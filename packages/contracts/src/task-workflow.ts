@@ -2142,7 +2142,7 @@ export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths
  * - a conflict round's fix, which was pushed as a merge commit and recorded as any fix (`recordWorkflowPullRequestUpdate`): the pull request already holds the head. It was code Rovara wrote, so
  *   nothing carries an approval, and `syncedFrom` is not set.
  */
-export function recordWorkflowBranchSync(currentInput: unknown, input: { repositoryId: string; number: number; headSha: string; headTreeSha: string; baseCommitSha: string; previousHeadSha?: string; now: string }): WorkflowSnapshot {
+export function recordWorkflowBranchSync(currentInput: unknown, input: { repositoryId: string; number: number; headSha: string; headTreeSha: string; baseCommitSha: string; previousHeadSha?: string; unverified?: boolean; now: string }): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   const sha = z.string().regex(/^[a-f0-9]{40}$/);
   if (![input.headSha, input.headTreeSha, input.baseCommitSha, ...(input.previousHeadSha === undefined ? [] : [input.previousHeadSha])].every((value) => sha.safeParse(value).success)) {
@@ -2171,7 +2171,8 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
     if (entry_ !== pullRequest) return entry_.candidateDigest === candidate.digest ? { ...entry_, candidateDigest: renewed.digest } : entry_;
     const { syncedFrom: priorSyncedFrom, ...rest } = entry_;
     return { ...rest, headSha: input.headSha, headTreeSha: input.headTreeSha, candidateDigest: renewed.digest,
-      ...(clean ? { syncedFrom: priorSyncedFrom ?? input.previousHeadSha! } : {}) };
+      // `unverified`: the worker's result was lost, so nothing proves Rovara's checks passed on the merged head, and no earlier head is kept for an approval to carry from.
+      ...(clean && input.unverified !== true ? { syncedFrom: priorSyncedFrom ?? input.previousHeadSha! } : {}) };
   });
   const reviewBase = renewed.repositories.every((repository) => repository.baseCommitSha !== undefined)
     ? renewed.repositories.map((repository) => ({ repositoryId: repository.repositoryId, baseCommitSha: repository.baseCommitSha as string })) : current.reviewBase;

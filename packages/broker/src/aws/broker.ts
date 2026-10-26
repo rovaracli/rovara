@@ -13045,6 +13045,29 @@ async function companyChoseCriticModel(dependencies: AwsBrokerDependencies, task
 }
 
 /**
+ * Plan 6 Task 17: a merge of the base branch whose machine was lost (the row names the operation, which has ended without a result): it is judged as a finished one is, from what GitHub shows, and
+ * recorded as Rovara's own when GitHub shows exactly the merge it asked for; with no result there is nothing to show that Rovara's checks passed, so no approval carries (`unverified`). GitHub
+ * that cannot be read is tried again (the row backs off, and gives up by ending the merge). One transaction with the row's delete.
+ */
+async function settleLostBranchSync(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const row = item as WorkflowDispatchRecord & { workspaceId?: unknown; operationId?: unknown };
+  const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
+  const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string" ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
+  if (operation === undefined || !TERMINAL.has(operation.status) || operation.maintenance?.workflowSync === undefined) {
+    // Not an operation that ended: nothing to judge, and the merge must not stay RUNNING for it.
+    await endUnstartedBranchSync(dependencies, item);
+    return "STALE";
+  }
+  const items = await completedBranchSyncItems(dependencies, operation, task, operation.status, new Date().toISOString(), undefined, operation.error, { lost: true });
+  if (items.length === 0) {
+    await endUnstartedBranchSync(dependencies, item);
+    return "STALE";
+  }
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, ...items] }));
+  return "DISPATCHED";
+}
+
+/**
  * Plan 6 Task 17: a merge of the base branch that could not be started, however often it was tried: its dispatch row goes and the task waits for the merge again, as it did. One transaction, conditional on the
  * row and on the task still waiting to start exactly this merge; a task that moved on, or a row someone else took, is left alone.
  */
@@ -13052,8 +13075,8 @@ async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item:
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
   const workflow = task?.workflow;
   const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
-  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "READY"
-    || workflow.branchSync === undefined) {
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE"
+    || (workflow.state !== "READY" && workflow.state !== "RUNNING") || workflow.branchSync === undefined) {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow] }));
     return;
   }
@@ -13064,7 +13087,7 @@ async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item:
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow, now), ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": "READY" },
+      ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow, now), ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": workflow.state },
     } }] }));
   } catch (error) {
     if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.branch_sync_end_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
@@ -13548,7 +13571,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
       : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
       // Plan 6 Task 17: the merge of the base branch the tracking pass queued.
-      : item.kind === "SYNC" ? workflow?.stage === "WAIT_FOR_MERGE" && workflow.state === "READY" && workflow.branchSync !== undefined
+      : item.kind === "SYNC" ? workflow?.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING") && workflow.branchSync !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
@@ -13562,6 +13585,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       if (Date.now() < Date.parse(item.nextAttemptAt)) return "STALE";
       return await endStuckUnderstanding(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     }
+    // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
+    if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
@@ -14589,6 +14614,8 @@ async function completedBranchSyncItems(
   now: string,
   result: unknown,
   terminalError: string | undefined,
+  /** `lost`: the operation ended without a result; GitHub is the only witness, so it must be readable (else the caller tries again). */
+  options: { lost?: boolean } = {},
 ): Promise<TransactItems> {
   const binding = operation.maintenance?.workflowSync;
   const maintenance = operation.maintenance;
@@ -14636,7 +14663,7 @@ async function completedBranchSyncItems(
     const parents = head !== binding.expectedHeadCommit && gateway.getCommitParents !== undefined ? await gateway.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
     if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
   } catch (error) {
-    if (reported !== undefined && reported.commit !== binding.expectedHeadCommit) throw error;
+    if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
   }
   const outcome = planBranchSyncOutcome({
     workflow, binding: { repositoryId: marker.repositoryId, number: marker.number, baseCommit: binding.baseCommit, expectedHeadCommit: binding.expectedHeadCommit },

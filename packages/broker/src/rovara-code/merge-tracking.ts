@@ -363,6 +363,9 @@ export function ownerCardPending(workflow: WorkflowSnapshot): boolean {
 export async function nextMergeAction(item: MergeTrackingItem, workflow: WorkflowSnapshot, settings: CodeSettings, autonomy: Autonomy, now: number = Date.now(), context?: MergeActionContext): Promise<MergeAction> {
   if (item.state !== "open") return { slot: "none", reason: "not_open" };
   if (!item.headByRovara) return { slot: "none", reason: "someone_else_pushed" };
+  // A head the pull request record has and the workflow has not recorded yet (a push whose result is still to be judged) is not acted on: nothing is fixed, merged or asked about it until the workflow knows it.
+  const recorded = context === undefined ? undefined : workflow.pullRequests?.find((entry) => entry.repositoryId === context.repositoryId && entry.number === context.pullRequestNumber);
+  if (context !== undefined && recorded?.headSha !== undefined && recorded.headSha !== context.headSha) return { slot: "none", reason: "in_flight" };
   if (workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return { slot: "none", reason: "in_flight" };
   if (ownerCardPending(workflow)) return { slot: "none", reason: "owner_card", ...(item.failingChecks.length === 0 ? {} : { ciFailures: item.failingChecks }) };
   for (const slot of MERGE_ACTION_ORDER) {

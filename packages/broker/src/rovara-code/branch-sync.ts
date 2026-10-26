@@ -146,6 +146,8 @@ export function planBranchSyncOutcome(input: {
       const next = recordWorkflowBranchSync(workflow, {
         repositoryId: binding.repositoryId, number: binding.number, headSha: github.headCommit, headTreeSha: github.headTreeSha, baseCommitSha: binding.baseCommit,
         previousHeadSha: binding.expectedHeadCommit, now: input.now,
+        // Only a merge whose result came back has Rovara's checks behind it (the worker pushes only after they pass).
+        unverified: input.terminalStatus !== "SUCCEEDED",
       });
       return { kind: "synced", workflow: next, headSha: github.headCommit, headTreeSha: github.headTreeSha, previousHeadSha: binding.expectedHeadCommit, baseCommitSha: binding.baseCommit };
     } catch (error) {
