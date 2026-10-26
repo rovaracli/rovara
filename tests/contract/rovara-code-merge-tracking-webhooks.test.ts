@@ -206,7 +206,7 @@ describe("a check or status delivery", () => {
 
   it("still compares the project's pinned repository by name when the App's check is skipped", async () => {
     const s = await setup();
-    const url = s.deps.repositoryUrl;
+    const url = s.deps.repositoryUrl.bind(s.deps);
     s.deps.repositoryUrl = async (...args) => (await url(...args))?.replace("payments", "other");
     expect(await resolveHeadEventTask(s.deps, { installationId: INSTALLATION, repositoryId: REPOSITORY, fullName: "acme/payments", headSha: HEAD_A }, { verifyRepository: false })).toBeUndefined();
   });

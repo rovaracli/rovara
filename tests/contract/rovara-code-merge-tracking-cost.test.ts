@@ -57,7 +57,7 @@ function counting(options: { reviewers: number; permission?: (login: string) => 
     return new Response("{}", { status: 404 });
   };
   const provider = new GitHubAppCredentialProvider({
-    credentialRef: "github", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation: fetchImplementation as typeof fetch, now: () => NOW,
+    credentialRef: "github", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation, now: () => NOW,
   });
   let used = 0;
   const budget = { signal: new AbortController().signal, beforeRequest: () => { used += 1; }, used: () => used };
@@ -65,7 +65,7 @@ function counting(options: { reviewers: number; permission?: (login: string) => 
 }
 
 function setup(github: Counting) {
-  const w = world({ deps: { github: github.provider as never } });
+  const w = world({ deps: { github: github.provider } });
   w.db.set({ ...codeSettingsKey(TEST_ORG, "web"), allowSelfApproval: false, mergeMethod: "squash", codeReviewers: ["alice"], revision: 1 });
   return w;
 }

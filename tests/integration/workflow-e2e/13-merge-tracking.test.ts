@@ -22,7 +22,7 @@ function trackingGithub(e2e: () => WorkflowE2E) {
         return {
           number, state: found.state, draft: found.draft === true, headSha: found.commit, baseBranch: found.baseBranch, mergeableState: "clean" as const, mergeable: true, behindBy: 0,
           checks: [{ name: "test", status: "completed" as const, conclusion: "success" as const, required: false, url: "" }],
-          baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [],
+          requiredCheckNames: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [],
         };
       },
       getRepositoryPermission: async () => "none" as const,
