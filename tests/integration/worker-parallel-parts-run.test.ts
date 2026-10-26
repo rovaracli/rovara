@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskGraphDigest, type TaskGraphV1 } from "@agentx/contracts";
 import { WorkerCancellationController } from "../../packages/worker/src/cancel.js";
 import { runTaskInvocation, type TaskInvocationResult } from "../../packages/worker/src/run-task.js";
+import { readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";
 
 // The worker's whole run of an approved plan whose independent parts build side by side, with a fake model that edits the files of the working copy it was started in.
 
@@ -31,7 +32,7 @@ beforeEach(async () => {
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 type Entry = { itemId: string; sequence: number; state: string; integratedTreeSha?: string };
-type Ev = { payload?: { workItemProgress?: Entry } };
+type Ev = { type?: string; payload?: { workItemProgress?: Entry } };
 
 interface Scenario {
   graph: TaskGraphV1;
@@ -41,15 +42,17 @@ interface Scenario {
   controller?: WorkerCancellationController;
   resumeProgress?: unknown[];
   sequenceStart?: number;
+  /** The repository's path in the manifest; default repo/app. */
+  manifestPath?: string;
 }
 
-async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult; error?: Error; events: Ev[]; cwds: string[]; peak: number; operationId: string }> {
+async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult; error?: Error; events: Ev[]; cwds: string[]; peak: number; operationId: string; artifacts: string[] }> {
   const git = (...args: string[]) => execFileSync("git", ["-C", repository, ...args], { encoding: "utf8" }).trim();
   const resolvedCommit = git("rev-parse", "HEAD");
   const at = new Date().toISOString();
   await mkdir(join(root, ".agentx"), { recursive: true });
   await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({ schemaVersion: 2, projectName: "x", projectRevision: 1,
-    repositories: [{ name: "app", path: "repo/app", defaultBranch: "main", resolvedCommit, resolvedAt: at, completedAt: at }],
+    repositories: [{ name: "app", path: scenario.manifestPath ?? "repo/app", defaultBranch: "main", resolvedCommit, resolvedAt: at, completedAt: at }],
     completedSetupSteps: [], readinessResults: [], creationIdentity: "fixture", complete: true, updatedAt: at }));
   const operationId = randomUUID();
   const runId = randomUUID();
@@ -57,9 +60,11 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
   const cwds: string[] = [];
   const running = { now: 0, peak: 0 };
   const events: Ev[] = [];
+  const artifacts: string[] = [];
   const adapter = {
     async create({ sessionDirectory, cwd }: { sessionDirectory: string; cwd: string }) {
       cwds.push(cwd);
+      const spent = cwds.length * 10;
       const sessionFile = join(sessionDirectory, `fixture-${cwds.length}.jsonl`);
       await writeFile(sessionFile, "");
       let listener: (event: unknown) => void = () => undefined;
@@ -77,7 +82,7 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
         },
         async abort() { aborted = true; },
         getModel: () => ({ provider: "fixture", modelId: "fixture" }),
-        getSessionStats: () => ({ sessionFile, sessionId: "fixture", userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 }),
+        getSessionStats: () => ({ sessionFile, sessionId: "fixture", userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2, tokens: { input: spent, output: 1, cacheRead: 0, cacheWrite: 0, total: spent + 1 }, cost: 0 }),
         subscribe(next: (event: unknown) => void) { listener = next; return () => undefined; },
         dispose() { return undefined; },
       };
@@ -90,10 +95,10 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
         approval: { artifactDigest: "a".repeat(64), graphDigest: taskGraphDigest(graph), workflowRevision: 2, actorId: "b".repeat(64), runId } } } };
   try {
     const result = await runTaskInvocation(invocation as never, { rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: adapter,
-      ...(scenario.controller === undefined ? {} : { cancellationController: scenario.controller }), eventSink: async (batch) => { events.push(...(batch as unknown as Ev[])); }, artifactSink: async () => undefined });
-    return { result, events, cwds, peak: running.peak, operationId };
+      ...(scenario.controller === undefined ? {} : { cancellationController: scenario.controller }), eventSink: async (batch) => { events.push(...(batch as unknown as Ev[])); }, artifactSink: async (artifact) => { artifacts.push(artifact.name); } });
+    return { result, events, cwds, peak: running.peak, operationId, artifacts };
   } catch (error) {
-    return { error: error as Error, events, cwds, peak: running.peak, operationId };
+    return { error: error as Error, events, cwds, peak: running.peak, operationId, artifacts };
   }
 }
 
@@ -118,10 +123,10 @@ describe("a v2 task's parts, run by the worker", () => {
     });
     expect(outcome.error).toBeUndefined();
     expect(outcome.peak).toBe(2);
-    const partFolders = outcome.cwds.filter((cwd) => cwd.includes("/.agentx/parts/"));
+    const partFolders = outcome.cwds.filter((cwd) => cwd.includes("/.agentx-parts/"));
     expect(partFolders).toHaveLength(3);
     expect(new Set(partFolders).size).toBe(3);
-    expect(partFolders.every((cwd) => cwd.startsWith(join(root, ".agentx/parts", "")) && cwd.endsWith("/app"))).toBe(true);
+    expect(partFolders.every((cwd) => cwd.startsWith(join(root, ".agentx-parts", "")) && cwd.endsWith("/app"))).toBe(true);
     const repo = async (file: string) => readFile(join(repository, file), "utf8");
     expect([await repo("A.txt"), await repo("B.txt")]).toEqual(["from A\n", "from B\n"]);
     expect(await repo("C.txt")).toBe("C saw from A\nfrom B\n");
@@ -132,8 +137,33 @@ describe("a v2 task's parts, run by the worker", () => {
     expect(outcome.result?.workflowDependenciesResult?.items.map((entry) => entry.state)).toEqual(["IMPLEMENTED", "IMPLEMENTED", "IMPLEMENTED"]);
     const lastIntegrated = progress.filter((entry) => entry.state === "IMPLEMENTED").at(-1)!.integratedTreeSha;
     expect(outcome.result?.workflowCandidateRepositories?.[0]?.treeSha).toBe(lastIntegrated);
-    expect(await readdir(join(root, ".agentx/parts"))).toEqual([]);
+    expect(await readdir(join(root, ".agentx-parts"))).toEqual([]);
     expect(execFileSync("git", ["-C", repository, "status", "--porcelain"], { encoding: "utf8" })).not.toContain(".agentx");
+    // Every part's session is reported as usage, with the main session's: four reports, each with its own session's tokens, so activity counts a parallel build whole.
+    const usage = outcome.events.filter((event) => event.type === "usage").map((event) => (event.payload as unknown as { tokens?: { input?: number } }).tokens?.input);
+    expect(usage).toHaveLength(4);
+    expect(new Set(usage).size).toBe(4);
+    expect(outcome.artifacts.filter((name) => name.startsWith("usage-part-"))).toHaveLength(3);
+    expect(outcome.artifacts).toContain("usage.json");
+  });
+
+  it("builds the parts one after another when the project repository is the workspace root", async () => {
+    // The parts folder would be inside the repository, so nothing is built in it.
+    await rm(join(root, "repo"), { recursive: true, force: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+    git("init", "--quiet", "--initial-branch=main");
+    await writeFile(join(root, "README.md"), "base\n");
+    await writeFile(join(root, ".gitignore"), ".agentx/\nagent-sessions/\n.agentx-parts/\n");
+    git("add", "README.md", ".gitignore");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "base");
+    repository = root;
+    const outcome = await run({
+      graph: { schemaVersion: 1, taskId: randomUUID(), version: 1, items: [item(A, "A"), item(B, "B")] }, parallel: { max: 3 }, manifestPath: ".",
+      act: async (title, cwd) => { await wait(5); await writeFile(join(cwd, `${title}.txt`), "x\n"); return undefined; },
+    });
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.peak).toBe(1);
+    expect(outcome.cwds.some((cwd) => cwd.includes("/.agentx-parts/"))).toBe(false);
   });
 
   it("runs the parts one at a time when the cap is 1", async () => {
@@ -152,8 +182,8 @@ describe("a v2 task's parts, run by the worker", () => {
     });
     expect(outcome.error).toBeUndefined();
     expect(outcome.peak).toBe(1);
-    expect(outcome.cwds.some((cwd) => cwd.includes("/.agentx/parts/"))).toBe(false);
-    expect(existsSync(join(root, ".agentx/parts"))).toBe(false);
+    expect(outcome.cwds.some((cwd) => cwd.includes("/.agentx-parts/"))).toBe(false);
+    expect(existsSync(join(root, ".agentx-parts"))).toBe(false);
   });
 
   it("when the budget runs out in one part the run ends with the budget's own words, the finished part is kept, and nothing is left behind", async () => {
@@ -173,10 +203,9 @@ describe("a v2 task's parts, run by the worker", () => {
     // The repository holds the finished part (a resume starts from it), not the part that stopped.
     expect(await readFile(join(repository, "B.txt"), "utf8")).toBe("x\n");
     expect(existsSync(join(repository, "A.txt"))).toBe(false);
-    expect(await readdir(join(root, ".agentx/parts"))).toEqual([]);
+    expect(await readdir(join(root, ".agentx-parts"))).toEqual([]);
     const finished = progress.find((entry) => entry.state === "IMPLEMENTED")!;
-    const tree = execFileSync("git", ["-C", repository, "write-tree"], { encoding: "utf8", env: { ...process.env, GIT_INDEX_FILE: join(repository, ".git/index") } }).trim();
-    expect(tree).toBe(finished.integratedTreeSha);
+    expect((await readCandidateRepositories([{ repositoryId: "app", directory: repository }]))[0]!.treeSha).toBe(finished.integratedTreeSha);
   });
 
   it("a cancel stops the parts that are running, starts no other, and leaves nothing behind", async () => {
@@ -193,6 +222,6 @@ describe("a v2 task's parts, run by the worker", () => {
     });
     expect(outcome.error?.message).toMatch(/was cancelled/);
     expect(prompted.sort()).toEqual(["A", "B"]);
-    expect(await readdir(join(root, ".agentx/parts"))).toEqual([]);
+    expect(await readdir(join(root, ".agentx-parts"))).toEqual([]);
   });
 });

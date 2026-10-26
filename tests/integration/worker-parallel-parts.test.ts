@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +23,7 @@ let repository: string;
 const git = (...args: string[]) => execFileSync("git", ["-C", repository, ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "rovara-parts-"));
+  root = await realpath(await mkdtemp(join(tmpdir(), "rovara-parts-")));
   repository = join(root, "repo/app");
   await mkdir(repository, { recursive: true });
   git("init", "--quiet", "--initial-branch=main");
@@ -78,6 +78,9 @@ describe("parallel parts on real git", () => {
     expect(seenByC).toEqual(["from a\n", "from b\n"]);
     expect([await read("a.txt"), await read("b.txt"), await read("c.txt")]).toEqual(["from a\n", "from b\n", "from c\n"]);
     expect(await treeNow()).toBe(result.finalTreeSha);
+    // The repository's own index is as it was (the files differ from it, as after an agent's edits), so the run can go on from here one part at a time.
+    expect(git("diff", "--cached", "--name-only")).toBe("");
+    expect(git("status", "--porcelain")).toContain("a.txt");
     expect(events.map((event) => event.state).filter((state) => state === "IMPLEMENTED")).toHaveLength(3);
     // `.agentx` is outside every repository: git never sees it, and nothing of the parts is left.
     expect(git("status", "--porcelain")).not.toContain(".agentx");

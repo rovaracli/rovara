@@ -5,7 +5,7 @@
 // parts: the plan's cap (PARALLEL_PARTS_MAX), and the room the person and the org have in their workspace slots. The task holds one slot already, so it may run its own
 // part plus one more for each free slot; an org at its limit builds serially.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { parallelPartsFor, type OrgId, type WorkflowParallel } from "@agentx/contracts";
+import { parallelPartsFor, taskGraphOrder, type OrgId, type TaskGraphV1, type WorkItemProgressV1, type WorkflowParallel } from "@agentx/contracts";
 import { developerCharge, readWorkspaceLimits } from "../developer/limits.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -69,4 +69,20 @@ export function parallelStartTrees(
     if (tree !== undefined) trees.add(tree);
   }
   return trees;
+}
+
+/**
+ * Whether a worker that builds the plan's items one at a time (an older one, without "task.workflowParallelParts") can take over this plan's retained progress. Its executor
+ * resumes only from a completed prefix of the plan's order whose last item ended on the tree the workspace holds; progress that parallel parts left (item B done, item A not) is
+ * not that, and sending it would fail the run at its start on every retry. Such a plan is refused for an older worker instead of being sent to it.
+ */
+export function serialWorkerCanResume(input: { graph: TaskGraphV1; resumeProgress?: readonly WorkItemProgressV1[] | undefined; resumeTreeSha?: string | undefined }): boolean {
+  const order = taskGraphOrder(input.graph);
+  const implemented = new Map((input.resumeProgress ?? []).filter((entry) => entry.state === "IMPLEMENTED").map((entry) => [entry.itemId, entry] as const));
+  let prefix = 0;
+  while (prefix < order.length && implemented.has(order[prefix]!)) prefix += 1;
+  if (implemented.size !== prefix) return false;
+  if (prefix === 0) return true;
+  const last = implemented.get(order[prefix - 1]!)!;
+  return input.resumeTreeSha !== undefined && last.candidateTreeSha === input.resumeTreeSha;
 }

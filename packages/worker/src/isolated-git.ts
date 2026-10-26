@@ -144,7 +144,17 @@ export interface IsolatedGit {
  * worker's own descriptor-relative writes (candidate-fs.ts) rather than through Git, which would follow a symlink the agent put in `objects/`. `"read"` writes
  * nothing to the candidate.
  */
-export async function withIsolatedGit<T>(directory: string, mode: "read" | "write", use: (git: IsolatedGit) => Promise<T>): Promise<T> {
+export async function withIsolatedGit<T>(
+  directory: string,
+  mode: "read" | "write",
+  use: (git: IsolatedGit) => Promise<T>,
+  /**
+   * `objectsDirectory`: the object directory Git reads instead of the candidate's own. Only for a folder the agent wrote that the worker must not read objects from (a
+   * parallel part's): Git then sees the project repository's objects and the files of `directory`, and nothing from the part's own `.git/objects`. `"write"` still exports to the
+   * candidate's layout, so use it with `"read"` and export the throwaway repository's objects where they belong.
+   */
+  options: { objectsDirectory?: string } = {},
+): Promise<T> {
   const layout = await candidateLayout(directory);
   const scratch = await mkdtemp(join(tmpdir(), "agentx-candidate-git-"));
   let workTreeHeld: HeldDirectory | undefined;
@@ -154,7 +164,7 @@ export async function withIsolatedGit<T>(directory: string, mode: "read" | "writ
     await execFile("git", ["init", "--bare", "--quiet", "--template=", gitDir], { cwd: scratch, env: initEnv });
     await mkdir(join(gitDir, "info"), { recursive: true });
     await mkdir(join(gitDir, "objects", "info"), { recursive: true });
-    await writeFile(join(gitDir, "objects", "info", "alternates"), `${layout.objects}\n`, { mode: 0o600 });
+    await writeFile(join(gitDir, "objects", "info", "alternates"), `${options.objectsDirectory ?? layout.objects}\n`, { mode: 0o600 });
     // Ignore patterns and attributes are plain text: the files carry no command, and the agent's own exclusions and attributes keep deciding what `add` stages.
     for (const name of ["exclude", "attributes"]) {
       const bytes = await readSmallFile(join(layout.gitDirectory, "info", name), SMALL_FILE_BYTES).catch(() => undefined);

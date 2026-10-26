@@ -47,7 +47,7 @@ function modelFor(context: { current?: WorkflowE2E }) {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The parts a run built one after another, in order: they share one session, so each shows only in the coding turns. */
-const itemTitlesInOrder = (e2e: WorkflowE2E) => [...new Set(e2e.turns.filter((turn) => turn.role === "CODER" && /Current approved item/.test(turn.userText)).map((turn) => turn.userText.match(/Title: (.*)/)?.[1] ?? ""))];
+const itemTitlesInOrder = (e2e: WorkflowE2E, after = 0) => [...new Set(e2e.turns.slice(after).filter((turn) => turn.role === "CODER" && /Current approved item/.test(turn.userText)).map((turn) => turn.userText.match(/Title: (.*)/)?.[1] ?? ""))];
 /** One entry per coding session that was given a part, in the order the sessions opened. */
 const itemTitles = (e2e: WorkflowE2E) => e2e.prompts.filter((prompt) => /Current approved item/.test(prompt)).map((prompt) => prompt.match(/Title: (.*)/)?.[1] ?? "");
 const implementInvocations = (e2e: WorkflowE2E) => e2e.invocations.filter((invocation) => invocation.kind === "task" && invocation.payload.workflowMode === "IMPLEMENT");
@@ -276,6 +276,64 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     await e2e.settle();
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(e2e.github.pullRequests).toHaveLength(1);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("an older worker is refused a plan whose finished parts are not a prefix of its order, and takes over one whose are", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    let failA = true;
+    const model = modelFor(context);
+    const e2e = await createWorkflowE2E({
+      readiness: READINESS, realProjectCommands: true,
+      model: { ...model, edits: (latest) => {
+        if (failA && /Title: A: create formatter/.test(latest)) throw new Error("model stopped before a result");
+        return itemEdits(latest);
+      } },
+    });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    // Part B finished, part A did not: B alone is not a prefix of A, B, C.
+    expect(progressOf(e2e).filter((entry) => entry.state === "IMPLEMENTED").map((entry) => entry.itemId)).toEqual([ITEM_B]);
+    const older = WORKER_INVOCATION_FEATURES.filter((feature) => feature !== "task.workflowParallelParts");
+    e2e.worker.features(older);
+    failA = false;
+    const prompts = e2e.prompts.length;
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(e2e.prompts).toHaveLength(prompts);
+    expect(e2e.github.pullRequests).toEqual([]);
+    // A worker that can build parts resumes it.
+    e2e.worker.features(WORKER_INVOCATION_FEATURES);
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("an older worker takes over when the finished part is the first of the plan's order", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    let failB = true;
+    const model = modelFor(context);
+    const e2e = await createWorkflowE2E({
+      readiness: READINESS, realProjectCommands: true,
+      model: { ...model, edits: (latest) => {
+        if (failB && /Title: B: create clock/.test(latest)) throw new Error("model stopped before a result");
+        return itemEdits(latest);
+      } },
+    });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(progressOf(e2e).filter((entry) => entry.state === "IMPLEMENTED").map((entry) => entry.itemId)).toEqual([ITEM_A]);
+    e2e.worker.features(WORKER_INVOCATION_FEATURES.filter((feature) => feature !== "task.workflowParallelParts"));
+    failB = false;
+    const turnsBefore = e2e.turns.length;
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(itemTitlesInOrder(e2e, turnsBefore)).toEqual(["B: create clock", "C: integration assertion"]);
     assertJourneyInvariants(e2e);
   }, 240_000);
 });

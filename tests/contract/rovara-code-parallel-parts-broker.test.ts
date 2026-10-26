@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { PARALLEL_PARTS_MAX, orgPk, type OrgId } from "@agentx/contracts";
-import { parallelPartsForTask, parallelStartTrees, workflowDependenciesAllowed } from "../../packages/broker/src/rovara-code/parallel-parts.js";
+import { PARALLEL_PARTS_MAX, orgPk, type OrgId, type TaskGraphV1, type WorkItemProgressV1 } from "@agentx/contracts";
+import { parallelPartsForTask, parallelStartTrees, serialWorkerCanResume, workflowDependenciesAllowed } from "../../packages/broker/src/rovara-code/parallel-parts.js";
 import { developerCharge, workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -95,5 +95,41 @@ describe("the trees a part may start from", () => {
   it("are only the finished parts' when the run has no first tree", () => {
     expect([...parallelStartTrees([{ state: "IMPLEMENTED", integratedTreeSha: t("2") }], undefined)]).toEqual([t("2")]);
     expect(parallelStartTrees([], undefined).size).toBe(0);
+  });
+});
+
+describe("whether an older worker can take over a plan's retained progress", () => {
+  const A = "11111111-1111-4111-8111-111111111111";
+  const B = "22222222-2222-4222-8222-222222222222";
+  const C = "33333333-3333-4333-8333-333333333333";
+  const graph: TaskGraphV1 = { schemaVersion: 1, taskId: "8c330a74-b4c6-4f01-9356-5fe54fc55b19", version: 1, items: [
+    { id: A, title: "A", description: "A.", repository: "r", dependsOn: [] }, { id: B, title: "B", description: "B.", repository: "r", dependsOn: [] },
+    { id: C, title: "C", description: "C.", repository: "r", dependsOn: [A, B] },
+  ] };
+  const done = (itemId: string, tree: string, state: WorkItemProgressV1["state"] = "IMPLEMENTED"): WorkItemProgressV1 => ({
+    schemaVersion: 1, graphDigest: "d".repeat(64), runId: "8c330a74-b4c6-4f01-9356-5fe54fc55b21", itemId, sequence: 1, state, operationId: "8c330a74-b4c6-4f01-9356-5fe54fc55b20",
+    baseTreeSha: "0".repeat(40), ...(state === "IMPLEMENTED" ? { candidateTreeSha: tree, integratedTreeSha: tree } : {}), at: "2026-10-26T12:00:00.000Z", producer: "agentx-worker",
+  });
+  const t = (digit: string) => digit.repeat(40);
+
+  it("can when nothing was finished", () => {
+    expect(serialWorkerCanResume({ graph, resumeProgress: [], resumeTreeSha: undefined })).toBe(true);
+    expect(serialWorkerCanResume({ graph })).toBe(true);
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(A, t("1"), "UNKNOWN")] })).toBe(true);
+  });
+
+  it("can from a completed prefix of the plan's order that ended on the workspace's tree", () => {
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(A, t("1"))], resumeTreeSha: t("1") })).toBe(true);
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(A, t("1")), done(B, t("2"))], resumeTreeSha: t("2") })).toBe(true);
+  });
+
+  it("cannot from a set that is closed under dependencies but is not a prefix (B done, A not)", () => {
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(B, t("2"))], resumeTreeSha: t("2") })).toBe(false);
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(B, t("2")), done(A, t("1"), "FAILED")], resumeTreeSha: t("2") })).toBe(false);
+  });
+
+  it("cannot from a prefix whose last item did not end on the tree the workspace holds (the parts were merged after it)", () => {
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(A, t("1")), done(B, t("2"))], resumeTreeSha: t("3") })).toBe(false);
+    expect(serialWorkerCanResume({ graph, resumeProgress: [done(A, t("1"))], resumeTreeSha: undefined })).toBe(false);
   });
 });

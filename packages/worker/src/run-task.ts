@@ -57,7 +57,7 @@ import {
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies, type ExecuteSerialWorkflowDependenciesInput, type ExecuteSerialWorkflowDependenciesResult } from "./workflow-dependencies.js";
 import { WorkflowPartsHaltedError, executeParallelWorkflowDependencies, type ParallelPartContext } from "./parallel-parts.js";
-import { capturePartTree, checkoutIntegratedTree, createPartWorkingCopy, integrateTrees } from "./parallel-parts-git.js";
+import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWorkingCopy, integrateTrees, partsFolderIsOutside } from "./parallel-parts-git.js";
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
@@ -238,11 +238,13 @@ async function runTask(
   // fall back to the local shell.
   let sandbox: TaskSandbox | undefined;
   let localShell = false;
-  // Independent parts build side by side (Rovara Code v2) only where the task's own sandbox, or the explicit local shell, can see their working copies. A project that has a
-  // dev container builds its parts one after another, which the broker's checkpoint rules allow.
-  const partsAllowed = workflowDependencies?.parallel !== undefined && devcontainer === undefined;
+  // Independent parts build side by side (Rovara Code v2) only where the task's own sandbox, or the explicit local shell, can see their working copies (`.agentx-parts`, a folder
+  // of the workspace that is not hidden), and the folder is outside the project repository. A project that has a dev container, or whose repository is the workspace root, builds
+  // its parts one after another, which the broker's checkpoint rules allow.
+  const partsAllowed = workflowDependencies?.parallel !== undefined && devcontainer === undefined
+    && (manifest.repositories.length !== 1 || await partsFolderIsOutside(canonicalRoot, resolve(canonicalRoot, manifest.repositories[0]!.path)));
   if (devcontainer === undefined) {
-    sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId, ...(partsAllowed ? { exposeParts: true } : {}) });
+    sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
       await sandbox.start();
@@ -908,17 +910,34 @@ async function runTask(
         maxParallel: number; repositoryDirectory: string; repositoryId: string; initialTreeSha: string;
       }): Promise<ExecuteSerialWorkflowDependenciesResult> => {
         const graph = input.common.graph;
+        const reportPartUsage = async (partSession: PiSessionHandle, itemId: string, partOutcome: TaskUsageOutcome): Promise<void> => {
+          try {
+            const usage = createTaskUsageTelemetry(partSession.getSessionStats(), {
+              ...partSession.getModel(),
+              ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }),
+            }, partOutcome);
+            const redactedUsage = redactCredentials(usage);
+            await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
+            await dependencies.artifactSink({ name: `usage-part-${itemId.slice(0, 8)}.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
+          } catch (error) {
+            onDiagnostic(`Rovara could not report the usage of one part: ${errorText(error)}`);
+          }
+        };
+        // Folders of parts that an earlier run did not get to remove (a crash) are not kept.
+        await clearPartsFolder(canonicalRoot);
         const runOnePart = async (item: (typeof graph.items)[number], context: ParallelPartContext): Promise<{ treeSha: string; summary?: string }> => {
           const copy = await createPartWorkingCopy({ rootPath: canonicalRoot, repositoryDirectory: input.repositoryDirectory, repositoryId: input.repositoryId, itemId: item.id, treeSha: context.baseTreeSha });
           let partSession: PiSessionHandle | undefined;
           let unsubscribe: () => void = () => undefined;
+          let partOutcome: TaskUsageOutcome = "SUCCEEDED";
           try {
             partSession = await createWorkspacePiSession(
               {
                 rootPath: dependencies.rootPath, workingDirectory: copy.directory, model: dependencies.model, workflowMode: "IMPLEMENT", onDiagnostic,
                 extensionFactories: [],
                 ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
-                ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
+                // The part's file tools are rooted at its own folder, so it cannot edit the project repository or another part.
+                ...(fileTools !== undefined ? { fileTools: { ...fileTools, root: copy.directory } } : localShell ? { localFileTools: true } : {}),
                 ...stepSession,
               },
               dependencies.piAdapter,
@@ -975,10 +994,15 @@ async function runTask(
             const treeSha = await capturePartTree(copy, input.repositoryDirectory);
             const summary = (lastText ?? "").trim();
             return { treeSha, ...(summary === "" ? {} : { summary: redactText(summary).slice(0, 2_000) }) };
+          } catch (error) {
+            partOutcome = context.signal.aborted ? "CANCELLED" : "FAILED";
+            throw error;
           } finally {
             unsubscribe();
             if (partSession !== undefined) {
               partSessions.delete(partSession);
+              // What this part's session spent counts as the task's usage, as the main session's does (billing is by the operation's one key; this is the usage report).
+              await reportPartUsage(partSession, item.id, partOutcome);
               partSession.dispose();
             }
             await copy.remove().catch((error: unknown) => {

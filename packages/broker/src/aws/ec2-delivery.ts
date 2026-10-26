@@ -24,6 +24,7 @@ import {
 } from "@agentx/contracts";
 import { asksForApplicationPlan, asksForCodeAnchors, withoutApplicationPlanText, withoutCodeAnchorText } from "./broker-shared.js";
 import type { Ec2OutboxRecord } from "./lambda.js";
+import { serialWorkerCanResume } from "../rovara-code/parallel-parts.js";
 import type { SessionManager } from "./sessions.js";
 
 /** The worker's port; its /invocations accepts only KMS-signed tokens (#80). */
@@ -567,11 +568,13 @@ async function forWorkerFeatures(
 
 /**
  * An approved plan's parts for a worker that does not list "task.workflowParallelParts": it would reject the `parallel` setting, and it builds the parts one after another, which
- * the broker's checkpoint rules accept and which costs no more (only time). This is the one field of a plan run that is withheld rather than refused: the plan and its approval
- * are sent whole.
+ * the broker's checkpoint rules accept and which costs no more (only time). The `parallel` setting is the one field of a plan run that is withheld rather than refused (owner
+ * ruling), and only when the older worker can take over the retained progress; otherwise the run is refused with the worker-outdated text. The plan and its approval are sent whole.
  */
 function withoutParallelParts(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
   if (invocation.kind !== "task" || invocation.payload.workflowDependencies?.parallel === undefined || features.includes("task.workflowParallelParts")) return invocation;
+  // Progress that parallel parts left is not one an older worker can resume from; it is refused, not sent.
+  if (!serialWorkerCanResume(invocation.payload.workflowDependencies)) throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   const { parallel: _parallel, ...workflowDependencies } = invocation.payload.workflowDependencies;
   void _parallel;
   return { ...invocation, payload: { ...invocation.payload, workflowDependencies } };
