@@ -10,6 +10,8 @@ import {
   BRANCH_SYNCS_PER_DAY_MAX,
   BRANCH_WORKFLOW_FILES_MESSAGE,
   branchConflictAskMessage,
+  branchSyncGiveUpMessage,
+  SYNC_FAILURES_MAX,
   type Autonomy,
   CONFLICT_PATHS_BLOCK_HEADER,
   WorkflowTransitionError,
@@ -91,6 +93,11 @@ export function isWorkflowFilesRefusal(error: string | undefined): boolean {
 }
 
 // ---- what a finished merge is
+
+/** The fixed words a failed merge is told in: the project's checks (the worker's readiness checks failed on the merged tree), or the merge not going through. The worker's own text is never shown. */
+export function classifySyncFailure(error: string | undefined): "checks" | "other" {
+  return error !== undefined && /registered readiness checks failed/iu.test(error) ? "checks" : "other";
+}
 
 /** What GitHub shows of the pull request after a merge was run (read fresh by the caller; undefined where it could not be read). */
 export interface BranchSyncGithub {
@@ -178,6 +185,17 @@ export function planBranchSyncOutcome(input: {
   }
   if (input.terminalStatus !== "SUCCEEDED" && isWorkflowFilesRefusal(input.terminalError) && !headMoved) {
     return { kind: "stopped", workflow: blockWorkflowBranchSync(workflow, { reason: BRANCH_WORKFLOW_FILES_MESSAGE, now: input.now }), message: BRANCH_WORKFLOW_FILES_MESSAGE };
+  }
+  // A merge that failed (its checks, a lost machine, GitHub): counted for this head. The second failure stops, in fixed words; a head that moved is a person's push, not the merge failing.
+  const stale = input.terminalError?.includes("STALE_FENCE") === true;
+  if (input.terminalStatus !== "SUCCEEDED" && !stale && !headMoved) {
+    const prior = workflow.syncFailures;
+    const count = (prior?.headSha === binding.expectedHeadCommit ? prior.count : 0) + 1;
+    if (count >= SYNC_FAILURES_MAX) {
+      const message = branchSyncGiveUpMessage(classifySyncFailure(input.terminalError));
+      return { kind: "stopped", workflow: blockWorkflowBranchSync(workflow, { reason: message, now: input.now }), message };
+    }
+    return { kind: "unchanged", workflow: endWorkflowBranchSync(workflow, input.now, { failed: true }) };
   }
   return unchanged();
 }

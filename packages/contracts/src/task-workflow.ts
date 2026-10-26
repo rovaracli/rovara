@@ -3,7 +3,7 @@ import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, 
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
-  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, type BranchSyncReason, type WorkflowBranchSync,
+  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, type BranchSyncReason, type WorkflowBranchSync,
   intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
@@ -1343,6 +1343,8 @@ const WorkflowSnapshotShapeSchema = z.object({
   conflictBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
   /** Both versions: a person told Rovara to go on with a conflict it asked about (Retry): the heads of the open pull requests then. The merge it starts uses it up. */
   conflictApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
+  /** Both versions: how many times a merge of the base failed on this head (a head a person pushes starts the count again). Rovara stops at `SYNC_FAILURES_MAX`. */
+  syncFailures: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/), count: z.number().int().min(1).max(SYNC_FAILURES_MAX) }).strict().optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -2113,12 +2115,16 @@ export function startWorkflowBranchSyncRun(currentInput: unknown, now: string): 
 }
 
 /** A merge of the base branch that pushed nothing (it did not start, was not needed, failed, or the branch moved): the task waits for the merge again, as it was. */
-export function endWorkflowBranchSync(currentInput: unknown, now: string): WorkflowSnapshot {
+export function endWorkflowBranchSync(currentInput: unknown, now: string, options: { failed?: true } = {}): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   if (current.stage !== "WAIT_FOR_MERGE" || (current.state !== "READY" && current.state !== "RUNNING") || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is under way");
-  const { branchSync: _branchSync, ...rest } = current;
-  void _branchSync;
-  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: now });
+  const { branchSync, ...rest } = current;
+  // A merge that failed is counted for the head it was for; a different head starts the count again.
+  const head = branchSync.expectedHeadCommit;
+  const failures = options.failed === true ? { headSha: head, count: Math.min(SYNC_FAILURES_MAX, (current.syncFailures?.headSha === head ? current.syncFailures.count : 0) + 1) } : current.syncFailures;
+  const { syncFailures: _failures, ...withoutFailures } = rest;
+  void _failures;
+  return WorkflowSnapshotSchema.parse({ ...withoutFailures, ...(failures === undefined ? {} : { syncFailures: failures }), revision: current.revision + 1, state: "WAITING", updatedAt: now });
 }
 
 /**
@@ -2198,8 +2204,9 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
   });
   const reviewBase = renewed.repositories.every((repository) => repository.baseCommitSha !== undefined)
     ? renewed.repositories.map((repository) => ({ repositoryId: repository.repositoryId, baseCommitSha: repository.baseCommitSha as string })) : current.reviewBase;
-  const { branchSync: _branchSync, ...rest } = current;
+  const { branchSync: _branchSync, syncFailures: _failures, ...rest } = current;
   void _branchSync;
+  void _failures;
   const verification = current.verification?.candidateDigest === candidate.digest ? { ...current.verification, candidateDigest: renewed.digest } : current.verification;
   const reviews = rekey(current.reviews);
   const acceptedFindings = rekey(current.acceptedFindings);

@@ -147,7 +147,8 @@ export async function maintainPullRequest(options: {
     // The fix is the merge of the base: whatever the base changed outside the files that conflicted must be in the tree. The candidate is captured from the working tree, so a file the repository ignores,
     // or one the coder took back, would be missing here, and a merge commit that names the base as a parent would make GitHub treat its change as merged: merging the pull request would delete it.
     if (mergeBase !== undefined) await assertKeepsBaseChanges(repositoryPath, remoteHead, mergeBase, workspaceTree);
-    // A merge commit is worth recording even when its tree is the head's own (the conflict was resolved to the pull request's side).
+    // A merge commit is worth recording even when its tree is the head's own (every change of the base lay in the conflicting files, and the conflict was resolved to the pull request's side). (A round
+    // that changed nothing at all is stopped earlier, by the broker.)
     if (workspaceTree === publishedTree && mergeBase === undefined) {
       throw agentXError("CONFIG_INVALID", "repository has no effective changes to append");
     }
@@ -193,7 +194,10 @@ export async function maintainPullRequest(options: {
   }
 
   const status = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=dirty"]);
-  if (status.trim()) throw agentXError("CONFIG_INVALID", "sync requires a clean repository");
+  if (status.trim() && invocation.payload.workflowSync === undefined) throw agentXError("CONFIG_INVALID", "sync requires a clean repository");
+  // A workflow task's merge starts only while the task waits for the merge, when nothing of Rovara's is in flight: whatever an abandoned conflict round left (markers, half a resolution, files) goes, so the
+  // merge starts from the recorded head and is not refused for it every time.
+  if (status.trim()) await git(repositoryPath, ["clean", "--force", "-d", "--quiet"]);
   await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, remoteHead]);
   const baseTip = (await git(repositoryPath, ["rev-parse", `refs/remotes/origin/${invocation.payload.baseBranch}^{commit}`])).trim();
   // A workflow task's merge takes exactly the base commit the broker named (never whatever the base is by now), and only one the base branch holds.
@@ -254,7 +258,8 @@ export async function maintainPullRequest(options: {
   }
   let checks: Awaited<ReturnType<typeof runReadinessChecks>>;
   try {
-    checks = await runReadinessChecks(rootPath, invocation, manifest, readinessOptions);
+    // A workflow task's merge that has nothing to merge pushes nothing, so its checks would cost a machine's time for no reason.
+    checks = reconciled && workflowSync !== undefined ? [] : await runReadinessChecks(rootPath, invocation, manifest, readinessOptions);
   } catch (error) {
     // For example, the devcontainer did not start: the merge is not kept either.
     throw reconciled ? error : await undoMerge(repositoryPath, remoteHead, error);
