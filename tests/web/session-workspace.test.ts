@@ -61,8 +61,8 @@ it("uses only the server-provided anchor when discussing a changed file", () => 
  const f = setup(fixture({ anchors: [anchor] }), "#changes");const source = screen.getByRole("button", { name: "Comment on src/refund.ts" });fireEvent.click(source);expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor, source);f.close();
  const other = setup(fixture(), "#changes");expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();other.close();
 });
-it("keeps the missing chain contract as an explicit safe seam", () => {
- const f = setup(fixture({ kind: "chain", body: { kind: "chain", chain: chainRunViewOf("crn_" + "a".repeat(20)) } }));expect(screen.getByText("Details aren't available for this session.")).toBeTruthy();expect(screen.queryByText("Hidden chain detail")).toBeNull();f.close();
+it("reads the actual chain contract after integration", () => {
+ const f = setup(fixture({ kind: "chain", body: { kind: "chain", chain: chainRunViewOf("crn_" + "a".repeat(20)) } }));expect(screen.getByText("investigate")).toBeTruthy();expect(screen.queryByText("Hidden chain detail")).toBeNull();f.close();
 });
 for (const theme of ["light", "dark"] as const) it("keeps the workspace accessible in " + theme, async () => {
  const f = setup(fixture(), "#changes");document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();

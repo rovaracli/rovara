@@ -29,12 +29,12 @@ it("shows real sections and gate approvers, with a bare confirmation action only
  expect(f.container.querySelector("img")).toBeNull();expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeTruthy();await expectNoAxeViolations(f.container);f.close();
 });
 it("does not offer completed, absent, ticketed or foreign gate URLs",()=>{
- for(const option of [{status:"APPROVED" as const,url:"https://cell.example/v1/app/approve/apr_gate"},{},{url:"https://cell.example/v1/app/approve/apr_gate?ticket=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{url:"https://other.example/v1/app/approve/apr_gate"}]){const f=setup(option);expect(screen.queryByRole("button",{name:"Open"})).toBeNull();f.close();}
+ for(const option of [{status:"APPROVED" as const,url:"https://cell.example/v1/app/approve/apr_gate"},{},{url:"https://cell.example/v1/app/approve/apr_gate?ticket=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{url:"https://other.example/v1/app/approve/apr_gate"}]){const f=setup(option);fireEvent.click(screen.getByText("Review the evidence"));expect(screen.queryByRole("button",{name:"Open"})).toBeNull();f.close();}
 });
 it("reads a section's task only when expanded and exposes its actual evidence",async()=>{
  const f=setup();expect(f.request).not.toHaveBeenCalled();fireEvent.click(screen.getByText("Investigate refunds"));
  await waitFor(()=>expect(f.request).toHaveBeenCalledWith(expect.objectContaining({method:"GET",path:"/v1/app/sessions/"+id+"/sections/1/task"})));
- expect(await screen.findByRole("tab",{name:"Plan"})).toBeTruthy();f.close();
+ const plan=await screen.findByRole("tab",{name:"Plan"});fireEvent.mouseDown(plan,{button:0,ctrlKey:false});expect(await screen.findByRole("heading",{name:"Refund investigation",level:2})).toBeTruthy();expect(screen.queryByRole("button",{name:"Review and approve the plan"})).toBeNull();f.close();
 });
 it("explains the project permission on a step-task 404 without showing its evidence",async()=>{
  const f=setup({denied:true});fireEvent.click(screen.getByText("Investigate refunds"));

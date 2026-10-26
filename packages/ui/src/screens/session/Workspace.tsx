@@ -16,9 +16,10 @@ export const SESSION_TABS = [
  { value: "changes", label: "Changes", available: (view: WorkspaceView) => view.task?.changedFiles !== undefined },
  { value: "pull-request", label: "Pull request", available: (view: WorkspaceView) => (view.task?.pullRequests?.length ?? 0) > 0 },
 ] as const;
-export const Workspace = memo(function Workspace({ session, onComment }: { session: ReadSession; onComment?: CommentOnPart | undefined }) {
+export const Workspace = memo(function Workspace({ session, onComment, section }: { session: ReadSession; onComment?: CommentOnPart | undefined; section?: number }) {
  const location = useLocation(), navigate = useNavigate(), task = useMemo(() => workspaceTask(session), [session]), view = { session, task };
- const tabs = SESSION_TABS.filter(tab => tab.available(view)), requested = location.hash.slice(1), selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
+ const prefix = section === undefined ? "" : "step-" + section + "-";
+ const tabs = SESSION_TABS.filter(tab => tab.available(view)), requested = location.hash.startsWith("#" + prefix) ? location.hash.slice(1 + prefix.length) : "", selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
  const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "tests" ? <TestsTab task={task} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
- return <Tabs label="Session workspace" value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + value }, { replace: true, preventScrollReset: true }); }} items={items} />;
+ return <Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} />;
 });

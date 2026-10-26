@@ -41,3 +41,5 @@ export * from "./agent-web-views.js";
 export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessions.js";
 
 export * from "./onboarding.js";
+
+export { ChainRunViewReaderSchema } from "./chain-session.js";

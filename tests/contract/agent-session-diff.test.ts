@@ -128,8 +128,9 @@ it("reads only a readable chain step's own pull request and pinned repository re
  expect(f.repository).toHaveBeenCalledWith(ORG_A,"web",1,"app");expect(f.files).toHaveBeenCalledTimes(1);
 });
 it("refuses chain diff reads without start permission, across organizations, or from unrelated task records",async()=>{
- for(const mode of ["viewer","foreign","unrelated","selector"]){
+ for(const mode of ["viewer","foreign","unrelated","selector","revision","stored-org","stored-project"]){
  const f=chainDiffSetup();if(mode==="viewer")f.w.grant(PRIYA,"web","viewer");
+ if(["revision","stored-org","stored-project"].includes(mode)){const key={pk:"DEVTASK#"+f.taskId,sk:"META"};f.w.db.set({...f.w.db.get(key)!,...(mode==="revision"?{startingRevision:2}:mode==="stored-org"?{orgId:ORG_B}:{project:"ops"})});}
  if(mode==="unrelated"){const key={pk:"DEVTASK#"+f.taskId,sk:"META"};f.w.db.set({...f.w.db.get(key)!,chain:{chainRunId:"crn_"+"z".repeat(20)}});}
  await expect(sessionDiff(f.deps,mode==="foreign"?f.w.caller(BO,ORG_B):f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:mode==="selector"?43:42,page:1})).rejects.toMatchObject({code:"NOT_FOUND"});expect(f.files).not.toHaveBeenCalled();
  }
