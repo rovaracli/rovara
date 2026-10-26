@@ -116,3 +116,76 @@ describe("I2: scoped thread rows cannot confer workspace authority", () => {
     expect(db.find(() => true)).toEqual(data);
   });
 });
+
+// C43 c (Task 24 re-check): a workspace record written before records named their org belongs to the install's single org, and only to it. `getThreadWorkspace` (prepare, close) and
+// `stopSlackThreadTask` both rest on that fallback.
+describe("K1: the install-org fallback for a workspace record with no org", () => {
+  const foreign = "org_bbbbbbbbbbbbbbbbbbbb";
+  const withoutOrg = (db: ReturnType<typeof createBroker>["db"], workspaceId: string) => {
+    const workspace = { ...db.get(`WORKSPACE#${workspaceId}`, "META")! };
+    delete workspace.orgId;
+    db.set(workspace);
+    return workspace;
+  };
+  const stop = (handler: ReturnType<typeof createBroker>["handler"]) =>
+    handler({ source: "agentx.slack-ingress", action: "stop-task", thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, userId: user });
+  /** The install org's thread row and workspace, moved under another org's scope: that org's Slack team now finds a workspace that carries no org. */
+  async function movedToForeignOrg() {
+    const { db, handler } = createBroker();
+    await registerSlackProject(handler);
+    const workspaceId = String((await ensureWorkspace(handler, subject, user)).body.workspaceId);
+    markReady(db, workspaceId);
+    const workspace = withoutOrg(db, workspaceId);
+    const row = db.find((item) => item.entityType === "SLACK_THREAD" && item.workspaceId === workspaceId)[0]!;
+    db.set({ ...row, ...slackThreadKey(foreign, String(workspace.ownerKey)), orgId: foreign });
+    db.delete({ pk: String(row.pk), sk: String(row.sk) });
+    for (const item of db.find((entry) => entry.entityType === "DEFAULT_WORKSPACE")) db.delete({ pk: String(item.pk), sk: String(item.sk) });
+    db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: foreign });
+    const other = createBroker({ extra: { documentClient: db, orgResolver: async () => foreign } });
+    await registerSlackProject(other.handler);
+    return { db, other, workspaceId };
+  }
+
+  it("stop: a workspace with no org record is the install org's, so the install org's team can stop it", async () => {
+    const { db, handler } = createBroker();
+    await registerSlackProject(handler);
+    const workspaceId = String((await ensureWorkspace(handler, subject, user)).body.workspaceId);
+    markReady(db, workspaceId);
+    const conversation = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
+    const task = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "synthetic work" });
+    expect(task.status).toBe(202);
+    withoutOrg(db, workspaceId);
+    const reply = await stop(handler);
+    expect(reply.statusCode).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({ outcome: "CANCEL_REQUESTED", workspaceId });
+  });
+
+  it("stop: the same workspace is refused for any other org's team, and nothing is written", async () => {
+    const { db, other } = await movedToForeignOrg();
+    const data = structuredClone(db.find(() => true));
+    const before = db.commandNames().length;
+    const reply = await stop(other.handler);
+    expect(reply.statusCode).toBe(403);
+    expect(JSON.parse(reply.body)).toMatchObject({ error: { code: "FORBIDDEN" } });
+    expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
+    expect(db.find(() => true)).toEqual(data);
+  });
+
+  it("prepare and close: a thread row under another org does not find the install org's no-org workspace", async () => {
+    const { db, other } = await movedToForeignOrg();
+    const data = structuredClone(db.find(() => true));
+    const before = db.commandNames().length;
+    expect(await prepareThread(other.handler, subject, user)).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
+    expect((await serviceCall(other.handler, subject, user, "POST", "/v1/service/threads/workspace/close", { requestId: randomUUID() })).body).toEqual({ outcome: "NOT_FOUND", requestId: expect.any(String) as unknown });
+    expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
+    expect(db.find(() => true)).toEqual(data);
+  });
+
+  it("prepare: the install org's team still finds its no-org workspace", async () => {
+    const { db, handler } = createBroker();
+    await registerSlackProject(handler);
+    const workspaceId = String((await lazyEnsureWorkspace(handler, subject, user)).body.workspaceId);
+    withoutOrg(db, workspaceId);
+    expect((await prepareThread(handler, subject, user)).body).toMatchObject({ outcome: "WORKSPACE", workspaceId });
+  });
+});
