@@ -3,7 +3,8 @@
 // everything else waits for the owner as before: a reader's comment, a stranger's beside a writer's, autonomy suggest, a fourth round. What a comment says changes nothing.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
+import { fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
+import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { agentGuardrailsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
@@ -59,7 +60,7 @@ function trackingGithub(e2e: () => WorkflowE2E, people: Record<string, { permiss
 }
 
 /** A version 2 task through its first pull request (waiting for the merge), with its program in place, CI green, and the reviewer of PR feedback scripted. */
-async function waitingForMerge(options: { reviews?: Parameters<typeof createWorkflowE2E>[0] extends infer O ? (O extends { model?: { reviews?: infer R } } ? R : never) : never; github?: { wire?: boolean }; people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
+async function waitingForMerge(options: { onFix?: () => void; reviews?: Parameters<typeof createWorkflowE2E>[0] extends infer O ? (O extends { model?: { reviews?: infer R } } ? R : never) : never; github?: { wire?: boolean }; people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
   const holder: { e2e?: WorkflowE2E } = {};
   const github = trackingGithub(() => holder.e2e!, options.people ?? { maya: { permission: "write", type: "User" } });
   const prompts: string[] = [];
@@ -71,6 +72,7 @@ async function waitingForMerge(options: { reviews?: Parameters<typeof createWork
         if (!latest.includes(AUTO_FIX) && !latest.includes("owner-approved PR feedback") && !latest.includes("Address the problems below")) return EDITS;
         // Each round changes the code a little differently, so a round that fixed nothing is never mistaken for one that did.
         rounds += 1;
+        options.onFix?.();
         return [{ path: FIXED[0]!.path, content: `${FIXED[0]!.content}// round ${String(rounds)}\n` }];
       },
       ...(options.reviews === undefined ? {} : { reviews: options.reviews }),
@@ -387,6 +389,52 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     await e2e.settle();
     expect(e2e.github.pushLog.length).toBe(pushes);
     expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
+  }, 480_000);
+
+  /** The company lowers its limit while the round is already going: what each paid step of the round does next. */
+  const midRound = async (setup: (lower: () => void) => Parameters<typeof waitingForMerge>[0]) => {
+    const hold: { e2e?: WorkflowE2E } = {};
+    const lower = () => lowerCompanyLimit(hold.e2e!, "suggest");
+    const world = await waitingForMerge(setup(lower));
+    hold.e2e = world.e2e;
+    await reviewCommented(world.e2e, world.pullRequest.number, "maya", "Please trim the name before greeting.");
+    const pushes = world.e2e.github.pushLog.length;
+    await trackAndFix(world.e2e);
+    return { ...world, pushesMade: world.e2e.github.pushLog.length - pushes };
+  };
+  const clean = reviewerReply.pass;
+  const stopped = (e2e: WorkflowE2E) => {
+    expect(e2e.workflow().state).toBe("BLOCKED");
+    expect(e2e.workflow().blockReason).toBe(FEEDBACK_STOPPED_REASON);
+    expect(e2e.workflow()).toMatchObject({ fixRounds: { feedbackAuto: 1 } });
+    expect(said(e2e).at(-1)).toContain("how far Rovara may go on its own was lowered");
+    expect(dispatchRows(e2e)).toEqual([]);
+  };
+
+  it("15.15 the company lowers its limit while the first fix is running: the round's reviews do not start, and nothing is pushed", async () => {
+    const world = await midRound((lower) => ({ onFix: lower, reviews: { CODE: [clean(), clean()], SECURITY: [clean(), clean()] } }));
+    expect(world.pushesMade).toBe(0);
+    stopped(world.e2e);
+    expect(world.e2e.workflow().stage).toBe("REVIEW");
+  }, 480_000);
+
+  /** A reviewer's answer that lowers the company's limit as it is given. */
+  const answerAndLower = (lower: () => void, findings: unknown[]): FauxResponseStep => () => { lower(); return fauxAssistantMessage(JSON.stringify({ findings })); };
+
+  it("15.16 the company lowers its limit during the round's review, which then sends the work back: the send-back run does not start", async () => {
+    const found = (reviewerFindings(1, { role: "CODE" }).CODE![0] as unknown as { content: Array<{ text: string }> }).content[0]!.text;
+    const world = await midRound((lower) => ({ reviews: { CODE: [clean(), answerAndLower(lower, (JSON.parse(found) as { findings: unknown[] }).findings)], SECURITY: [clean(), clean()] } }));
+    expect(world.pushesMade).toBe(0);
+    expect(world.prompts.some((prompt) => prompt.includes("Address the problems below"))).toBe(false);
+    stopped(world.e2e);
+    expect(world.e2e.workflow().stage).toBe("IMPLEMENT");
+  }, 480_000);
+
+  it("15.17 the company lowers its limit during the round's last review: the fix is not pushed", async () => {
+    const world = await midRound((lower) => ({ reviews: { CODE: [clean(), answerAndLower(lower, [])], SECURITY: [clean(), clean()] } }));
+    expect(world.pushesMade).toBe(0);
+    stopped(world.e2e);
+    expect(world.e2e.workflow().stage).toBe("PULL_REQUEST");
   }, 480_000);
 
   it("15.11b a company limit of suggest means Rovara decides nothing on its own, whatever the task's frozen recipe says: the card goes to the owner", async () => {
