@@ -633,6 +633,7 @@ export type AgentSessionItemSk =
   | `PRESENCE#${string}`
   | `MESSAGE#${string}`
   | `TURN#${string}`
+  | "LOCAL"
   | `EVENT#${string}`
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
@@ -642,6 +643,11 @@ export type AgentSessionItemSk =
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
+}
+
+/** A local session's transcript line, `TURN#<number>`; six digits keep a query on `TURN#` in order. */
+export function sessionTurnSk(seq: number): `TURN#${string}` {
+  return `TURN#${paddedCounter(seq, "a turn number")}`;
 }
 
 /** An event's sort key: `EVENT#<instant>#<eventId>`, so a query on `EVENT#` reads them in order. */
@@ -699,7 +705,7 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
  * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
  * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
  */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all"): OrgKey {
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 
@@ -769,6 +775,26 @@ export function deviceKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
 /** The list of one member's devices, for the per-member limit and the settings page. */
 export function memberDevicesKey(orgId: OrgId, developerId: string, deviceId: DeviceId): OrgKey {
   return { pk: orgScoped(orgId, `MEMBER_DEVICES#${keyPart(developerId, "a developer id")}`), sk: keyPart(deviceId, "a device id") };
+}
+
+/** The count of commands a device was given: the next command is this plus one. Sits beside the commands (its sort key is not a command's) and expires with them. */
+export function deviceCommandCounterKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: "COMMAND_SEQ" };
+}
+
+/** Which sessions run on a device, one item per session (`SESSION#<sessionId>`), so removing the device finds them without reading its owner's whole list. */
+export function deviceSessionKey(orgId: OrgId, deviceId: DeviceId, sessionId: SessionId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `SESSION#${keyPart(sessionId, "a session id")}` };
+}
+
+/** A window's count of one kind of write by a Mac (`update`), in the device's own partition so it goes with the device. */
+export function deviceRateKey(orgId: OrgId, deviceId: DeviceId, kind: "update"): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `RATE#${kind}` };
+}
+
+/** A window's count of one kind of write by one person (`local_register`: local sessions started), in a partition of their own. */
+export function personRateKey(orgId: OrgId, developerId: string, kind: "local_register"): OrgKey {
+  return { pk: orgScoped(orgId, `PERSON_RATE#${keyPart(developerId, "a developer id")}`), sk: kind };
 }
 
 /** One command waiting for a device (stop, move to the cloud, a steering message); six digits keep them in order. */

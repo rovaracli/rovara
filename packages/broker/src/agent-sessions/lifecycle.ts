@@ -20,6 +20,7 @@ import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCo
 import {
   AGENTX_NAME_PATTERN,
   DeviceIdSchema,
+  LOCAL_ORG_CLOSED_MESSAGE,
   INDEX_EXPIRY_ATTRIBUTE,
   LIVE_INDEX_SCAN_MAX,
   OrgIdSchema,
@@ -54,7 +55,9 @@ import { errorName, failedIndexes, type Item, type TransactItem } from "../agent
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { paymentOfTask } from "../spend/payer.js";
 import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { endLocalSession, endSessionsOfDevice } from "../devices/local-sessions.js";
 import { removeFollower } from "./followers.js";
+import { AgentSessionStore } from "./store.js";
 import { batchGetItems, keyText } from "./live.js";
 import { ENDED_DRAIN_CURSOR_KEY } from "./summary.js";
 
@@ -216,7 +219,10 @@ async function dropFollowsAndPresence(deps: SessionLifecycleDeps, orgId: OrgId, 
   }
 }
 
-/** Marks each of the person's devices revoked (Task 17's `revokedAt`), once, and lets the record go a year later. Task 18 ends the open sessions of a revoked device. */
+/**
+ * Marks each of the person's devices revoked (Task 17's `revokedAt`), once, and lets the record go a year later, and ends the open sessions of every one of them (Task 18): also for a
+ * device already marked, so a run that stopped between the mark and the end is finished by the next.
+ */
 async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string): Promise<void> {
   const at = isoOf(deps.now());
   const expires = Math.floor(deps.now() / 1000) + REVOKED_DEVICE_KEEP_DAYS * DAY_SECONDS;
@@ -232,9 +238,10 @@ async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developer
           ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":at": at, ":expires": expires, ":org": orgId, ":developer": developerId },
         }));
       } catch (error) {
-        // Already revoked, gone, or no longer theirs: nothing to do.
+        // Already revoked, gone, or no longer theirs: nothing to mark.
         if (errorName(error) !== "ConditionalCheckFailedException") throw error;
       }
+      await endSessionsOfDevice({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => log(deps, typeof entry["event"] === "string" ? entry["event"] : "devices.end_sessions", entry) }, orgId, deviceId.data);
     }
   }, PAGES_MAX);
 }
@@ -688,6 +695,12 @@ export async function stopOrgSessions(deps: SessionLifecycleDeps, orgId: string,
       break;
     }
     try {
+      // A session on a Mac has no cloud work to stop: it is ended here, with the company's words, and the Mac is told by its next update being refused.
+      const session = await new AgentSessionStore(deps).get(org, sessionId);
+      if (session !== undefined && session.subject.kind === "local") {
+        if (session.endedAt === undefined) await endLocalSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => log(deps, typeof entry["event"] === "string" ? entry["event"] : "devices.end_sessions", entry) }, session, LOCAL_ORG_CLOSED_MESSAGE, "org-closed");
+        continue;
+      }
       await stop(sessionId, closeStopRequestId(org, sessionId));
     } catch (error) {
       log(deps, "agent_session.close_stop_failed", { orgId: org, sessionId, error: errorName(error) ?? "unknown" });
