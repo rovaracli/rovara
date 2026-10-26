@@ -14,9 +14,9 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER,
+  AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentStepGroundingSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER, UNVERIFIED_END_PREFIX,
   agentXError, redactText, renderRunInput, shortenToBytes,
-  type AgentRunState, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
+  type AgentRunState, type AgentStepTools, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
 } from "@agentx/contracts";
 import type { DeveloperTaskActions, TransactItems } from "../aws/developer-task-actions.js";
 import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from "../aws/broker-shared.js";
@@ -641,8 +641,36 @@ export interface AgentStepFinished {
   report?: string;
   /** The branch the worker chose (`result.agentStepResult.branch`). */
   branch?: string;
+  /**
+   * The worker's comparison of the report with the tool calls the step made (`result.agentStepResult.grounding`, `AgentStepGroundingSchema`), as the worker sent it: absent from an
+   * older worker and from a clean step. Read here, so a shape the broker cannot read counts as unverified.
+   */
+  grounding?: unknown;
   /** The worker's error, for a failed step. */
   error?: string;
+}
+
+const UNREADABLE_GROUNDING = "Rovara could not read how the report was checked against the tool calls, so it was not trusted.";
+/** What the end reason says of the reasons, cut so the whole stays inside the state's limit. */
+const UNVERIFIED_REASON_MAX = 900;
+
+/**
+ * What a step's grounding comes to for the run: the tools to show with the step (kept when one failed or the report is unverified) and, when the report is not backed by what
+ * the agent did, the reasons. Nothing for a step with no grounding. A grounding that does not parse is unverified: a report is never trusted on a check nobody could read.
+ */
+function groundingOf(raw: unknown): { tools?: AgentStepTools; unverified?: string[] } | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = AgentStepGroundingSchema.safeParse(raw);
+  if (!parsed.success) return { unverified: [UNREADABLE_GROUNDING] };
+  const { verdict, reasons, tools } = parsed.data;
+  const unverified = verdict === "unverified" ? (reasons.length > 0 ? reasons : [UNREADABLE_GROUNDING]) : undefined;
+  return { ...(tools.failed > 0 || unverified !== undefined ? { tools } : {}), ...(unverified === undefined ? {} : { unverified }) };
+}
+
+/** The tools of a step's earlier operation and this one together (a continuation after approvals is another operation of the same step). */
+function mergedTools(before: AgentStepTools | undefined, now: AgentStepTools): AgentStepTools {
+  if (before === undefined) return now;
+  return { calls: before.calls + now.calls, failed: before.failed + now.failed, failures: [...before.failures, ...now.failures].slice(0, 10) };
 }
 
 /** The branch the worker named, when it is one the run's contract allows and the step is the last agent step (the only one that may choose). */
@@ -727,7 +755,21 @@ export async function onAgentStepFinished(deps: AgentRunEngineDependencies, inpu
       log(deps, "agent_run.report_not_kept", { taskId: task.taskId, error: errorNameOf(error) });
       return undefined;
     });
-    const reported: AgentRunState = { ...run, reports: withReport(run, step, text), steps: withStep(run, state.id, reportKey === undefined ? {} : { reportKey }) };
+    const grounding = groundingOf(input.grounding);
+    const reported: AgentRunState = {
+      ...run, reports: withReport(run, step, text),
+      steps: withStep(run, state.id, {
+        ...(reportKey === undefined ? {} : { reportKey }),
+        ...(grounding?.tools === undefined ? {} : { tools: mergedTools(state.tools, grounding.tools) }),
+        ...(grounding?.unverified === undefined ? {} : { unverified: grounding.unverified }),
+      }),
+    };
+    // A report nothing backs is never a success: the run ends FAILED with the reasons, keeping the report for a person to read. Whatever the step asked to write waits no longer
+    // (the end expires its approvals), and no later step is handed it as a finding.
+    if (grounding?.unverified !== undefined) {
+      if (await endRun(deps, { task, run: reported }, { state: "FAILED", reason: shownText(`${UNVERIFIED_END_PREFIX}${grounding.unverified.join(" ")}`, UNVERIFIED_REASON_MAX), finalReport: text })) return;
+      continue;
+    }
     const approvals = (await taskApprovals(deps, task, reported)).filter((record): record is WriteApprovalRecord => record.kind === "write" && record.subject.stepId === state.id);
     const open = approvals.filter(isOpen);
     // The step's own counter of pending approvals is read too: an approval the task's events do not show (more events than are read) still holds the step.
@@ -1066,12 +1108,13 @@ export async function driveAgentRun(deps: AgentRunEngineDependencies, taskId: st
       if (operation === undefined) continue;
       const status = String(operation["status"]);
       if (!["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(status)) continue;
-      const result = (operation["result"] ?? undefined) as { agentStepResult?: { report?: unknown; branch?: unknown } } | undefined;
+      const result = (operation["result"] ?? undefined) as { agentStepResult?: { report?: unknown; branch?: unknown; grounding?: unknown } } | undefined;
       const error = typeof operation["error"] === "string" ? operation["error"] : undefined;
       await onAgentStepFinished(deps, {
         taskId, operationId, outcome: status as AgentStepFinished["outcome"],
         ...(typeof result?.agentStepResult?.report === "string" ? { report: result.agentStepResult.report } : {}),
         ...(typeof result?.agentStepResult?.branch === "string" ? { branch: result.agentStepResult.branch } : {}),
+        ...(result?.agentStepResult?.grounding === undefined ? {} : { grounding: result.agentStepResult.grounding }),
         ...(error === undefined ? {} : { error }),
       });
     }
@@ -1109,7 +1152,7 @@ export async function giveUpAgentRun(deps: AgentRunEngineDependencies, taskId: s
 /** The run as the task view shows it; `confirmOrigin` is where approvals are decided. Undefined for a task with no run (or another org's). */
 export async function agentRunView(deps: Pick<ApprovalDependencies, "documentClient" | "tableName" | "now" | "log">, task: DeveloperTaskRecord, confirmOrigin?: string): Promise<{
   state: AgentRunState["state"]; currentStep?: { id: string; name: string };
-  steps: Array<{ id: string; name: string; status: AgentRunState["steps"][number]["status"]; report?: string }>;
+  steps: Array<{ id: string; name: string; status: AgentRunState["steps"][number]["status"]; report?: string; tools?: AgentStepTools; unverified?: string[] }>;
   pendingApprovals: Array<{ approvalId: string; kind: "write" | "step"; text: string; confirmUrl?: string }>;
   finalReport?: string; branch?: string; endReason?: string;
 } | undefined> {
@@ -1126,7 +1169,10 @@ export async function agentRunView(deps: Pick<ApprovalDependencies, "documentCli
     ...(current === undefined ? {} : { currentStep: { id: current.id, name: nameOf(current.id) } }),
     steps: run.steps.map((step) => {
       const report = run.reports.find((entry) => entry.stepId === step.id)?.text;
-      return { id: step.id, name: nameOf(step.id), status: step.status, ...(report === undefined ? {} : { report: shownReport(report) }) };
+      return {
+        id: step.id, name: nameOf(step.id), status: step.status, ...(report === undefined ? {} : { report: shownReport(report) }),
+        ...(step.tools === undefined ? {} : { tools: step.tools }), ...(step.unverified === undefined ? {} : { unverified: step.unverified }),
+      };
     }),
     pendingApprovals: pending.flatMap((record) => (record.kind === "write" || record.kind === "step") ? [{
       approvalId: record.approvalId, kind: record.kind, text: record.kind === "write" ? record.summary : (record).prompt,

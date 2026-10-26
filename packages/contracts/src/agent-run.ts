@@ -36,3 +36,23 @@ export const AGENT_RUN_STATES = ["RUNNING", "WAITING_FOR_APPROVAL", "PAUSED_BUDG
 export const AGENT_RUN_STEP_STATUSES = ["pending", "running", "waiting", "done", "failed"] as const;
 
 export const AGENT_REPORT_MAX_BYTES = 32_768;
+
+/** What a run's end reason starts with when the run ended because its report could not be checked against what the agent did; the words after it say why. */
+export const UNVERIFIED_END_PREFIX = "Unverified, needs a person: ";
+
+/** The tool calls of an agent step and the ones that failed, as the worker recorded them: the message is the tool's own words, redacted and cut. */
+export const AgentStepToolsSchema = z.object({
+  calls: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  failures: z.array(z.object({ tool: z.string().min(1).max(100), message: z.string().max(300) }).strict()).max(10),
+}).strict();
+
+/**
+ * What the worker found when it compared an agent step's report with the tool calls it made (worker `checkGrounding`). `unverified`: the report cites things no successful
+ * call returned, imitates tool calls in text, or rests on tool calls that failed; `reasons` say which. Absent from a step's result when the report stands and no tool failed.
+ */
+export const AgentStepGroundingSchema = z.object({
+  verdict: z.enum(["grounded", "unverified"]),
+  reasons: z.array(z.string().min(1).max(300)).max(10),
+  tools: AgentStepToolsSchema,
+}).strict();

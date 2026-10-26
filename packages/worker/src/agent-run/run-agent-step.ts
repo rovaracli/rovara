@@ -8,7 +8,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import {
   AGENT_STEP_PREAMBLE, READ_ONLY_TOOLS, SHORTENED_MARKER, agentXError, redactText, createTaskUsageTelemetry,
-  type AgentStepPayload, type ConnectorCatalog, type ResultContract,
+  type AgentStepGrounding, type AgentStepPayload, type ConnectorCatalog, type ResultContract,
 } from "@agentx/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "../cancel.js";
@@ -20,6 +20,7 @@ import { ToolLoopGuard } from "../tool-loop-guard.js";
 import { usageForControlPlane } from "../usage.js";
 import { assistantText } from "../verification/extension.js";
 import { withStepTimeout, type AgentSkillFile } from "../agent-step.js";
+import { ToolCallRecorder, checkGrounding } from "./grounding.js";
 import { agentToolCatalogsSource, brokerToolCall, createConnectorBridgeTools, type ConnectorBridgeCall } from "./connector-bridge.js";
 
 export type AgentRunStepPayload = Extract<AgentStepPayload, { kind: "agent" }>;
@@ -34,6 +35,11 @@ export interface AgentStepResult {
   /** The last valid `choose_branch` call, when the step had a result contract and the model chose. */
   branch?: string;
   reason?: string;
+  /**
+   * The step's report compared with the tool calls it made (`checkGrounding`), present when a tool failed or the report is not backed by what the agent did. The step still ends
+   * SUCCEEDED here (it ran); the broker decides: an `unverified` report never counts as a success.
+   */
+  grounding?: AgentStepGrounding;
 }
 
 export interface RunAgentStepInput {
@@ -140,6 +146,9 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     const tools: ToolDefinition[] = createConnectorBridgeTools(catalogs, call, { workspaceId: input.workspaceId, conversationId: input.conversationId, operationId: input.operationId });
     const branch = payload.resultContract === undefined ? undefined : chooseBranchTool(payload.resultContract);
     if (branch !== undefined) tools.push(branch.tool);
+    // Every tool call of the step is recorded here, so the report can be compared with what happened when the step ends.
+    const connectorTools = catalogs.flatMap((catalog) => catalog.tools.map((tool) => ({ name: tool.name, upstream: tool.upstreamName })));
+    const recorder = new ToolCallRecorder(new Set(connectorTools.map(({ name }) => name)));
 
     const { workspace } = input;
     session = await createWorkspacePiSession({
@@ -165,6 +174,7 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
       // A streaming update repeats the whole message so far; the finished message and the finished call are what the log keeps.
       const streamed = (event as { type?: unknown } | undefined)?.type;
       if (streamed !== "message_update" && streamed !== "tool_execution_update") void events.append(eventType(event), event).catch(() => undefined);
+      recorder.observe(event);
       const ended = assistantOutcome(event);
       if (ended !== undefined) {
         lastAssistant = ended;
@@ -203,10 +213,13 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     const report = typeof finalText === "string" ? finalText.trim() : "";
     if (report === "") throw agentXError("OPERATION_INTERRUPTED", "the agent ended without writing a report");
     const chosen = branch?.chosen();
+    const kept = shortened(redactText(report), AGENT_STEP_REPORT_MAX_BYTES);
+    const grounding = checkGrounding({ report: kept, provided: payload.inputs, calls: recorder.calls(), connectorTools, evidenceTruncated: recorder.truncated });
     result = {
-      report: shortened(redactText(report), AGENT_STEP_REPORT_MAX_BYTES),
+      report: kept,
       outcome: "SUCCEEDED",
       ...(chosen === undefined ? {} : { branch: chosen.branch, reason: redactText(chosen.reason) }),
+      ...(grounding === undefined ? {} : { grounding }),
     };
     outcome = "SUCCEEDED";
     await events.append("result", { status: "SUCCEEDED", conversationId: input.conversationId, agentStepResult: result });

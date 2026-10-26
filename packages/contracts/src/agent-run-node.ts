@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { RunContextItemSchema} from "./agent-run.js";
-import { RunInputSchema, utf8, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RUN_INPUT_CONTEXT_MAX } from "./agent-run.js";
+import type { RunContextItemSchema, AgentStepGroundingSchema} from "./agent-run.js";
+import { RunInputSchema, utf8, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RUN_INPUT_CONTEXT_MAX, AgentStepToolsSchema } from "./agent-run.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { AgentIdSchema } from "./agent.js";
 import { StepIdSchema } from "./agent-recipe.js";
@@ -106,6 +106,10 @@ export function shortenToBytes(text: string, limit: number): string {
 
 /** An agent step's report is at most this many bytes (the worker cuts it too); a longer one ends "… (shortened)". */
 
+export type AgentStepTools = z.infer<typeof AgentStepToolsSchema>;
+
+export type AgentStepGrounding = z.infer<typeof AgentStepGroundingSchema>;
+
 /** A pull request of a project repository a run was asked to look at: the head commit the run's workspace checks out, read-only. */
 export const RunCheckoutSchema = z.object({
   /** The repository's name in the project. */
@@ -147,6 +151,10 @@ export const AgentRunStateSchema = z.object({
      * after it again, since each run of a step starts from the request alone (Plan 5 Task 11b). Absent on older runs.
      */
     notesFrom: z.string().max(40).optional(),
+    /** The tool calls the step's latest operation made and the ones that failed, kept when one failed or the report was unverified (shown with the run's result). */
+    tools: AgentStepToolsSchema.optional(),
+    /** Why the step's report was not backed by what the agent did (the run ended FAILED with these words). */
+    unverified: z.array(z.string().min(1).max(300)).max(10).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
   finalReport: z.string().optional(),
@@ -178,4 +186,4 @@ export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
 
 export { RUN_INPUT_TEXT_MAX_BYTES, RUN_INPUT_CONTEXT_MAX, RUN_INPUT_REF_MAX, RUN_INPUT_TITLE_MAX, RUN_INPUT_BODY_MAX_BYTES, RUN_CONTEXT_KINDS, RunContextItemSchema, RunInputSchema, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
 
-export { AGENT_REPORT_MAX_BYTES } from "./agent-run.js";
+export { AGENT_REPORT_MAX_BYTES, UNVERIFIED_END_PREFIX, AgentStepToolsSchema, AgentStepGroundingSchema } from "./agent-run.js";

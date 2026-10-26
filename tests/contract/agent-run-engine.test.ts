@@ -22,7 +22,8 @@ import {
 import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
-import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run-node.js";
+import { DeveloperTaskRunViewSchema } from "../../packages/contracts/src/developer-tasks.js";
+import { AgentRunStateSchema, SHORTENED_MARKER, UNVERIFIED_END_PREFIX, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run-node.js";
 import { agentXError, orgScoped } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
@@ -2877,5 +2878,85 @@ describe("final fix wave, runs minors: the dispatch row, the stop of a step, and
     await approve(deps, write.approvalId);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running", continuations: 1 }, { id: "report", status: "pending" }] });
     expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Grounding: a report that nothing backs never counts as a success (staging 0.4.6, crn_6o18spb2tfbe8147c40j)
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("an unverified report", () => {
+  const FABRICATED = "I'll look up the pull request.\n<tool_call>{\"name\":\"github_list_prs\"}</tool_call>\nFound it: PR #5, merged. healthy";
+  const UNVERIFIED = {
+    verdict: "unverified", tools: { calls: 0, failed: 0, failures: [] },
+    reasons: ["The report contains tool calls or tool answers written as text. A tool call exists only when the agent calls the tool, so none of it happened.", "The report cites pull request #5, which no tool returned and the request did not contain."],
+  };
+
+  it("ends the run FAILED with the reasons, keeps the report for a person, starts no further step and tells the end handlers it failed (never succeeded)", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, FABRICATED, { grounding: UNVERIFIED });
+    const item = t.runItem(run.taskId)!;
+    expect(item.state).toBe("FAILED");
+    expect(item.endReason!.startsWith(UNVERIFIED_END_PREFIX)).toBe(true);
+    expect(item.endReason).toContain("pull request #5");
+    expect(item.finalReport).toBe(FABRICATED);
+    expect(item.steps[0]).toMatchObject({ status: "failed", unverified: UNVERIFIED.reasons });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(events).toEqual([expect.objectContaining({ outcome: "failed", taskId: run.taskId, finalReport: FABRICATED })]);
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    const view = await t.view(MAYA, run.taskId);
+    expect(view.status).toBe("FAILED");
+    expect(view.run).toMatchObject({ state: "FAILED", finalReport: FABRICATED, steps: [{ id: "investigate", status: "failed", report: FABRICATED, unverified: UNVERIFIED.reasons }, { id: "report", status: "pending" }] });
+    expect(view.run.endReason).toMatch(/^Unverified, needs a person: /);
+    // Every client reads the view through its schema: the new fields are part of it.
+    expect(DeveloperTaskRunViewSchema.parse(view.run).steps[0]).toMatchObject({ unverified: UNVERIFIED.reasons });
+  });
+
+  it("fails the run on the last step too: the end of the run is where success was granted before", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Found it.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "healthy", { grounding: UNVERIFIED });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED", finalReport: "healthy", steps: [{ status: "done" }, { status: "failed", unverified: UNVERIFIED.reasons }] });
+    expect((await t.view(MAYA, run.taskId)).status).toBe("FAILED");
+  });
+
+  it("records the tools that failed on the step and shows them with the run's result, while a grounded run goes on", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const tools = { calls: 3, failed: 1, failures: [{ tool: "ls", message: "Cannot read directory: permission" }] };
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The service has three routes.", { grounding: { verdict: "grounded", reasons: [], tools } });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ status: "done", tools }, { status: "running" }] });
+    expect(t.runItem(run.taskId)!.steps[0]).not.toHaveProperty("unverified");
+    const view = await t.view(MAYA, run.taskId);
+    expect(view.run.steps[0]).toMatchObject({ id: "investigate", tools });
+    expect(DeveloperTaskRunViewSchema.parse(view.run).steps[0]).toMatchObject({ tools });
+  });
+
+  it("treats a grounding the broker cannot read as unverified, never as a success", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Fine.", { grounding: { verdict: "grounded", surprise: true } });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason!.startsWith(UNVERIFIED_END_PREFIX)).toBe(true);
+  });
+
+  it("changes nothing for a step with no grounding in its result (an older worker, or a clean run)", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "One.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Two.");
+    const item = t.runItem(run.taskId)!;
+    expect(item).toMatchObject({ state: "COMPLETE", finalReport: "Two." });
+    expect(item.steps[0]).not.toHaveProperty("tools");
+    expect(item.steps[0]).not.toHaveProperty("unverified");
   });
 });
