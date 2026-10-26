@@ -39,10 +39,12 @@ const AUTOMATED_CHECKS_LABEL = "Automated checks";
 
 /** One redacted line of at most `max` characters (counted in code points): no control or format characters, runs of white space made one space. */
 function oneLine(text: string, max: number, fallback: string): string {
-  const cleaned = redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
+  // Normalised before it is redacted: a format character (a zero-width space) inside a token would otherwise stop the match and leave the pieces readable.
+  const flat = text.replace(/\p{Cf}+/gu, "").replace(/[\p{Cc}\s]+/gu, " ");
+  const cleaned = redactText(flat).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
   if (cleaned === "") return fallback;
   const points = Array.from(cleaned);
-  return points.length <= max ? cleaned : `${points.slice(0, max - 1).join("")}…`;
+  return points.length <= max ? cleaned : `${points.slice(0, max - 1).join("")}\u2026`;
 }
 
 /** What the project knows that the workflow does not: how its pull request's CI is judged (Task 14 fills it from the tracked pull request). */
@@ -134,15 +136,21 @@ export interface ReviewRound {
 }
 
 /**
- * The review round being fixed, for a version 2 task that follows a program: while coding or the checks that follow it run again after a review round found
- * problems (the engine sends them back on its own, up to the review step's `maxRounds`). Absent before the first review, during a review, once the
- * pull request is next, while the step is blocked, and always on a version 1 task (m20: it shows no round counter).
+ * The review round being fixed, for a version 2 task that follows a program: while coding runs again after a review round found problems (the engine sends them
+ * back on its own, up to the review step's `maxRounds`). The engine's counter (`programRounds`) counts every finished review, a clean one included, and is never
+ * reset, so it alone would call an owner's send-back or a CI fix after a clean review "a round that found problems". A round is being fixed only when the review
+ * step's reports for the code being rewritten still hold findings (they stay until the next candidate replaces them). Absent before the first review, while checks
+ * or a review run, once the pull request is next, while the step is blocked, for a fix made for CI, a conflict or comments (`fixSource`), and always on a version 1
+ * task (m20: it shows no round counter).
  */
 export function workflowReviewRound(workflow: WorkflowSnapshot): ReviewRound | undefined {
   const program = workflow.program;
   if (workflow.definitionVersion !== "1.1.0" || program === undefined || workflow.programStepId === undefined) return undefined;
-  if ((workflow.stage !== "IMPLEMENT" && workflow.stage !== "VERIFY") || workflow.state === "BLOCKED") return undefined;
+  if (workflow.stage !== "IMPLEMENT" || workflow.state === "BLOCKED" || workflow.fixSource !== undefined) return undefined;
   const current = program.steps.findIndex((step) => step.id === workflow.programStepId);
+  const currentCode = workflow.candidate?.digest;
+  const unresolved = currentCode !== undefined && (workflow.reviews ?? []).some((review) => review.status === "FINDINGS" && review.candidateDigest === currentCode);
+  if (!unresolved) return undefined;
   for (const [index, step] of program.steps.entries()) {
     if (step.kind !== "review" || step.onFindings === undefined) continue;
     const backTo = program.steps.findIndex((candidate) => candidate.id === step.onFindings?.backTo);

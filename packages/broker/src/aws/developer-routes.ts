@@ -1818,7 +1818,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isChainRoute(url.pathname)) {
     const chainDeps = chainRouteDependenciesFor(deps, caller);
     if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
-    return routeChainRequest(chainDeps, caller, request, url);
+    // Rovara Code (Plan 6): a step's task is read like any task, so a client without `x-agentx-task-view: 2` gets the version 1 projection of it.
+    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url), request.headers);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);

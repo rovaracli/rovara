@@ -1507,7 +1507,10 @@ export async function taskView(
   // Plan 6, Task 12: a Rovara Code version 2 task shows its verification report (once checks have run on its current code; the changed files come with the full
   // read) and the review round being fixed. A version 1 task shows neither (m20), and a client that does not ask for the version 2 view never receives them.
   const rovaraCodeV2 = task.workflow?.definitionVersion === "1.1.0" && removedReason === undefined;
-  const verification = rovaraCodeV2 && options.details && task.workflow?.verification !== undefined
+  // Not while the code is being rewritten (the old candidate and its results stay until the next candidate replaces them), and not when the changed files were not
+  // loaded (the full read skips them while the task runs), where "no tests added" would be a guess.
+  const detailsLoaded = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING";
+  const verification = rovaraCodeV2 && detailsLoaded && task.workflow?.verification !== undefined && task.workflow.stage !== "IMPLEMENT"
     ? verificationReport(task.workflow, details.changedFiles ?? [], {}) : undefined;
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
   return {

@@ -2,23 +2,32 @@
 // which review round is being fixed. The report is built from the worker's recorded results (untrusted output): bounded, schema-validated and redacted, and it is
 // plain text for every reader, never HTML. Version 1 tasks show neither field, and a client that does not ask for the version 2 view never receives them.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { VerificationReportSchema, redactText } from "../../packages/contracts/src/index.js";
 import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
 import { codingProgram } from "../../packages/contracts/src/agent-recipe.js";
 import { builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowProgram, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import {
+  WorkflowSnapshotSchema, blockWorkflow, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, returnWorkflowToImplementation, submitWorkflowArtifact,
+  submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
+} from "../../packages/contracts/src/task-workflow.js";
 import {
   IMPLEMENT_TEST_RULE, TEST_PATH_PATTERNS, isTestPath, verificationReport, withTestRule, workflowReviewRound,
 } from "../../packages/broker/src/rovara-code/verification-report.js";
 import { taskResponseForClient, taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+
 import { MAYA, bearerFor, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { startTaskWorkflowImplementationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
-import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
+import { resumeAfterRunLimitApproval, startTaskWorkflowImplementationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
+
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { runLimitBlockText } from "../../packages/contracts/src/spend.js";
+import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import { agentGuardrailsKey, builtinSettingsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { FakeProjectMembers } from "../support/fake-project-members.js";
+import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { createHash } from "node:crypto";
 
@@ -170,6 +179,18 @@ describe("verificationReport", () => {
     expect(redactText("ok")).toBe("ok");
   });
 
+  it("redacts a secret split by a zero-width character (Review M5)", () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    const split = `${secret.slice(0, 12)}\u200b${secret.slice(12)}`;
+    const workflow = workflowWith({
+      stage: "REVIEW", state: "WAITING", candidate: candidate("1"), checkPolicy: policy({ required: [check("unit", `Run ${split}`)], proposed: [] }),
+      verification: verification([{ checkId: "unit", status: "PASS" }]),
+    });
+    const text = JSON.stringify(verificationReport(workflow, [{ repository: "payments", path: `tests/${split}.test.ts`, added: 1 }], {}));
+    expect(text).not.toContain("ghp_");
+    expect(text).not.toContain("qrstuvwxyz0123");
+  });
+
   it("bounds every list and never fails on a flood of changed files", () => {
     const many = Array.from({ length: 300 }, (_, index) => ({ repository: "payments", path: `tests/t${index}.test.ts`, added: 1, removed: 0 }));
     const workflow = workflowWith({ stage: "REVIEW", state: "WAITING", candidate: candidate("1"), checkPolicy: policy({ proposed: [] }), verification: verification([{ checkId: "unit", status: "PASS" }, { checkId: "lint", status: "PASS" }]) });
@@ -214,11 +235,35 @@ describe("the test rule of a version 2 build", () => {
   });
 });
 
+const OPERATION = "11111111-1111-4111-8111-111111111111";
+const finding = { text: "The token is logged.", origin: "INTRODUCED" as const, file: "src/log.ts", line: 4 };
+const reviewReport = (role: "CRITIC" | "SECURITY", status: "PASS" | "FINDINGS", codeDigest: string, findings: unknown[] = []) =>
+  ({ operationId: OPERATION, candidateDigest: codeDigest, role, provider: "scripted", version: "1", status, findings, readOnly: true, recordedAt: now });
+const planArtifact = { id: "plan-v1", type: "plan" as const, version: 1, sha256: "b".repeat(64), producer: "agentx-planner", objectKey: `tasks/${taskId}/plan-v1.md`, createdAt: now };
+/** The real engine, so the round tests stand on what it does: a version 2 workflow with its plan approved, the build ready. */
+function approvedV2(): WorkflowSnapshot {
+  const created = createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion: "1.1.0", program: v2Program() });
+  const waiting = submitWorkflowArtifact(created, { expectedRevision: created.revision, artifact: planArtifact, now });
+  return decideWorkflow(waiting, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: waiting.revision, decision: "APPROVE", reason: "Go", artifactDigest: planArtifact.sha256 },
+    { actorId: ownerId, role: "TASK_OWNER" }, { now, allowedSkipStages: [] });
+}
+const checkedOn = (workflow: WorkflowSnapshot, code: ReturnType<typeof candidate>): WorkflowSnapshot => recordWorkflowVerification(
+  { ...blockWorkflow(workflow, "candidate checks are being recorded", now), stage: "VERIFY" as const },
+  { candidate: code, checks: { candidateDigest: code.digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [{ checkId: "unit", status: "PASS" }] }, now },
+);
+const reviewedOn = (workflow: WorkflowSnapshot, code: ReturnType<typeof candidate>, findings: unknown[]): WorkflowSnapshot =>
+  (["CRITIC", "SECURITY"] as const).map((role) => reviewReport(role, findings.length > 0 ? "FINDINGS" : "PASS", code.digest, findings))
+    .reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now), workflow);
+const sendBack = (workflow: WorkflowSnapshot, requestId: string) => returnWorkflowToImplementation(workflow, { requestId, actorId: ownerId, reason: "One more change", now });
+
 describe("the review round being fixed", () => {
   // Not parsed: these are the positions the engine passes through, and a version 1 task with a program is one the schema refuses (the function must still say nothing).
+  // A round found problems when the review it counts still holds findings for the code being rewritten, so that is what the default carries.
+  const code = candidate("1");
+  const found = [reviewReport("CRITIC", "FINDINGS", code.digest, [finding]), reviewReport("SECURITY", "FINDINGS", code.digest, [finding])];
   const rounded = (rounds: number, extra: Record<string, unknown> = {}, definitionVersion: "1.0.0" | "1.1.0" = "1.1.0") => ({
     ...createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion }),
-    program: v2Program(), programStepId: "build", stage: "IMPLEMENT", state: "READY", ...(rounds === 0 ? {} : { programRounds: { review: rounds } }), ...extra,
+    program: v2Program(), programStepId: "build", stage: "IMPLEMENT", state: "READY", candidate: code, reviews: found, ...(rounds === 0 ? {} : { programRounds: { review: rounds } }), ...extra,
   }) as unknown as WorkflowSnapshot;
 
   it("says round 2 of 3 exactly while the fix for round 2 is under way", () => {
@@ -226,21 +271,46 @@ describe("the review round being fixed", () => {
     expect(workflowReviewRound(rounded(1))).toEqual({ round: 1, max: 3, message: "Review round 1 of 3 found problems; I'm fixing them." });
   });
 
-  it("also while the fix's checks run, and not before any review, during a review, or once the pull request is next", () => {
-    expect(workflowReviewRound(rounded(1, { stage: "VERIFY", state: "WAITING", programStepId: "check" }))?.round).toBe(1);
+  it("not before any review, while the checks or a review run, once the pull request is next, or while the step is blocked", () => {
     expect(workflowReviewRound(rounded(0))).toBeUndefined();
+    expect(workflowReviewRound(rounded(1, { stage: "VERIFY", state: "WAITING", programStepId: "check" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(1, { stage: "REVIEW", state: "WAITING", programStepId: "review" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(2, { stage: "PULL_REQUEST", state: "READY", programStepId: "pull_request" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(1, { state: "BLOCKED", blockReason: "coding stopped" }))).toBeUndefined();
-    // Only the steps from the build the findings go back to up to the review count: not the steps before it, nor the review itself.
+    // Only the build the findings go back to: not the steps before it, nor the review itself.
     expect(workflowReviewRound(rounded(1, { programStepId: "plan_critic" }))).toBeUndefined();
-    expect(workflowReviewRound(rounded(1, { stage: "VERIFY", state: "WAITING", programStepId: "review" }))).toBeUndefined();
+    expect(workflowReviewRound(rounded(1, { programStepId: "review" }))).toBeUndefined();
   });
 
   it("a version 1 task has no round counter, whatever its snapshot holds", () => {
     expect(workflowReviewRound(rounded(2, {}, "1.0.0"))).toBeUndefined();
     const noProgram = workflowWith({ stage: "IMPLEMENT", state: "READY" });
     expect(workflowReviewRound(noProgram)).toBeUndefined();
+  });
+
+  it("counts a round only when it found problems: findings in the engine give round 1 and 2, a clean review gives none, and a send-back after one is not a round (Review I1)", () => {
+    const first = candidate("1");
+    const second = candidate("2");
+    const third = candidate("3");
+    expect(workflowReviewRound(approvedV2())).toBeUndefined();
+    const afterFirst = reviewedOn(checkedOn(approvedV2(), first), first, [finding]);
+    expect(afterFirst).toMatchObject({ stage: "IMPLEMENT", state: "READY", programRounds: { review: 1 } });
+    expect(workflowReviewRound(afterFirst)).toMatchObject({ round: 1, max: 3 });
+    const afterSecond = reviewedOn(checkedOn(afterFirst, second), second, [finding]);
+    expect(workflowReviewRound(afterSecond)).toMatchObject({ round: 2, max: 3, message: "Review round 2 of 3 found problems; I'm fixing them." });
+    // The fix of round 2 passes its review: the counter still says two reviews finished, but neither is being fixed.
+    const clean = reviewedOn(checkedOn(afterSecond, third), third, []);
+    expect(clean).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+    const owner = sendBack(clean, "33333333-3333-4333-8333-333333333333");
+    expect(owner).toMatchObject({ stage: "IMPLEMENT", state: "READY", programStepId: "build" });
+    expect(workflowReviewRound(owner)).toBeUndefined();
+    // A clean first review and then an owner send-back: the same.
+    const onceClean = reviewedOn(checkedOn(approvedV2(), first), first, []);
+    expect(workflowReviewRound(sendBack(onceClean, "44444444-4444-4444-8444-444444444444"))).toBeUndefined();
+  });
+
+  it("a fix made for a CI failure, a conflict or comments is not a review round", () => {
+    for (const fixSource of ["ci", "conflict", "feedback"]) expect(workflowReviewRound(rounded(2, { fixSource })), fixSource).toBeUndefined();
   });
 });
 
@@ -276,9 +346,11 @@ describe("the task view carries the two fields, and an older client never sees t
 });
 
 describe("the thread says which review round is being fixed", () => {
+  const code = candidate("1");
+  const found = [reviewReport("CRITIC", "FINDINGS", code.digest, [finding]), reviewReport("SECURITY", "FINDINGS", code.digest, [finding])];
   const rounded = (rounds: number, extra: Record<string, unknown> = {}, definitionVersion: "1.0.0" | "1.1.0" = "1.1.0") => ({
     ...createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion }),
-    program: v2Program(), programStepId: "build", stage: "IMPLEMENT", state: "RUNNING", programRounds: { review: rounds }, ...extra,
+    program: v2Program(), programStepId: "build", stage: "IMPLEMENT", state: "RUNNING", candidate: code, reviews: found, programRounds: { review: rounds }, ...extra,
   }) as unknown as WorkflowSnapshot;
   const said = (workflow: WorkflowSnapshot) => workflowMessage({ taskId, workflow })?.text;
 
@@ -286,6 +358,19 @@ describe("the thread says which review round is being fixed", () => {
     expect(said(rounded(2))).toBe("Review round 2 of 3 found problems; I'm fixing them.");
     const sentBack = rounded(2, { revision: 9, decisions: [{ requestId: "22222222-2222-4222-8222-222222222222", workflowRevision: 8, decision: "REQUEST_CHANGES", actorId: ownerId, actorRole: "TASK_OWNER", reason: "Fix it", source: "SEND_BACK", at: now }] });
     expect(said(sentBack)).not.toContain("Review round");
+  });
+
+  it("a clean review followed by an owner's send-back says the send-back, never a round (Review I1)", () => {
+    const first = candidate("1");
+    const clean = reviewedOn(checkedOn(approvedV2(), first), first, []);
+    const owner = { ...sendBack(clean, "33333333-3333-4333-8333-333333333333"), state: "RUNNING" as const };
+    expect(said(owner)).toBe("Sent back to coding with your note. Checks and reviews will run again after.");
+  });
+
+  it("an approved PR feedback fix and a fix for CI keep their own words, whatever the round counter holds (Review I1)", () => {
+    const feedback = rounded(2, { revision: 12, feedbackDecisions: [{ decision: "APPROVE", workflowRevision: 11, at: now }] });
+    expect(said(feedback)).toBe("PR feedback approved. Updating the code now; the checks and reviews run again after.");
+    expect(said(rounded(2, { fixSource: "ci" }))).not.toContain("Review round");
   });
 
   it("a version 1 task never says a round", () => {
@@ -332,7 +417,9 @@ describe("a version 2 task through the broker", () => {
   it("shows the review round to a version 2 client only, and none while the first build runs", async () => {
     const { harness, id, record } = await v2Task();
     expect((await read(harness, id, { "x-agentx-task-view": "2" })).reviewRound).toBeUndefined();
-    harness.db.set({ ...record(), workflow: { ...record().workflow, stage: "IMPLEMENT", state: "READY", programStepId: "build", programRounds: { review: 2 } } });
+    const code = candidate("1");
+    const found = ["CRITIC", "SECURITY"].map((role) => reviewReport(role as "CRITIC" | "SECURITY", "FINDINGS", code.digest, [finding]));
+    harness.db.set({ ...record(), workflow: { ...record().workflow, stage: "IMPLEMENT", state: "READY", programStepId: "build", programRounds: { review: 2 }, candidate: code, reviews: found } });
     expect((await read(harness, id, { "x-agentx-task-view": "2" })).reviewRound).toEqual({ round: 2, max: 3, message: "Review round 2 of 3 found problems; I'm fixing them." });
     expect(await read(harness, id)).not.toHaveProperty("reviewRound");
   });
@@ -342,7 +429,7 @@ describe("a version 2 task through the broker", () => {
     const code = candidate("1");
     const policyOf = { required: [check("unit", "Unit tests")], optional: [], selectedOptionalIds: [], proposed: [] };
     harness.db.set({ ...record(), workflow: { ...record().workflow, stage: "REVIEW", state: "WAITING", programStepId: "review", candidate: code, checkPolicy: policyOf,
-      verification: verification([{ checkId: "unit", status: "PASS" }], {}, code.digest) } });
+      verification: verification([{ checkId: "unit", status: "PASS" }], {}, code.digest) }, closedAt: now, outcome: "CLOSED" });
     const v2View = await read(harness, id, { "x-agentx-task-view": "2" });
     expect(v2View.verificationReport).toEqual({ reviewOnly: false, passed: [{ label: "Unit tests" }], failed: [], notChecked: [], testsAdded: [] });
     expect(await read(harness, id)).not.toHaveProperty("verificationReport");
@@ -384,6 +471,30 @@ describe("a version 2 task through the broker", () => {
   const deps = (harness: Awaited<ReturnType<typeof v2Task>>["harness"]) => ({ documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
     orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() });
 
+  it("hides the report while the code is being rewritten (Review M3)", async () => {
+    const { harness, id, record } = await v2Task();
+    const code = candidate("1");
+    const reviewing = { ...record().workflow, stage: "REVIEW", state: "WAITING", programStepId: "review", candidate: code, checkPolicy: { required: [check("unit", "Unit tests")], optional: [], selectedOptionalIds: [], proposed: [] },
+      verification: verification([{ checkId: "unit", status: "PASS" }], {}, code.digest) };
+    harness.db.set({ ...record(), workflow: reviewing, closedAt: now, outcome: "CLOSED" });
+    expect((await read(harness, id, { "x-agentx-task-view": "2" })).verificationReport).toBeDefined();
+    // After a send-back the old candidate and its results stay until the next candidate replaces them; they are not shown as this code's results.
+    harness.db.set({ ...record(), workflow: { ...reviewing, stage: "IMPLEMENT", state: "READY", programStepId: "build" }, closedAt: now, outcome: "CLOSED" });
+    expect(await read(harness, id, { "x-agentx-task-view": "2" })).not.toHaveProperty("verificationReport");
+  });
+
+  it("hides the report while the task's operation is running, when the changed files are not known (Review M4)", async () => {
+    const { harness, id, record, workspaceId, builds } = await approvedBuild();
+    expect(builds()).toHaveLength(1);
+    const code = candidate("1");
+    harness.db.set({ ...record(), workflow: { ...record().workflow, stage: "REVIEW", state: "WAITING", programStepId: "review", candidate: code,
+      checkPolicy: { required: [check("unit", "Unit tests")], optional: [], selectedOptionalIds: [], proposed: [] }, verification: verification([{ checkId: "unit", status: "PASS" }], {}, code.digest) } });
+    const running = await read(harness, id, { "x-agentx-task-view": "2" });
+    expect(running.status).toBe("RUNNING");
+    expect("verificationReport" in running).toBe(false);
+    expect(workspaceId).toBeDefined();
+  });
+
   it("the build prompt after the plan's approval ends with the test rule", async () => {
     const { builds, promptOf } = await approvedBuild();
     expect(builds()).toHaveLength(1);
@@ -413,5 +524,128 @@ describe("a version 2 task through the broker", () => {
     const stepPrompt = promptOf(builds()[2]!);
     expect(stepPrompt).toContain("one coding step of a longer sequence");
     expect(stepPrompt.endsWith(`\n\n${IMPLEMENT_TEST_RULE}`)).toBe(true);
+  });
+
+  it("the prompt after a run-limit-approved start ends with the rule, and a version 1 task's does not (Review M1)", async () => {
+    const v2 = await approvedBuild();
+    const blockOnRunLimit = (task: Awaited<ReturnType<typeof approvedBuild>>, mutate: (workflow: Record<string, unknown>) => Record<string, unknown>) => {
+      task.harness.db.set({ ...task.record(), workflow: mutate({ ...task.record().workflow, state: "BLOCKED", blockReason: runLimitBlockText(5, "maintainer") }) });
+    };
+    await v2.harness.finish(v2.workspaceId, String(v2.builds()[0]!.id), "FAILED", { error: "stopped" });
+    blockOnRunLimit(v2, (workflow) => workflow);
+    await expect(resumeAfterRunLimitApproval(deps(v2.harness) as never, v2.id, { requestId: randomUUID(), runLimitUsd: 5 })).resolves.toBe("STARTED");
+    expect(v2.builds()).toHaveLength(2);
+    const prompt = v2.promptOf(v2.builds()[1]!);
+    expect(prompt).toContain("Implement the human-approved plan below");
+    expect(prompt.endsWith(`\n\n${IMPLEMENT_TEST_RULE}`)).toBe(true);
+
+    const v1 = await approvedBuild();
+    await v1.harness.finish(v1.workspaceId, String(v1.builds()[0]!.id), "FAILED", { error: "stopped" });
+    // The same task as a version 1 task: no program, the old definition version.
+    blockOnRunLimit(v1, ({ program: _program, programStepId: _programStepId, ...workflow }) => ({ ...workflow, definitionVersion: "1.0.0" }));
+    await expect(resumeAfterRunLimitApproval(deps(v1.harness) as never, v1.id, { requestId: randomUUID(), runLimitUsd: 5 })).resolves.toBe("STARTED");
+    const older = v1.promptOf(v1.builds()[1]!);
+    expect(older).toContain("Implement the human-approved plan below");
+    expect(older).not.toContain(IMPLEMENT_TEST_RULE);
+  });
+});
+
+describe("the retained-source recovery prompt of a version 2 task (Review M2)", () => {
+  beforeAll(async () => { await loadSlackBroker(); });
+
+  it("tells the worker to finalize without editing, and never adds the test rule, which would contradict it", async () => {
+    const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } } });
+    const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Implement the ordered change", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const id = String((started.body.task as { taskId: string }).taskId);
+    const record = () => harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> & { revision: number } };
+    const workspaceId = record().workspaceId;
+    const operations = () => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
+    await harness.finish(workspaceId, String(operations().find((item) => item.kind === "prepare")?.id), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
+    const graph = { schemaVersion: 1 as const, taskId: id, version: 1, items: [{ id: "11111111-1111-4111-8111-111111111111", title: "Implement first", description: "Implement the first change", repository: "demo", dependsOn: [] as string[] }] };
+    const planning = operations().find((item) => item.workflowMode === "PLAN")!;
+    await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(planDocument({ workBreakdown: graph })));
+    await harness.finish(workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const approved = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/decision`, {
+      requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: (record().workflow.artifacts as Array<{ sha256: string }>).at(-1)!.sha256, workBreakdownDigest: taskGraphDigest(graph),
+    });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const sourceOperationId = String(operations().find((item) => item.workflowMode === "IMPLEMENT")!.id);
+    const approval = record().workflow.workflowDependenciesApproval as { runId: string; graphDigest: string; workflowRevision: number };
+    harness.db.set({ ...record(), workflow: { ...record().workflow, e2e: { contractDigest: "1".repeat(64), policyDigest: "2".repeat(64), bundleDigest: "3".repeat(64), executionPlanDigest: "4".repeat(64), required: true, currentGroupRunIds: [], resultRefs: [] } } });
+    const implemented = { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId, itemId: graph.items[0]!.id, sequence: 2, state: "IMPLEMENTED" as const, operationId: sourceOperationId,
+      baseTreeSha: "a".repeat(40), candidateTreeSha: "b".repeat(40), at: new Date().toISOString(), producer: "agentx-worker" };
+    await harness.events(workspaceId, sourceOperationId, [
+      { type: "progress", payload: { workItemProgress: { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId, itemId: graph.items[0]!.id, sequence: 1, state: "STARTED", operationId: sourceOperationId, baseTreeSha: "a".repeat(40), at: new Date().toISOString(), producer: "agentx-worker" } } },
+      { type: "progress", payload: { workItemProgress: implemented } },
+    ]);
+    const code = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    await harness.finish(workspaceId, sourceOperationId, "SUCCEEDED", { result: {
+      workflowCandidateRepositories: code.repositories, workflowCheckCandidateRepositories: code.repositories,
+      checks: { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" },
+      workflowDependenciesResult: { schemaVersion: 1, taskId: id, graphDigest: approval.graphDigest, runId: approval.runId, operationId: sourceOperationId, workflowRevision: approval.workflowRevision, status: "SUCCEEDED", items: [implemented], candidateDigest: code.digest, at: new Date().toISOString() },
+    } });
+    expect(record().workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "the final candidate has no first-party committed source export" });
+    // The same task as a version 2 task (no program is needed for the recovery path).
+    harness.db.set({ ...record(), workflow: { ...record().workflow, definitionVersion: "1.1.0" } });
+
+    const requestId = randomUUID();
+    const response = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/retry`, { requestId, expectedRevision: record().workflow.revision, instructions: "Finalize the retained source without editing it." });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const recovery = operations().find((operation) => operation.requestId === requestId)!;
+    const prompt = (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === recovery.id)[0]?.invocation as { payload: { prompt: string } }).payload.prompt;
+    expect(prompt).toContain("Finalize the approved implementation");
+    expect(prompt).toContain("Do not edit");
+    expect(prompt).not.toContain(IMPLEMENT_TEST_RULE);
+  });
+});
+
+describe("the chain step's task route (Review I2)", () => {
+  beforeAll(async () => { await loadSlackBroker(); });
+
+  it("projects the task for a client without the version 2 header: no report, no round, no Task 1 fields", async () => {
+    const members = new FakeProjectMembers();
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: { projectMembers: members } } });
+    members.setOrgRole(TEST_ORG, MAYA.developerId, "owner");
+    members.grant(TEST_ORG, "payments", MAYA.developerId, "maintainer");
+    harness.db.set({ ...orgProjectCatalogKey(TEST_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments" });
+    harness.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: MAYA.developerId, updatedAt: now, guardrails: { ...DEFAULT_AGENT_GUARDRAILS } });
+    const call = async (method: string, path: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) => {
+      const org = await harness.orgOf(MAYA);
+      const response = await harness.handler({
+        version: "2.0", rawPath: path.split("?")[0]!, rawQueryString: "", headers: { authorization: await bearerFor(MAYA, org), ...headers },
+        ...(body === undefined ? {} : { body: JSON.stringify({ requestId: randomUUID(), ...body }) }), requestContext: { requestId: randomUUID(), http: { method } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+    };
+    const definition = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look into it", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }] };
+    const created = await call("POST", "/v1/app/chains", { name: "Look into it", definition });
+    const chainId = (created.body.chain as { chainId: string }).chainId;
+    const draft = await call("GET", `/v1/app/chains/${chainId}/draft`);
+    await call("POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: (draft.body.draft as { revision: number }).revision });
+    const started = await call("POST", `/v1/app/chains/${chainId}/runs`, { project: "payments" });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const runId = (started.body.run as { runId: string }).runId;
+    const path = `/v1/app/chain-runs/${runId}/sections/1/task`;
+    const taskId = ((await call("GET", path, undefined, { "x-agentx-task-view": "2" })).body.task as { taskId: string }).taskId;
+
+    // The step's task becomes a version 2 task that has been checked and is being fixed after a review round.
+    const code = candidate("1");
+    const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
+    const workflow = WorkflowSnapshotSchema.parse({
+      ...createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion: "1.1.0" }), stage: "REVIEW", state: "WAITING", candidate: code,
+      checkPolicy: { required: [check("unit", "Unit tests")], optional: [], selectedOptionalIds: [], proposed: [] }, verification: verification([{ checkId: "unit", status: "PASS" }], {}, code.digest),
+      fixRounds: { ci: 0, conflict: 0, feedbackAuto: 0 },
+    });
+    // A task that has ended reads its details in full (a starting or running one does not), so its report can be shown.
+    harness.db.set({ ...record, workflow, closedAt: now, outcome: "CLOSED" });
+    const full = (await call("GET", path, undefined, { "x-agentx-task-view": "2" })).body.task as Record<string, unknown>;
+    expect(full.verificationReport).toBeDefined();
+    expect(full.workflow).toMatchObject({ definitionVersion: "1.1.0", fixRounds: { ci: 0 } });
+
+    const plain = (await call("GET", path)).body.task as Record<string, unknown>;
+    expect(plain).not.toHaveProperty("verificationReport");
+    expect(plain).not.toHaveProperty("reviewRound");
+    expect(plain.workflow).toMatchObject({ definitionVersion: "1.0.0" });
+    expect(plain.workflow).not.toHaveProperty("fixRounds");
   });
 });

@@ -662,14 +662,14 @@ function pushingFixTo(workflow: WorkflowSnapshot): string | undefined {
 function implementRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
   const decision = leadingDecision(workflow);
-  // Rovara Code version 2 (Task 12): a review round that found problems sends the work back on its own, and the thread says which round it is. An owner's own send-back
-  // keeps its wording below, and a version 1 task has no round.
-  const round = workflowReviewRound(workflow);
-  if (round !== undefined && decision?.source !== "SEND_BACK" && decision?.source !== "FINDINGS") return round.message;
   const feedback = (workflow.feedbackDecisions ?? []).at(-1);
   if (feedback?.decision === "APPROVE" && feedback.workflowRevision >= workflow.revision - 2 && (decision === undefined || feedback.at >= decision.at)) {
     return "PR feedback approved. Updating the code now; the checks and reviews run again after.";
   }
+  // Rovara Code version 2 (Task 12): a review round that found problems sends the work back on its own, and the thread says which round it is. It comes after the
+  // approved PR feedback fix (above), and an owner's own send-back keeps its wording (below); a version 1 task, and a fix for CI, a conflict or comments, have no round.
+  const round = workflowReviewRound(workflow);
+  if (round !== undefined && decision?.source !== "SEND_BACK" && decision?.source !== "FINDINGS") return round.message;
   if (decision?.source === "SEND_BACK" || decision?.source === "FINDINGS") {
     const problems = sendBackProblems(workflow);
     const issues = problems.filter((problem) => problem.source !== "check").length;
