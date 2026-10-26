@@ -1,4 +1,5 @@
 // Task 12: a worker calls models through the proxy with a per-task key, never with provider secrets.
+import { developerOrgKey, orgMemberKey, orgRemovedKey } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
@@ -334,6 +335,20 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
     seedMembership(h.db, developerIdForSlackUser(slackUser), { orgId: TEST_ORG, role: "member" });
     expect((await h.ask()).status).toBe(200);
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUser), purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
+  });
+
+  it("refuses a new key after the Slack requester is removed, even without a payer setting (C1)", async () => {
+    const h = await slackTask();
+    const developerId = developerIdForSlackUser(slackUser);
+    seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await h.ask()).status).toBe(200);
+    h.mintKey.mockClear();
+    h.db.delete(orgMemberKey(TEST_ORG, developerId));
+    h.db.delete(developerOrgKey(developerId));
+    h.db.set({ ...orgRemovedKey(TEST_ORG, developerId), orgId: TEST_ORG, developerId });
+    const reply = await h.ask();
+    expect(reply).toMatchObject({ status: 403, body: { error: { code: "TASK_ACCESS_DENIED" } } });
+    expect(h.mintKey).not.toHaveBeenCalled();
   });
 
   it("answers 404 when the operation names no org", async () => {
