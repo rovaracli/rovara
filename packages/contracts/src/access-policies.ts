@@ -142,8 +142,10 @@ const appsyncEvents = (scope: Pick<PolicyScope, "partition" | "region" | "accoun
  * service authorization reference (servicereference.us-east-1.amazonaws.com/v1/cloudfront/cloudfront.json, 2026-10-26); CloudFront ARNs carry no region.
  *  This is the service role's list; the boundary's ceiling (CLOUDFRONT_BOUNDARY_ACTIONS) is coarser, see there.
  *  - Distributions take the environment tag (`agentx:env`, which Tags.of(app) puts on the distribution): CreateDistribution (what CloudFormation's create-with-tags call is authorized as,
- *    together with TagResource) only when the request carries this environment's tag, and every other action only on a distribution that carries it, so one environment's role cannot create,
- *    change or delete another's. CreateDistribution takes no resource type (the distribution does not exist yet), so it needs "*", held by the request tag.
+ *    together with TagResource) only when the request carries this environment's tag; TagResource on "*" (the resource the create-time tag call is authorized against is not known, so it is not
+ *    pinned to distribution ARNs) only with that request tag; and every other action, TagResource included (a later update that changes only other tags sends no agentx:env), only on a distribution
+ *    that carries the tag, so one environment's role cannot create, change or delete another's. Two Denies keep it so: no TagResource on a distribution tagged for another environment, and none
+ *    that sets another environment's value. CreateDistribution takes no resource type (the distribution does not exist yet), so it needs "*", held by the request tag.
  *  - Origin access controls and response headers policies support no tags and no condition keys. Their get, update and delete are scoped to this account's ARNs, but not to one environment (the id
  *    is generated), and their create actions take no resource type, so they need "*". The environment is only in their names.
  *  - Read-only hedges on "*": GetCachePolicy (attaching the managed CachingOptimized policy; it is not known whether CloudFront authorizes that read against the managed policy's ARN, which carries no
@@ -154,6 +156,7 @@ export const CLOUDFRONT_ENV_TAG = "agentx:env";
 export const CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS: readonly string[] = ["cloudfront:CreateDistribution"];
 export const CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS: readonly string[] = ["cloudfront:TagResource"];
 export const CLOUDFRONT_DISTRIBUTION_ACTIONS: readonly string[] = [
+  "cloudfront:TagResource",
   "cloudfront:GetDistribution",
   "cloudfront:GetDistributionConfig",
   "cloudfront:UpdateDistribution",
@@ -161,8 +164,8 @@ export const CLOUDFRONT_DISTRIBUTION_ACTIONS: readonly string[] = [
   "cloudfront:ListTagsForResource",
   "cloudfront:UntagResource",
 ];
-export const CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS: readonly string[] = ["cloudfront:GetOriginAccessControl", "cloudfront:UpdateOriginAccessControl", "cloudfront:DeleteOriginAccessControl"];
-export const CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS: readonly string[] = ["cloudfront:GetResponseHeadersPolicy", "cloudfront:UpdateResponseHeadersPolicy", "cloudfront:DeleteResponseHeadersPolicy"];
+export const CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS: readonly string[] = ["cloudfront:GetOriginAccessControl", "cloudfront:GetOriginAccessControlConfig", "cloudfront:UpdateOriginAccessControl", "cloudfront:DeleteOriginAccessControl"];
+export const CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS: readonly string[] = ["cloudfront:GetResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicyConfig", "cloudfront:UpdateResponseHeadersPolicy", "cloudfront:DeleteResponseHeadersPolicy"];
 /** The actions that need Resource "*": two creates that take no resource type, and the read-only hedges described above. */
 export const CLOUDFRONT_UNSCOPED_ACTIONS: readonly string[] = [
   "cloudfront:CreateOriginAccessControl",
@@ -190,12 +193,14 @@ const cloudFrontStatements = (scope: Pick<PolicyScope, "env" | "partition" | "ac
   const arn = (type: string) => `arn:${scope.partition}:cloudfront::${scope.account}:${type}/*`;
   return [
     { Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS], Resource: "*", Condition: { StringEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
-    { Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: arn("distribution"), Condition: { StringEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: "*", Condition: { StringEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
     { Sid: "CloudFrontDistributions", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_ACTIONS], Resource: arn("distribution"), Condition: { StringEquals: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
     { Sid: "CloudFrontPolicies", Effect: "Allow", Action: [...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS], Resource: [arn("origin-access-control"), arn("response-headers-policy")] },
     { Sid: "CloudFrontUnscoped", Effect: "Allow", Action: [...CLOUDFRONT_UNSCOPED_ACTIONS], Resource: "*" },
-    // TagResource's Allow cannot require the resource's current tag (a new distribution has none yet), so without this a role could re-tag another environment's distribution as its own. A distribution with no tag is not matched.
+    // TagResource on "*" with this environment's request tag (the create path, whichever resource CloudFront authorizes it against) cannot also require the resource's current tag (a new distribution has none yet),
+    // so without the first Deny a role could re-tag another environment's distribution as its own; the second never lets a role set another environment's value. A distribution with no tag is not matched by the first.
     { Sid: "CloudFrontKeepEnvironmentTag", Effect: "Deny", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: arn("distribution"), Condition: { Null: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: "false" }, StringNotEquals: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontOnlyOwnEnvironmentTag", Effect: "Deny", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: "*", Condition: { Null: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: "false" }, StringNotEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
   ];
 };
 
@@ -452,6 +457,18 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     // FR-047: the control-plane stack's monthly budget, and only that one, never budgets:* on *.
     { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/agentx-${scope.env}-monthly` },
   ];
+}
+
+/**
+ * The statements without their Sids, for the DEPLOYED boundary: Sids are optional, and an IAM managed policy is capped at 6,144 characters (non-whitespace) of which the 23 Sids are about 590.
+ * Tests find statements by Sid in `defaultBoundaryStatements`, so the Sids stay there and only the deployed copy drops them.
+ */
+export function withoutSids<T extends { Sid?: string }>(statements: readonly T[]): Array<Omit<T, "Sid">> {
+  return statements.map((statement) => {
+    const rest: Partial<T> = { ...statement };
+    delete rest.Sid;
+    return rest as Omit<T, "Sid">;
+  });
 }
 
 /** The exact ARNs of the three roles the default boundary's AssumeOrgRoles statement raises the ceiling for. */

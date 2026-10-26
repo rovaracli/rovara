@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, CLOUDFRONT_BOUNDARY_ACTIONS, CLOUDFRONT_DISTRIBUTION_ACTIONS, CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, CLOUDFRONT_UNSCOPED_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
+import { boundaryWithSids } from "../support/deployed-boundary.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -24,7 +25,7 @@ function roleStatements(resources: Record<string, Resource>): Statement[] {
 
 /** IAM's action wildcard: `*` matches any run of characters, case-insensitively. */
 const globMatches = (pattern: string, action: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(action);
-const CLOUDFRONT_ALL_ACTIONS = [...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_ACTIONS, ...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, ...CLOUDFRONT_UNSCOPED_ACTIONS];
+const CLOUDFRONT_ALL_ACTIONS = [...new Set([...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_ACTIONS, ...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, ...CLOUDFRONT_UNSCOPED_ACTIONS])];
 
 describe("access stack", () => {
   const app = buildAgentXApp({ agentxEnv: "staging" });
@@ -106,7 +107,9 @@ describe("access stack", () => {
     expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging-boundary");
     expect(policy.Properties.Path).toBe("/agentx/staging/");
     const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
-    expect(statements.map((st) => st.Sid)).toEqual(defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-east-1", account: "1", cloudFormationRoleName: "x" }).map((st) => st.Sid));
+    // The deployed boundary carries no Sids (its 6,144-character cap), but the same statements in the same order.
+    expect(statements.every((st) => st.Sid === undefined)).toBe(true);
+    expect(boundaryWithSids(statements).map((st) => st.Sid)).toEqual(defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-east-1", account: "1", cloudFormationRoleName: "x" }).map((st) => st.Sid));
   });
 
   it("always applies a boundary to both access roles: the given one, else the default", () => {
@@ -139,7 +142,7 @@ describe("access stack", () => {
       .flatMap((r) => (r.Properties.ManagedPolicyArns ?? []) as unknown[]).map((arn) => JSON.stringify(arn).match(/policy\/(?:service-role\/)?([A-Za-z0-9]+)/)![1]!)));
     expect([...managed].sort()).toEqual(Object.keys(MANAGED_POLICY_SERVICES).sort());
 
-    const boundary = (boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement.filter((st) => st.Effect === "Allow");
+    const boundary = boundaryWithSids((boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).filter((st) => st.Effect === "Allow");
     const allowed = new Set(boundary.flatMap((st) => [st.Action].flat()));
     const allowedServices = new Set([...allowed].filter((a) => a.endsWith(":*")).map((a) => a.split(":")[0]));
     expect(allowedServices.has("iam")).toBe(false);
@@ -172,7 +175,7 @@ describe("access stack", () => {
     expect(hasProfile).toBe(true);
     const profileStatement = (statements: Statement[]) => statements.find((st) => st.Sid === "IamInstanceProfiles");
     const service = profileStatement(roleStatements(template.toJSON().Resources as Record<string, Resource>))!;
-    const boundary = profileStatement((boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement)!;
+    const boundary = profileStatement(boundaryWithSids((boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement))!;
     for (const statement of [service, boundary]) {
       expect(statement.Action).toEqual(expect.arrayContaining(["iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile"]));
       expect(JSON.stringify(statement.Resource)).toContain("instance-profile/agentx/staging/*");
@@ -181,7 +184,7 @@ describe("access stack", () => {
 
   it("gives the CloudFormation service role and the boundary no cloudfront:*", () => {
     const serviceStatements = roleStatements(template.toJSON().Resources as Record<string, Resource>).filter((st) => st.Sid !== undefined);
-    const boundaryStatements = (boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const boundaryStatements = boundaryWithSids((boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement);
     for (const [name, statements] of [["service role", serviceStatements], ["boundary", boundaryStatements]] as const) {
       const actions = statements.flatMap((st) => [st.Action].flat());
       expect(actions, name).not.toContain("cloudfront:*");
@@ -191,15 +194,20 @@ describe("access stack", () => {
     const cloudfront = serviceStatements.filter((st) => st.Effect === "Allow" && [st.Action].flat().some((action) => action.startsWith("cloudfront:")));
     expect([...new Set(cloudfront.flatMap((st) => [st.Action].flat()))].sort()).toEqual([...CLOUDFRONT_ALL_ACTIONS].sort());
     const onStar = cloudfront.filter((st) => st.Resource === "*");
-    expect(onStar.map((st) => st.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontUnscoped"]);
+    expect(onStar.map((st) => st.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontDistributionTag", "CloudFrontUnscoped"]);
     expect(onStar.find((st) => st.Sid === "CloudFrontDistributionCreate")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/agentx:env": "staging" } });
     expect(cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    // TagResource on "*" only with this environment's request tag (the create path); on an own-tagged distribution it is in CloudFrontDistributions (a tag-only update).
+    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionTag")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/agentx:env": "staging" } });
+    expect([cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Action].flat()).toContain("cloudfront:TagResource");
     const scoped = JSON.stringify(cloudfront.filter((st) => st.Resource !== "*").map((st) => st.Resource));
     expect(scoped).toContain(":cloudfront::");
     for (const type of ["distribution", "origin-access-control", "response-headers-policy"]) expect(scoped).toContain(`:${type}/*`);
-    const retag = serviceStatements.find((st) => st.Sid === "CloudFrontKeepEnvironmentTag")!;
-    expect(retag.Effect).toBe("Deny");
-    expect(retag.Action).toEqual(["cloudfront:TagResource"]);
+    for (const sid of ["CloudFrontKeepEnvironmentTag", "CloudFrontOnlyOwnEnvironmentTag"]) {
+      const deny = serviceStatements.find((st) => st.Sid === sid)!;
+      expect(deny.Effect).toBe("Deny");
+      expect(deny.Action).toEqual(["cloudfront:TagResource"]);
+    }
     // The boundary is the ceiling: CloudFront action families on its Services statement, nothing for any other CloudFront action.
     const ceiling = boundaryStatements.find((st) => st.Sid === "Services")!;
     expect([ceiling.Action].flat().filter((action) => action.startsWith("cloudfront:"))).toEqual([...CLOUDFRONT_BOUNDARY_ACTIONS]);

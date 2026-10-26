@@ -19,6 +19,7 @@ export {
   taskPersonProofRoleName,
   operatorRoleStatements,
   serviceRoleStatements,
+  withoutSids,
   type PolicyScope,
   type PolicyStatementJson,
 } from "@agentx/contracts";
