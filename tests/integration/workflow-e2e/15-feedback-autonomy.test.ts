@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 import { AGENT_WORKER_OUTDATED, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
-import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { agentGuardrailsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../../packages/contracts/src/agent-guardrails.js";
 import { feedbackCriticReply, reviewerReply } from "../../support/faux-scripts.js";
 import { reviewerFindings } from "../../support/model-fixtures.js";
 import { visibleSlackText } from "../../support/strict-slack.js";
@@ -363,12 +364,40 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(e2e.workflow().stage === "WAIT_FOR_MERGE" && e2e.workflow().state === "WAITING").toBe(false);
   }, 480_000);
 
-  it("15.11 a task whose autonomy is changed to suggest before the run starts is refused at the worker's start", async () => {
+  /** The company lowers how far agents may act on their own (the guardrails' limit), as its admin's tightening does: the stored document, at once. */
+  const lowerCompanyLimit = (e2e: WorkflowE2E, maxAutonomy: "suggest" | "prepare" | "run") =>
+    e2e.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 1, guardrails: { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAutonomy } });
+
+  it("15.11 a company that lowers its limit to suggest stops a round that was decided but has not started: the run is refused at the worker's start and nothing is pushed", async () => {
     const { e2e, pullRequest } = await waitingForMerge();
     await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
     e2e.clock.advance(20 * 60_000);
     await e2e.runMergeRecovery();
     expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
+    lowerCompanyLimit(e2e, "suggest");
+    const pushes = e2e.github.pushLog.length;
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.github.pushLog.length).toBe(pushes);
+    expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
+  }, 480_000);
+
+  it("15.11b a company limit of suggest means Rovara decides nothing on its own, whatever the task's frozen recipe says: the card goes to the owner", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge({ autonomy: "run" });
+    lowerCompanyLimit(e2e, "suggest");
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    await trackAndFix(e2e);
+    expect(e2e.workflow()).toMatchObject({ feedbackReview: { status: "PENDING" } });
+    expect(e2e.workflow().fixRounds).toBeUndefined();
+    expect(github.calls.filter((call) => call.startsWith("permission:"))).toEqual([]);
+    expect(e2e.slack.lastPostWithAction("agentx_feedback_review_recommended")).toBeDefined();
+  }, 480_000);
+
+  it("15.11c a task whose frozen recipe is changed to suggest before the run starts is refused at the worker's start", async () => {
+    const { e2e, pullRequest } = await waitingForMerge();
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
     e2e.db.set({ ...taskRecipeKey(e2e.taskId()), entityType: "TASK_RECIPE", orgId: TEST_ORG, recipe: { ...structuredClone(EMPTY_RECIPE), autonomy: "suggest" }, digest: RECIPE_DIGEST });
     const pushes = e2e.github.pushLog.length;
     await e2e.runRecovery();
@@ -387,6 +416,5 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     const view = await e2e.mcp("agentx_get_pr_feedback", { task_id: e2e.taskId() });
     expect(JSON.stringify(view)).toContain("Decided by Rovara (autonomy: prepare); nothing is waiting for you.");
     expect(JSON.stringify(view)).toContain("decided_by");
-    expect(mergeTrackingKey(e2e.taskId(), "demo", pullRequest.number)).toBeDefined();
   }, 480_000);
 });

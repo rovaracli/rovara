@@ -11,7 +11,7 @@ import {
 } from "@agentx/contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
-import { readCiEvidence, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
+import { readCiEvidence, taskAutonomy, taskAutonomyBinding, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, standingKey, autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
@@ -714,38 +714,38 @@ describe("what was stored before this change still reads and still works", () =>
 });
 
 describe("what still has to hold when the worker starts", () => {
-  const task = (digest?: string) => ({ ...(digest === undefined ? {} : { agent: { digest } }), workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "maya", threadId: "t1" }, { id: "review_comment:2", author: "omar", threadId: "t2" }, { id: "review_comment:3", author: "maya", threadId: "t3" }] }).workflow });
+  const task = () => ({ workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "maya", threadId: "t1" }, { id: "review_comment:2", author: "omar", threadId: "t2" }, { id: "review_comment:3", author: "maya", threadId: "t3" }] }).workflow });
   const holds = (overrides: Partial<Parameters<typeof autonomyStillHolds>[0]> = {}, people: Record<string, { permission: "admin" | "write" | "read" | "none"; userType?: string }> = { maya: { permission: "write" }, omar: { permission: "admin", userType: "User" } }) => {
     const asked: string[] = [];
     const deps = {
-      autonomy: async () => "prepare" as const, repositoryUrl: async () => "https://github.com/acme/payments",
+      autonomy: async () => ({ autonomy: "prepare" as const }), repositoryUrl: async () => "https://github.com/acme/payments",
       standing: async (_url: string, login: string) => { asked.push(login); const found = people[login]; if (found === undefined) throw new Error("GitHub is down"); return found; }, ...overrides,
     };
     return { deps, asked };
   };
   const binding = (digest?: string) => ({ autonomy: { level: "prepare", ...(digest === undefined ? {} : { recipeDigest: digest }) } });
+  const live = (autonomy: "suggest" | "prepare" | "run", recipeDigest?: string) => async () => ({ autonomy, ...(recipeDigest === undefined ? {} : { recipeDigest }) });
 
-  it("holds while the autonomy is prepare or run, the recipe is the one it was bound to, and every writer of the round is still a person who can write", async () => {
-    const w = holds();
-    expect(await autonomyStillHolds(w.deps, task(hash("9")), binding(hash("9")))).toBe(true);
+  it("holds while the autonomy is prepare or run, the frozen recipe is the one it was bound to, and every writer of the round is still a person who can write", async () => {
+    const w = holds({ autonomy: live("prepare", hash("9")) });
+    expect(await autonomyStillHolds(w.deps, task(), binding(hash("9")))).toBe(true);
     expect(w.asked).toEqual(["maya", "omar"]);
-    expect(await autonomyStillHolds(holds({ autonomy: async () => "run" }).deps, task(), binding())).toBe(true);
+    expect(await autonomyStillHolds(holds({ autonomy: live("run") }).deps, task(), binding())).toBe(true);
   });
 
   it("does not hold for a decision with no autonomy bound, or when nothing can be asked", async () => {
     expect(await autonomyStillHolds(holds().deps, task(), {})).toBe(false);
     expect(await autonomyStillHolds(holds({ standing: undefined }).deps, task(), binding())).toBe(false);
-    expect(await autonomyStillHolds(holds().deps, { agent: {} }, binding())).toBe(false);
   });
 
-  it("does not hold when the recipe is not the one the decision was bound to (either way round)", async () => {
-    expect(await autonomyStillHolds(holds().deps, task(hash("8")), binding(hash("9")))).toBe(false);
-    expect(await autonomyStillHolds(holds().deps, task(hash("9")), binding())).toBe(false);
-    expect(await autonomyStillHolds(holds().deps, task(), binding(hash("9")))).toBe(false);
+  it("does not hold when the frozen recipe is not the one the decision was bound to (either way round)", async () => {
+    expect(await autonomyStillHolds(holds({ autonomy: live("prepare", hash("8")) }).deps, task(), binding(hash("9")))).toBe(false);
+    expect(await autonomyStillHolds(holds({ autonomy: live("prepare", hash("9")) }).deps, task(), binding())).toBe(false);
+    expect(await autonomyStillHolds(holds({ autonomy: live("prepare") }).deps, task(), binding(hash("9")))).toBe(false);
   });
 
-  it("does not hold once the task asks about everything (suggest) or its autonomy cannot be read", async () => {
-    expect(await autonomyStillHolds(holds({ autonomy: async () => "suggest" }).deps, task(), binding())).toBe(false);
+  it("does not hold once the autonomy read now is suggest: the task's own, or the company's limit lowered, or an unreadable recipe or limit", async () => {
+    expect(await autonomyStillHolds(holds({ autonomy: live("suggest") }).deps, task(), binding())).toBe(false);
   });
 
   it("does not hold once a writer lost write access, is not a person, is a bot, or cannot be looked up; and asks nobody once it is known not to hold", async () => {
@@ -755,10 +755,39 @@ describe("what still has to hold when the worker starts", () => {
     const gone = holds({ repositoryUrl: async () => undefined });
     expect(await autonomyStillHolds(gone.deps, task(), binding())).toBe(false);
     expect(gone.asked).toEqual([]);
-    const bot = { ...task(), workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "renovate[bot]", threadId: "t1" }] }).workflow };
+    const bot = { workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "renovate[bot]", threadId: "t1" }] }).workflow };
     const botWorld = holds();
     expect(await autonomyStillHolds(botWorld.deps, bot, binding())).toBe(false);
     expect(botWorld.asked).toEqual([]);
+  });
+
+  it("asks about each writer on the repository of their own comment", async () => {
+    const two = { workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "bob", threadId: "t1", repositoryId: "payments" }, { id: "review_comment:2", author: "bob", threadId: "t2", repositoryId: "web" }], findings: [{ id: "f1", commentIds: ["review_comment:1"] }, { id: "f2", commentIds: ["review_comment:2"] }] }).workflow };
+    const seen: string[] = [];
+    const deps = { autonomy: live("prepare"), repositoryUrl: async (repositoryId: string) => `https://github.com/acme/${repositoryId}`, standing: async (url: string) => { seen.push(url); return { permission: url.endsWith("/web") ? "read" as const : "write" as const }; } };
+    expect(await autonomyStillHolds(deps, two, binding())).toBe(false);
+    expect(seen).toEqual(["https://github.com/acme/payments", "https://github.com/acme/web"]);
+  });
+});
+
+describe("how far Rovara may go on its own with a task", () => {
+  const frozen = (autonomy: "suggest" | "prepare" | "run", digest = hash("9")) => async () => ({ recipe: { autonomy }, digest });
+  it("is the stricter of the frozen recipe and the company's limit read now, with the frozen recipe's digest", async () => {
+    expect(await taskAutonomyBinding(frozen("run"), undefined, async () => "run")).toEqual({ autonomy: "run", recipeDigest: hash("9") });
+    expect(await taskAutonomyBinding(frozen("run"), undefined, async () => "prepare")).toEqual({ autonomy: "prepare", recipeDigest: hash("9") });
+    expect(await taskAutonomyBinding(frozen("prepare"), undefined, async () => "suggest")).toEqual({ autonomy: "suggest", recipeDigest: hash("9") });
+    expect(await taskAutonomyBinding(frozen("suggest"), undefined, async () => "run")).toEqual({ autonomy: "suggest", recipeDigest: hash("9") });
+    // A task with no recipe is prepare, and the limit still applies to it.
+    expect(await taskAutonomyBinding(async () => undefined, undefined, async () => "run")).toEqual({ autonomy: "prepare" });
+    expect(await taskAutonomyBinding(async () => undefined, undefined, async () => "suggest")).toEqual({ autonomy: "suggest" });
+  });
+
+  it("asks first (suggest) when the recipe or the limit cannot be read", async () => {
+    const logged: string[] = [];
+    expect(await taskAutonomyBinding(frozen("run"), (event) => { logged.push(event); }, async () => { throw new Error("throttled"); })).toEqual({ autonomy: "suggest" });
+    expect(await taskAutonomyBinding(async () => { throw new Error("throttled"); }, (event) => { logged.push(event); }, async () => "run")).toEqual({ autonomy: "suggest" });
+    expect(logged).toEqual(["ci_fix.autonomy_limit_unreadable", "ci_fix.autonomy_unreadable"]);
+    expect(await taskAutonomy(frozen("run"), undefined, async () => "prepare")).toBe("prepare");
   });
 });
 
