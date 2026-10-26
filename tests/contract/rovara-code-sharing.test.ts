@@ -313,3 +313,39 @@ it("I3: Slack share undo atomically records its actor, audit turn, event and ses
   const tx = w.db.transactions().at(-1)!;
   expect(tx.some((entry) => (entry.Put as { TableName?: string } | undefined)?.TableName === "turns")).toBe(true);
 });
+
+for (const level of ["view", "use"] as const) it(`M1: ${level} cannot undo a Slack share`, async () => {
+  const w = world();
+  w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, level);
+  const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
+  const at = new Date(w.clock.now).toISOString();
+  const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view" as const, sharedAt: at, sharedReason: "requested" as const };
+  const requestId = randomUUID();
+  await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, share, requestId, PRIYA, at) }));
+  w.db.set({ ...task, share, shared: true, shareVersion: 1, codeShareRequestId: requestId });
+  const writes = w.db.transactions().length;
+  await expect(undoCodeShare(w.deps, w.caller(ARJUN), w.sessionId, `SLACK#${requestId}`)).rejects.toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+  expect(w.db.transactions()).toHaveLength(writes);
+  expect(w.db.get(taskKey(w.taskId))).toMatchObject({ shared: true, shareVersion: 1 });
+});
+
+it("M1: an owner change racing sharing aborts the write and reauthorizes", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  await h.orgOf(OMAR);
+  const send = h.db.send;
+  let raced = false;
+  h.db.send = async (command) => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some((entry) => entry.Update?.UpdateExpression?.includes("codeShareRequestId"))) {
+      raced = true;
+      h.db.set({ ...h.db.get(taskKey(taskId)), currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: new Date().toISOString() } });
+    }
+    return send(command);
+  };
+  const reply = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "continue" });
+  expect(raced).toBe(true);
+  expect(reply.body.error).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
+  expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
+});
