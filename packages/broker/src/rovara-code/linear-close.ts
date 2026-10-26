@@ -84,7 +84,7 @@ const isLetter = (code: number): boolean => (code >= 65 && code <= 90) || (code 
 const JOINER = "\u200D";
 
 /**
- * Text in which no Linear issue key can be read: after the hyphen of every key-shaped token (a run of letters and digits with a letter in it, a hyphen, a digit) an invisible joiner is put,
+ * Text in which no Linear issue key can be read (used for a pull request's title, where a bare key links and may move the issue, and which holds nothing anyone copies): after the hyphen of every key-shaped token (a run of letters and digits with a letter in it, a hyphen, a digit) an invisible joiner is put,
  * whatever comes before it (a closing word, markdown, a bracket, a quote, nothing) or after it. Nobody knows what Linear's reader strips or accepts, so the key is broken, never the words
  * around it. The text reads the same. Dates and version numbers (`2026-10-26`, `12-34`) have no letter in the run and stay as they are. One pass, linear in the text.
  */
@@ -107,8 +107,26 @@ export function breakLinearKeys(text: string): string {
   return copied === 0 ? text : out + text.slice(copied);
 }
 
-/** The lines with every key broken but Rovara's own `Fixes <KEY>` line (exactly that line, for exactly the key given), which is left whole. */
-export function sealLinearKeys(lines: readonly string[], ownKey: string | undefined): string[] {
+// Linear acts on a key only after one of its magic words (docs: "Linking pull requests" and the GitHub/GitLab integration pages): the closing words close, fix, resolve, complete, implement (each with
+// -s, -d or -ing) and the linking words ref(s), references, part of, contributes to, towards, updates, related to, relates to. A key by itself in a description does nothing; a key in a title or branch name links.
+const MAGIC_WORDS = "close[sd]?|closing|fix(?:es|ed|ing)?|resolve[sd]?|resolving|complete[sd]?|completing|implement(?:s|ed|ing)?|refs?|references|towards?|updates|part\\s+of|contributes?\\s+to|relates?\\s+to|related\\s+to";
+/** Up to twelve characters of anything but letters and digits (spaces, punctuation, markdown, line breaks), or a character reference, between the word and the key. */
+const MAGIC_GAP = "(?:[^A-Za-z0-9]|&[a-z]+;|&#x?[0-9a-f]+;){0,12}";
+/** The start of a key: letters and digits with a letter first, then a hyphen (backslash-escaped, as the feedback section writes it) and a digit. */
+const KEY_START = "[A-Za-z][A-Za-z0-9]*\\\\?-\\d";
+const MAGIC_BEFORE_KEY = new RegExp(`(?<![A-Za-z0-9])(?:${MAGIC_WORDS})(?![A-Za-z0-9])(?=${MAGIC_GAP}${KEY_START})`, "giu");
+
+/**
+ * Text in which Linear can read no magic word before a key: the word (whole word, any case, with any markdown or punctuation around it) that has a key within a few characters after it gets an
+ * invisible joiner after its first letter, so it reads the same and is not the word. The key itself, and every other word, number, path, code span and fence, are left byte for byte
+ * (`UTF-8`, `SHA-256`, `node-22`, `db/V1-2__init.sql` are untouched). The same word with no key after it (`Fixes the null check`) is untouched too. Linear time.
+ */
+export function neutralizeLinearWords(text: string): string {
+  return text.replace(MAGIC_BEFORE_KEY, (word) => `${word.slice(0, 1)}${JOINER}${word.slice(1)}`);
+}
+
+/** The lines with every magic word before a key neutralized but Rovara's own `Fixes <KEY>` line (exactly that line, for exactly the key given), which is left whole. */
+export function sealLinearText(lines: readonly string[], ownKey: string | undefined): string[] {
   const own = ownKey === undefined ? undefined : linearCloseLine(ownKey);
-  return lines.map((line) => (own !== undefined && line === own ? line : breakLinearKeys(line)));
+  return lines.map((line) => (own !== undefined && line === own ? line : neutralizeLinearWords(line)));
 }

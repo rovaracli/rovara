@@ -389,8 +389,9 @@ import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
-import { linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
+import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
+import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
@@ -11575,33 +11576,84 @@ async function reconcilePullRequestUpdate(
 }
 
 /**
- * Plan 6 Task 20: after a session's Linear issue was linked, replaced or unlinked, the open pull requests' descriptions say so at once: the `Fixes <KEY>` line inside Rovara's block is set, changed or taken
- * out (`withLinearCloseLine`), each description read just before it is written. Bounded in time like the feedback description update; a pull request that could not be read or written, whose block is not as
- * Rovara wrote it, or past the time limit, counts as failed. Never throws.
+ * The Linear issue key the task's session follows now, read from the binding. `fallback` stands when the binding cannot be read (a read that fails is never read as "unlinked", which would take the line out).
  */
-async function rewriteOpenLinearCloseLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }> {
+async function freshLinearKey(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, fallback: string | undefined): Promise<string | undefined> {
+  if (task.orgId === undefined || task.sessionId === undefined) return fallback;
+  try {
+    const bindings = await sessionBindingsOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task.orgId, task.sessionId);
+    return bindings.map(linearIssueKeyOf).find((found) => found !== undefined);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Plan 6 Task 20: brings ONE open pull request's description to the Linear binding: the `Fixes <KEY>` line inside Rovara's block is set, changed or taken out (`withLinearCloseLine`) from the description
+ * as GitHub has it now. GitHub has no conditional write for a description, so after each write the description and the binding are read again, and the line is set right again if another writer's
+ * copy (a feedback rewrite that read the description before this write) undid it, or the binding moved meanwhile; at most three writes. `first`: the key the caller knows (a route's, right after its
+ * commit); without it the binding is read. "failed": GitHub refused, the block is not as Rovara wrote it, the description would be too long, or the time ran out.
+ */
+async function settleLinearLine(
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, target: { repositoryUrl: string; number: number }, scope: Awaited<ReturnType<typeof githubScopeOf>>, first: { key: string | undefined } | undefined, deadline: number,
+): Promise<"updated" | "same" | "failed"> {
+  let wanted = first !== undefined ? first.key : await freshLinearKey(dependencies, task, undefined);
+  let wrote = false;
+  for (let round = 0; round < 4; round += 1) {
+    if (Date.now() > deadline) return "failed";
+    const next = withLinearCloseLine((await dependencies.githubPullRequests.getPullRequest(target.repositoryUrl, target.number, scope)).body, wanted);
+    if (next.kind === "same") return wrote ? "updated" : "same";
+    // The fourth look only checks: a third write that was undone again is reported, not repeated.
+    if (next.kind === "no_block" || next.body.length > PULL_REQUEST_BODY_MAX_CHARS || round === 3) return "failed";
+    await dependencies.githubPullRequests.updatePullRequest(target.repositoryUrl, target.number, { body: next.body }, scope);
+    wrote = true;
+    wanted = await freshLinearKey(dependencies, task, wanted);
+  }
+  return "failed";
+}
+
+/**
+ * Plan 6 Task 20: the open pull requests' descriptions say what the session's Linear binding says, at once (a link, a replace or an unlink; the pull request just recorded). Each description is settled
+ * (`settleLinearLine`) within the time a feedback description update has. A pull request that could not be read or written, whose block is not as Rovara wrote it, or past the time limit, counts as failed.
+ * Never throws. `first`: the key a route knows right after its commit; without it the binding is read.
+ */
+async function settleOpenLinearLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, first: { key: string | undefined } | undefined): Promise<{ updated: number; failed: number }> {
   const open = (task.workflow?.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN");
   const result = { updated: 0, failed: 0 };
   const deadline = Date.now() + (dependencies.descriptionUpdateMaxMs ?? DESCRIPTION_UPDATE_MAX_MS);
   let scope: Awaited<ReturnType<typeof githubScopeOf>> | undefined;
   for (const pullRequest of open) {
-    if (Date.now() > deadline) { result.failed += 1; continue; }
     try {
       scope ??= await githubScopeOf(dependencies, task);
       const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, pullRequest.repositoryId, pullRequest.number));
       if (record === undefined) { result.failed += 1; continue; }
-      const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, pullRequest.number, scope)).body;
-      const next = withLinearCloseLine(current, key);
-      if (next.kind === "same") continue;
-      if (next.kind === "no_block" || next.body.length > PULL_REQUEST_BODY_MAX_CHARS || Date.now() > deadline) { result.failed += 1; continue; }
-      await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, pullRequest.number, { body: next.body }, scope);
-      result.updated += 1;
+      const outcome = await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: pullRequest.number }, scope, first, deadline);
+      if (outcome === "updated") result.updated += 1;
+      else if (outcome === "failed") result.failed += 1;
     } catch (error) {
       result.failed += 1;
       console.log(JSON.stringify({ component: "broker", event: "linear_close.description_not_updated", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     }
   }
   return result;
+}
+
+async function rewriteOpenLinearCloseLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }> {
+  return settleOpenLinearLines(dependencies, task, { key });
+}
+
+/**
+ * Plan 6 Task 20: a pull request was just recorded for a version 2 task. Its title and description were fixed when the publication was accepted, so a link, replace or unlink made since is not in them: the
+ * open descriptions are settled against the binding now. Best effort (the next rewrite of the description does it too); never throws.
+ */
+async function settleRecordedPullRequest(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task?.workflow?.definitionVersion !== "1.1.0" || task.orgId === undefined || task.sessionId === undefined) return;
+    await settleOpenLinearLines(dependencies, task, undefined);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "linear_close.recorded_not_settled", taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /** How long the description update may hold up the worker's callback; past it the push is answered and the update gives up. */
@@ -11660,6 +11712,9 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       return;
     }
     await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body }, scope);
+    // Plan 6 Task 20: this write carries a copy of the description read a moment ago, so a Linear link made meanwhile (and rewritten into the description by the route) could be undone by it: the line is settled again
+    // against the binding as it is now. A failure here is logged with the rest of this update's.
+    if (workflow.definitionVersion === "1.1.0" && late() === false) await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: record.number }, scope, undefined, deadline);
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -16068,6 +16123,8 @@ async function recordTerminalResult(
       console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: milestoneTaskId, error: error instanceof Error ? error.name : "unknown" }));
     });
   }
+  // Plan 6 Task 20: the pull request this publication opened is recorded; a Linear link, replace or unlink made since the description was written is honoured now.
+  if (taskPointer !== undefined && recordedStatus === terminalStatus && operation.kind === "publish" && terminalStatus === "SUCCEEDED") await settleRecordedPullRequest(dependencies, taskPointer.taskId);
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).

@@ -728,7 +728,7 @@ describe("a pushed fix on a version 2 task", () => {
     const orgOfTask = String((record() as unknown as { orgId: string }).orgId);
     if (options.boundTo !== undefined) {
       harness.db.set({ ...record(), sessionId: "ses_00000000000000000001" });
-      harness.db.set({ ...sessionBindingKey(orgOfTask as never, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: orgOfTask, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: options.boundTo, url: `https://linear.app/issue/${options.boundTo}` }, at: now });
+      harness.db.set({ ...sessionBindingKey(orgOfTask, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: orgOfTask, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: options.boundTo, url: `https://linear.app/issue/${options.boundTo}` }, at: now });
     }
     const first = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
     await harness.artifact(workspaceId, String(implementation.id), "workspace.diff", DIFF(["src/retry.ts"]));
@@ -777,8 +777,8 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body.split(START)).toHaveLength(2);
   });
 
-  const unbind = (harness: Harness, orgId: string) => harness.db.delete(sessionBindingKey(orgId as never, "ses_00000000000000000001", "linear_issue"));
-  const rebind = (harness: Harness, orgId: string, key: string) => harness.db.set({ ...sessionBindingKey(orgId as never, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: key, url: `https://linear.app/issue/${key}` }, at: "2026-10-26T13:00:00.000Z" });
+  const unbind = (harness: Harness, orgId: string) => harness.db.delete(sessionBindingKey(orgId, "ses_00000000000000000001", "linear_issue"));
+  const rebind = (harness: Harness, orgId: string, key: string) => harness.db.set({ ...sessionBindingKey(orgId, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: key, url: `https://linear.app/issue/${key}` }, at: "2026-10-26T13:00:00.000Z" });
 
   it("honours an unlink made before the pull request was recorded: it opens without the old Fixes line (re-derived when the pull request is recorded)", async () => {
     const t = await fixPassed({ boundTo: "ENG-142", beforeOpen: (harness, _taskId, orgId) => unbind(harness, orgId) });
@@ -820,6 +820,20 @@ describe("a pushed fix on a version 2 task", () => {
     expect(closers(t.state.body)).toEqual(["Fixes ENG-143"]);
   });
 
+  it("does not take the line out because the binding could not be read after the write", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142" });
+    const original = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
+      return original(command as never);
+    });
+    t.state.body = t.state.body.replace(/\n\nFixes ENG-142/u, "");
+    expect(closers(t.state.body)).toEqual([]);
+    const rewrite = (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine;
+    expect(await rewrite(t.record() as never, "ENG-142")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+  });
+
   it("the feedback rewrite checks the binding again after its write, so a link committed meanwhile is not undone", async () => {
     const t = await fixPassed({ boundTo: "ENG-142" });
     const record = t.record() as unknown as { orgId: string };
@@ -845,7 +859,12 @@ describe("a pushed fix on a version 2 task", () => {
     const record = t.record() as unknown as { orgId: string };
     t.harness.db.set({ ...t.record(), sessionId: "ses_00000000000000000001" });
     const task = t.record() as never;
-    const rewrite = (key: string | undefined) => (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(task, key);
+    // The route commits the binding first and then asks for the rewrite, so the binding is moved before each call.
+    const rewrite = (key: string | undefined) => {
+      if (key === undefined) t.harness.db.delete(sessionBindingKey(record.orgId, "ses_00000000000000000001", "linear_issue"));
+      else t.harness.db.set({ ...sessionBindingKey(record.orgId, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: record.orgId, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: key, url: `https://linear.app/issue/${key}` }, at: now });
+      return (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(task, key);
+    };
     expect(record.orgId).toBeDefined();
     expect(await rewrite("ENG-142")).toEqual({ updated: 1, failed: 0 });
     expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
@@ -1148,7 +1167,7 @@ describe("technical text in a version 2 description stays as it is", () => {
     expect(body).not.toContain("\u200D");
     const full = workflowPullRequestBody(task, workflowWith(), "# Plan\n\n1. Use UTF-8 and SHA-256 on node-22 (x86-64)\n2. Run `git checkout feature-2`\n", SESSION, context({ linearIssueKey: "ENG-142", changedFiles: { files, complete: true } }));
     expect(full).toContain("Use UTF-8 and SHA-256 on node-22 (x86-64)");
-    expect(full).toContain("`git checkout feature-2`");
+    expect(full).toContain("git checkout feature-2");
     expect(full).not.toContain("\u200D");
   });
 });

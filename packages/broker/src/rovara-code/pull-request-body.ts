@@ -5,7 +5,7 @@
 import type { RiskAssessment, VerificationReport, WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
-import { breakLinearKeys, linearCloseLine, normalizeIssueKey, sealLinearKeys } from "./linear-close.js";
+import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -138,12 +138,12 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
   const linearKey = normalizeIssueKey(context.linearIssueKey);
   let lines: string[] = [];
   for (const limit of LIST_LIMITS) {
-    // The last guard: whatever a path let through, no line names a Linear issue but Rovara's own Fixes line.
-    lines = sealLinearKeys([
+    // The last guard: whatever a path let through, no line has a Linear magic word before a key but Rovara's own Fixes line.
+    lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
       "## Reviews", ...reviewLines(limit), "",
-      `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${inertLine(reason, ITEM_MAX)}`),
+      `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
       ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
     ], linearKey);
     if (byteLength(lines.join("\n")) <= budgetBytes) return lines;
@@ -179,7 +179,7 @@ export function rovaraPullRequestBody(input: {
 }): string {
   // The plan's words are a model's: they sit under their own heading as a quotation (a quotation holds a heading, a fence or a rule inside it), so they cannot pose as one of Rovara's sections.
   const summary = summaryOf(input.summary);
-  const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${breakLinearKeys(line)}`);
+  const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${neutralizeLinearWords(line)}`);
   const head = ["## Plan summary", ...quoted];
   const tail = [...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
