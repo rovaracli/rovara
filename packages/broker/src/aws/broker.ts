@@ -6720,8 +6720,9 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
           scopes: payment.scopes,
           operationKeyIds: current.modelKeyIds ?? [],
-          // The plan check spends from the planning limit too. It is advice: running out never pauses the task or asks for money (the plan goes on to the person, "stopped at the planning limit").
-          planning: current.workflowMode === "PLAN" || current.workflowMode === "PLAN_CRITIQUE",
+          // The plan check spends from the task's planning limit like planning does (the run limit is the planning limit until the plan is approved). It is advice: running out never pauses the task or asks for money
+          // (the plan goes on to the person, "stopped at the planning limit"), so it is given no pause to write.
+          planning: current.workflowMode === "PLAN",
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
           ...(current.workflowMode === "PLAN_CRITIQUE" ? {} : { pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id } }),
@@ -15488,8 +15489,7 @@ async function recordTerminalResult(
   }
   // Plan 3 final fix wave (runs I-1): an agent-step run's budget stop with no pause yet (the proxy's mid-step "budget exceeded") is asked for BEFORE the engine is
   // driven, so the engine tells the pause's real scope, once, instead of a made-up one that it then resumes at once. A stop an approval already answered is not asked again.
-  // Plan 6 Task 8: a plan check that ran out of budget is advice that stopped short (its plan goes to the person), not a pause: it asks for no money.
-  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && operation.workflowMode !== "PLAN_CRITIQUE" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
   const stop = { asked: false };
   const runStop = budgetStoppedRun && taskPointer !== undefined ? await agentRunStopAsk(dependencies, taskPointer.taskId, operation.id) : "not_run";
   if (runStop !== "not_run") stop.asked = true;
@@ -15499,6 +15499,7 @@ async function recordTerminalResult(
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
+  // Plan 6 Task 8: a plan check that ran out of budget is advice that stopped short (its plan goes to the person), not a pause: it asks for no money.
   const budgetStopped = taskPointer !== undefined && operation.kind === "task" && operation.workflowMode !== "PLAN_CRITIQUE" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
   // Plan 3, M-6: a plain task that stopped on a budget is paused, not ended (Task 32 may resume it): the pause handlers hear that instead, before the ask below.

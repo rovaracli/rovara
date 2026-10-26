@@ -7,8 +7,10 @@ import {
   PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, WorkflowSnapshotSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow,
   readPlanCritique, submitPlanCritique, submitWorkflowArtifact, type PlanCritique, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
+import { canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
+import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { criticModelFor, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -19,7 +21,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { call, loadSlackBroker } from "../support/slack-broker.js";
+import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 
 beforeAll(async () => {
   await loadSlackBroker();
@@ -366,6 +368,8 @@ describe("criticModelFor: Rovara's recommendation", () => {
     expect(recommendCriticModel({ approved: [SONNET, OPUS] }, SONNET, [SONNET, OPUS])).toEqual({ model: OPUS, sameModelAsPlanner: false });
     expect(recommendCriticModel({ approved: [SONNET] }, SONNET, [SONNET])).toEqual({ model: SONNET, sameModelAsPlanner: true });
     expect(recommendCriticModel({}, SONNET, [])).toBeUndefined();
+    // With no source list known, the project's approved models, in their order, stand in for it.
+    expect(recommendCriticModel({ approved: [SONNET, OPUS] }, SONNET, [])).toEqual({ model: OPUS, sameModelAsPlanner: false });
     expect(recommendCriticModel({ forbidden: [OPUS] }, SONNET, [SONNET, OPUS, GPT])).toEqual({ model: GPT, sameModelAsPlanner: false });
   });
 });
@@ -383,11 +387,13 @@ const TESTED_PLAN = planDocument({
 const REVISED_PLAN = planDocument({ ...TESTED_PLAN, title: "Retry failed payments, with a limit", notChanging: ["The refund flow stays as it is.", "A payment is retried at most three times."] });
 const critiqueAnswer = (verdict: "ok" | "revise", points: Array<{ id: string; severity: "blocking" | "note"; text: string; claimId?: string }> = []) => block({ verdict, points });
 
-async function world(options: { proxy?: boolean } = {}) {
+async function world(options: { proxy?: boolean; models?: { default: ModelIdentifier; approved: ModelIdentifier[] } } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
   const h = await createDeveloperTaskBroker({
+    register: options.models === undefined,
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
+  if (options.models !== undefined) await registerSlackProject(h.handler, { models: options.models });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -598,6 +604,60 @@ describe("the plan check's result", () => {
     const { taskId, workspaceId } = await t.planned();
     await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: "the model did not answer" });
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "plan check operation ended failed" });
+  });
+});
+
+const CLAUDE_DEFAULT = defaultWorkerModel();
+const OTHER_CLAUDE: ModelIdentifier = { provider: "amazon-bedrock", modelId: bedrockClaudeModelIds().find((id) => canonicalModelName({ provider: "amazon-bedrock", modelId: id }) !== canonicalModelName(CLAUDE_DEFAULT))! };
+
+describe("the plan check's model on a project with a list of models", () => {
+  it("runs on the one model a project allows, records that the same model checked the plan, and the person is told", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT] } });
+    const { taskId, workspaceId } = await t.planned();
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId });
+    expect(check.criticSameModel).toBe(true);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    expect(t.meta(taskId).workflow.critique).toMatchObject({ status: "done", sameModelAsPlanner: true });
+  });
+
+  it("recommends the project's other model when two are allowed, and never one outside the list", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const { workspaceId } = await t.planned();
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ modelId: OTHER_CLAUDE.modelId });
+    expect(check.criticSameModel).toBeUndefined();
+  });
+
+  it("compares with the model the planning run actually recorded, not the project's default", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const { workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    const planOperation = t.byMode(workspaceId, "PLAN")[0]!;
+    t.h.db.set({ ...planOperation, model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId } });
+    await t.finishPlanning(workspaceId);
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
+  });
+
+  it("offers the models of the sources the project walks, in its order: a project that walks none has none to offer", async () => {
+    const stored = { order: ["rovara"], sources: [], removing: [] } as never;
+    const routing = { sources: { read: async () => stored }, projectSourceOrder: async () => [] as string[] };
+    expect(await servableModels(routing, TEST_ORG)).not.toEqual([]);
+    expect(await servableModels(routing, TEST_ORG, "payments")).toEqual([]);
+  });
+});
+
+describe("a result for a check the task no longer waits for", () => {
+  it("changes nothing, and does not fail the result", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const waiting = t.meta(taskId);
+    t.h.db.set({ ...waiting, workflow: { ...waiting.workflow, stage: "PLAN", state: "RUNNING" } });
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    expect(t.meta(taskId).workflow.critique).toBeUndefined();
+    expect(t.byMode(workspaceId, "PLAN")).toHaveLength(1);
   });
 });
 
