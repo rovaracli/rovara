@@ -281,7 +281,9 @@ import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
-import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
+import { verificationReport, withTestRule, workflowReviewRound, type ChangedFileEntry } from "../rovara-code/verification-report.js";
+import { inertPlanLine } from "../rovara-code/inert-text.js";
+import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1338,6 +1340,41 @@ async function changedFiles(deps: DeveloperTaskRouteDependencies, task: Develope
   if (diff === "") return undefined;
   return diffStat(diff).map((file) => ({ ...file, repository: redactText(file.repository), path: redactText(file.path) }));
 }
+
+/** How many of the task's newest coding operations are searched for the diff of its code. */
+const CANDIDATE_DIFF_OPERATIONS = 8;
+/** The workspace diff's own notes that the file list is not the whole change (a cut diff, or a base that is gone so only uncommitted changes show). */
+const INCOMPLETE_DIFF_NOTES = [/\[workspace diff truncated/u, /\[the commit this workspace was prepared at is not in this repository/u];
+
+/**
+ * The files the task's code changes, from the newest coding operation that published a workspace diff (a review does not publish one). Redacted by `changedFiles`. `complete` is false when the diff
+ * was cut (by the worker or by the read), when its base commit was gone, or when it lists as many files as `diffStat` keeps, so the pull request's risk is never judged low on part of a change.
+ * Undefined when no diff can be read: storage trouble logs the error name only.
+ */
+export async function candidateChangedFiles(
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "log">, task: Pick<DeveloperTaskRecord, "taskId" | "workspaceId" | "ownerKey">,
+): Promise<ChangedFilesRead | undefined> {
+  try {
+    const operations = (await deps.actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, CANDIDATE_DIFF_OPERATIONS);
+    for (const operation of operations) {
+      const diff = (await deps.actions.artifacts(task.workspaceId, operation.id)).find((artifact) => artifact.name === DIFF_ARTIFACT);
+      if (diff === undefined) continue;
+      if (diff.size === 0) return { files: [], complete: true };
+      if (!ownArtifactKey({ ownerKey: task.ownerKey, workspaceId: task.workspaceId } as DeveloperTaskRecord, operation.id, diff.objectKey)) continue;
+      const text = await deps.actions.readArtifact(diff.objectKey, DIFF_READ_BYTES);
+      const stat = diffStat(text);
+      const files: ChangedFileEntry[] = stat.map((file) => ({ repository: redactText(file.repository), path: redactText(file.path), added: file.added, removed: file.removed }));
+      const complete = (diff.size === undefined || diff.size <= DIFF_READ_BYTES) && stat.length < DIFF_STAT_FILES_MAX && !INCOMPLETE_DIFF_NOTES.some((note) => note.test(text));
+      return { files, complete };
+    }
+  } catch (error) {
+    log(deps, { event: "developer.task_changed_files_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+  }
+  return undefined;
+}
+
+/** `diffStat` keeps this many files; a diff that reaches it may have more. */
+const DIFF_STAT_FILES_MAX = 200;
 
 /** R18: what the latest task operation left, and the task's pull requests. Callers load the owned task first. */
 async function taskDetails(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<TaskDetails> {
@@ -3869,6 +3906,11 @@ function reviewCheckCommand(command: ProjectCommand): string {
  * What the reviewers are told about the checks on the candidate: the selected checks its passing verification recorded,
  * or that it is review only with the plan's reason. Nothing when verification recorded neither.
  */
+function workflowReviewRiskOption(workflow: WorkflowSnapshot): { workflowReviewRisk?: true } {
+  // Rovara Code version 2: the code review also states a risk level. A version 1 review is exactly as before.
+  return workflow.definitionVersion === "1.1.0" ? { workflowReviewRisk: true } : {};
+}
+
 function workflowReviewChecksOption(workflow: WorkflowSnapshot): { workflowReviewChecks?: WorkflowReviewChecks } {
   const verification = workflow.verification;
   if (verification === undefined) return {};
@@ -3984,7 +4026,7 @@ async function queueWorkflowReview(
       request: "Run independent candidate reviews", response: `Independent ${reviewRoles.length === 2 ? "code and security reviews" : reviewRoles[0] === "SECURITY" ? "security review" : "code review"} started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(access === undefined ? [] : [accessFence(deps, access)]),
-  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...reviewPlan, ...reviewFeedback,
+  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...workflowReviewRiskOption(workflow), ...reviewPlan, ...reviewFeedback,
     // A custom sequence's review step: which step it is, and (when it asks for fewer than both) which reviews to run.
     ...(workflow.programStepId === undefined ? {} : { programStepId: workflow.programStepId }), ...(reviewRoles.length === 2 ? {} : { workflowReviewers: reviewRoles }) });
 }
@@ -4958,25 +5000,6 @@ const WORKFLOW_PLAN_SUMMARY_LINE_MAX = 500;
 const WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED = 20;
 
 /**
- * A model-written plan line made inert on GitHub: images dropped, links reduced to their text, URLs in angle brackets
- * unwrapped and other HTML tags dropped, and every @ followed by a zero-width joiner so no one is mentioned or notified.
- * A zero-width joiner also follows each `://` and `www`, so no bare URL becomes a link, and each `#` before a digit, so
- * no `#123` or `org/repo#123` cross-references an issue or pull request.
- */
-function inertPlanLine(line: string): string {
-  return line
-    .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
-    .replace(/<((?:https?|mailto):[^>]*)>/giu, "$1")
-    .replace(/<[^>]*>/gu, "")
-    .replaceAll("@", "@\u200D")
-    .replaceAll("://", "://\u200D")
-    .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
-    .replace(/#(?=\d)/gu, "#\u200D")
-    .trim();
-}
-
-/**
  * The task's title as the pull request shows it: Slack's markup (a mention, a channel, a link with its label, a
  * broadcast) reduced to plain words first, then made inert for GitHub as a plan line is. A Slack-started task's title is
  * the requester's words, so nothing in it may mention anyone or link anywhere on GitHub.
@@ -4995,7 +5018,14 @@ export function inertTaskTitle(title: string): string {
  * (or, first, that no automated check applied and why), where the task lives, and that a human merges it. At most
  * 30,000 bytes.
  */
-export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined): string {
+export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext): string {
+  // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.
+  if (workflow.definitionVersion === "1.1.0") {
+    return rovaraPullRequestBody({
+      summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
+      fallbackTitle: task.title, workflow, context: context ?? {}, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
+    });
+  }
   // A structured plan's summary is its top claims; a legacy one's is its first lines (task 18: the same as the plan's
   // Slack message). Either way each line is made inert for GitHub first.
   const summary = (typeof plan === "object" && plan.format === "structured"
@@ -5029,12 +5059,25 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
  * line is one line, redacted and made inert for GitHub. Rewritten after a pushed PR feedback fix, so it is always about
  * the code on the pull request.
  */
-export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot): string[] {
+export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, context?: PullRequestBodyContext): string[] {
+  // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk); version 1's lines are as they were.
+  if (workflow.definitionVersion === "1.1.0") return rovaraStatusLines(workflow, context ?? {}, (listed) => workflowReviewLines(workflow, listed));
   const checks = [...(workflow.checkPolicy?.required ?? []), ...(workflow.checkPolicy?.proposed ?? []), ...(workflow.checkPolicy?.optional ?? [])];
   const passed = (workflow.verification?.results ?? []).filter((result) => result.status === "PASS")
     // A proposed check's label is model-written: one line, redacted and made inert like a plan line, as every label is.
     .map((result) => `${inertPlanLine(redactText(checks.find((check) => check.id === result.checkId)?.label ?? result.checkId).replace(/\s+/gu, " "))} passed`);
   const reviewOnly = workflow.verification?.reviewOnly === true && workflowIsReviewOnly(workflow.checkPolicy);
+  return [
+    ...(reviewOnly ? [] : [`Checks: ${passed.length > 0 ? passed.join(", ") : "none recorded"}`]),
+    ...workflowReviewLines(workflow, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED),
+  ];
+}
+
+/**
+ * The lines about the reviews of the current code: how they went, the findings the owner accepted (at most `listed` of them named) and whether the reviewers saw only part of the change. Each line is one line,
+ * redacted and made inert for GitHub.
+ */
+function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string[] {
   // The issues noted are those nobody had to resolve: the findings the owner accepted are listed on their own.
   const noted = (workflow.reviews ?? []).reduce((count, review) => count + review.findings.filter((finding) => !workflowFindingAccepted(workflow, review.role, finding)).length, 0);
   const reviewWord = (role: "CRITIC" | "SECURITY") => (workflow.reviews ?? []).some((review) => review.role === role
@@ -5042,13 +5085,12 @@ export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot): stri
   const accepted = (workflow.acceptedFindings ?? []).filter((finding) => finding.candidateDigest === workflow.candidate?.digest);
   const partial = workflowReviewsSawPartialDiff(workflow);
   return [
-    ...(reviewOnly ? [] : [`Checks: ${passed.length > 0 ? passed.join(", ") : "none recorded"}`]),
     `Reviews: code review ${reviewWord("CRITIC")}; security review ${reviewWord("SECURITY")}${noted > 0 ? `; ${noted} earlier issue${noted === 1 ? "" : "s"} noted` : ""}`,
     ...(accepted.length === 0 ? [] : [
       `Owner accepted ${accepted.length} review finding${accepted.length === 1 ? "" : "s"}:`,
       // Reviewer text and the owner's reason, each on one line, redacted and made inert for GitHub like a plan line.
-      ...accepted.slice(0, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED).map((finding) => `- [${finding.role === "SECURITY" ? "security" : "code"}] ${inertPlanLine(redactText(finding.text).replace(/\s+/gu, " "))} \u2014 accepted: ${inertPlanLine(redactText(finding.reason).replace(/\s+/gu, " "))}`),
-      ...(accepted.length > WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED ? [`- and ${accepted.length - WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED} more; see the task page`] : []),
+      ...accepted.slice(0, listed).map((finding) => `- [${finding.role === "SECURITY" ? "security" : "code"}] ${inertPlanLine(redactText(finding.text).replace(/\s+/gu, " "))} \u2014 accepted: ${inertPlanLine(redactText(finding.reason).replace(/\s+/gu, " "))}`),
+      ...(accepted.length > listed ? [`- and ${accepted.length - listed} more; see the task page`] : []),
     ]),
     ...(partial ? [PULL_REQUEST_PARTIAL_REVIEW_LINE] : []),
   ];
@@ -5243,8 +5285,12 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (workflow.e2e?.required !== true) await deps.actions.ensureProjectCatalogPointer(deps.orgId, task.project);
   const publication = await workflowPublicationAuthority(deps, task, workflow, approvedPlan, workflow.revision + (ownerRetry ? 1 : 0));
   if (publication === undefined) return "STALE";
-  const title = `AgentX: ${inertTaskTitle(task.title)}`.slice(0, 256);
-  const body = workflowPullRequestBody(task, workflow, approvedPlan, origin.taskPageUrl);
+  // Rovara Code version 2: the description says what changed, how it was tested and how risky it is, and the risk is recorded with the code it was judged on (in the same write that opens the pull request).
+  const rovaraV2 = workflow.definitionVersion === "1.1.0";
+  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task) } : undefined;
+  const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
+  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${inertTaskTitle(task.title)}`.slice(0, 256);
+  const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext);
   const receivedAt = iso(deps);
   const unchanged = {
     ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
@@ -5256,11 +5302,14 @@ export async function startTaskWorkflowPublicationFromSystem(
   // that offered it. An automatic start only checks the task is still where it was read.
   const taskItem: TransactItems[number] = workflow.state === "BLOCKED"
     ? { Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
-      ExpressionAttributeValues: { ":workflow": unblockWorkflowPublication(workflow, receivedAt), ":now": receivedAt, ...at } } }
+      ExpressionAttributeValues: { ":workflow": unblockWorkflowPublication(judged, receivedAt), ":now": receivedAt, ...at } } }
     : ownerRetry
       ? { Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
-        ExpressionAttributeValues: { ":workflow": { ...workflow, revision: workflow.revision + 1, updatedAt: receivedAt }, ":now": receivedAt, ...at } } }
-      : { ConditionCheck: { TableName: deps.tableName, Key: taskKey(taskId), ...unchanged, ExpressionAttributeValues: at } };
+        ExpressionAttributeValues: { ":workflow": { ...judged, revision: workflow.revision + 1, updatedAt: receivedAt }, ":now": receivedAt, ...at } } }
+      // A version 2 task records its risk without moving the revision: it is derived from the very code this write is conditioned on.
+      : judged !== workflow
+        ? { Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow", ...unchanged, ExpressionAttributeValues: { ":workflow": judged, ...at } } }
+        : { ConditionCheck: { TableName: deps.tableName, Key: taskKey(taskId), ...unchanged, ExpressionAttributeValues: at } };
   // The base the task's code was reviewed against is the published commit's parent, which the broker checks on GitHub.
   const baseCommitSha = (workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === repository.repositoryId)?.baseCommitSha;
   // What each extra item below checks, in the same order, for naming the one a cancelled acceptance failed on.
@@ -5360,13 +5409,16 @@ async function startTaskWorkflowPullRequestUpdate(
   if (pullRequest.headSha === undefined || baseCommitSha === undefined) return block();
   const requestId = workflowRequestId("agentx-auto-update", task.taskId, expected.workflowRevision, expected.candidateDigest, repository.repositoryId, 1);
   const receivedAt = iso(deps);
+  // Rovara Code version 2: the code on the pull request changes with this push, so its risk is judged again for the new code, in the write that starts the push.
+  const started = startWorkflowPullRequestUpdate(workflow, receivedAt);
+  const judged = workflow.definitionVersion === "1.1.0" ? recomputeRisk(started, await candidateChangedFiles(deps, task), {}) : started;
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequestUpdate"]>>;
   try {
     accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId, repository: repository.repositoryId, pullRequestNumber: pullRequest.number, action: "append",
     }, (operation) => [
       { Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
-        ExpressionAttributeValues: { ":workflow": startWorkflowPullRequestUpdate(workflow, receivedAt), ":now": receivedAt, ...at } } },
+        ExpressionAttributeValues: { ":workflow": judged, ":now": receivedAt, ...at } } },
       putNew(turnTable(deps), aiToolTurn({
         party: ownerActor === undefined ? partyOfTask(task) : partyOfTaskActor(task, ownerActor), turnId: randomUUID(), action: "pull_request", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
         request: "Push the approved fix to the pull request",

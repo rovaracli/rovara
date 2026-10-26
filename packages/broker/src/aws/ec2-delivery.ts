@@ -520,8 +520,18 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const anchored = withoutCodeAnchors(withNote, features);
-  if (anchored !== withNote) {
+  const withRisk = withoutReviewRisk(withNote, features);
+  if (withRisk !== withNote) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.review_risk_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const anchored = withoutCodeAnchors(withRisk, features);
+  if (anchored !== withRisk) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.code_anchors_omitted",
@@ -643,6 +653,17 @@ function withoutReviewNote(invocation: WorkerInvocation, features: readonly stri
   if (invocation.kind !== "task" || invocation.payload.workflowReviewNote === undefined || features.includes("task.workflowReviewNote")) return invocation;
   const payload = { ...invocation.payload };
   delete payload.workflowReviewNote;
+  return { ...invocation, payload };
+}
+
+/**
+ * A review without the request for a risk level, for a worker that does not parse it. The level is one more input of the risk shown on the pull request; such a worker reviews the same change
+ * as before, and the risk comes from the paths, the size and the checks alone.
+ */
+function withoutReviewRisk(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowReviewRisk === undefined || features.includes("task.workflowReviewRisk")) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowReviewRisk;
   return { ...invocation, payload };
 }
 

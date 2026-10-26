@@ -367,7 +367,7 @@ import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, pl
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { slackRefusalMessage } from "./slack-refusals.js";
-import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
+import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
@@ -489,7 +489,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
@@ -5554,7 +5554,8 @@ async function attributedBody(
   body: string | undefined,
 ): Promise<string | undefined> {
   if (identity.developer) {
-    const footer = developerFooter(identity.developer.name, identity.developer.client);
+    // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
+    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX");
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
   }
@@ -5861,7 +5862,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -5910,6 +5911,7 @@ async function taskOperationParts(
     payloadHash: hashJson({ conversationId: input.conversationId, prompt: input.prompt,
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: input.workflowReviewers }),
+      ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
       ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }) }),
     status: "ACCEPTED",
@@ -6009,6 +6011,7 @@ async function taskOperationParts(
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
+      ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
@@ -6897,7 +6900,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
+  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -6907,6 +6910,7 @@ async function acceptTask(
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
+    ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
     ...(options.workflowDependencies === undefined ? {} : { workflowDependencies: options.workflowDependencies }),
     ...(options.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: options.workflowE2EAdmission }) });
   const idempotencyKey = {
@@ -6960,6 +6964,7 @@ async function acceptTask(
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.programStepId === undefined ? {} : { programStepId: options.programStepId }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
+    ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
     ...(options.retiredClaimIds === undefined ? {} : { retiredClaimIds: options.retiredClaimIds }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
@@ -11421,7 +11426,10 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope)).body;
     const workflow = task.workflow;
     const pushedChecked = workflow.candidate?.digest === candidateDigest && workflow.verification?.candidateDigest === candidateDigest;
-    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow)) : undefined;
+    // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk) for the code now on the pull request; its changed files come from the task's latest workspace diff.
+    const changedFiles = pushedChecked && workflow.definitionVersion === "1.1.0"
+      ? await candidateChangedFiles({ actions: developerTaskActions(dependencies), log: () => undefined }, task) : undefined;
+    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, changedFiles === undefined ? undefined : { changedFiles })) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;
     const fixed = withFeedbackFixes(withStatus, fixes, earlier);
     const next = { ...fixed, ...(fixed.body === undefined && withStatus !== current ? { body: withStatus } : {}) };

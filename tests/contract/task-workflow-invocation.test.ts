@@ -123,6 +123,16 @@ describe("workflow-mode worker invocation", () => {
     expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowReviewers");
   });
 
+  it("asks for the code review's risk level only on review operations, as the literal true (Plan 6 Task 13)", () => {
+    const risk = (workflowReviewRisk: unknown, workflowMode = "REVIEW") => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, workflowMode, workflowReviewRisk } }).success;
+    expect(risk(true)).toBe(true);
+    expect(risk(false)).toBe(false);
+    expect(risk("yes")).toBe(false);
+    expect(risk(true, "IMPLEMENT")).toBe(false);
+    expect(WorkerInvocationSchema.parse(base).payload).not.toHaveProperty("workflowReviewRisk");
+    expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowReviewRisk");
+  });
+
   it("carries the reviewed tree for a pull request update, only as 40 hex on a maintain append", () => {
     const maintain = {
       ...base,

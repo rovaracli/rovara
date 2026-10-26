@@ -332,7 +332,10 @@ export const WorkflowReviewReportSchema = z.object({
   recordedAt: z.string().datetime(),
   /** The base-to-candidate diff the reviewer saw was cut to fit its limit: the review covered only part of the change. */
   partialDiff: z.literal(true).optional(),
+  /** Rovara Code v2: the code reviewer's own risk level for this change (one of three words; the security review states none). Kept only on a 1.1.0 task. */
+  risk: z.enum(["low", "medium", "high"]).optional(),
 }).strict().superRefine((report, context) => {
+  if (report.risk !== undefined && report.role !== "CRITIC") context.addIssue({ code: "custom", path: ["risk"], message: "only the code review states a risk level" });
   const introduced = report.findings.some((finding) => findingBlocks(finding, report.role));
   if (report.status === "PASS" && introduced) context.addIssue({ code: "custom", path: ["findings"], message: "a passing review cannot report an introduced finding" });
   if (report.status === "FINDINGS" && !introduced) context.addIssue({ code: "custom", path: ["findings"], message: "a review with findings must report at least one introduced finding" });
@@ -1307,6 +1310,7 @@ const WorkflowSnapshotShapeSchema = z.object({
     if (workflow.program?.steps.some((step) => step.kind === "plan_critic") === true) {
       context.addIssue({ code: "custom", path: ["program"], message: "a plan check step needs definition version 1.1.0" });
     }
+    if (workflow.reviews?.some((review) => review.risk !== undefined) === true) context.addIssue({ code: "custom", path: ["reviews"], message: "a review's risk level needs definition version 1.1.0" });
   }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
@@ -1589,7 +1593,11 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   // The reviews this step asks for: both without a program, the review step's own reviewers with one.
   const roles = workflowReviewRoles(current);
   if (current.program !== undefined && !roles.includes(report.data.role)) throw new WorkflowTransitionError("review report is not one this step asked for");
-  const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), report.data];
+  // A risk level is a version 2 thing: a version 1 task keeps the review as it was, without one.
+  const { risk: _risk, ...withoutRisk } = report.data;
+  void _risk;
+  const stored = current.definitionVersion === "1.1.0" ? report.data : withoutRisk;
+  const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), stored];
   // A review also stands when the owner accepted every finding that blocked it, for this candidate.
   const complete = roles.every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
   // The reviews that hold the change back, named as the owner knows them, whichever review was recorded last.

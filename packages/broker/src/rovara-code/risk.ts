@@ -1,0 +1,112 @@
+// Rovara Code (Plan 6 Task 13): the risk level of a pull request's code. It comes from defined inputs only: the paths and size of the change, the checks' report, the review findings the owner
+// accepted and the code reviewer's own level (one of three words). No free model text decides it. The highest matching rule wins and every match adds its (fixed) reason.
+//
+// At launch this is deliberately simple. Later (owner, 2026-10-22) it should also weigh how often each file changes, how far a change reaches, each project's own sensitive-path settings
+// and what past reverts of Rovara's merged pull requests teach.
+import { RISK_LARGE_CHANGE_LINES, RiskAssessmentSchema, type RiskAssessment, type VerificationReport } from "@agentx/contracts";
+import { inertLine } from "./inert-text.js";
+
+export type RiskLevel = RiskAssessment["level"];
+
+/**
+ * The paths that make a change high risk. Each pattern is tested against the whole path, lower-cased and written with `/`, so a directory name must be a whole path segment
+ * (`src/author.ts` and `src/diamond.ts` are not `auth` or `iam`). Directory names: migrations, auth, authn, authz, payments, billing, secrets, iam, infra, terraform, cdk and
+ * `.github/workflows`. File patterns: `*.sql`, `*.tf` and `Dockerfile`.
+ */
+export const RISK_SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)(migrations|auth|authn|authz|payments|billing|secrets|iam|infra|terraform|cdk)(\/|$)/,
+  /(^|\/)\.github\/workflows(\/|$)/,
+  /\.(sql|tf)$/,
+  /(^|\/)dockerfile$/,
+];
+
+/** The lock files and manifests whose change is at least medium (matched on the file name). */
+const MANIFEST_NAMES = new Set([
+  "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock",
+  "cargo.toml", "cargo.lock", "go.mod", "go.sum", "pipfile", "pipfile.lock", "poetry.lock", "pyproject.toml", "uv.lock",
+  "gemfile", "gemfile.lock", "composer.json", "composer.lock", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "gradle.lockfile",
+  "mix.exs", "mix.lock", "pubspec.yaml", "pubspec.lock", "packages.lock.json",
+]);
+const MANIFEST_PATTERNS: readonly RegExp[] = [/^requirements[\w.-]*\.txt$/, /\.csproj$/];
+
+const PATHS_LISTED = 3;
+const REASON_MAX = 200;
+const REASONS_MAX = 8;
+const PATH_SHOWN_MAX = 60;
+
+function normalized(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").toLowerCase();
+}
+
+/** Whether a path has a segment (or the workflows folder, or a file name) that makes it sensitive. */
+export function isSensitivePath(path: string): boolean {
+  const value = normalized(path);
+  return RISK_SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function isManifestPath(path: string): boolean {
+  const name = normalized(path).split("/").at(-1) ?? "";
+  return MANIFEST_NAMES.has(name) || MANIFEST_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+/** A changed file as the task's diff lists it; the line counts are the diff's when known. */
+export interface RiskFile {
+  repository: string;
+  path: string;
+  added?: number | undefined;
+  removed?: number | undefined;
+}
+
+export interface RiskInput {
+  /** The files the change touches. */
+  changedFiles: readonly RiskFile[];
+  /** False when the list may be missing files (it could not be read, or was cut): the level is then never low. */
+  changedFilesComplete: boolean;
+  /** What the checks said about this code (Task 12). */
+  report: VerificationReport;
+  /** The review findings the owner accepted for this code. */
+  acceptedFindings: ReadonlyArray<{ role: "CRITIC" | "SECURITY" }>;
+  /** The security findings the review introduced on this code, accepted or not (the accepted list is bounded, so this is a second source). */
+  securityFindings: number;
+  /** The code reviewer's own level for this code, when it gave one. */
+  reviewerRisk?: RiskLevel | undefined;
+  candidateDigest: string;
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+function shown(paths: readonly string[]): string {
+  const listed = paths.slice(0, PATHS_LISTED).map((path) => inertLine(path, PATH_SHOWN_MAX));
+  const more = paths.length - listed.length;
+  return `${listed.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
+}
+
+/** The risk of the change: the highest matching rule wins, and each match adds its reason (at most 8, each at most 200 characters). */
+export function assessRisk(input: RiskInput): RiskAssessment {
+  const high: string[] = [];
+  const medium: string[] = [];
+  const sensitive = [...new Set(input.changedFiles.filter((file) => isSensitivePath(file.path)).map((file) => file.path))];
+  if (sensitive.length > 0) high.push(`Changes sensitive paths: ${shown(sensitive)}.`);
+  if (input.acceptedFindings.some((finding) => finding.role === "SECURITY") || input.securityFindings > 0) high.push("The security review found a problem that the owner accepted.");
+  if (input.reviewerRisk === "high") high.push("The code review rated this change high risk.");
+
+  const lines = input.changedFiles.reduce((total, file) => total + (file.added ?? 0) + (file.removed ?? 0), 0);
+  if (lines > RISK_LARGE_CHANGE_LINES) medium.push(`Changes ${lines} lines, more than ${RISK_LARGE_CHANGE_LINES}.`);
+  if (!input.changedFilesComplete) medium.push("Rovara couldn't list every changed file.");
+  const manifests = [...new Set(input.changedFiles.filter((file) => isManifestPath(file.path)).map((file) => file.path))];
+  if (manifests.length > 0) medium.push(`Changes dependencies or build files: ${shown(manifests)}.`);
+  if (input.report.reviewOnly) medium.push("No automated check applied, so this change was checked by review only.");
+  if (input.report.failed.length > 0) medium.push(`${plural(input.report.failed.length, "check", "checks")} failed on the latest code.`);
+  if (input.report.notChecked.length > 0 && !input.report.reviewOnly) medium.push(`${plural(input.report.notChecked.length, "check", "checks")} could not be run.`);
+  if (input.acceptedFindings.some((finding) => finding.role === "CRITIC")) medium.push("The owner accepted a code review finding.");
+  if (input.reviewerRisk === "medium") medium.push("The code review rated this change medium risk.");
+
+  const level: RiskLevel = high.length > 0 ? "high" : medium.length > 0 ? "medium" : "low";
+  const reasons = [...high, ...medium].map((reason) => reason.slice(0, REASON_MAX));
+  if (reasons.length === 0) reasons.push("A small change with no sensitive paths, dependency changes or open concerns.");
+  return RiskAssessmentSchema.parse({ level, reasons: reasons.slice(0, REASONS_MAX), candidateDigest: input.candidateDigest });
+}
+
+export function riskHeading(level: RiskLevel): "Low" | "Medium" | "High" {
+  return level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
+}

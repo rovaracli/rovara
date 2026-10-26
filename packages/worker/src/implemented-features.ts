@@ -15,4 +15,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
   "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
   "model.route", "task.agentStep", "task.agentRun",
+  // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
+  "task.workflowReviewRisk",
 ] as const satisfies readonly WorkerInvocationFeature[];
