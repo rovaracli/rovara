@@ -24,7 +24,7 @@ function graphFor(taskId: string) {
 }
 
 function fullPlan(taskId: string, latest: string): string {
-  const cleanClaims = [{ id: "1", text: "Users can create and use a greeting service." }];
+  const cleanClaims = [{ id: "1", text: "Users can create and use a greeting service in src/greeting.ts, covered by a test in src/greeting.test.ts." }];
   if (/writing the requirements/i.test(latest)) return planAnswer(planDocument({ title: "Requirements", claims: cleanClaims }));
   if (/writing the design/i.test(latest)) return planAnswer(planDocument({ title: "Design", claims: cleanClaims }));
   return planAnswer(planDocument({ title: "Coding plan", claims: cleanClaims, workBreakdown: graphFor(taskId) }));

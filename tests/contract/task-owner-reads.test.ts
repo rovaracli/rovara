@@ -31,6 +31,9 @@ const ROWS: readonly Row[] = [
   // a take-over (Plan 5 Task 12b): the default payer of a task that recorded none is its creator's (money, as in `paymentOfTask`; the take-over then writes it explicitly), and the
   // creator's task-list row is the one the taker's row is copied from (it calls `ownerFenceOf` for the owner the write is fenced on)
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
+  // Plan 6 Task 11: how many parts of an approved plan may build at once is the room left in the creator's and the organization's workspace counts (the creator's own charge keys), so it reads the creator like the other money reads; it never grants authority
+  ["aws/developer-tasks.ts", "partsSettingOf", "money", ".developerId", ".slackUserId"],
+  ["rovara-code/parallel-parts.ts", "parallelPartsForTask", "money", ".developerId", ".slackUserId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
   // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
