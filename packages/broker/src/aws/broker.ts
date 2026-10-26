@@ -5955,6 +5955,7 @@ async function criticModelOfStep(
     project: { name: workspace.projectName, approved }, guardrails,
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
     unusable: history.models,
+    lastAttempt: history.sinceLatestPlan + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
   });
   if ("refuse" in chosen) throw chosen.refuse;
   if ("unavailable" in chosen) throw new PlanCheckUnavailableError();
