@@ -209,7 +209,7 @@ describe("how an Answered task reads everywhere else", () => {
     expect(String(put.sk)).toMatch(/answered/u);
     expect(items.length).toBe(2);
     // The same task gives the same milestone key every time, so a repeat of the end can't write a second one.
-    const key = (list: typeof items) => JSON.stringify(list.map((item) => [item.Put?.Item?.pk, item.Put?.Item?.sk]));
+    const key = (list: typeof items): string => JSON.stringify(list.map((item): unknown[] => [item.Put?.Item?.pk as unknown, item.Put?.Item?.sk as unknown]));
     expect(key(answeredMilestoneItems({ tableName: "state" }, task, answered(), LATER))).toBe(key(items));
     expect(answeredMilestoneItems({ tableName: "state" }, task, running(), LATER)).toEqual([]);
     expect(ANSWERED_MILESTONE_TEXT).not.toMatch(/[<>]/u);
