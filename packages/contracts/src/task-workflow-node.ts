@@ -5,6 +5,7 @@ import {
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
 import type { WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
+import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_STAGES, WorkflowDecisionRecordSchema, } from "./task-workflow.js";
 import { ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -2124,6 +2125,144 @@ export function returnWorkflowToImplementation(
   });
 }
 
+declare const wholeTaskSpendBrand: unique symbol;
+/**
+ * Model spend, in US dollars, of the WHOLE task so far (planning, every coding run, checks and reviews, from the task's cost records), not of the current plan version or round. The
+ * automatic-fixing cap is per task, so a number that counts less lets automatic fixing spend past it. The brand makes a caller say so through `wholeTaskSpendUsd`.
+ */
+export type WholeTaskSpendUsd = number & { readonly [wholeTaskSpendBrand]: true };
+export function wholeTaskSpendUsd(usd: number): WholeTaskSpendUsd {
+  return usd as WholeTaskSpendUsd;
+}
+/** The money inputs of one more automatic round. All three are required by the policy and by the guard functions below. */
+export interface WorkflowAutoSpend {
+  /** Whole-task spend so far. */
+  spentUsd: WholeTaskSpendUsd;
+  /** The estimate of one more round. */
+  roundEstimateUsd: number;
+  /** The most automatic fixing may spend on one task (default 15). */
+  capUsd: number;
+}
+/**
+ * Why one more automatic round is not allowed by the money: `inputs-missing` when any number is absent or not a finite, non-negative number (never read as zero), `spend-cap` when
+ * spent plus the estimate is over the cap. Undefined when it fits. Used by the policy and held again by the two guard functions.
+ */
+export function workflowAutoSpendRefusal(spend: Partial<WorkflowAutoSpend> | undefined): "inputs-missing" | "spend-cap" | undefined {
+  const numbers = [spend?.spentUsd, spend?.roundEstimateUsd, spend?.capUsd];
+  if (!numbers.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return "inputs-missing";
+  return (spend?.spentUsd as number) + (spend?.roundEstimateUsd as number) > (spend?.capUsd as number) ? "spend-cap" : undefined;
+}
+
+/**
+ * The request ID of one automatic action on one workflow revision. It depends only on the task, the revision the action was decided on and the kind of action, so a repeated trigger
+ * (a recovered dispatch, the reconciler running again) reaches the idempotency check with the same key, and only one of two writers on the same revision can win.
+ */
+export function workflowAutoActionRequestId(taskId: string, revision: number, action: "AUTO_FIX" | "AUTO_RETRY"): string {
+  return workflowRequestId("autofix", taskId, revision, action);
+}
+
+/** How many automatic actions a workflow's decisions already hold, for the automatic limits. Derived from the decisions only: nothing else is stored. */
+export interface WorkflowAutoFixCounts {
+  /** Automatic send backs recorded since the plan's last approval. */
+  sendBacksSincePlanApproval: number;
+  /** Automatic send backs and retries in the whole task. */
+  actions: number;
+  /** Automatic retries recorded for this stage and this candidate (undefined: a stage with no candidate yet). */
+  retriesFor: (stage: (typeof WORKFLOW_AUTO_STAGES)[number], candidateDigest: string | undefined) => number;
+}
+
+export function workflowAutoFixCounts(decisions: readonly WorkflowDecision[]): WorkflowAutoFixCounts {
+  let lastApproval = -1;
+  decisions.forEach((decision, index) => { if (decision.decision === "APPROVE" && (decision.source ?? "GATE") === "GATE") lastApproval = index; });
+  const automatic = decisions.map((decision, index) => ({ decision, index })).filter(({ decision }) => decision.source === "AUTO_FIX" || decision.source === "AUTO_RETRY");
+  return {
+    sendBacksSincePlanApproval: automatic.filter(({ decision, index }) => decision.source === "AUTO_FIX" && index > lastApproval).length,
+    actions: automatic.length,
+    retriesFor: (stage, candidateDigest) => automatic.filter(({ decision }) => decision.source === "AUTO_RETRY" && decision.auto?.stage === stage
+      && decision.auto.candidateDigest === candidateDigest).length,
+  };
+}
+
+/** Block reasons only a person can resolve: sending the work back to coding never helps, so the broker never does it on its own. */
+function personOnlyBlock(blockReason: string | undefined): boolean {
+  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE
+    || [WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX]
+      .some((prefix) => blockReason?.startsWith(prefix) === true);
+}
+
+/**
+ * The broker, by itself, sends blocked checks or reviews back to coding (automatic fixing). It records a REQUEST_CHANGES decision by the AGENTX actor with source AUTO_FIX and is
+ * otherwise the same move as the owner's Send back. It is a different function on purpose: it can only make this one move, from a blocked VERIFY or REVIEW, and never approves, skips,
+ * rejects, publishes or acts in a plan review or a pull request. It holds the limits itself (2 per approved plan version, 6 automatic actions in all), so the policy cannot be bypassed,
+ * and it refuses a stale revision. It also refuses when the whole-task spend plus one more round is over the cap or any money input is missing (`workflowAutoSpendRefusal`). The request ID is derived (`workflowAutoActionRequestId`): the same call again, on the same revision, returns the workflow as it already is.
+ * Whether to call it is the policy's decision (`autoFixDecision`); the owner pressing Send back first makes this one fail with an out-of-date revision.
+ */
+export function returnWorkflowToImplementationAutomatically(
+  currentInput: unknown,
+  input: { expectedRevision: number; reason: string; spend: WorkflowAutoSpend; now: string },
+): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const requestId = workflowAutoActionRequestId(current.taskId, input.expectedRevision, "AUTO_FIX");
+  const prior = current.decisions.find((decision) => decision.requestId === requestId);
+  if (prior !== undefined) {
+    if (prior.source === "AUTO_FIX" && prior.workflowRevision === input.expectedRevision) return current;
+    throw new WorkflowTransitionError("request ID was already used for a different workflow decision");
+  }
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("the workflow changed since this was decided; it is out of date");
+  if (current.state !== "BLOCKED" || (current.stage !== "VERIFY" && current.stage !== "REVIEW")) {
+    throw new WorkflowTransitionError("only blocked checks or reviews are sent back to coding automatically");
+  }
+  if ((current.pullRequests?.length ?? 0) > 0) throw new WorkflowTransitionError("a pull request is already open for part of this change; a person decides what happens next");
+  if (personOnlyBlock(current.blockReason)) throw new WorkflowTransitionError("this block needs a person; new code does not fix it");
+  if (current.decisions.length >= 100) throw new WorkflowTransitionError("workflow decision history is full");
+  const counts = workflowAutoFixCounts(current.decisions);
+  if (counts.sendBacksSincePlanApproval >= WORKFLOW_AUTO_SEND_BACK_LIMIT) throw new WorkflowTransitionError("the automatic send back limit for this plan is reached");
+  if (counts.actions >= WORKFLOW_AUTO_ACTION_LIMIT) throw new WorkflowTransitionError("the automatic action limit for this task is reached");
+  if (workflowAutoSpendRefusal(input.spend) !== undefined) throw new WorkflowTransitionError("the whole-task spend is unknown or over the automatic fixing cap");
+  const decision = WorkflowDecisionRecordSchema.parse({
+    requestId, workflowRevision: current.revision, decision: "REQUEST_CHANGES", actorId: WORKFLOW_AGENTX_ACTOR_ID, actorRole: "AGENTX",
+    reason: input.reason.trim().slice(0, 500), source: "AUTO_FIX",
+    auto: { stage: current.stage, ...(current.candidate === undefined ? {} : { candidateDigest: current.candidate.digest }) }, at: input.now,
+  });
+  const { blockReason: _blockReason, ...unblocked } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({
+    ...unblocked, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY",
+    decisions: [...current.decisions, decision], updatedAt: input.now,
+  });
+}
+
+/**
+ * The decision that records one automatic retry of a blocked stage (AUTO_RETRY), for the broker to append in the same write that runs the retry (the existing Retry route for that
+ * stage). Refuses a stale revision, a stage that is not the blocked one, and a second automatic retry of the same stage for the same candidate, and holds the 6-action limit. The same
+ * call again on the same revision returns the decision already recorded (`current.decisions` holds it): the caller must not append it twice.
+ */
+export function workflowAutomaticRetryDecision(
+  currentInput: unknown,
+  input: { expectedRevision: number; stage: (typeof WORKFLOW_AUTO_STAGES)[number]; reason: string; spend: WorkflowAutoSpend; now: string },
+): WorkflowDecision {
+  const current = validSnapshot(currentInput);
+  const requestId = workflowAutoActionRequestId(current.taskId, input.expectedRevision, "AUTO_RETRY");
+  const prior = current.decisions.find((decision) => decision.requestId === requestId);
+  if (prior !== undefined) {
+    if (prior.source === "AUTO_RETRY" && prior.workflowRevision === input.expectedRevision && prior.auto?.stage === input.stage) return prior;
+    throw new WorkflowTransitionError("request ID was already used for a different workflow decision");
+  }
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("the workflow changed since this was decided; it is out of date");
+  if (current.state !== "BLOCKED" || current.stage !== input.stage) throw new WorkflowTransitionError("only the blocked stage is retried automatically");
+  if (personOnlyBlock(current.blockReason)) throw new WorkflowTransitionError("this block needs a person; a retry does not fix it");
+  if (current.decisions.length >= 100) throw new WorkflowTransitionError("workflow decision history is full");
+  const counts = workflowAutoFixCounts(current.decisions);
+  if (counts.retriesFor(input.stage, current.candidate?.digest) >= WORKFLOW_AUTO_RETRY_LIMIT) throw new WorkflowTransitionError("this stage was already retried automatically for this code");
+  if (counts.actions >= WORKFLOW_AUTO_ACTION_LIMIT) throw new WorkflowTransitionError("the automatic action limit for this task is reached");
+  if (workflowAutoSpendRefusal(input.spend) !== undefined) throw new WorkflowTransitionError("the whole-task spend is unknown or over the automatic fixing cap");
+  return WorkflowDecisionRecordSchema.parse({
+    requestId, workflowRevision: current.revision, decision: "REQUEST_CHANGES", actorId: WORKFLOW_AGENTX_ACTOR_ID, actorRole: "AGENTX",
+    reason: input.reason.trim().slice(0, 500), source: "AUTO_RETRY",
+    auto: { stage: input.stage, ...(current.candidate === undefined ? {} : { candidateDigest: current.candidate.digest }) }, at: input.now,
+  });
+}
+
 /**
  * The code each repository's pull request holds, by repository, for judging whether an approved fix changed anything:
  * GitHub's tree for its head as recorded, whatever the pull request's state; else, for a pull request recorded without one,
@@ -2581,4 +2720,4 @@ export function decideWorkflow(
 
 export { workflowCheckCommandText } from "./workflow-check-input.js";
 
-export { ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+export { ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowDecisionRecordSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_STAGES, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_ACTION_LIMIT, WorkflowAutoActionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";

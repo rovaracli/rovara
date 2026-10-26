@@ -31,4 +31,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowParallelParts",
   // Plan 6 Task 17: a merge of the base branch into a workflow task's pull request branch, and a conflict round's fix pushed as a merge commit.
   "maintain.workflowSync",
+  // Mainline #408: the plan dry run (a coding plan's proposed checks tried on the unchanged code; the executor monitor withholds it on a host without the executor image) and the grounding round (T7a/T7b).
+  "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];
