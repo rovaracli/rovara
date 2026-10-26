@@ -126,7 +126,7 @@ function readCommands(value: unknown): CommandResult {
  * cases and digits are all treated as tokens and left out.
  */
 const TOKEN_LIKE_NAME = new RegExp(
-  String.raw`(?:^|[^A-Za-z0-9])(?:gh[pousr]_|github_pat_|AKIA[0-9A-Z]{8}|ASIA[0-9A-Z]{8}|AIza|sk-|sk_(?:live|test)_|rk_(?:live|test)_|pk_(?:live|test)_|xox[abprs]-|glpat-|npm_|pypi-|shpat_|hf_|dop_v1_|ya29\.|eyJ)[A-Za-z0-9_\-.]{4,}`,
+  String.raw`(?:^|[^A-Za-z0-9])(?:gh[pousr]_|github_pat_|AKIA[0-9A-Z]{8}|ASIA[0-9A-Z]{8}|AIza|sk-|sk_(?:live|test)_|rk_(?:live|test)_|pk_(?:live|test)_|xox[abprs]-|glpat-|npm_|pypi-|shpat_|hf_|dop_v1_|dckr_pat_|ya29\.|eyJ)[A-Za-z0-9_\-.]{4,}`,
 );
 export function looksLikeToken(name: string): boolean {
   if (redactText(name) !== name || TOKEN_LIKE_NAME.test(name)) return true;
