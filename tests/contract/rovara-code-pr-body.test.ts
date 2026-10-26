@@ -1170,6 +1170,14 @@ describe("technical text in a version 2 description stays as it is", () => {
     expect(full).toContain("git checkout feature-2");
     expect(full).not.toContain("\u200D");
   });
+
+  it("keeps the joiner it puts in a name that holds a magic word and a key, in the block and in a risk reason (it is not inerted a second time into a space)", () => {
+    const files = [file("db/migrations/Fixes-ENG-1.sql")];
+    const body = workflowPullRequestStatusLines(workflowWith(), context({ linearIssueKey: "ENG-142", changedFiles: { files, complete: true } })).join("\n");
+    expect(body).toContain("Changes sensitive paths: db/migrations/F\u200Dixes-ENG-1.sql");
+    expect(body).not.toContain("F ixes");
+    expect(readable(body)).toEqual(["Fixes ENG-142"]);
+  });
 });
 
 describe("a pull request's title names no issue", () => {
