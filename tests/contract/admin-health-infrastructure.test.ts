@@ -205,6 +205,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/milestones.ts", "packages/broker/src/rovara-code/duration.ts", "packages/broker/src/rovara-code/setup-draft.ts", "packages/broker/src/rovara-code/head-index.ts",
       // Rovara Code (Plan 6 Task 15): what CI said, kept for the coding run of the fix round that started with it (30 days, then the TTL deletes it); only ci-fix.ts writes and reads it.
       "packages/broker/src/rovara-code/ci-fix.ts",
+      // Rovara Code (Plan 6 Task 16): the replies a landed push of an automatic comment fix left to send (30 days, then the TTL deletes them); only feedback-autonomy.ts writes and sends them.
+      "packages/broker/src/rovara-code/feedback-autonomy.ts",
       // Rovara Code (Plan 6 Task 18): the record that a review reminder was sent (and when the next may be), kept for the waiting window (REVIEW_WAIT_RETENTION_DAYS), then the TTL deletes it; only nudges.ts writes and reads it.
       "packages/broker/src/rovara-code/nudges.ts",
     ]);

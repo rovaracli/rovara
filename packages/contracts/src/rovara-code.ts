@@ -373,6 +373,41 @@ export const WorkflowBranchSyncSchema = z
   .strict();
 export type WorkflowBranchSync = z.infer<typeof WorkflowBranchSyncSchema>;
 
+// ---- fixing review comments under autonomy (Plan 6 Task 16)
+
+/** The id Rovara records its own automatic decisions under (never a person's id: a person's is 64 hex characters). */
+export const FEEDBACK_AUTONOMY_ACTOR_ID = "rovara";
+/** How far Rovara may go on its own with feedback: only `prepare` and `run` fix a round without asking (`suggest` asks about everything). */
+export const FeedbackAutonomyLevelSchema = z.enum(["prepare", "run"]);
+/** What an automatic decision is bound to: the autonomy it was made under and the digest of the recipe that said so, so a task whose agent or autonomy changed does not keep an old go-ahead. */
+export const WorkflowFeedbackAutonomySchema = z.object({ level: FeedbackAutonomyLevelSchema, recipeDigest: Sha256Schema.optional() }).strict();
+export type WorkflowFeedbackAutonomy = z.infer<typeof WorkflowFeedbackAutonomySchema>;
+/** The most failing checks a waiting feedback card names. */
+export const FEEDBACK_CI_CHECKS_MAX = CI_FAILED_JOBS_MAX;
+/**
+ * The failing checks shown on the owner's feedback card while it waits (and so part of what the owner's, or Rovara's, decision is bound to). `digest` is the digest of the sorted names;
+ * `evidenceRevision` is the workflow revision under which the log tails were kept (`CI_EVIDENCE#<revision>`).
+ */
+export const FeedbackCiFailuresSchema = z
+  .object({ checks: z.array(z.string().trim().min(1).max(200)).min(1).max(FEEDBACK_CI_CHECKS_MAX), digest: Sha256Schema, evidenceRevision: z.number().int().positive() })
+  .strict();
+export type FeedbackCiFailures = z.infer<typeof FeedbackCiFailuresSchema>;
+
+/** Why a round Rovara decided was not run: what it was decided on (who wrote the comments, how far Rovara may go) changed before the run started. A Retry is the owner's own go-ahead. */
+export const FEEDBACK_NOT_RUN_REASON = "Rovara didn't fix the review comments: who wrote the review comments or how far Rovara may go on its own changed since it decided. Retry to fix them anyway, or take over.";
+
+/** Why a round Rovara decided stopped part-way: the company lowered how far agents may act on their own while it ran, so no further paid step starts and nothing more is pushed. */
+export const FEEDBACK_STOPPED_REASON = "Rovara stopped fixing the review comments: how far Rovara may go on its own was lowered since it started. Nothing more was changed or pushed. You can take over from here.";
+
+/** What the thread and the task view say of a round Rovara decided itself. */
+export function feedbackDecidedByText(level: "prepare" | "run"): string {
+  return `Decided by Rovara (autonomy: ${level})`;
+}
+/** The reply Rovara leaves once on each review thread it fixed, naming the commit that holds the fix. */
+export function feedbackFixedReply(commit: string): string {
+  return `Fixed in ${commit.slice(0, 7)}.`;
+}
+
 // ---- merge tracking
 
 /** The separate item that holds what GitHub says about one pull request of a task (`DEVTASK#<taskId>` / `MERGE_TRACKING#<repositoryId>#<number>`). `decisionDigest` hashes every field but `observedAt`, `version` and itself. */

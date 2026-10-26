@@ -1,6 +1,6 @@
 import { DigestSchema } from "./workflow-dependencies.js";
 import {
-  ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, SYNC_BACKOFF_MINUTES, isBranchSyncGiveUpReason, type BranchSyncReason, type WorkflowBranchSync, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
+  ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, SYNC_BACKOFF_MINUTES, isBranchSyncGiveUpReason, type BranchSyncReason, type WorkflowBranchSync, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackAutonomySchema, type FeedbackCiFailures, type WorkflowFeedbackAutonomy,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
@@ -1219,6 +1219,17 @@ export function abandonWorkflowFix(currentInput: unknown, now: string): Workflow
 }
 
 /**
+ * A round Rovara decided itself (Plan 6 Task 16) stops where it is, with `reason`, because the autonomy it ran under was lowered: the workflow is blocked at the step it was at, so nothing more is run,
+ * paid for or pushed. Before the push (PULL_REQUEST, which only a ready fix may be at) it waits for the merge, blocked, with the pull requests as they were, the fix's marks gone. The rounds stay counted.
+ */
+export function stopWorkflowFeedbackRound(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.fixSource !== "feedback" || current.feedbackDecisions?.at(-1)?.actorRole !== "ROVARA_AUTONOMY") throw new WorkflowTransitionError("no round Rovara decided itself is running");
+  if (current.stage !== "PULL_REQUEST") return blockWorkflow(current, reason, now);
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now });
+}
+
+/**
  * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
  * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
  */
@@ -1445,7 +1456,7 @@ export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   const history = [...(current.feedbackReviewHistory ?? [])];
   if (previousReport && !history.some(r => r.sha256 === previousReport.sha256)) history.push(previousReport);
   return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, feedback: undefined,
-    feedbackReview: collected.data, feedbackReviewHistory: history, feedbackDispatchApproval: undefined, updatedAt: now });
+    feedbackReview: collected.data, feedbackReviewHistory: history, feedbackDispatchApproval: undefined, feedbackCiFailures: undefined, updatedAt: now });
 }
 
 /** Registers immutable reconciled inputs and a separate AI advisory report; never starts code. */
@@ -1522,14 +1533,64 @@ export function retryWorkflowFeedbackReview(currentInput: unknown, input: {
     feedbackReviewHistory: history, updatedAt: input.now });
 }
 
-/** Requires fresh bindings supplied by the reconciler; dispatch must independently reconcile again. */
+/** The digest of a set of failing checks' names (sorted, so the order they were seen in does not matter). */
+export function feedbackCiFailuresDigest(checks: readonly string[]): string {
+  return createHash("sha256").update(JSON.stringify([...new Set(checks)].sort()), "utf8").digest("hex");
+}
+
+/** The failing checks the owner's card shows: only while a complete review waits for a decision. */
+export function feedbackCardCiFailures(workflow: Pick<WorkflowSnapshot, "feedbackReview" | "feedbackCiFailures">): FeedbackCiFailures | undefined {
+  const review = workflow.feedbackReview;
+  return review?.status === "PENDING" && review.reviewRef.status === "COMPLETE" ? workflow.feedbackCiFailures : undefined;
+}
+
+/**
+ * CI fails (or stops failing) while the owner's feedback card waits (Plan 6 Task 16): the failing checks are added to the card, or taken off it. Nothing is fixed by this; it changes what the
+ * decision is bound to (the workflow's revision moves, so a decision made against the card as it was is refused), and the decision that follows carries the failures into the same round. Only
+ * while the card waits: after a decision nothing is added. No names clears the card's failures. A change that is no change is refused.
+ */
+export function recordWorkflowFeedbackCiFailures(currentInput: unknown, input: { checks: readonly string[]; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const review = current.feedbackReview;
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || review?.status !== "PENDING" || review.reviewRef.status !== "COMPLETE") {
+    throw new WorkflowTransitionError("no feedback card is waiting for a decision");
+  }
+  const names = z.array(z.string().trim().min(1).max(200)).max(FEEDBACK_CI_CHECKS_MAX).safeParse([...new Set(input.checks)].sort());
+  if (!names.success) throw new WorkflowTransitionError("the failing checks are invalid");
+  if (names.data.length === 0) {
+    if (current.feedbackCiFailures === undefined) throw new WorkflowTransitionError("the card names no failing checks");
+    const { feedbackCiFailures: _cleared, ...rest } = current;
+    void _cleared;
+    return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, updatedAt: input.now });
+  }
+  const digest = feedbackCiFailuresDigest(names.data);
+  if (current.feedbackCiFailures?.digest === digest) throw new WorkflowTransitionError("the card already names these failing checks");
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, feedbackCiFailures: { checks: names.data, digest, evidenceRevision: current.revision + 1 }, updatedAt: input.now });
+}
+
+/** Who decides a feedback round: the task's owner, or Rovara itself under the autonomy its recipe gives (only its own approval of an actionable round, counted). */
+export type WorkflowFeedbackActor =
+  | { actorId: string; role: "TASK_OWNER" | "PROJECT_ADMIN" }
+  | { actorId: typeof FEEDBACK_AUTONOMY_ACTOR_ID; role: "ROVARA_AUTONOMY"; autonomy: WorkflowFeedbackAutonomy };
+
+/**
+ * Requires fresh bindings supplied by the reconciler; dispatch must independently reconcile again.
+ * Rovara's own decision (`ROVARA_AUTONOMY`, Plan 6 Task 16) can only approve, with no note, under `FEEDBACK_AUTO_ROUNDS_MAX`: it counts as a round, marks the fix as a feedback fix, and does not carry
+ * the earlier code's review rounds over. A person's decision is never counted.
+ */
 export function decideWorkflowFeedbackFindings(currentInput: unknown, input: {
   requestId: string; expectedRevision: number; reviewDigest: string; proposalDigest: string;
   bundleDigests: string[]; selectedFindingIds: string[]; decision: "APPROVE" | "REQUEST_CHANGES" | "DISMISS"; ownerNote?: string;
-}, actor: { actorId: string; role: "TASK_OWNER" | "PROJECT_ADMIN" }, now: string, authority?: WorkflowOwnerAuthority): WorkflowSnapshot {
+}, actor: WorkflowFeedbackActor, now: string, authority?: WorkflowOwnerAuthority): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   const review = current.feedbackReview;
-  if (actor.role !== "TASK_OWNER" || !workflowOwnerAuthorized(current.ownerId, actor.actorId, authority)) {
+  const byRovara = actor.role === "ROVARA_AUTONOMY";
+  if (actor.role === "ROVARA_AUTONOMY") {
+    if (actor.actorId !== FEEDBACK_AUTONOMY_ACTOR_ID || input.decision !== "APPROVE" || input.ownerNote !== undefined || workflowFixRoundsLeft(current, "feedback") <= 0
+      || WorkflowFeedbackAutonomySchema.safeParse(actor.autonomy).success === false) {
+      throw new WorkflowTransitionError("Rovara can only approve a feedback round on its own, with the rounds it has left");
+    }
+  } else if (actor.role !== "TASK_OWNER" || !workflowOwnerAuthorized(current.ownerId, actor.actorId, authority)) {
     throw new WorkflowTransitionError("only the task owner can decide PR feedback findings");
   }
   if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || current.revision !== input.expectedRevision
@@ -1552,12 +1613,14 @@ export function decideWorkflowFeedbackFindings(currentInput: unknown, input: {
   const affected = review.bundleRefs.filter(b => selected.some(f => f.bundleDigest === b.sha256));
   const decision = WorkflowFeedbackDecisionSchema.safeParse({
     schemaVersion: 1, requestId: input.requestId, workflowRevision: current.revision,
-    decision: input.decision, actorId: actor.actorId, actorRole: "TASK_OWNER", reviewDigest: input.reviewDigest,
+    decision: input.decision, actorId: actor.actorId, actorRole: actor.role === "ROVARA_AUTONOMY" ? "ROVARA_AUTONOMY" : "TASK_OWNER", reviewDigest: input.reviewDigest,
     proposalDigest: input.proposalDigest, bundleDigests: input.bundleDigests, selectedFindingIds: input.selectedFindingIds,
     selectedCommentIds: [...new Set(selected.flatMap(f => f.commentIds))],
     candidates: affected.map(b => ({ repositoryId: b.repositoryId, number: b.number, headSha: b.headSha,
       candidateDigest: b.candidateDigest, commentSetDigest: b.commentSetDigest, bundleDigest: b.sha256 })),
     ...(input.ownerNote === undefined ? {} : { ownerNote: input.ownerNote }), at: now,
+    ...(actor.role === "ROVARA_AUTONOMY" ? { autonomy: actor.autonomy } : {}),
+    ...(feedbackCardCiFailures(current) === undefined ? {} : { ciFailures: feedbackCardCiFailures(current) }),
   });
   if (!decision.success) throw new WorkflowTransitionError("feedback finding decision is invalid");
   const notes = current.feedbackNotes ?? [];
@@ -1571,10 +1634,16 @@ export function decideWorkflowFeedbackFindings(currentInput: unknown, input: {
   const pullRequests = input.decision !== "APPROVE" ? current.pullRequests : current.pullRequests?.map(pr => pr.headTreeSha !== undefined
     || pr.candidateDigest !== current.candidate?.digest ? pr
     : { ...pr, headTreeSha: current.candidate.repositories.find(repo => repo.repositoryId === pr.repositoryId)?.treeSha });
-  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, ...(pullRequests === undefined ? {} : { pullRequests }),
+  // Rovara's own round is a fix like the others: it is marked, counted, and starts its review rounds from none (the third would otherwise block on the engine's never-reset counter).
+  const { programRounds: _rounds, feedbackCiFailures: _ci, ...base } = current;
+  void _rounds;
+  void _ci;
+  const rounds = workflowFixRounds(current);
+  return WorkflowSnapshotSchema.parse({ ...(byRovara ? base : { ...current, feedbackCiFailures: undefined }), revision: current.revision + 1, ...(pullRequests === undefined ? {} : { pullRequests }),
     ...(input.decision === "APPROVE" ? { stage: "IMPLEMENT", state: "READY",
       // A fix to an open pull request goes through the program's last build, then its checks and reviews again.
       ...(current.program === undefined ? {} : { programStepId: programBuildAtOrBefore(current.program, current.program.steps.length - 1).id }) } : {}),
+    ...(byRovara ? { fixSource: "feedback" as const, fixRounds: { ...rounds, feedbackAuto: rounds.feedbackAuto + 1 } } : {}),
     feedbackReview: { ...review, status: input.decision === "APPROVE" ? "APPROVED" : input.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "DISMISSED" },
     feedbackDecisions: [...(current.feedbackDecisions ?? []), decision.data], feedbackNotes, updatedAt: now,
   });

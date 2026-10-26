@@ -62,6 +62,8 @@ export function assessWorkflowRisk(workflow: WorkflowSnapshot, read: ChangedFile
     changedFiles: files, changedFilesComplete: read?.complete === true, report: verificationReport(workflow, files, project),
     acceptedFindings: (workflow.acceptedFindings ?? []).filter((finding) => finding.candidateDigest === digest).map((finding) => ({ role: finding.role })),
     securityFindings, ...(reviewerRisk === undefined ? {} : { reviewerRisk }), candidateDigest: digest,
+    // A change made as a fix (CI, a conflict or comments) is judged for hiding the failure it was asked to fix.
+    ...(workflow.fixSource === undefined ? {} : { fix: true }),
   });
 }
 

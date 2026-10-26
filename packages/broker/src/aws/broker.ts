@@ -101,6 +101,7 @@ import {
   completeWorkflowFeedbackReview,
   createCandidateManifest,
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
+  FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
@@ -530,14 +531,15 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, wakeTrackingRow, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
 import type { CodeMergeHost } from "../rovara-code/merge.js";
-import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
+import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../rovara-code/ci-fix.js";
 import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
+import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -737,7 +739,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "getRepositoryStanding" | "replyToReviewThread" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -11163,8 +11165,12 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }, task);
   // The owner's decision counts while they are the owner: the creator's, if it was decided before someone took the task over (by the decision's own stored time, never the
   // time it runs), and the taker's after (Plan 5 Task 12a, R3-6).
-  const authorizedActor = access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
-    : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
+  // A decision Rovara made itself (Plan 6 Task 16) is not the owner's, so the owner rule does not apply to it. It holds only while the task's autonomy still allows it (read now, from the frozen recipe the
+  // decision was bound to) and every person whose comment is in the round still has write access on GitHub (read now).
+  const authorizedActor = decision.actorRole === "ROVARA_AUTONOMY"
+    ? (access === undefined || access.status === "ALLOWED") && await autonomyStillHoldsFor(dependencies, task, input)
+    : access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
+      : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
   if (!authorizedActor) throw agentXError("STALE_FENCE", "the owner-approved PR feedback is no longer current");
 
   const finalPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
@@ -11210,6 +11216,26 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }
 }
 
+/** How far the company allows agents to act on their own, now (its guardrails' `maxAutonomy`); an unreadable document throws, which the callers read as `suggest`. */
+async function companyAutonomyLimit(dependencies: AwsBrokerDependencies, orgId: OrgId): Promise<"suggest" | "prepare" | "run"> {
+  return (await readGuardrails(dependencies, orgId)).maxAutonomy;
+}
+
+/** What the worker-start check reads, wired to the broker's live stores (Plan 6 Task 16). */
+function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
+  const orgId = task.orgId;
+  const github = dependencies.githubPullRequests;
+  return autonomyStillHolds({
+    autonomy: () => orgId === undefined ? Promise.resolve({ autonomy: "suggest" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, orgId), undefined, () => companyAutonomyLimit(dependencies, orgId)),
+    repositoryUrl: (repositoryId) => orgId === undefined ? Promise.resolve(undefined) : webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId),
+    standing: github.getRepositoryStanding !== undefined && orgId !== undefined
+      ? (url, login) => github.getRepositoryStanding!(url, login, githubScope(dependencies, orgId))
+      : github.getRepositoryPermission !== undefined && orgId !== undefined
+        ? async (url, login) => ({ permission: await github.getRepositoryPermission!(url, login, githubScope(dependencies, orgId)) })
+        : undefined,
+  }, task, binding);
+}
+
 function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, operation: OperationRecord | undefined,
   input: WorkflowFeedbackApprovalBinding): NonNullable<NonNullable<DeveloperTaskRecord["workflow"]>["feedbackDecisions"]>[number] | undefined {
   const workflow = task?.workflow;
@@ -11230,7 +11256,8 @@ function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, 
     || review.bundleRefs.some(ref => !activePullRequests.some(pr => pr.repositoryId === ref.repositoryId && pr.number === ref.number
       && pr.headSha === ref.headSha && pr.candidateDigest === ref.candidateDigest
       && workflow.candidate?.repositories.some(repo => repo.repositoryId === ref.repositoryId && repo.treeSha === ref.headTreeSha)))
-    || decision?.decision !== "APPROVE" || decision.actorRole !== "TASK_OWNER"
+    || decision?.decision !== "APPROVE"
+    || !feedbackApprovalMatchesDecision(decision, input)
     || decision.workflowRevision !== input.decisionWorkflowRevision || decision.reviewDigest !== input.reviewDigest
     || decision.proposalDigest !== input.proposalDigest || JSON.stringify(decision.bundleDigests) !== JSON.stringify(input.bundleDigests)
     || JSON.stringify(decision.selectedFindingIds) !== JSON.stringify(input.selectedFindingIds)
@@ -12891,6 +12918,20 @@ function headEventDependencies(dependencies: AwsBrokerDependencies): HeadEventDe
   };
 }
 
+/**
+ * Whether the stored review of a task's feedback is sound enough for Rovara to decide it itself (Plan 6 Task 16): the report and comments read and checked as the owner's card reads them. An
+ * unreadable record throws; the tracking pass then leaves the round to the owner.
+ */
+async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies, taskId: string): Promise<boolean> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (task?.workflow === undefined || dependencies.developer === undefined) return false;
+  const routeDependencies = developerTaskRouteDependencies({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
+    now: Date.now, tasks: developerTaskActions(dependencies),
+  }, await ownerCallerOf(dependencies, task, "workflow-feedback-autonomy"), undefined, null);
+  return await planAutomaticFeedbackRound(routeDependencies, task) !== undefined;
+}
+
 /** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
 function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
   const github = dependencies.githubPullRequests;
@@ -12900,14 +12941,26 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     github: {
       getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
       getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
+      ...(github.getRepositoryStanding === undefined ? {} : { getRepositoryStanding: (...args: Parameters<NonNullable<typeof github.getRepositoryStanding>>) => github.getRepositoryStanding!.call(github, ...args) }),
       markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
       requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
       ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
     },
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
-    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
+    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
     // The origin session links are made from (the approved milestone's "Ready to merge" link).
     ...(dependencies.developer === undefined ? {} : { origin: new URL(dependencies.developer.issuer).origin }),
+    // The autonomy and the digest of the task's frozen recipe, read together: an automatic decision on review comments is bound to both (Plan 6 Task 16).
+    autonomyBinding: (task) => task.orgId === undefined ? Promise.resolve({ autonomy: "prepare" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
+    // Whether the waiting round's stored report and comments are sound enough for Rovara to decide it (Plan 6 Task 16); the report is read and checked as the owner's card reads it.
+    feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
+    ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      github: { replyToReviewThread: (...args) => github.replyToReviewThread!.call(github, ...args) },
+      scope: (orgId) => githubScope(dependencies, orgId),
+      repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+      log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+    }, task, budget) }),
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
@@ -12952,6 +13005,8 @@ export async function reconcileWorkflowTrackingTask(
   installCiFixDecider();
   // Plan 6 Task 17: keeping the branch up to date (a conflict, or behind a base that requires it) fills the conflict and sync slots.
   installBranchSyncDeciders();
+  // Plan 6 Task 16: a writer's actionable review comments are fixed on Rovara's own decision (and failing CI is added to the owner's card); the slot is filled once for the process.
+  installFeedbackDecider();
   // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
   if (task?.orgId !== undefined && dependencies.developer !== undefined) {
@@ -13830,6 +13885,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
+        : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -14818,6 +14875,8 @@ async function completedPullRequestUpdateItems(
   ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
   // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
   ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
+  // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
+  ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
   ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "UPDATE", next.candidate.digest, now)] : [])];
@@ -15183,6 +15242,8 @@ async function completedWorkflowItems(
         : terminalError?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.noCodeChanged
         // Plan 3, Task 32: the step's budget ran out; a spend request is asked for at the end of this result, and its approval retries the step.
         : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
+        // Plan 6 Task 16: Rovara's own decision was refused when the worker started (a commenter lost write access, or the autonomy was lowered): the owner is told which.
+        : task.workflow.fixSource === "feedback" && operation.workflowFeedbackApproval?.autonomy !== undefined && terminalError?.includes("feedback-approval failed") === true ? FEEDBACK_NOT_RUN_REASON
         : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);

@@ -231,6 +231,7 @@ export interface DeveloperRouteDependencies {
   sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
   currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
+  taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
@@ -1754,6 +1755,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.currentPullRequestHead === undefined ? {} : { currentPullRequestHead: deps.currentPullRequestHead }),
     ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
+    ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),

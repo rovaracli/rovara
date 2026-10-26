@@ -20,6 +20,20 @@ export const RISK_SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
   /(^|\/)dockerfile$/,
 ];
 
+/**
+ * The paths of continuous-integration configuration (GitHub workflows, CircleCI, GitLab, Jenkins, Azure, Buildkite, Travis, Bitbucket, AppVeyor, Drone). A fix that changes one may have made CI pass by changing
+ * what CI checks, so it is high risk (Plan 6 Task 16). Matched on the whole path, lower-cased and written with `/`.
+ */
+export const CI_CONFIG_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)\.github\/(workflows|actions)(\/|$)/,
+  /(^|\/)\.gitlab(\/|$)/,
+  // What decides which tests CI runs: the test runners' own configuration.
+  /(^|\/)(vitest|jest|playwright|karma|cypress)\.config\.[cm]?[jt]s$/,
+  /(^|\/)(pytest\.ini|tox\.ini|conftest\.py|\.mocharc(\.[\w]+)?|karma\.conf\.[cm]?js)$/,
+  /(^|\/)\.(circleci|buildkite|drone)(\/|$)/,
+  /(^|\/)(\.gitlab-ci\.ya?ml|jenkinsfile|azure-pipelines\.ya?ml|\.travis\.ya?ml|bitbucket-pipelines\.ya?ml|appveyor\.ya?ml|\.drone\.ya?ml|buildkite\.ya?ml)$/,
+];
+
 /** The lock files and manifests whose change is at least medium (matched on the file name). */
 const MANIFEST_NAMES = new Set([
   "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock",
@@ -57,9 +71,17 @@ export interface RiskFile {
   renamedFrom?: string | undefined;
   added?: number | undefined;
   removed?: number | undefined;
+  /** The change deletes this test file, or only takes lines out of it. */
+  testsRemoved?: true | undefined;
+  /** A line the change adds skips a test in this file. */
+  testsSkipped?: true | undefined;
+  /** package.json: the change adds or removes a line of the `test` scripts. */
+  testCommandChanged?: true | undefined;
 }
 
 export interface RiskInput {
+  /** True while the change is a fix to a pull request that is open (for CI, a conflict or review comments): it may not hide what it was asked to fix. */
+  fix?: boolean | undefined;
   /** The files the change touches. */
   changedFiles: readonly RiskFile[];
   /** False when the list may be missing files (it could not be read, or was cut): the level is then never low. */
@@ -91,6 +113,16 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   const named = (file: RiskFile) => [file.path, ...(file.renamedFrom === undefined ? [] : [file.renamedFrom])];
   const sensitive = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isSensitivePath)))];
   if (sensitive.length > 0) high.push(`Changes sensitive paths: ${shown(sensitive)}.`);
+  if (input.fix === true) {
+    // A fix that makes a failure go by taking out or switching off what shows it, or by changing CI itself, has hidden the failure rather than fixed it. Only the whole change since the task's base is
+    // kept, so a test the task's first change removed is flagged on a later fix too: erring high costs a look; erring low costs a hidden failure.
+    const hidden = [...new Set(input.changedFiles.filter((file) => file.testsRemoved === true || file.testsSkipped === true).map((file) => file.path))];
+    if (hidden.length > 0) high.push(`A fix removes or skips tests (${shown(hidden)}), so a failure may be hidden rather than fixed.`);
+    const ci = [...new Set(input.changedFiles.flatMap((file) => named(file).filter((path) => CI_CONFIG_PATH_PATTERNS.some((pattern) => pattern.test(normalized(path))))))];
+    const command = [...new Set(input.changedFiles.filter((file) => file.testCommandChanged === true).map((file) => file.path))];
+    if (command.length > 0) high.push(`A fix changes the command that runs the tests (${shown(command)}), so a check may pass because the tests no longer run.`);
+    if (ci.length > 0) high.push(`A fix changes CI configuration (${shown(ci)}), so a check may pass because CI changed.`);
+  }
   if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");
   else if (input.securityFindings > 0) high.push("The security review reported a problem with this change.");
   if (input.reviewerRisk === "high") high.push("The code review rated this change high risk.");

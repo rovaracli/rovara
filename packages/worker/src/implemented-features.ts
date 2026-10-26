@@ -25,6 +25,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
   "task.workflowFix",
+  // Plan 6 Task 16: a coding run whose PR feedback approval is Rovara's own (it carries the autonomy it was decided under).
+  "task.workflowFeedbackAutonomy",
   // Rovara Code v2: independent parts of an approved plan build side by side (parallel-parts.ts).
   "task.workflowParallelParts",
   // Plan 6 Task 17: a merge of the base branch into a workflow task's pull request branch, and a conflict round's fix pushed as a merge commit.

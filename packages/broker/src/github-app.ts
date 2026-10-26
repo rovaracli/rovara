@@ -874,6 +874,14 @@ export class GitHubAppCredentialProvider {
    * permission this needs is checked at staging.
    */
   async getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none"> {
+    return (await this.getRepositoryStanding(repositoryUrl, login, scope, budget)).permission;
+  }
+
+  /**
+   * The person's permission (as `getRepositoryPermission`) and the kind of account GitHub says they are: the permission answer names its `user` and that user's `type` (`User`, `Bot`, `Organization`)
+   * (Plan 6 Task 16). The kind is absent when GitHub does not say; the rule for an automatic fix then relies on the login (a bot's ends in `[bot]`). Verify at staging that the answer carries it.
+   */
+  async getRepositoryStanding(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<{ permission: "admin" | "write" | "read" | "none"; userType?: string }> {
     if (!GITHUB_LOGIN.test(login)) throw agentXError("CONFIG_INVALID", "GitHub login is invalid");
     const provider = this.trackingProvider(budget);
     const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
@@ -882,9 +890,28 @@ export class GitHubAppCredentialProvider {
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/collaborators/${encodeURIComponent(login)}/permission`, token,
     );
     // 404: not a collaborator. 403: the App may not ask about this person; a person it cannot vouch for has no permission here (and does not count).
-    if (answered.status === 404 || answered.status === 403) return "none";
+    if (answered.status === 404 || answered.status === 403) return { permission: "none" };
     if (answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub permission lookup failed with HTTP ${answered.status}`);
-    return parseRepositoryPermission(answered.body);
+    const permission = parseRepositoryPermission(answered.body);
+    const user = (answered.body as { user?: unknown } | null)?.user;
+    const kind = user !== null && typeof user === "object" ? (user as { type?: unknown }).type : undefined;
+    return { permission, ...(typeof kind === "string" && kind.length > 0 ? { userType: kind.slice(0, 20) } : {}) };
+  }
+
+  /**
+   * Replies once in a review thread, to a comment of it (`POST pulls/{n}/comments/{id}/replies`): the one place Rovara writes into a thread of comments (Plan 6 Task 16). The text is Rovara's own and fixed.
+   * A comment or thread that is gone (404, 422) is "gone": nothing to reply to, not an error.
+   */
+  async replyToReviewThread(repositoryUrl: string, number: number, commentId: string, body: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"replied" | "gone"> {
+    if (!/^[1-9][0-9]{0,18}$/.test(commentId)) throw agentXError("CONFIG_INVALID", "review comment id is invalid");
+    if (body.length === 0 || body.length > 200 || /[\p{Cc}@]/u.test(body)) throw agentXError("CONFIG_INVALID", "the reply is not Rovara's fixed text");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { contents: "read", pull_requests: "write" }, scope);
+    const answered = await provider.trackingJson(`${pullRequestUrl(repository, number)}/comments/${commentId}/replies`, token, { method: "POST", body: { body } });
+    if (answered.status === 404 || answered.status === 422) return "gone";
+    if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reply failed with HTTP ${answered.status}`);
+    return "replied";
   }
 
   /** Takes a draft pull request out of draft (GraphQL `markPullRequestReadyForReview`); one that is ready already is left alone. */
@@ -1160,7 +1187,26 @@ export class GitHubAppCredentialProvider {
     const headTreeSha = await this.getCommitTreeSha(repository, after.headCommit, token);
     const final = await this.getPullRequestWithToken(repository, number, token);
     if (final.number !== number || final.headCommit !== after.headCommit || final.state !== after.state) throw feedbackReadError("PR head or state changed during collection");
+    // The App's own comments (Rovara's "Fixed in ..." replies, Plan 6 Task 16) are not feedback: they are left out of the comments and of their threads, after every consistency check above,
+    // so a reply Rovara left never starts a round of its own and is never part of a round's comment set. A slug that cannot be read leaves the comments as they are.
+    const own = await this.ownBotLogin();
+    const ownIds = new Set(own === undefined ? [] : comments.filter((comment) => comment.author.toLowerCase() === own).map((comment) => comment.id));
+    if (ownIds.size > 0) {
+      return {
+        pullRequest: { ...final, headTreeSha }, comments: comments.filter((comment) => !ownIds.has(comment.id)),
+        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })),
+      };
+    }
     return { pullRequest: { ...final, headTreeSha }, comments, threads };
+  }
+
+  /** The login the App's own comments carry (`<slug>[bot]`, lower-case), or undefined when the slug cannot be read. */
+  private async ownBotLogin(): Promise<string | undefined> {
+    try {
+      return `${(await this.appSlug()).toLowerCase()}[bot]`;
+    } catch {
+      return undefined;
+    }
   }
 
   /** The tree of a commit GitHub holds in the installed repository; throws when GitHub does not have that commit. */

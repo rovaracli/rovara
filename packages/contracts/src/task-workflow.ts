@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sha256Hex } from "./web-hash.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, WorkflowBranchSyncSchema, SYNC_FAILURES_MAX } from "./rovara-code.js";
+import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, WorkflowBranchSyncSchema, SYNC_FAILURES_MAX, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_STOPPED_REASON, FeedbackCiFailuresSchema, WorkflowFeedbackAutonomySchema } from "./rovara-code.js";
 import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
@@ -337,11 +337,20 @@ export const WorkflowFeedbackNoteSchema = z.object({
 
 export const WorkflowFeedbackDecisionSchema = z.object({
   schemaVersion: z.literal(1), requestId: z.string().uuid(), workflowRevision: z.number().int().positive(),
-  decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]), actorId: ActorIdSchema, actorRole: z.literal("TASK_OWNER"),
+  decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]),
+  // A person's id is 64 hex characters; Rovara's own automatic decision (Plan 6 Task 16) is recorded under "rovara" with the autonomy it was made under, never as the owner's.
+  actorId: z.union([ActorIdSchema, z.literal(FEEDBACK_AUTONOMY_ACTOR_ID)]), actorRole: z.enum(["TASK_OWNER", "ROVARA_AUTONOMY"]),
   reviewDigest: DigestSchema, proposalDigest: DigestSchema, bundleDigests: z.array(DigestSchema).min(1).max(32),
   selectedFindingIds: z.array(FeedbackIdSchema).max(128), selectedCommentIds: z.array(FeedbackIdSchema).max(4096),
   candidates: z.array(WorkflowFeedbackCandidateBindingSchema).max(32), ownerNote: z.string().trim().min(1).max(2000).optional(), at: z.string().datetime(),
+  autonomy: WorkflowFeedbackAutonomySchema.optional(),
+  /** The failing checks the card showed when this was decided (they are part of what the decision is bound to). */
+  ciFailures: FeedbackCiFailuresSchema.optional(),
 }).strict().superRefine((decision, context) => {
+  const byRovara = decision.actorRole === "ROVARA_AUTONOMY";
+  if (byRovara !== (decision.actorId === FEEDBACK_AUTONOMY_ACTOR_ID) || byRovara !== (decision.autonomy !== undefined) || (byRovara && decision.decision !== "APPROVE")) {
+    context.addIssue({ code: "custom", message: "an automatic decision is Rovara's own, carries its autonomy and can only approve" });
+  }
   if (new Set(decision.selectedFindingIds).size !== decision.selectedFindingIds.length
     || new Set(decision.selectedCommentIds).size !== decision.selectedCommentIds.length
     || new Set(decision.bundleDigests).size !== decision.bundleDigests.length
@@ -358,6 +367,10 @@ export const WorkflowFeedbackApprovalBindingSchema = z.object({
   reviewDigest: DigestSchema, proposalDigest: DigestSchema, bundleDigests: z.array(DigestSchema).min(1).max(32),
   candidateDigest: DigestSchema, selectedFindingIds: z.array(z.string().min(1).max(128)).min(1).max(100),
   selectedCommentIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+  /** Present only when Rovara decided the round itself (Plan 6 Task 16): the autonomy and recipe it was decided under, checked again when the worker starts. */
+  autonomy: WorkflowFeedbackAutonomySchema.optional(),
+  /** The digest of the failing checks the card showed, when it showed any. */
+  ciFailuresDigest: DigestSchema.optional(),
 }).strict();
 
 export const ReviewedWorkflowFeedbackSchema = z.object({
@@ -720,6 +733,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   feedbackReviewHistory: z.array(WorkflowFeedbackReviewRefSchema).max(100).optional(),
   feedbackDecisions: z.array(WorkflowFeedbackDecisionSchema).max(100).optional(),
   feedbackDispatchApproval: WorkflowFeedbackApprovalBindingSchema.optional(),
+  /** Rovara Code v2: the failing checks added to the owner's feedback card while it waits (Plan 6 Task 16); moved into the decision once decided. */
+  feedbackCiFailures: FeedbackCiFailuresSchema.optional(),
   feedbackNotes: z.array(WorkflowFeedbackNoteSchema).max(100).optional(),
   canvasLineage: z.array(WorkflowCanvasLineageSchema).max(100).optional(),
   canvasLineageVersion: z.number().int().nonnegative().optional(),
@@ -875,8 +890,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   if (workflow.stage === "WAIT_FOR_MERGE" || workflow.stage === "MERGED") {
     const pullRequests = workflow.pullRequests ?? [];
     const required = pullRequests.filter((pullRequest) => pullRequest.required);
-    // A pull request holds earlier reviewed code only after pushing its fix failed, or when it merged before the fix was pushed.
-    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
+    // A pull request holds earlier reviewed code only after pushing its fix failed (or was stopped because the autonomy was lowered), or when it merged before the fix was pushed.
+    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed || workflow.blockReason === FEEDBACK_STOPPED_REASON));
     if (required.length === 0 || workflow.candidate === undefined
       || (!earlierAllowed && pullRequests.some((pullRequest) => pullRequest.candidateDigest !== workflow.candidate?.digest))
       || workflow.candidate.repositories.some((repository) => !required.some((pullRequest) => pullRequest.repositoryId === repository.repositoryId))) {

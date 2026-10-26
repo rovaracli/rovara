@@ -331,6 +331,10 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         if (payload.workflowFeedbackApproval !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "feedback approval binding requires implementation mode" });
         }
+        // Rovara's own decision on review comments (Plan 6 Task 16) is a feedback fix. (A feedback fix may also run with no approval: the owner's Retry of one that stopped continues it from the current code.)
+        if (payload.workflowFeedbackApproval?.autonomy !== undefined && payload.workflowFix?.source !== "feedback") {
+          context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "an automatic feedback approval belongs to a feedback fix" });
+        }
         if (payload.workflowDependencies !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowDependencies"], message: "a work breakdown requires implementation mode" });
         }

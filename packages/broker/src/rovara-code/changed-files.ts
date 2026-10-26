@@ -2,12 +2,17 @@
 // header Git printed in quotes, records only the new name of a rename, and counts a file it cannot count as 0 lines. A risk judged on that list could miss a sensitive file or call a big change small, so this
 // reader keeps the real names (unquoted, both names of a rename) and leaves a count out when the diff has none to give (a new unstaged file, a binary patch, a change of mode or name only): unknown is not 0.
 import { redactText } from "@agentx/contracts";
-import type { ChangedFileEntry } from "./verification-report.js";
+import { isTestPath, type ChangedFileEntry } from "./verification-report.js";
 
 /** The most files read; a diff that names this many may name more. */
 export const CHANGED_FILES_MAX = 200;
 /** The workspace diff's own notes that its list is not the whole change (a diff cut to fit, or a base commit that is gone so only uncommitted changes show). */
 const INCOMPLETE_NOTES = [/\[workspace diff truncated/u, /\[the commit this workspace was prepared at is not in this repository/u];
+
+/** An added line that switches a test off: a skipped or pending test in the common frameworks. */
+const SKIP_MARKER = /(?:\b(?:it|test|describe|context|specify)(?:\.concurrent)?\.(?:skip|todo|only|fixme)\b|\b(?:xit|xtest|xdescribe|xcontext|fit|fdescribe)\s*\(|\.skipIf\s*\(|\bpending\s*\(|@(?:Disabled|Ignore)\b|#\[ignore\]|\bt\.Skip(?:Now)?\s*\(|\bpytest\.mark\.skip|@unittest\.skip|\bskipTest\s*\()/u;
+/** A line of package.json that sets a `test` script (`test`, `test:unit`, ...), added or removed. */
+const TEST_SCRIPT_LINE = /^[+-]\s*"test(?::[\w:.-]+)?"\s*:/u;
 
 /** Git's C-style quoting (`"a/\303\274.ts"`, `\"`, `\\`, `\t`, `\n`) undone; an unquoted name is returned as it is. */
 export function unquoteGitPath(token: string): string {
@@ -71,6 +76,9 @@ export function parseChangedFiles(text: string): { files: ChangedFileEntry[]; co
   let section: "none" | "status" | "diff" = "none";
   let current: ChangedFileEntry | undefined;
   let inHunk = false;
+  const deleted = new Set<ChangedFileEntry>();
+  const skipped = new Set<ChangedFileEntry>();
+  const testCommand = new Set<ChangedFileEntry>();
   for (const line of text.split("\n")) {
     const heading = /^## (\S+)$/u.exec(line);
     if (heading !== null) {
@@ -97,6 +105,7 @@ export function parseChangedFiles(text: string): { files: ChangedFileEntry[]; co
       continue;
     }
     if (current === undefined) continue;
+    if (!inHunk && line.startsWith("deleted file mode")) deleted.add(current);
     if (line.startsWith("@@")) {
       inHunk = true;
       current.added ??= 0;
@@ -104,8 +113,19 @@ export function parseChangedFiles(text: string): { files: ChangedFileEntry[]; co
       continue;
     }
     if (!inHunk) continue;
-    if (line.startsWith("+")) current.added = (current.added ?? 0) + 1;
-    else if (line.startsWith("-")) current.removed = (current.removed ?? 0) + 1;
+    if (line.startsWith("+")) {
+      current.added = (current.added ?? 0) + 1;
+      if (SKIP_MARKER.test(line)) skipped.add(current);
+    } else if (line.startsWith("-")) current.removed = (current.removed ?? 0) + 1;
+    if (TEST_SCRIPT_LINE.test(line) && (current.path === "package.json" || current.path.endsWith("/package.json"))) testCommand.add(current);
+  }
+  // What a change does to the tests it touches (Plan 6 Task 16): a test file deleted, moved out of the test paths, or losing more lines than it gains; a line added that skips or focuses a test; the test command changed.
+  for (const file of tracked) {
+    if (testCommand.has(file)) file.testCommandChanged = true;
+    const wasTest = file.renamedFrom !== undefined && isTestPath(file.renamedFrom);
+    if (!isTestPath(file.path) && !wasTest) continue;
+    if (deleted.has(file) || (wasTest && !isTestPath(file.path)) || (file.removed ?? 0) > (file.added ?? 0)) file.testsRemoved = true;
+    if (skipped.has(file)) file.testsSkipped = true;
   }
   const known = new Set(tracked.map((file) => `${file.repository}\u0000${file.path}`));
   const all = [...tracked, ...untracked.filter((file) => !known.has(`${file.repository}\u0000${file.path}`))];
