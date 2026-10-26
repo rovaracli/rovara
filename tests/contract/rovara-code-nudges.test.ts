@@ -3,7 +3,7 @@
 // comment. After the third reminder has had its window, the task's owner is told once. Everything rides the tracking pass; nothing here changes the workflow.
 import { afterEach, describe, expect, it } from "vitest";
 import { CODE_REVIEWERS_MAX, REVIEW_NUDGES_MAX, type MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
-import { agentSessionKey, codeMilestoneKey, codeSettingsKey, mergeTrackingKey, mySessionsKey, orgMemberKey, reviewNudgeLedgerKey, reviewWaitKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, codeMilestoneKey, codeSettingsKey, githubMemberKey, mergeTrackingKey, mySessionsKey, orgMemberKey, reviewNudgeLedgerKey, reviewWaitKey } from "../../packages/contracts/src/index.js";
 import { nextNudgeAt, nudgesDue, reviewWaitsOf, runReviewNudges } from "../../packages/broker/src/rovara-code/nudges.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { linkGithubMember, unlinkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
@@ -67,6 +67,17 @@ describe("when a reminder is due", () => {
     const overdue = item();
     expect(nudgesDue(overdue, ["1001"], Date.parse("2026-10-31T10:00:00.000Z"))).toBeUndefined();
     expect(nudgesDue(overdue, ["1001"], Date.parse("2026-11-02T10:00:00.000Z"))).toMatchObject({ number: 1 });
+  });
+
+  it("treats Sunday like Saturday: a time that falls on it moves to Monday, and nothing is sent on it", () => {
+    const sat = Date.parse("2026-10-31T12:00:00.000Z");
+    expect(nextNudgeAt(item({ readyAt: iso(sat), reviewersRequestedAt: iso(sat) }))).toBe(Date.parse("2026-11-02T00:00:00.000Z"));
+    const thu = Date.parse("2026-10-29T12:00:00.000Z");
+    const overdue = item({ readyAt: iso(thu), reviewersRequestedAt: iso(thu) });
+    expect(nudgesDue(overdue, ["1001"], Date.parse("2026-10-30T11:00:00.000Z"))).toBeUndefined();
+    expect(nudgesDue(overdue, ["1001"], Date.parse("2026-10-30T13:00:00.000Z"))).toMatchObject({ number: 1 });
+    expect(nudgesDue(overdue, ["1001"], Date.parse("2026-11-01T12:00:00.000Z"))).toBeUndefined();
+    expect(nudgesDue(overdue, ["1001"], Date.parse("2026-10-31T12:00:00.000Z"))).toBeUndefined();
   });
 
   it("is never more than the third, and says when the owner is told: one more window after the third reminder", () => {
@@ -240,6 +251,38 @@ describe("reminders on the tracking pass", () => {
     await pass(nobody, MON + 4 * DAY);
     expect(heard).toHaveLength(2);
     expect(itemOf(nobody).nudges.count).toBe(1);
+  });
+
+  it("does not remind a GitHub account whose link is only half there, and takes the reminder from someone who unlinked since", async () => {
+    const heard = hear();
+    const w = await waiting({ ids: ["1001", "3003", "6006"] });
+    memberOf(w, BOB);
+    await link(w, BOB, "3003");
+    // 6006 is linked from the GitHub side only: the member's own side does not name it.
+    memberOf(w, "carl-dev");
+    w.db.set({ ...githubMemberKey(TEST_ORG, "6006"), entityType: "GITHUB_MEMBER", orgId: TEST_ORG, githubUserId: "6006", developerId: "carl-dev", linkedAt: iso(MON) });
+    await pass(w, MON + DAY);
+    expect(heard[0]!.to).toEqual([ALICE, BOB]);
+    const reminded = async (who: string) => (await reviewWaitsOf({ documentClient: w.db, tableName: TABLE }, TEST_ORG, who)).length;
+    expect([await reminded(ALICE), await reminded(BOB), await reminded("carl-dev")]).toEqual([1, 1, 0]);
+    // Bob unlinks his account but is still listed: the next reminder is Alice's alone and Bob's Home item goes with it.
+    await unlinkGithubMember({ documentClient: w.db, tableName: TABLE, now: () => w.now() }, TEST_ORG, BOB);
+    await pass(w, MON + 3 * DAY);
+    expect(heard[1]!.to).toEqual([ALICE]);
+    expect([await reminded(ALICE), await reminded(BOB)]).toEqual([1, 0]);
+  });
+
+  it("does not trust a ledger that names another org", async () => {
+    const w = await waiting({ ids: ["1001", "3003"] });
+    memberOf(w, BOB);
+    await link(w, BOB, "3003");
+    await pass(w, MON + DAY);
+    const ledger = w.db.get(reviewNudgeLedgerKey(TASK_ID, "payments", 7))!;
+    w.db.set({ ...ledger, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+    requestedBy(w, ["1001"]);
+    await pass(w, MON + DAY + H);
+    // Bob's item stays: the ledger that would have named him is not this org's, so nothing was taken away on its word.
+    expect((await reviewWaitsOf({ documentClient: w.db, tableName: TABLE }, TEST_ORG, BOB)).length).toBe(1);
   });
 
   it("ignores requested teams, and reminds no more than the project's reviewer limit at once", async () => {
@@ -432,7 +475,7 @@ describe("Home", () => {
   it("shows a reminded reviewer the pull request waiting for them, with the session when they may view it", async () => {
     const h = homeWorld();
     await h.link(MAX, "1001");
-    expect((await h.nudge(h.tracked(), ["1001"], h.asked + DAY)).sent).toBe("nudge");
+    expect(await h.nudge(h.tracked(), ["1001"], h.asked + DAY)).toEqual({ sent: "nudge", recheckAt: h.asked + 3 * DAY });
     const { cards } = await h.home(MAX);
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
@@ -485,6 +528,7 @@ describe("Home", () => {
       (h: ReturnType<typeof homeWorld>) => h.put(h.tracked({ review: "changes_requested" })),
       (h: ReturnType<typeof homeWorld>) => h.put(h.tracked({ draft: true })),
       (h: ReturnType<typeof homeWorld>) => h.put(h.tracked({ state: "merged" })),
+      (h: ReturnType<typeof homeWorld>) => h.put(h.tracked({ orgId: ORG_B })),
       (h: ReturnType<typeof homeWorld>) => h.db.set({ ...h.db.get(taskKey(h.seeded.taskId))!, closedAt: "2026-10-27T00:00:00.000Z" }),
       (h: ReturnType<typeof homeWorld>) => h.db.set({ ...h.db.get(taskKey(h.seeded.taskId))!, releasedAt: "2026-10-27T00:00:00.000Z" }),
       (h: ReturnType<typeof homeWorld>) => { const task = h.db.get(taskKey(h.seeded.taskId))! as { workflow: Record<string, unknown> }; h.db.set({ ...task, workflow: { ...task.workflow, pullRequests: [{ ...(task.workflow["pullRequests"] as object[])[0], state: "MERGED" }] } }); },
@@ -519,6 +563,11 @@ describe("Home", () => {
     expect(await owner()).toBe("Your pull request for \"Bump the Stripe SDK\" is ready for review");
     h.put(h.tracked({ review: "requested" }));
     expect(await owner()).toBe("Your pull request for \"Bump the Stripe SDK\" is waiting for review");
+    // A version 1 task has no say here, whatever an item says.
+    const task = h.db.get(taskKey(h.seeded.taskId))! as { workflow: Record<string, unknown> };
+    h.db.set({ ...task, workflow: { ...task.workflow, definitionVersion: "1.0.0" } });
+    expect(await owner()).toBe("Your pull request for \"Bump the Stripe SDK\" is ready for review");
+    h.db.set(task);
     // A draft is not waiting for anyone yet.
     h.put(h.tracked({ review: "requested", draft: true }));
     expect(await owner()).toBe("Your pull request for \"Bump the Stripe SDK\" is ready for review");
