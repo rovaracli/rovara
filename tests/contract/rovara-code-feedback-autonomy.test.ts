@@ -7,7 +7,7 @@ import {
   CI_OUTPUT_BLOCK_HEADER, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowSnapshotSchema, WorkflowTransitionError,
   createCandidateManifest, createWorkflowSnapshot, decideWorkflowFeedbackFindings, feedbackCardCiFailures, feedbackCiFailuresDigest, feedbackDecidedByText, feedbackFixedReply,
   recordWorkflowFeedbackCiFailures, recordWorkflowPullRequestUpdate, requestWorkflowFeedbackReview, startWorkflowFix, workflowFixRoundsLeft,
-  type WorkflowProgram, type WorkflowSnapshot,
+  type WorkflowFeedbackActor, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
@@ -71,8 +71,8 @@ export function pendingCard(options: { comments?: CommentSpec[]; findings?: Find
 }
 
 const autonomy = { level: "prepare" as const, recipeDigest: hash("9") };
-const rovara = { actorId: FEEDBACK_AUTONOMY_ACTOR_ID, role: "ROVARA_AUTONOMY" as const, autonomy };
-const owner = { actorId: OWNER, role: "TASK_OWNER" as const };
+const rovara: WorkflowFeedbackActor = { actorId: FEEDBACK_AUTONOMY_ACTOR_ID, role: "ROVARA_AUTONOMY", autonomy };
+const owner: WorkflowFeedbackActor = { actorId: OWNER, role: "TASK_OWNER" };
 const requestFor = (card: ReturnType<typeof pendingCard>, extra: Record<string, unknown> = {}) => ({
   requestId: REQUEST, expectedRevision: card.workflow.revision, reviewDigest: card.reviewDigest, proposalDigest: card.proposalDigest, bundleDigests: [card.bundleDigest],
   selectedFindingIds: card.workflow.feedbackReview!.reviewRef!.findingRefs.map((finding) => finding.id), decision: "APPROVE" as const, ...extra,
@@ -621,7 +621,7 @@ describe("sendFeedbackReplies", () => {
 
   it("sends nothing for another task's or another org's item", async () => {
     const w = repliesWorld();
-    expect(await sendFeedbackReplies(w.deps, { ...w.task, orgId: "org_" + "b".repeat(24) as never })).toBe(0);
+    expect(await sendFeedbackReplies(w.deps, { ...w.task, orgId: `org_${"b".repeat(24)}` as never })).toBe(0);
     expect(await sendFeedbackReplies(w.deps, { ...w.task, taskId: "00000000-0000-4000-8000-0000000000b2" })).toBe(0);
     expect(w.sent).toEqual([]);
   });

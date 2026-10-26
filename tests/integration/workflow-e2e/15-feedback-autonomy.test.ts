@@ -12,7 +12,7 @@ import { visibleSlackText } from "../../support/strict-slack.js";
 import { OWN_LOGIN } from "../../support/workflow-e2e-github.js";
 import { IMPLEMENT_TEST_RULE } from "../../../packages/broker/src/rovara-code/verification-report.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, PUSHED_FIX, actionIds, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, PUSHED_FIX, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -249,7 +249,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     const finished = e2e.workflow();
     expect(finished).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(finished.fixRounds).toBeUndefined();
-    expect(finished.feedbackDecisions).toEqual([expect.objectContaining({ actorRole: "TASK_OWNER", ciFailures: expect.objectContaining({ checks: ["test"] }) })]);
+    expect(finished.feedbackDecisions).toEqual([expect.objectContaining({ actorRole: "TASK_OWNER", ciFailures: expect.objectContaining({ checks: ["test"] }) as unknown })]);
     const fixPrompt = prompts.find((prompt) => prompt.includes("owner-approved PR feedback"))!;
     expect(fixPrompt).toContain(CI_OUTPUT_BLOCK_HEADER);
     expect(fixPrompt).toContain("Error: boom in greet");
@@ -269,7 +269,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     // The reply Rovara left is on the thread; hearing of it is not feedback.
     const reply = e2e.github.pullRequests[0]!.comments.find((entry) => entry.author === OWN_LOGIN)!;
     expect(reply).toBeDefined();
-    expect(await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: { ...reply } as never })).toMatchObject({ status: 200 });
+    expect(await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: reply })).toMatchObject({ status: 200 });
     await e2e.settle();
     expect(e2e.workflow().feedbackReview).toBeUndefined();
     // The writer edits the comment: a new comment set, a new review, and Rovara decides it again (round two).
@@ -290,7 +290,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(e2e.github.replies).toHaveLength(1);
     const reply = e2e.github.pullRequests[0]!.comments.find((entry) => entry.author === OWN_LOGIN)!;
     expect(reply.threadId).toBe(comment.threadId);
-    expect((await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: { ...reply } as never })).status).toBe(200);
+    expect((await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: reply })).status).toBe(200);
     await e2e.settle();
     expect(e2e.workflow().feedbackReview).toBeUndefined();
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });

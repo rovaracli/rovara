@@ -4,6 +4,7 @@ import {
   WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, createCandidateManifest, createWorkflowSnapshot, requestWorkflowFeedbackReview,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
+import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createDeveloperTaskBroker, MAYA } from "./developer-task-broker.js";
 import { TEST_ORG } from "./orgs.js";
@@ -14,7 +15,10 @@ const now = REVIEW_NOW;
 export interface ReviewOptions { body?: string; finding?: Record<string, unknown>; findingRef?: Record<string, unknown>; tamper?: "report" | "bundle"; extra?: Record<string, unknown> }
 
 /** Stores the review for an existing task of `harness` (its record is replaced by one waiting for the merge with the review pending) and answers the route dependencies a decision reads it with. */
-export function seedReview(harness: Awaited<ReturnType<typeof createDeveloperTaskBroker>>, taskId: string, options: ReviewOptions = {}) {
+export type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
+export interface SeededReview { deps: DeveloperTaskRouteDependencies; stored: () => DeveloperTaskRecord; workflow: WorkflowSnapshot; taskId: string }
+
+export function seedReview(harness: Harness, taskId: string, options: ReviewOptions = {}): SeededReview {
   const task = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string; workspaceId: string };
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "c".repeat(40), treeSha: "e".repeat(40) }]);
   const body = options.body ?? "Handle empty input";
@@ -60,7 +64,7 @@ export function seedReview(harness: Awaited<ReturnType<typeof createDeveloperTas
   return { deps, stored, workflow, taskId };
 }
 
-export async function plannedReview(options: ReviewOptions = {}) {
+export async function plannedReview(options: ReviewOptions = {}): Promise<SeededReview & { harness: Harness }> {
   const harness = await createDeveloperTaskBroker({});
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Handle retries", client: "test", workflow: true, workflowPath: "QUICK" });
   const taskId = String((started.body.task as { taskId: string }).taskId);

@@ -1355,7 +1355,7 @@ export async function planAutomaticFeedbackRound(deps: DeveloperTaskRouteDepende
   const bytes = selected.reduce((total, finding) => total + (finding.comments as Array<{ body?: unknown }>).reduce((sum, comment) => sum + (typeof comment.body === "string" ? Buffer.byteLength(comment.body, "utf8") : 0), 0), 0);
   if (bytes > AUTOMATIC_FEEDBACK_COMMENT_BYTES_MAX) return undefined;
   const addsChecks = selected.some(finding => ((finding.fixProposal as { replacementChecks?: unknown[] } | undefined)?.replacementChecks?.length ?? 0) > 0);
-  const checkChanges = workflowFeedbackCheckChanges(workflow.checkPolicy, selected as never, addsChecks ? await taskRepositoryPaths(deps, task) : undefined);
+  const checkChanges = workflowFeedbackCheckChanges(workflow.checkPolicy, selected, addsChecks ? await taskRepositoryPaths(deps, task) : undefined);
   return checkChanges.problems.length > 0 ? undefined : { selected, checkChanges };
 }
 
