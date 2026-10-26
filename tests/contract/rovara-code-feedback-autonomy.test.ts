@@ -282,7 +282,7 @@ describe("autoFixableRound", () => {
 
   it("an empty round (no comments, or no findings) is not fixed on its own", () => {
     expect(autoFixableRound(roundOf([]), standings({}), "prepare", NO_ROUNDS)).toBe(false);
-    expect(autoFixableRound({ comments: maya, findings: [] }, standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
+    expect(autoFixableRound({ comments: maya.map((comment) => ({ ...comment, repositoryId: "payments" })), findings: [] }, standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
   });
 
   it("logins are compared without regard to case, as GitHub does", () => {
