@@ -24,3 +24,16 @@
 
 .rv-builder-history { border-top: 1px solid var(--rv-border); padding-block: var(--rv-space-5); margin-top: var(--rv-space-6); }
 .rv-builder-history > summary { min-height:44px; cursor:pointer; font-weight:600; }
+
+.rv-dialog.rv-publish-review { width: min(900px, calc(100vw - var(--rv-space-6))); }
+.rv-recipe-change { border-top: 1px solid var(--rv-border); padding-block: var(--rv-space-4); }
+.rv-recipe-change h4 { margin-block: 0 var(--rv-space-3); font-size: 1rem; }
+.rv-recipe-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--rv-space-5); }
+.rv-recipe-comparison > div { min-width: 0; }
+.rv-recipe-comparison h5 { color: var(--rv-text-muted); font-size: .875rem; margin-block: 0 var(--rv-space-3); }
+.rv-recipe-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-recipe-layer + .rv-recipe-layer { border-top: 1px solid var(--rv-border); padding-top: var(--rv-space-3); }
+.rv-recipe-fields { margin: 0; }
+.rv-recipe-fields dt { font-weight: 600; }
+.rv-recipe-fields dd { margin-inline-start: 0; }
+@media (max-width: 640px) { .rv-recipe-comparison { grid-template-columns: minmax(0, 1fr); } }

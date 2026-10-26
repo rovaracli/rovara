@@ -1286,7 +1286,7 @@ for (const issue of ["archived base", "missing version", "missing skill", "layer
  if(issue==="missing version")f.db.set({...stored,extends:{agentId:base,version:999}});
  if(issue==="missing skill")f.db.set({...stored,overlay:{...SAFE,skills:{add:[{skillId:"skl_"+"z".repeat(20)}]}}});
  if(issue==="layer loop")f.db.set({...stored,extends:{agentId:child,version:1}});
- const answer=await f.call(MAYA,"GET",`/v1/app/agents/${child}/draft`);expect(answer.status).toBe(200);expect(answer.body.draft).toMatchObject({revision:stored.revision});expect(answer.body.resolved).toBeUndefined();expect(answer.body.base).toBeUndefined();expect(answer.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({path:issue==="missing skill"?"skills":"extends",message:expect.any(String)})]));
+ const answer=await f.call(MAYA,"GET",`/v1/app/agents/${child}/draft`);expect(answer.status).toBe(200);expect(answer.body.draft).toMatchObject({revision:stored.revision});expect(answer.body.resolved).toBeUndefined();expect(answer.body.base).toBeUndefined();expect((answer.body.problems as Array<{path:string;message:unknown}>).some(problem=>problem.path===(issue==="missing skill"?"skills":"extends")&&typeof problem.message==="string"&&problem.message.length>0)).toBe(true);
  const repaired=await f.call(MAYA,"PUT",`/v1/app/agents/${child}/draft`,{expectedRevision:stored.revision,overlay:SAFE,extends:"rovara-code"});expect(repaired.status).toBe(200);
 });
 it("preserves the store's budget error and the original finite-only body bounds",async()=>{

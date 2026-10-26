@@ -437,7 +437,7 @@ async function diffAgent(deps: AgentRouteDependencies, caller: AgentCaller, agen
   };
   const before = await recipeOf(from);
   const after = await recipeOf(to);
-  return { from, to, changes: diffRecipes(before, after), lessSafe: lessSafeChanges(before, after) };
+  return { from, to, changes: diffRecipes(before, after), lessSafe: lessSafeChanges(before, after), comparison: { before, after } };
 }
 
 // ---- repeated requests (R18)
