@@ -496,3 +496,17 @@ it("I2 ingress: a Slack ownership action returns the session confirmation link",
   expect(body.confirmationUrl).toContain("/v1/app/approve/apr_");
   expect(h.db.get(taskKey(taskId))).not.toHaveProperty("currentOwner");
 });
+
+for (const state of ["missing", "other-org"] as const) it(`M7: principal DELETE still narrows when the task is ${state}`, async () => {
+  const w = world();
+  const principal = { kind: "member" as const, developerId: ARJUN };
+  await putSessionShare(w.deps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID(), principal, level: "view" });
+  const key = agentSessionKey(ORG_A, w.sessionId, `SHARE#MEMBER#${ARJUN}`);
+  expect(w.db.get(key)).toBeDefined();
+  expect(w.db.get(sharedSessionsKey(ORG_A, principal, w.sessionId))).toBeDefined();
+  if (state === "missing") w.db.delete(taskKey(w.taskId));
+  else w.db.set({ ...w.db.get(taskKey(w.taskId)), orgId: ORG_B });
+  expect(await deleteSessionShare(w.deps, w.caller(PRIYA), w.sessionId, `MEMBER#${ARJUN}`)).toEqual({ removed: true });
+  expect(w.db.get(key)).toBeUndefined();
+  expect(w.db.get(sharedSessionsKey(ORG_A, principal, w.sessionId))).toBeUndefined();
+});
