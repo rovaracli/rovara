@@ -27,9 +27,9 @@ function world() {
   const w = sessionWorld();
   const s = w.seedSession();
   const task = w.db.get(taskKey(s.taskId))!;
-  w.db.set({ ...task, title: "Bump the Stripe SDK", workflow: createWorkflowSnapshot({ taskId: s.taskId, ownerId: PRIYA, now: new Date(w.clock.now).toISOString() }) });
+  w.db.set({ ...task, title: "Bump the Stripe SDK", client: "app", startingRevision: 1, workflow: createWorkflowSnapshot({ taskId: s.taskId, ownerId: PRIYA, now: new Date(w.clock.now).toISOString() }) });
   const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore,
-    origin: "https://cell.example.com", taskView: async () => { throw new Error("ADMITTED"); } } satisfies SessionRouteDependencies;
+    origin: "https://cell.example.com", turnRecordsTableName: "turns", taskView: async () => { throw new Error("ADMITTED"); } } satisfies SessionRouteDependencies;
   const notices = () => w.db.find((item) => item.entityType === "CHANGE_NOTICE");
   return { ...w, ...s, deps, notices };
 }
@@ -289,3 +289,20 @@ for (const [surface, propose] of [["page", proposeTaskOwnershipForPage], ["Slack
     expect(w.db.find((item) => item.entityType === "TASK_PEOPLE_PROPOSAL")).toEqual([]);
   });
 }
+
+it("I3: Slack share undo atomically records its actor, audit turn, event and session revision", async () => {
+  const w = world();
+  const at = new Date(w.clock.now).toISOString();
+  const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
+  const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view" as const, sharedAt: at, sharedReason: "requested" as const };
+  const requestId = randomUUID();
+  await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, share, requestId, ARJUN, at) }));
+  w.db.set({ ...task, share, shared: true, shareVersion: 1, codeShareRequestId: requestId });
+  const revision = Number(w.db.get(agentSessionKey(ORG_A, w.sessionId, "META"))!.revision);
+  await undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`);
+  expect(w.db.get(agentSessionKey(ORG_A, w.sessionId, "META"))!.revision).toBe(revision + 1);
+  expect(w.db.find((item) => item.action === "share")).toEqual([expect.objectContaining({ developer: { developerId: PRIYA, provider: "oidc", displayName: "Priya" } })]);
+  expect(w.db.find((item) => typeof item.text === "string" && item.text.includes("undid sharing"))).toEqual([expect.objectContaining({ actor: { kind: "member", developerId: PRIYA, name: "Priya" } })]);
+  const tx = w.db.transactions().at(-1)!;
+  expect(tx.some((entry) => (entry.Put as { TableName?: string } | undefined)?.TableName === "turns")).toBe(true);
+});
