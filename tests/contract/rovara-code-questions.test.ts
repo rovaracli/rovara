@@ -11,6 +11,9 @@ import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/
 import { builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/contracts/src/index.js";
 import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { intentAnswerItems } from "../../packages/broker/src/rovara-code/question-answers.js";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -104,6 +107,7 @@ describe("answering Understand's questions: the workflow's move", () => {
     const before = waiting();
     const bad: unknown[] = [
       [{ questionId: "q1", optionId: "a" }, { questionId: "q2", text: "x" }, { questionId: "q3", text: "y" }],
+      [{ questionId: "q1", optionId: "a" }, { questionId: "q3", text: "y" }],
       [{ questionId: "q1", optionId: "c" }, { questionId: "q2", text: "x" }],
       [{ questionId: "q1", optionId: "a" }, { questionId: "q2", optionId: "a" }],
       [{ questionId: "q1" }, { questionId: "q2", text: "x" }],
@@ -176,6 +180,13 @@ describe("the questions message", () => {
     expect(text).not.toMatch(/[<>]/u);
     expect(text).not.toContain("```");
     expect(text.length).toBeLessThan(1000);
+  });
+
+  it("is escaped for Slack as every model-written line is: & becomes &amp; and nothing can open a tag", () => {
+    const flow = waiting(questions({ questions: [{ id: "q1", text: "R&D or <!channel> support?" }] }));
+    const text = workflowMessage({ taskId: TASK_ID, workflow: flow })?.text ?? "";
+    expect(text).toContain("1. R&amp;D or !channel support?");
+    expect(text).not.toMatch(/<(?!\/?$)/u);
   });
 
   it("says how to answer", () => {
@@ -427,7 +438,9 @@ describe("POST /v1/app/sessions/{id}/answers", () => {
     const ok = await t.respond(ARJUN, run.sessionId);
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(t.meta(run.taskId).workflow.intent?.answers[0]).toMatchObject({ by: { name: "Arjun Rao" } });
-    expect((t.meta(run.taskId).workflow.intent?.answers[0]!.by as { actorId: string }).actorId).not.toBe(MAYA.developerId);
+    const by = t.meta(run.taskId).workflow.intent?.answers[0]!.by as { actorId: string };
+    expect(by.actorId).toBe(taskOwnerKey(ARJUN.developerId, run.taskId));
+    expect(by.actorId).not.toBe(taskOwnerKey(MAYA.developerId, run.taskId));
   });
 
   it("refuses a project viewer even when the session was shared with them to use", async () => {
@@ -578,6 +591,22 @@ describe("POST /v1/app/sessions/{id}/answers", () => {
   });
 });
 
+describe("the write is bound to the task's own org", () => {
+  it("is refused by its own condition for another org's id, even if the checks before it were skipped", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    const task = t.meta(run.taskId);
+    const from = WorkflowSnapshotSchema.parse(task.workflow);
+    const to = answer(from);
+    const { update } = intentAnswerItems({ tableName: "state" }, { orgId: ORG_B, taskId: run.taskId, from, to, at: LATER });
+    await expect(t.db.send(new TransactWriteCommand({ TransactItems: [update] }))).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    expect(t.meta(run.taskId).workflow.state).toBe("WAITING");
+    const mine = intentAnswerItems({ tableName: "state" }, { orgId: TEST_ORG, taskId: run.taskId, from, to, at: LATER });
+    await t.db.send(new TransactWriteCommand({ TransactItems: [mine.update, mine.dispatch] }));
+    expect(t.meta(run.taskId).workflow.state).toBe("READY");
+  });
+});
+
 describe("Home's question cards", () => {
   const homeOf = async (t: Awaited<ReturnType<typeof world>>, who: Developer) => {
     const reply = await t.dev(who, "GET", "/v1/app/home");
@@ -599,6 +628,16 @@ describe("Home's question cards", () => {
     expect(mine[0]!.buttons.map((button) => button.label)).toContain("Answer");
     expect((await homeOf(t, ARJUN)).filter((card) => card.kind === "question")).toEqual([expect.objectContaining({ cardId: `question:${run.sessionId}` })]);
     expect((await homeOf(t, MIA)).filter((card) => card.kind === "question")).toEqual([]);
+    expect((await homeOf(t, MAX)).filter((card) => card.kind === "question")).toEqual([]);
+  });
+
+  it("do not reach a project viewer, even one the session was shared with to use", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    await t.member(MAX, "developer");
+    expect((await t.share(run.sessionId, MAX, "use")).status).toBe(200);
+    expect((await homeOf(t, MAX)).filter((card) => card.kind === "question")).toHaveLength(1);
+    await t.member(MAX, "viewer");
     expect((await homeOf(t, MAX)).filter((card) => card.kind === "question")).toEqual([]);
   });
 
