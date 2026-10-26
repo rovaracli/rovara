@@ -16,7 +16,7 @@ import {
   spendCounterKey, spendOriginKind, type BudgetScope, type OrgId,
 } from "@agentx/contracts";
 import type { MintTags, ModelAccess } from "../model-proxy/access.js";
-import { Aliases, NOT_EXISTS, errorName, failedIndexes, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
+import { Aliases, NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { effectiveLimits, type SpendSettingsDependencies } from "./settings.js";
 import { agentUsageCounter } from "./payer.js";
 import { cleanUsd } from "./top-ups.js";
@@ -88,6 +88,15 @@ const MAX_SCOPES = 20;
 const SWEEP_PAGE = 50;
 const SWEEP_AT_ONCE = 8;
 const OPEN_KEYS_PK = "OPEN_MODEL_KEYS";
+/** How often a settle is sent again after a transaction conflict. */
+const SETTLE_CONFLICT_RETRIES = 3;
+
+/** DynamoDB's reason for each item of a cancelled transaction (`None`, `ConditionalCheckFailed`, `TransactionConflict`, ...); absent for any other error. */
+function cancellationCodes(error: unknown): string[] | undefined {
+  const reasons = (error as { CancellationReasons?: unknown } | null)?.CancellationReasons;
+  if (errorName(error) !== "TransactionCanceledException" || !Array.isArray(reasons)) return undefined;
+  return reasons.map((reason: { Code?: string } | undefined) => reason?.Code ?? "unknown");
+}
 
 const iso = (epochMs: number): string => new Date(epochMs).toISOString();
 const log = (deps: LedgerDependencies, entry: Record<string, unknown>): void => (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
@@ -280,12 +289,19 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       add: { usd: deltaUsd },
     }),
   ];
-  try {
-    await send(deps, items);
-  } catch (error) {
-    // The first item is the record: it fails when someone else counted first, and that is not an error.
-    if (failedIndexes(error)?.has(0) === true) return "raced";
-    throw error;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await send(deps, items);
+      break;
+    } catch (error) {
+      // The first item is the record: it fails when someone else counted first, and that is not an error.
+      if (failedIndexes(error)?.has(0) === true) return "raced";
+      // Another settle touching the same counters (two keys of one run share every scope counter, the agent's counters and the run total) cancels this
+      // transaction with no condition failed and nothing written. The same items are sent again: they hold only while the amount counted is the one read, so
+      // a retry cannot count twice. A conflict that outlasts the tries leaves the key in the sweep's index, which settles it on its next run.
+      if (!isTransactionConflict(error) || attempt >= SETTLE_CONFLICT_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1) + Math.floor(Math.random() * 20)));
+    }
   }
   await settleAlerts(deps, { ...record, settledUsd: spent });
   return { deltaUsd, settledUsd: spent };
@@ -527,7 +543,7 @@ export async function sweepSpend(deps: LedgerDependencies, now: number, cursor?:
         if ((await settleKey(deps, orgId, keyId, { pastWindow: true })).deltaUsd > 0) page.settled += 1;
       } catch (error) {
         page.failed += 1;
-        log(deps, { event: "spend.final_settle_failed", keyId, error: errorName(error) ?? "unknown" });
+        log(deps, { event: "spend.final_settle_failed", keyId, error: errorName(error) ?? "unknown", ...(cancellationCodes(error) === undefined ? {} : { reasons: cancellationCodes(error) }) });
         if (now <= finalizedAt + 2 * FINALIZED_SETTLE_WINDOW_MS) return;
       }
       await dropIndexItem(deps, item);
@@ -540,7 +556,7 @@ export async function sweepSpend(deps: LedgerDependencies, now: number, cursor?:
       if (delta > 0) page.settled += 1;
     } catch (error) {
       page.failed += 1;
-      log(deps, { event: "spend.settle_failed", keyId, error: errorName(error) ?? "unknown" });
+      log(deps, { event: "spend.settle_failed", keyId, error: errorName(error) ?? "unknown", ...(cancellationCodes(error) === undefined ? {} : { reasons: cancellationCodes(error) }) });
       // A key the proxy has lost for good would otherwise hold its reservation forever.
       if (!(due && now >= record.expiresAt + KEY_EXPIRY_GRACE_MS + FINALIZED_SETTLE_WINDOW_MS)) return;
     }
