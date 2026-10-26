@@ -15,6 +15,9 @@ export const CHANGE_ANYWAY_UNAVAILABLE = "Starting the change isn't available ri
 /** What a follow-up start hears when the task it names is not one it may follow: missing, another org's, not visible, or not ended Answered. One message for all, so nothing is learned from which. */
 export const FOLLOW_UP_UNAVAILABLE_MESSAGE = "That task can't be followed up.";
 
+/** What a follow-up hears when the session runs on a Mac now. */
+export const SESSION_ON_MAC_FOLLOW_UP_MESSAGE = "This session runs on a Mac now, so a follow-up can't be started from here.";
+
 /** The first `max` bytes of `text`, never in the middle of a character. */
 function cutToBytes(text: string, max: number): string {
   const bytes = new TextEncoder().encode(text);
@@ -26,6 +29,7 @@ export async function changeAnywayOnSession(deps: SessionReadDependencies, calle
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "body"}: ${parsed.error.issues[0]?.code === "unrecognized_keys" ? "has a field this route does not take" : "is not valid"}`);
   const { session } = await requireSessionLevel(deps, caller, sessionId, "use", "ask for the change");
+  if (session.kind === "local" || session.where.kind !== "cloud") throw agentXError("SESSION_ON_MAC", SESSION_ON_MAC_FOLLOW_UP_MESSAGE);
   const task = await taskOfSession(deps, session);
   const workflow = task?.workflow;
   const answer = workflow === undefined ? undefined : workflowAnswer(workflow);

@@ -13,6 +13,7 @@ import { UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/con
 import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
+import { SESSION_ON_MAC_ANSWER_MESSAGE } from "../../packages/broker/src/rovara-code/questions.js";
 import { intentAnswerItems } from "../../packages/broker/src/rovara-code/question-answers.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
@@ -400,6 +401,18 @@ describe("Understand's questions reach people", () => {
 });
 
 describe("POST /v1/app/sessions/{id}/answers", () => {
+  it("refuses an answer for a session that now runs on a Mac, like the other session controls do, and changes nothing", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } } as never);
+    const before = JSON.stringify(t.meta(run.taskId).workflow);
+    const reply = await t.respond(MAYA, run.sessionId);
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect(errorOf(reply).message).toBe(SESSION_ON_MAC_ANSWER_MESSAGE);
+    expect(JSON.stringify(t.meta(run.taskId).workflow)).toBe(before);
+    expect(t.understands(run.workspaceId)).toHaveLength(1);
+  });
+
   it("lets the owner answer: Understand runs again at once with the answers in their block, by name, and the task's own planning limit", async () => {
     const t = await world();
     const run = await t.waitingTask();

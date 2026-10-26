@@ -56,6 +56,9 @@ async function peopleRevisionOf(deps: SessionReadDependencies, taskId: string): 
   return typeof item?.["revision"] === "number" ? item["revision"] : undefined;
 }
 
+/** What an answer hears when the session runs on a Mac now. */
+export const SESSION_ON_MAC_ANSWER_MESSAGE = "This session runs on a Mac now, so its questions can't be answered from here.";
+
 /**
  * `POST /v1/app/sessions/{id}/answers` `{ requestId, round, answers }`. Answers the session as `GET` shows it. A repeat of the request writes nothing and answers the same; the same
  * id with other answers, or from another person, is `IDEMPOTENCY_CONFLICT`. A task that is not waiting for these answers (not waiting, already answered, another round) is
@@ -75,6 +78,8 @@ export async function answerIntentOnSession(deps: SessionReadDependencies, calle
   };
   const repeated = await replay();
   if (repeated !== undefined) return repeated;
+  // A session that now runs on a Mac is answered there; the cloud holds no Understand run for it (like stop, retry and take over, which look at where it runs).
+  if (session.kind === "local" || session.where.kind !== "cloud") throw agentXError("SESSION_ON_MAC", SESSION_ON_MAC_ANSWER_MESSAGE);
   if (session.subject.kind !== "task" || isEnded(session)) throw notWaiting();
   const task = await taskOfSession(deps, session);
   if (task === undefined || task.closedAt !== undefined || task.workflow === undefined) throw notWaiting();
