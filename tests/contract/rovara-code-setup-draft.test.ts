@@ -845,7 +845,7 @@ describe("the draft's bookkeeping", () => {
         t.db.set({ ...(t.db.get(setupDraftKey(TEST_ORG, NAME)) as Record<string, unknown>), taskId: randomUUID() });
       }
       return send(command as never);
-    }) as typeof t.db.send;
+    });
     const tasks = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
     const reply = await t.ask();
     expect(reply.status).toBe(409);
@@ -863,7 +863,7 @@ describe("the draft's bookkeeping", () => {
         t.db.set({ ...setupDraftKey(TEST_ORG, NAME), entityType: "SETUP_DRAFT", orgId: TEST_ORG, project: NAME, taskId: randomUUID(), requestId: randomUUID(), requestedBy: KIT.developerId, basedOnRevision: 1, startedAt: new Date().toISOString() });
       }
       return send(command as never);
-    }) as typeof t.db.send;
+    });
     const reply = await t.ask();
     expect(reply.status).toBe(409);
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
