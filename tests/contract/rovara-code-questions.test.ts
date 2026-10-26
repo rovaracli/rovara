@@ -11,7 +11,8 @@ import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/
 import { builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/contracts/src/index.js";
 import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
 import { intentAnswerItems } from "../../packages/broker/src/rovara-code/question-answers.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -95,7 +96,8 @@ describe("answering Understand's questions: the workflow's move", () => {
     const before = waiting();
     const words = "Answer every question, or say 'your call' for the ones you don't mind.";
     for (const answers of [[{ questionId: "q1", optionId: "a" }], [{ questionId: "q2", text: "billing" }],
-      [{ questionId: "q1", optionId: "a" }, { questionId: "q1", optionId: "b" }, { questionId: "q2", text: "x" }]]) {
+      [{ questionId: "q1", optionId: "a" }, { questionId: "q1", optionId: "b" }, { questionId: "q2", text: "x" }],
+      [{ questionId: "q1", optionId: "a" }, { questionId: "q1", optionId: "b" }]]) {
       expect(refusal(() => answer(before, { answers })), JSON.stringify(answers)).toMatchObject({ code: "CONFIG_INVALID", message: words });
     }
     expect(YOUR_CALL_WORDS).toBe("your call");
@@ -631,6 +633,16 @@ describe("Home's question cards", () => {
     expect((await homeOf(t, MAX)).filter((card) => card.kind === "question")).toEqual([]);
   });
 
+  it("are not made for a session that needs its owner for anything else: a plan to review, a step that stopped", async () => {
+    const t = await world();
+    const stopped = await t.understanding();
+    await t.artifact(stopped.workspaceId, stopped.operationId, UNDERSTAND_ARTIFACT_NAME, "{nope");
+    await t.finish(stopped.workspaceId, stopped.operationId, "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
+    await t.refreshSummary(stopped.sessionId);
+    expect(t.sessionRecord(stopped.sessionId).summary.status).toBe("needs_person");
+    expect((await homeOf(t, MAYA)).filter((card) => card.kind === "question")).toEqual([]);
+  });
+
   it("do not reach a project viewer, even one the session was shared with to use", async () => {
     const t = await world();
     const run = await t.waitingTask();
@@ -710,6 +722,33 @@ describe("an owner's Slack reply while the task waits", () => {
     expect(t.meta(run.taskId).workflow).toMatchObject({ state: "WAITING", intent: { answers: [] } });
     expect(await reply(MAYA.slackUserId!, "1695500002.000009", "x".repeat(2000))).toEqual({ outcome: "captured" });
     expect(t.meta(run.taskId).workflow.state).toBe("RUNNING");
+  });
+
+  it("is refused, and answers nothing, when it says nothing once cleaned (control characters only)", async () => {
+    const { t, run, reply } = await slackTask();
+    expect(await reply(MAYA.slackUserId!, "1695500002.000010", "\u0007\u0007")).toEqual({ outcome: "refused" });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ state: "WAITING", intent: { answers: [] } });
+    expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && String(item.sk).startsWith("NOTE#"))).toEqual([]);
+  });
+
+  it("is told apart from its own second delivery even when both read the task still waiting, and from a changed People list", async () => {
+    const { t, run } = await slackTask();
+    const taskKeyOf = { pk: `DEVTASK#${run.taskId}`, sk: "META" };
+    const frozen = structuredClone(t.db.get(taskKeyOf.pk, taskKeyOf.sk)!);
+    // Both deliveries read the task as it was when the questions were asked.
+    const documentClient = { send: (command: unknown) => (command instanceof GetCommand && command.input.Key?.pk === taskKeyOf.pk && command.input.Key?.sk === "META" ? Promise.resolve({ Item: frozen }) : t.db.send(command)) };
+    const deliver = (messageTs: string, peopleAccess?: { peopleRevision?: number; isOwner: boolean }) => recordWorkflowThreadNote(
+      { documentClient, tableName: "state", actions: t.actions, now: Date.now },
+      { taskId: run.taskId, thread, userId: MAYA.slackUserId!, messageTs, eventId: `Ev${messageTs}`, text: "billing", peopleAccess: peopleAccess ?? { isOwner: true } },
+    );
+    expect(await deliver("1695500002.000011")).toEqual({ outcome: "captured" });
+    expect(await deliver("1695500002.000011")).toEqual({ outcome: "duplicate" });
+    expect(t.meta(run.taskId).workflow.intent?.answers).toHaveLength(1);
+    // A reply whose People proof is out of date writes nothing (the ingress is told to try again).
+    t.db.set({ ...t.meta(run.taskId), workflow: frozen.workflow });
+    t.db.set({ pk: `DEVTASK#${run.taskId}`, sk: "PEOPLE", entityType: "TASK_PEOPLE", schemaVersion: 1, revision: 2, people: [{ developerId: MAYA.developerId, role: "owner" }] });
+    await expect(deliver("1695500002.000012", { peopleRevision: 1, isOwner: true })).rejects.toThrow();
+    expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && item.sk === "NOTE#1695500002.000012")).toEqual([]);
   });
 
   it("is not an answer from anyone but the owner: a teammate's reply stays a note and the task keeps waiting", async () => {

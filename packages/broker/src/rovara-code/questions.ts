@@ -169,9 +169,9 @@ const questionSource: HomeCardSource = {
       const workflow = tasks.get(session.subject.taskId)?.["workflow"] as WorkflowSnapshot | undefined;
       const asked = openQuestions(workflow);
       if (asked.length === 0) continue;
-      // The same rule as answering: "can use" now, and a project viewer who is not the owner only watches.
+      // The same rule as answering: "can use" now. A project viewer who is not the owner is capped at "view" by the access rules themselves, however the session was shared.
       const access = await context.accessOf(session);
-      if (access === undefined || !atLeast(access.level, "use") || (!access.owner && access.projectRole === "viewer")) continue;
+      if (access === undefined || !atLeast(access.level, "use")) continue;
       const words = `Rovara has ${asked.length === 1 ? "1 question" : `${String(asked.length)} questions`} about ${quoted(session.title)}`.replace(/[<>]/gu, " ");
       cards.push({
         cardId: `question:${session.sessionId}`, kind: "question", title: session.title, reason: fit(words, ""), sessionId: session.sessionId, at: session.updatedAt,
