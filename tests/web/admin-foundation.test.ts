@@ -102,3 +102,30 @@ it("cancels and evicts an old-org background read before its late response", asy
  try { await act(async () => { void f.query.invalidateQueries({ queryKey: ["admin", "members"] });await new Promise(resolve => setTimeout(resolve, 25)); });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByText("New scope");expect(f.query.getQueryData(oldKey)).toBeUndefined();await act(async () => delayed.resolve({ status: 200, body: { members: [member] } }));expect(screen.queryByText("Maya")).toBeNull(); }
  finally { delayed.resolve({ status: 200, body: { members: [member] } });f.close(); }
 });
+
+it("requires an explicit role review and verifies canonical data before showing a receipt", async () => {
+ let current = { ...member }, writes = 0;const f = mount({ respond: async r => {
+  if (r.method === "PUT") { writes++;expect(r.body).toMatchObject({ expectedRole: "member", role: "admin" });expect(typeof (r.body as {requestId:string}).requestId).toBe("string");current = { ...member, role: "admin" };return { status: 200, body: { developerId: member.developerId, role: "admin", requestId: "envelope" } }; }
+  return { status: 200, body: r.path.endsWith("/members") ? { members: [current] } : f.me };
+ } });
+ await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));expect(screen.getByRole("dialog", { name: "Change company role" })).toBeTruthy();expect(screen.getByText("Current role: Member")).toBeTruthy();
+ fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));expect(writes).toBe(0);expect(screen.getByText("Proposed role: Admin")).toBeTruthy();expect(screen.getByText(/maintainer access to every project/)).toBeTruthy();expect(screen.getByText(/at least one owner/)).toBeTruthy();
+ fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));await screen.findByText("Company role verified: Admin.");expect(writes).toBe(1);expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/members"))).toHaveLength(2);f.close();
+});
+it("keeps admins read-only and never offers an unknown target role for editing", async () => {
+ const f = mount({ role: "admin" });await screen.findByText("Maya");expect(screen.queryByRole("button", { name: /Change role/ })).toBeNull();f.close();
+ const u = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [{ ...member, role: "unknown" }] } : u.me }) });await screen.findByText("Maya");expect(screen.queryByRole("button", { name: /Change role/ })).toBeNull();u.close();
+});
+it("invalidates a review when the target role changes during a background recheck", async () => {
+ const f = mount();await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));
+ f.request.mockImplementation(async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [{ ...member, role: "owner" }] } : f.me }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });
+ expect(await screen.findByText("This person's role changed. Close and review again.")).toBeTruthy();expect((screen.getByRole("button", { name: "Confirm role change" }) as HTMLButtonElement).disabled).toBe(true);expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);f.close();
+});
+it("does not claim success when the canonical role disagrees with the write receipt", async () => {
+ const f = mount({ respond: async r => r.method === "PUT" ? { status: 200, body: { developerId: member.developerId, role: "admin" } } : { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me } });
+ await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));expect(await screen.findByText("The current role could not be verified. Close and reload before making another change.")).toBeTruthy();expect(screen.queryByText("Company role verified: Admin.")).toBeNull();f.close();
+});
+it("blocks self-demotion when the loaded company has only one owner", async () => {
+ const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };const f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [self] } : f.me }) });await screen.findByText("Priya", { selector: "bdi" }).catch(() => undefined);
+ fireEvent.click(await screen.findByRole("button", { name: "Change role for Priya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "member" } });expect(screen.getByText("Add another owner before changing your own role.")).toBeTruthy();expect((screen.getByRole("button", { name: "Review role change" }) as HTMLButtonElement).disabled).toBe(true);f.close();
+});

@@ -176,3 +176,16 @@ it("serves exact-email lookup through the real cookie/CSRF boundary and broker e
  const result = await h.call("POST", path, { cookie: COOKIE, origin: CELL, "x-rovara-csrf": appCsrfTokenFor(SID) }, body);
  expect(result.status).toBe(200);expect(result.body).toEqual({ match: { developerId: WHO, name: "Web member" }, requestId: "web-auth-fixture" });
 });
+
+it("requires a reviewed expectedRole for cookie role changes before any write", async () => {
+ const h = await broker(), target = "b".repeat(64);seedMembership(h.db, target, { orgId: TEST_ORG, role: "member" });
+ for (const body of [{ requestId: randomUUID(), role: "admin" }, { requestId: randomUUID(), role: "admin", expectedRole: null }, { requestId: randomUUID(), role: "admin", expectedRole: "unknown" }]) {
+  const before = h.db.commandNames().length;
+  const response = await h.call("PUT", `/v1/web/org/members/${target}/role`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body);
+  expect(response.status).toBe(400);expect(errorOf(response.body).code).toBe("CONFIG_INVALID");expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("member");
+ }
+});
+it("keeps legacy token role writes available while cookie omission is refused", async () => {
+ const h = await broker(), target = "b".repeat(64);seedMembership(h.db, target, { orgId: TEST_ORG, role: "member" });
+ const response = await h.call("PUT", `/v1/app/org/members/${target}/role`, { authorization: "Bearer test-only-bearer" }, { requestId: randomUUID(), role: "admin" });expect(response.status).toBe(200);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
+});
