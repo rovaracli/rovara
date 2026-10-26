@@ -49,10 +49,12 @@ function isManifestPath(path: string): boolean {
   return MANIFEST_NAMES.has(name) || MANIFEST_PATTERNS.some((pattern) => pattern.test(name));
 }
 
-/** A changed file as the task's diff lists it; the line counts are the diff's when known. */
+/** A changed file as the task's diff lists it; the line counts are the diff's when it has them (a new unstaged file or a binary patch has none, and none is not 0). */
 export interface RiskFile {
   repository: string;
   path: string;
+  /** The old name of a renamed file: a file moved out of a sensitive folder is still a change to it. */
+  renamedFrom?: string | undefined;
   added?: number | undefined;
   removed?: number | undefined;
 }
@@ -85,15 +87,21 @@ function shown(paths: readonly string[]): string {
 export function assessRisk(input: RiskInput): RiskAssessment {
   const high: string[] = [];
   const medium: string[] = [];
-  const sensitive = [...new Set(input.changedFiles.filter((file) => isSensitivePath(file.path)).map((file) => file.path))];
+  // A renamed file counts under both names: the new one and the one it left.
+  const named = (file: RiskFile) => [file.path, ...(file.renamedFrom === undefined ? [] : [file.renamedFrom])];
+  const sensitive = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isSensitivePath)))];
   if (sensitive.length > 0) high.push(`Changes sensitive paths: ${shown(sensitive)}.`);
-  if (input.acceptedFindings.some((finding) => finding.role === "SECURITY") || input.securityFindings > 0) high.push("The security review found a problem that the owner accepted.");
+  if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");
+  else if (input.securityFindings > 0) high.push("The security review reported a problem with this change.");
   if (input.reviewerRisk === "high") high.push("The code review rated this change high risk.");
 
   const lines = input.changedFiles.reduce((total, file) => total + (file.added ?? 0) + (file.removed ?? 0), 0);
   if (lines > RISK_LARGE_CHANGE_LINES) medium.push(`Changes ${lines} lines, more than ${RISK_LARGE_CHANGE_LINES}.`);
+  // A file with no line count (new and not staged, binary, or only moved) may be large: the size of the change is unknown, not small.
+  const uncounted = input.changedFiles.filter((file) => file.added === undefined || file.removed === undefined).length;
+  if (uncounted > 0) medium.push(`${uncounted} ${uncounted === 1 ? "file has" : "files have"} no line count (new or binary), so Rovara can't tell how large the change is.`);
   if (!input.changedFilesComplete) medium.push("Rovara couldn't list every changed file.");
-  const manifests = [...new Set(input.changedFiles.filter((file) => isManifestPath(file.path)).map((file) => file.path))];
+  const manifests = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isManifestPath)))];
   if (manifests.length > 0) medium.push(`Changes dependencies or build files: ${shown(manifests)}.`);
   if (input.report.reviewOnly) medium.push("No automated check applied, so this change was checked by review only.");
   if (input.report.failed.length > 0) medium.push(`${plural(input.report.failed.length, "check", "checks")} failed on the latest code.`);

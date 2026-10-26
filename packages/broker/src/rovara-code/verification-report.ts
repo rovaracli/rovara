@@ -50,10 +50,11 @@ export interface VerificationProject {
   ciBasis?: "required" | "all_checks" | undefined;
 }
 
-/** A changed file as the task view lists it; `added` and `removed` are the diff's line counts when known. */
+/** A changed file as the task view lists it; `added` and `removed` are the diff's line counts when known (absent: the diff gave none, which is not 0). `renamedFrom` is the old name of a renamed file. */
 export interface ChangedFileEntry {
   repository: string;
   path: string;
+  renamedFrom?: string | undefined;
   added?: number | undefined;
   removed?: number | undefined;
 }

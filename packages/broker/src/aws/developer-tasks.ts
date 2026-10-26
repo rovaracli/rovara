@@ -281,7 +281,8 @@ import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
-import { verificationReport, withTestRule, workflowReviewRound, type ChangedFileEntry } from "../rovara-code/verification-report.js";
+import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
+import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 
@@ -1343,12 +1344,9 @@ async function changedFiles(deps: DeveloperTaskRouteDependencies, task: Develope
 
 /** How many of the task's newest coding operations are searched for the diff of its code. */
 const CANDIDATE_DIFF_OPERATIONS = 8;
-/** The workspace diff's own notes that the file list is not the whole change (a cut diff, or a base that is gone so only uncommitted changes show). */
-const INCOMPLETE_DIFF_NOTES = [/\[workspace diff truncated/u, /\[the commit this workspace was prepared at is not in this repository/u];
-
 /**
  * The files the task's code changes, from the newest coding operation that published a workspace diff (a review does not publish one). Redacted by `changedFiles`. `complete` is false when the diff
- * was cut (by the worker or by the read), when its base commit was gone, or when it lists as many files as `diffStat` keeps, so the pull request's risk is never judged low on part of a change.
+ * was cut (by the worker or by the read), when its base commit was gone, or when it lists as many files as are kept, so the pull request's risk is never judged low on part of a change.
  * Undefined when no diff can be read: storage trouble logs the error name only.
  */
 export async function candidateChangedFiles(
@@ -1362,19 +1360,15 @@ export async function candidateChangedFiles(
       if (diff.size === 0) return { files: [], complete: true };
       if (!ownArtifactKey({ ownerKey: task.ownerKey, workspaceId: task.workspaceId } as DeveloperTaskRecord, operation.id, diff.objectKey)) continue;
       const text = await deps.actions.readArtifact(diff.objectKey, DIFF_READ_BYTES);
-      const stat = diffStat(text);
-      const files: ChangedFileEntry[] = stat.map((file) => ({ repository: redactText(file.repository), path: redactText(file.path), added: file.added, removed: file.removed }));
-      const complete = (diff.size === undefined || diff.size <= DIFF_READ_BYTES) && stat.length < DIFF_STAT_FILES_MAX && !INCOMPLETE_DIFF_NOTES.some((note) => note.test(text));
-      return { files, complete };
+      // Read by Rovara Code's own reader: Git's quoted names and both names of a rename are kept, and a file with no line count has none (not 0).
+      const read = parseChangedFiles(text);
+      return { files: read.files, complete: read.complete && (diff.size === undefined || diff.size <= DIFF_READ_BYTES) };
     }
   } catch (error) {
     log(deps, { event: "developer.task_changed_files_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
   }
   return undefined;
 }
-
-/** `diffStat` keeps this many files; a diff that reaches it may have more. */
-const DIFF_STAT_FILES_MAX = 200;
 
 /** R18: what the latest task operation left, and the task's pull requests. Callers load the owned task first. */
 async function taskDetails(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<TaskDetails> {

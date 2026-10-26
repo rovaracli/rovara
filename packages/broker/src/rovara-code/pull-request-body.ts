@@ -90,12 +90,22 @@ function changedLines(context: PullRequestBodyContext, limit: number): string[] 
   const read = context.changedFiles;
   if (read === undefined) return ["Rovara couldn't list the changed files."];
   if (read.files.length === 0) return [read.complete ? "No changed files were listed." : "Rovara couldn't list the changed files."];
+  // A file the diff gave no count for is unknown, not 0 lines: the totals say "at least" and the file says it was not counted.
+  const uncounted = read.files.filter((file) => file.added === undefined || file.removed === undefined).length;
   const added = read.files.reduce((total, file) => total + (file.added ?? 0), 0);
   const removed = read.files.reduce((total, file) => total + (file.removed ?? 0), 0);
   const repositories = new Set(read.files.map((file) => file.repository));
+  const countedFiles = read.files.length - uncounted;
+  const counts = uncounted === 0 ? `+${added} -${removed}`
+    : countedFiles === 0 ? "lines not counted"
+      : `at least +${added} -${removed}; ${uncounted} ${uncounted === 1 ? "file" : "files"} not counted`;
   return [
-    `${read.files.length}${read.complete ? "" : " or more"} file${read.files.length === 1 ? "" : "s"} changed (+${added} -${removed})${read.complete ? "" : "; the list may be incomplete"}.`,
-    ...read.files.slice(0, limit).map((file) => `- ${repositories.size > 1 ? `${inertLine(file.repository, 60)}: ` : ""}${inertLine(file.path, ITEM_MAX)} (+${file.added ?? 0} -${file.removed ?? 0})`),
+    `${read.files.length}${read.complete ? "" : " or more"} file${read.files.length === 1 ? "" : "s"} changed (${counts})${read.complete ? "" : "; the list may be incomplete"}.`,
+    ...read.files.slice(0, limit).map((file) => {
+      const size = file.added === undefined || file.removed === undefined ? "lines not counted" : `+${file.added} -${file.removed}`;
+      const moved = file.renamedFrom === undefined ? "" : ` renamed from ${inertLine(file.renamedFrom, ITEM_MAX)}`;
+      return `- ${repositories.size > 1 ? `${inertLine(file.repository, 60)}: ` : ""}${inertLine(file.path, ITEM_MAX)}${moved} (${size})`;
+    }),
     ...(read.files.length > limit && limit > 0 ? [`- and ${read.files.length - limit} more`] : []),
   ];
 }
@@ -161,8 +171,10 @@ export function rovaraPullRequestBody(input: {
   reviewLines: (listed: number) => string[];
   pageUrl: string | undefined;
 }): string {
+  // The plan's words are a model's: they sit under their own heading as a quotation (a quotation holds a heading, a fence or a rule inside it), so they cannot pose as one of Rovara's sections.
   const summary = summaryOf(input.summary);
-  const head = summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)];
+  const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${line}`);
+  const head = ["## Plan summary", ...quoted];
   const tail = [...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
   const fixed = byteLength(assemble(head, []));
@@ -170,6 +182,7 @@ export function rovaraPullRequestBody(input: {
   const body = assemble(head, block);
   if (byteLength(body) <= PULL_REQUEST_BODY_MAX_BYTES) return body;
   // Even the shortest lists don't fit beside the summary: the summary gives way, never the block.
-  const short = assemble([Array.from(head[0]!).slice(0, 200).join("")], block);
+  const first = `> ${Array.from(quoted[0]!.slice(2)).slice(0, 200).join("")}`;
+  const short = assemble(["## Plan summary", first], block);
   return byteLength(short) <= PULL_REQUEST_BODY_MAX_BYTES ? short : assemble([], block);
 }
