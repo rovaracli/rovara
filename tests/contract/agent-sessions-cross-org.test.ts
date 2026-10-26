@@ -22,6 +22,7 @@ import { agentsCli, cleanHarnessDirs, type Answer } from "../support/agents-cli-
 import { httpControlPlaneClient, createAgentXMcpServer } from "../../packages/mcp/src/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { projectorWorld } from "../support/agent-session-projector-world.js";
 import { chainRunViewOf } from "../support/chain-run-view.js";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -353,4 +354,17 @@ it("M1 refuses inside-org subscriptions to private task and unshared local sessi
     const token = (await w.call(MIA, ORG_A, "POST", "/v1/app/realtime/token") as { token: string }).token;
     expect(await authorizeRealtime({ authorizationToken: token, requestContext: { operation: "EVENT_SUBSCRIBE", channel: sessionChannel(ORG_A, w.s4.sessionId) } }, { ...w.table, publicKey: async () => jwk, log: () => undefined })).toEqual({ isAuthorized: true, ttlOverride: 0 });
   });
+});
+
+it("M3 rejects forged images through the real projector and refresh write path", async () => {
+  const p = projectorWorld();
+  const a = p.open();
+  p.open({ orgId: ORG_B, owner: BO });
+  p.operation(a.workspaceId, "task", "RUNNING");
+  const image = { pk: `ORG#${ORG_A}#TASK_SPENT#${a.taskId}`, sk: "META", orgId: ORG_B, settledUsd: 3 };
+  const before = structuredClone(p.w.db.find(() => true));
+  const offset = p.w.db.commandNames().length;
+  expect(await projectSessions([p.stream(image)], p.deps, { deadline: p.w.clock.now + 1000 })).toMatchObject({ refreshed: 0, unchanged: 0 });
+  expect(p.w.db.commandNames().slice(offset).filter((name) => WRITE.test(name))).toEqual([]);
+  expect(p.w.db.find(() => true)).toEqual(before);
 });
