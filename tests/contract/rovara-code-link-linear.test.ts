@@ -399,9 +399,9 @@ describe("replacing is one transaction", () => {
         h.db.set({ ...sessionSurfaceKey(ORG_A, { kind: "linear_issue", issueId: "ENG-143", url: KEY_URL }), entityType: "SESSION_SURFACE", orgId: ORG_A, sessionId: other.sessionId, kind: "linear_issue", at: "2026-10-22T09:30:00.000Z" });
       }
       return original(command as never);
-    }) as typeof h.db.send;
+    });
     expect(await code(h.link(PRIYA, first.sessionId, "ENG-143", { replace: true }))).toEqual({ code: "CONFIG_INVALID", message: "This issue already follows another session." });
-    h.db.send = original as typeof h.db.send;
+    h.db.send = original;
     expect(h.binding(first.sessionId)?.binding.issueId).toBe("ENG-142");
     expect(h.surface("ENG-142")).toMatchObject({ sessionId: first.sessionId });
     expect(h.audit.recorded().map((event) => event.action)).toEqual(["session.linked"]);
@@ -421,9 +421,9 @@ describe("replacing is one transaction", () => {
         if (reads === 2) h.db.delete(sessionBindingKey(ORG_A, sessionId, "linear_issue"));
       }
       return original(command as never);
-    }) as typeof h.db.send;
+    });
     expect(await code(h.link(PRIYA, sessionId, "ENG-143", { replace: true }))).toEqual({ code: "CONFIG_INVALID", message: "This session's link changed just now. Check it and try again." });
-    h.db.send = original as typeof h.db.send;
+    h.db.send = original;
     expect(h.surface("ENG-143")).toBeUndefined();
     expect(h.audit.recorded().map((event) => event.action)).toEqual(["session.linked"]);
   });
@@ -443,9 +443,9 @@ describe("replacing is one transaction", () => {
           else h.db.set({ ...key, entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId, binding: { kind: "linear_issue", issueId: "ENG-777", url: "https://linear.app/issue/ENG-777" }, at: "2026-10-22T09:30:00.000Z" });
         }
         return original(command as never);
-      }) as typeof h.db.send;
+      });
       expect(await code(h.link(PRIYA, sessionId, "ENG-143", { replace: true })), change).toMatchObject({ code: "CONFIG_INVALID" });
-      h.db.send = original as typeof h.db.send;
+      h.db.send = original;
       expect(h.surface("ENG-143"), change).toBeUndefined();
       expect(h.audit.recorded().map((event) => event.action), change).toEqual(["session.linked"]);
     }
@@ -505,7 +505,7 @@ describe("the open pull request's description follows the binding at once", () =
     const { sessionId, taskId } = h.seedSession();
     h.withWorkflow(taskId, "1.1.0", ["OPEN"]);
     const bare = { ...h.deps, control: undefined } as never;
-    const reply = await routeAgentSessionRequest(bare, h.caller(PRIYA, ORG_A), { method: "POST", path: `/v1/app/sessions/${sessionId}/bindings`, headers: {}, requestId: "r", body: JSON.stringify({ linear: "ENG-142" }) } as never, new URL(`/v1/app/sessions/${sessionId}/bindings`, "https://cell.example.com")) as { pullRequest: { description: string } };
+    const reply = await routeAgentSessionRequest(bare, h.caller(PRIYA, ORG_A), { method: "POST", path: `/v1/app/sessions/${sessionId}/bindings`, headers: {}, requestId: "r", body: JSON.stringify({ linear: "ENG-142" }) }, new URL(`/v1/app/sessions/${sessionId}/bindings`, "https://cell.example.com")) as { pullRequest: { description: string } };
     expect(reply.pullRequest.description).toBe("failed");
     expect(h.binding(sessionId)?.binding.issueId).toBe("ENG-142");
   });

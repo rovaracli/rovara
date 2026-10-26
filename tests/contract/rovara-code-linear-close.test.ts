@@ -8,7 +8,6 @@ import { ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 
 const issue = (issueId: string, url = "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug"): SessionBinding => ({ kind: "linear_issue", issueId, url });
 const THREAD: SessionBinding = { kind: "slack_thread", teamId: "T0TEAM001", channelId: "C0CHAN001", threadTs: "1695500000.000031" };
-const closers = (text: string) => text.match(/\b(?:fix|fixes|fixed|fixing|close|closes|closed|closing|resolve|resolves|resolved|resolving|complete|completes|completed|completing)[\s:]+[a-z][a-z0-9]*-\d+/giu) ?? [];
 
 describe("linearIssueKeyOf", () => {
   it("reads the key from the issue id, or from the issue's link", () => {
