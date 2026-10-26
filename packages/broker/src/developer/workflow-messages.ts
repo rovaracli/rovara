@@ -561,23 +561,28 @@ function waitingForMerge(workflow: WorkflowSnapshot): string | undefined {
   if (required.length === 0) return undefined;
   const name = (pullRequest: { url: string; number: number }) => link(pullRequest.url, `PR #${pullRequest.number}`);
   const merged = required.filter((pullRequest) => pullRequest.state === "MERGED").length;
+  // Rovara Code (version 2, staging 0.4.11 Bug G): Merge is pressed in Rovara once a person has approved the pull request on GitHub.
+  const tracked = workflow.definitionVersion === "1.1.0";
+  const review = (many: boolean): string => (tracked
+    ? `Once ${many ? "they're" : "it's"} approved on GitHub, press Merge in Rovara; I'll finish this task when ${many ? "they're all" : "it's"} merged.`
+    : `${many ? "Review them and merge them" : "Review it and merge it"} on GitHub; I'll finish this task when ${many ? "they're all" : "it's"} merged.`);
   if (merged === 0) {
     // Plan 6 Task 17: Rovara brought a pull request up to date with its base branch (a clean merge, not a fix).
     const synced = required.filter((pullRequest) => pullRequest.syncedFrom !== undefined);
     if (workflow.pullRequestUpdatedAt !== undefined && synced.length > 0) {
       return required.length === 1
-        ? `Brought ${name(required[0]!)} up to date with its base branch. Review it and merge it on GitHub; I'll finish this task when it's merged.`
-        : `Brought ${pullRequestNames(synced, name)} up to date with the base branch. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+        ? `Brought ${name(required[0]!)} up to date with its base branch. ${review(false)}`
+        : `Brought ${pullRequestNames(synced, name)} up to date with the base branch. ${review(true)}`;
     }
     // After approved PR feedback, AgentX pushed the fixed code to the same pull requests.
     if (workflow.pullRequestUpdatedAt !== undefined) {
       return required.length === 1
-        ? `Pushed the fix to ${name(required[0]!)}. Review it and merge it on GitHub; I'll finish this task when it's merged.`
-        : `Pushed the fix to ${pullRequestNames(required, name)}. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+        ? `Pushed the fix to ${name(required[0]!)}. ${review(false)}`
+        : `Pushed the fix to ${pullRequestNames(required, name)}. ${review(true)}`;
     }
     return required.length === 1
-      ? `Draft pull request opened: ${name(required[0]!)}. Review it and merge it on GitHub; I'll finish this task when it's merged.`
-      : `Draft pull requests opened: ${required.map(name).join(", ")}. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+      ? `Draft pull request opened: ${name(required[0]!)}. ${review(false)}`
+      : `Draft pull requests opened: ${required.map(name).join(", ")}. ${review(true)}`;
   }
   const remaining = required.filter((pullRequest) => pullRequest.state !== "MERGED")
     .map((pullRequest) => `${name(pullRequest)} is still ${pullRequest.state === "CLOSED" ? "closed" : "open"}.`).join(" ");

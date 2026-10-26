@@ -538,7 +538,8 @@ import { createDeveloperApiConfiguration } from "./workflow-dependencies-configu
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, wakeTrackingRow, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
-import type { CodeMergeHost } from "../rovara-code/merge.js";
+import { mergeViewOf, type CodeMergeHost } from "../rovara-code/merge.js";
+import type { MergeTrackingItem } from "@agentx/contracts";
 import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../rovara-code/ci-fix.js";
 import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
 import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
@@ -2144,6 +2145,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...(agents?.agentSessions === undefined ? {} : { agentSessions: agents.agentSessions }),
+          // The task page says to press Merge in Rovara when it may be pressed (Bug G); this page carries no agent routes, so it carries the merge view alone.
+          ...(agents?.codeMerge === undefined ? {} : { codeMergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[], viewer: string) => mergeViewOf(agents, task, items, viewer) }),
           ...workflowApplicationRouteDependencies(dependencies) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
