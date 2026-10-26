@@ -37,7 +37,7 @@ import { parseControlBody } from "../agent-sessions/stop.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { createPendingChange, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../agents/approvals.js";
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";
-import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { ownerDisplayName, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { GitHubTokenScope, MergePullRequestResult } from "../github-app.js";
 import { parseGitHubRepository } from "../github-app.js";
 import type { PullRequestStatus } from "../github-pull-status.js";
@@ -189,8 +189,7 @@ export function requiredPullRequests(workflow: WorkflowSnapshot): PullRequestEnt
 }
 
 const requesterNameOf = (task: DeveloperTaskRecord): string => {
-  const owner = (task as { currentOwner?: { name?: unknown } }).currentOwner?.name;
-  const name = typeof owner === "string" ? owner : task.developerName;
+  const name = ownerDisplayName(task);
   return name.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 80) || "the person who asked";
 };
 

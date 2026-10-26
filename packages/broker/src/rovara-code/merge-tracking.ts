@@ -34,6 +34,7 @@ import { sessionEventItem } from "../agent-sessions/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { prHeadItems } from "./head-index.js";
+import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
@@ -66,7 +67,7 @@ export interface TrackingGithub {
 }
 
 /** The part of the task record tracking reads. */
-export interface TrackedTask {
+export interface TrackedTask extends TaskOwnerSource {
   taskId: string;
   orgId?: OrgId | undefined;
   project: string;
@@ -77,9 +78,7 @@ export interface TrackedTask {
   releasedAt?: string | undefined;
   workflow?: WorkflowSnapshot | undefined;
   /** Who asked for the task (Plan 6 Task 19): the approval rule tells a requester's own approval from a reviewer's. */
-  developerId?: string | undefined;
   startedBy?: { developerId?: string | undefined } | undefined;
-  currentOwner?: unknown;
   /** The task's frozen agent: its recipe's digest, which an automatic decision is bound to. */
   agent?: { digest?: string | undefined } | undefined;
 }

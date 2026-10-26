@@ -2,6 +2,7 @@
 // on GitHub is governed by the repository's own branch protection. Pure except for the lookups of who is a member, which the callers pass in already read.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgRoleSchema, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 import type { PullRequestReview } from "../github-pull-status.js";
 import { githubUserOfMember, memberForGithubUser, type GithubMemberDependencies } from "./github-members.js";
 
@@ -74,20 +75,22 @@ export function humanApprovalOf(input: ApprovalInput): HumanApproval {
 // ---- the people
 
 /** The part of a task record that says who asked for it. */
-export interface RequesterSource {
-  developerId?: string | undefined;
+export type RequesterSource = TaskOwnerSource & {
   startedBy?: { developerId?: string | undefined } | undefined;
-  currentOwner?: unknown;
-}
+};
 
-/** The developers who asked for the task: its creator, whoever started it, and whoever owns it now. */
+/**
+ * The developers who asked for the task: its creator, whoever started it, and whoever owns it now. The owner comes from `tryEffectiveTaskOwner` (a take-over or a merge moves it), never
+ * from the stored take-over record itself; `undefined` for an owner that cannot be read, which `requesterGithubIds` does not take for "no extra requester".
+ */
 export function requesterIds(task: RequesterSource): string[] {
-  const owner = (task.currentOwner as { developerId?: unknown } | undefined)?.developerId;
-  return [...new Set([task.developerId, task.startedBy?.developerId, typeof owner === "string" ? owner : undefined].filter((id): id is string => typeof id === "string" && id !== ""))];
+  const owner = tryEffectiveTaskOwner(task)?.developerId;
+  return [...new Set([task.developerId, task.startedBy?.developerId, owner].filter((id): id is string => typeof id === "string" && id !== ""))];
 }
 
-/** The requesters' GitHub accounts, or "unlinked" when any of them has none (their approval cannot be told from a reviewer's). */
+/** The requesters' GitHub accounts, or "unlinked" when any of them has none (their approval cannot be told from a reviewer's), or when the owner now cannot be read (who asked cannot be told). */
 export async function requesterGithubIds(deps: GithubMemberDependencies, orgId: OrgId, task: RequesterSource): Promise<string[] | "unlinked"> {
+  if (isTaskTakenOver(task) && tryEffectiveTaskOwner(task) === undefined) return "unlinked";
   const ids: string[] = [];
   for (const developerId of requesterIds(task)) {
     const github = await githubUserOfMember(deps, orgId, developerId);

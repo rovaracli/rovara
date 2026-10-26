@@ -7,6 +7,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
+import { requesterGithubIds, requesterIds } from "../../packages/broker/src/rovara-code/approval.js";
 import { developerReply } from "../../packages/broker/src/aws/json-reply.js";
 import { humanApprovalOf, mergeReadiness, mergeViewFromReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
@@ -993,5 +994,23 @@ describe("round trip: the merge answers, as the broker sends them", () => {
     expect((cases[0] as { message: string }).message.startsWith(long.message!.slice(0, -1))).toBe(true);
     expect(mergeViewFromReadiness({ ready: false, message: M.checks })).toEqual({ ready: false, message: M.checks });
     expect(mergeViewFromReadiness({ ready: true })).toEqual({ ready: true });
+  });
+});
+
+// ---- who asked for the task follows the task's owner (task-owner-reads: no raw read of a take-over)
+
+describe("the requesters of a task", () => {
+  const task = (extra: Record<string, unknown> = {}) => ({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", developerId: "a".repeat(64), developerName: "Ana", provider: "oidc" as const, startedBy: { developerId: "b".repeat(64) }, ...extra }) as never;
+  const taker = { developerId: "c".repeat(64), name: "Cy", provider: "oidc", since: "2026-10-25T12:00:00.000Z" };
+
+  it("are the creator, whoever started it and the owner now, who is the taker after a take-over", () => {
+    expect(requesterIds(task())).toEqual(["a".repeat(64), "b".repeat(64)]);
+    expect(requesterIds(task({ currentOwner: taker }))).toEqual(["a".repeat(64), "b".repeat(64), "c".repeat(64)]);
+  });
+
+  it("cannot be told when the taker's record is not whole, and no approval is then taken for a reviewer's", async () => {
+    const broken = task({ currentOwner: { developerId: "c".repeat(64) } });
+    expect(requesterIds(broken)).toEqual(["a".repeat(64), "b".repeat(64)]);
+    expect(await requesterGithubIds({} as never, ORG_A, broken)).toBe("unlinked");
   });
 });
