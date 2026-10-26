@@ -813,7 +813,7 @@ describe("a pushed fix on a version 2 task", () => {
       // Our write lands, and then Rovara's feedback rewrite (which read the description before it) writes its old copy over it.
       t.state.body = before;
       void change;
-      return { number: 42, url: PR_URL, state: "open" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
+      return { number: 42, url: PR_URL, state: "closed" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
     });
     const rewrite = (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine;
     await rewrite(t.record() as never, "ENG-143");
@@ -841,7 +841,7 @@ describe("a pushed fix on a version 2 task", () => {
       // The feedback rewrite writes what it computed from the binding it read (ENG-142); the person's replace commits at that moment, and its own write is the one that gets undone.
       if (change.body !== undefined) t.state.body = change.body;
       rebind(t.harness, record.orgId, "ENG-999");
-      return { number: 42, url: PR_URL, state: "open" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
+      return { number: 42, url: PR_URL, state: "closed" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
     });
     await t.finishReviews();
     const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
