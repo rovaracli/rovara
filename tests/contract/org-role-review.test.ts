@@ -63,3 +63,9 @@ it("uses a fixed validation refusal without echoing untrusted field names", asyn
 for (const role of ["admin", "member", "maintainer", "viewer", "future-role"]) it(`refuses self-promotion by a live ${role}`, async () => {
  const f = fixture(role);expect(await f.request({ requestId: id, expectedRole: role === "admin" ? "admin" : "member", role: "owner" }, actor)).toEqual({ code: "FORBIDDEN" });expect(f.role(actor)).toBe(role);expect(f.audit.recorded()).toEqual([]);
 });
+it("recovers the stored outcome when a committed transaction loses its acknowledgement", async () => {
+ const f = fixture(), send = f.db.send.bind(f.db);let lose = true;
+ f.db.send = async command => { const answer = await send(command);if (command.constructor.name === "TransactWriteCommand" && lose) { lose = false;throw Object.assign(new Error("fixture timeout"), { name: "TimeoutError" }); }return answer; };
+ expect(await f.request()).toEqual({ result: { developerId: target, role: "admin" } });expect(f.role()).toBe("admin");expect(f.audit.pending()).toHaveLength(1);expect(f.db.transactions()).toHaveLength(1);
+ expect(await f.request()).toEqual({ result: { developerId: target, role: "admin" } });expect(f.db.transactions()).toHaveLength(1);expect(f.audit.recorded()).toHaveLength(1);
+});
