@@ -447,7 +447,7 @@ describe("planMissingParts", () => {
   });
 
   it("counts a claim that names a test, anywhere in the tree, in any case", () => {
-    for (const text of ["Unit tests cover the retry.", "TESTING: retry is asserted.", "Coverage of the timeout path is added.", "charge.spec.ts is extended with a timeout case.", "A test proves a timed-out payment is retried once and never charged twice."]) {
+    for (const text of ["Unit tests cover the retry.", "TESTING: retry is asserted.", "Coverage of the timeout path is added.", "charge.spec.ts is extended with a timeout case.", "A test proves a timed-out payment is retried once and never charged twice.", "Nothing here is risky, but one extra test proves the retry is bounded."]) {
       expect(planMissingParts(planWith([{ ...claim("1", "Timeouts are retried.", CODE), children: [claim("1.1", text)] }])), text).toEqual([]);
     }
     for (const text of ["The latest change is shipped.", "Contest mode is added.", "Attestation is stored."]) {
