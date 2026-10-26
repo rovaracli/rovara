@@ -19,7 +19,7 @@ import { noticesOf } from "../../packages/broker/src/developer/notifications.js"
 import { widenedShareMessage } from "../../packages/broker/src/developer/share-messages.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { taskIndexKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, PRIYA, ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 
