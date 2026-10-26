@@ -90,8 +90,11 @@ export interface MergeTrackingDependencies {
   recordedHead?(workspaceId: string, repositoryId: string, number: number): Promise<string | undefined>;
   /** The org's autonomy for Rovara Code, for the deciders; `prepare` when not given. */
   autonomy?(task: TrackedTask): Promise<Autonomy> | Autonomy;
-  /** The digest of the recipe that gave the autonomy, which an automatic feedback decision is bound to (Plan 6 Task 16). */
-  recipeDigest?(task: TrackedTask): Promise<string | undefined> | string | undefined;
+  /**
+   * The autonomy and the digest of the frozen recipe that gave it, read together (one read, so the two cannot disagree): an automatic feedback decision is bound to both (Plan 6 Task 16).
+   * Preferred over `autonomy` where given.
+   */
+  autonomyBinding?(task: TrackedTask): Promise<{ autonomy: Autonomy; recipeDigest?: string | undefined }>;
   /**
    * Whether the waiting feedback round can be fixed on its own: its stored report and comments are read and found sound, every fix is one to make, and the checks it changes are acceptable (Plan 6
    * Task 16). Without it nothing is decided on Rovara's own.
@@ -662,9 +665,10 @@ async function trackOne(
     let action: MergeActionRequest | undefined;
     const github = deps.github;
     const readLog = github.getJobLogTail === undefined ? undefined : (jobId: string) => github.getJobLogTail!(url, jobId, scope, budget);
-    const recipeDigest = await deps.recipeDigest?.(task);
+    const bound = deps.autonomyBinding !== undefined ? await deps.autonomyBinding(task) : { autonomy: await (deps.autonomy?.(task) ?? "prepare") };
+    const recipeDigest = bound.recipeDigest;
     let ranOut = false;
-    const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now, {
+    const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, bound.autonomy, now, {
       tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
       repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
       ...(readLog === undefined ? {} : { readJobLog: readLog }),

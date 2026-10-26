@@ -325,8 +325,7 @@ function feedbackWorld(options: { pullRequests?: Array<{ repositoryId: string; n
   (fixture.deps as { github: unknown }).github = github;
   for (const pr of options.pullRequests ?? [{ repositoryId: "payments", number: 7 }]) github.statuses.set(pr.number, status({ number: pr.number, headSha: pr.repositoryId === "web" ? "c".repeat(40) : HEAD, draft: false, ...(options.red === true && pr.number === 7 ? { checks: [redCheck()] } : {}) }));
   fixture.setTask({ workflow: (options.card ?? pendingCard()).workflow });
-  (fixture.deps as { autonomy?: unknown }).autonomy = () => options.autonomy ?? "prepare";
-  (fixture.deps as { recipeDigest?: unknown }).recipeDigest = () => TRACKED_APPROVAL;
+  (fixture.deps as { autonomyBinding?: unknown }).autonomyBinding = async () => ({ autonomy: options.autonomy ?? "prepare", recipeDigest: TRACKED_APPROVAL });
   const check = options.roundCheck;
   (fixture.deps as { feedbackRoundCheck?: unknown }).feedbackRoundCheck = check === undefined ? async () => true : typeof check === "boolean" ? async () => check : check;
   github.permissions.set("maya", "write");
@@ -799,6 +798,13 @@ describe("feedbackApprovalMatchesDecision", () => {
     expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" } }, {})).toBe(false);
     expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" } }, { autonomy: { level: "run" } })).toBe(false);
     expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY" }, { autonomy: { level: "run" } })).toBe(false);
+  });
+
+  it("the autonomy is compared field by field: a stored map comes back in any key order", () => {
+    const stored = { level: "prepare", recipeDigest: hash("9") };
+    const reordered = JSON.parse(JSON.stringify({ recipeDigest: hash("9"), level: "prepare" })) as typeof stored;
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: reordered }, { autonomy: stored })).toBe(true);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: reordered }, { autonomy: { ...stored, recipeDigest: hash("8") } })).toBe(false);
   });
 
   it("both name the same failing checks, or none", () => {

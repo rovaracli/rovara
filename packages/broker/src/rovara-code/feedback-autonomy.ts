@@ -287,11 +287,12 @@ export async function sendFeedbackReplies(deps: FeedbackReplyDependencies, task:
  * made under; a person's carries none), and both name the same failing checks (or none).
  */
 export function feedbackApprovalMatchesDecision(
-  decision: { actorRole: "TASK_OWNER" | "ROVARA_AUTONOMY"; autonomy?: unknown; ciFailures?: { digest: string } | undefined },
-  approval: { autonomy?: unknown; ciFailuresDigest?: string | undefined },
+  decision: { actorRole: "TASK_OWNER" | "ROVARA_AUTONOMY"; autonomy?: { level: string; recipeDigest?: string | undefined } | undefined; ciFailures?: { digest: string } | undefined },
+  approval: { autonomy?: { level: string; recipeDigest?: string | undefined } | undefined; ciFailuresDigest?: string | undefined },
 ): boolean {
+  // Field by field: a stored map comes back from DynamoDB in no particular key order.
   const sameAutonomy = decision.actorRole === "TASK_OWNER" ? approval.autonomy === undefined
-    : approval.autonomy !== undefined && decision.autonomy !== undefined && JSON.stringify(decision.autonomy) === JSON.stringify(approval.autonomy);
+    : approval.autonomy !== undefined && decision.autonomy !== undefined && decision.autonomy.level === approval.autonomy.level && decision.autonomy.recipeDigest === approval.autonomy.recipeDigest;
   return sameAutonomy && decision.ciFailures?.digest === approval.ciFailuresDigest;
 }
 

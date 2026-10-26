@@ -127,7 +127,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(finished).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 0, conflict: 0, feedbackAuto: 1 } });
     expect(finished.fixSource).toBeUndefined();
     expect(finished.feedbackDecisions).toEqual([expect.objectContaining({
-      decision: "APPROVE", actorId: "rovara", actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" }, selectedCommentIds: [comment.id],
+      decision: "APPROVE", actorId: "rovara", actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare", recipeDigest: RECIPE_DIGEST }, selectedCommentIds: [comment.id],
     })]);
     // Maya's write access was read when Rovara decided, and again when the worker started the run.
     expect(github.calls.filter((call) => call.startsWith("permission:"))).toEqual(["permission:maya", "permission:maya"]);

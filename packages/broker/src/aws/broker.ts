@@ -12718,8 +12718,8 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     },
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
     autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
-    // The digest of the task's frozen recipe, the one that gave the autonomy: an automatic decision on review comments is bound to it (Plan 6 Task 16).
-    recipeDigest: async (task) => task.orgId === undefined ? undefined : (await taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), undefined, () => companyAutonomyLimit(dependencies, task.orgId!))).recipeDigest,
+    // The autonomy and the digest of the task's frozen recipe, read together: an automatic decision on review comments is bound to both (Plan 6 Task 16).
+    autonomyBinding: (task) => task.orgId === undefined ? Promise.resolve({ autonomy: "prepare" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
     // Whether the waiting round's stored report and comments are sound enough for Rovara to decide it (Plan 6 Task 16); the report is read and checked as the owner's card reads it.
     feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
     ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({
