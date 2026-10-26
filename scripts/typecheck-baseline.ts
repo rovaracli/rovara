@@ -205,7 +205,8 @@ const LINT_CONFIG = "tsconfig.lint.json";
 const require = createRequire(import.meta.url);
 
 /** Node's arguments for the tsc run. The lint project covers every test file, which outgrows Node's
- * default heap on a CI runner, so it gets the same 6 GB that `npm run lint` gives ESLint. */
+ * default heap on a CI runner, so it gets 8 GB (the merged Plan 6 tree needs more than the 6 GB it had; `npm run lint` still gives ESLint 6 GB, which is a different tool and is not
+ * to be aligned with this value). CI runners must have the memory: a private-repo standard runner is about 7-8 GB, so check the first CI run of the merged branch. */
 export function tscArguments(tscPath: string, heapMb = 8192): string[] {
   return [`--max-old-space-size=${heapMb}`, tscPath, "-p", LINT_CONFIG, "--noEmit", "--pretty", "false"];
 }
