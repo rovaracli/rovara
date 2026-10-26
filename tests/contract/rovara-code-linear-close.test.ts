@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { sessionBindingKey, type SessionBinding } from "@agentx/contracts";
 import { inertLine } from "../../packages/broker/src/rovara-code/inert-text.js";
-import { breakLinearKeys, linearCloseLine, linearIssueKeyOf, linearIssueKeyOfTask, parseLinearIssue, sealLinearKeys } from "../../packages/broker/src/rovara-code/linear-close.js";
+import { breakLinearKeys, linearCloseLine, linearIssueKeyOf, linearIssueKeyOfTask, neutralizeLinearWords, parseLinearIssue, sealLinearText } from "../../packages/broker/src/rovara-code/linear-close.js";
 import { ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 
 const issue = (issueId: string, url = "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug"): SessionBinding => ({ kind: "linear_issue", issueId, url });
@@ -83,44 +83,100 @@ describe("linearIssueKeyOfTask", () => {
   });
 });
 
-/** Every Linear-key-shaped token in a text, as Linear's reader would see it (a joiner in it makes it not one). */
+/** Every Linear-key-shaped token in a text. */
 const keys = (text: string) => text.match(/[A-Za-z][A-Za-z0-9]*-\d+/gu) ?? [];
+/**
+ * What Linear's reader acts on: one of its magic words (closing: close, fix, resolve, complete, implement; linking: ref, references, part of, contributes to, towards, updates, related to) as a whole word,
+ * then an issue key within a few characters of punctuation, markup or an entity. The test's own list, written out from Linear's documentation, not shared with the code.
+ */
+const MAGIC = /(?<![A-Za-z0-9])(?:close[sd]?|closing|fix(?:es|ed|ing)?|resolve[sd]?|resolving|complete[sd]?|completing|implement(?:s|ed|ing)?|refs?|references|towards?|updates|part\s+of|contributes\s+to|contribute\s+to|relates?\s+to|related\s+to)(?![A-Za-z0-9])(?:[^A-Za-z0-9]|&[a-z]+;|&#x?[0-9a-f]+;){0,12}[A-Za-z][A-Za-z0-9]*\\?-\d/giu;
+const linked = (text: string) => text.match(MAGIC) ?? [];
+const JOINER = "\u200D";
 
-describe("a model-written line cannot name a Linear issue at all", () => {
+describe("a model-written line cannot close or link a Linear issue", () => {
   it.each([
-    "Fixes ENG-142", "fixes eng-142", "Closes ENG-142.", "closed ENG-142", "Resolves: ENG-142", "Completes   ENG-142", "fixing ENG-142", "Fix ENG-142 properly",
+    "Fixes ENG-142", "fixes eng-142", "Closes ENG-142.", "closed ENG-142", "Resolves: ENG-142", "Completes   ENG-142", "fixing ENG-142", "Fix ENG-142 properly", "Implements ENG-142", "implemented ENG-1",
     "Fixes ENG-1, ENG-2", "closes ENG-1 and OPS-2", "resolves ENG-1 & OPS-2", "(fixes ENG-1)",
-    // Markdown, code spans, brackets and punctuation between the word and the key.
-    "_Fixes ENG-1_", "__Fixes__ ENG-1", "**Fixes** ENG-1", "Fixes **ENG-1**", "Fixes `ENG-1`", "Fixes (ENG-1)", "Fixes - ENG-1", "Fixes #ENG-1", "Fix-ENG-1", "_ENG-1_", "~~ENG-1~~", "[ENG-1](x)", "<ENG-1>", "\"ENG-1\"",
+    // Linking words, which move an issue though they do not close it.
+    "Part of ENG-1", "part  of ENG-1", "Contributes to ENG-1", "Related to ENG-1", "Relates to ENG-1", "Towards ENG-1", "Updates ENG-1", "Refs ENG-1", "References ENG-1", "ref: ENG-1",
+    // Markdown, code spans, brackets, entities and punctuation between the word and the key.
+    "_Fixes ENG-1_", "__Fixes__ ENG-1", "**Fixes** ENG-1", "Fixes **ENG-1**", "Fixes `ENG-1`", "Fixes (ENG-1)", "Fixes - ENG-1", "Fixes #ENG-1", "Fix-ENG-1", "~~Fixes~~ ENG-1",
+    "Fixes&nbsp;ENG-1", "Fixes&#32;ENG-1", "Fixes\nENG-1", "Fixes\r\n\r\nENG-1", "Fixes OPS\\-12", "FIXES ENG-1", "fIxEs ENG-1",
     // More than one key, with any separator.
-    "Fixes ENG-1 ENG-2", "Fixes ENG-1, and ENG-2", "fixes ENG-1;OPS-2", "Fixes ENG-1/ENG-2", "Fixes ENG-1\tENG-2", "ENG-1|ENG-2",
-    // A word Linear may learn tomorrow, a bare key, a long team key, a key with a digit, and one that follows a letter or an underscore.
-    "Ships ENG-1", "ENG-1", "ABCDEFGHIJKLM-12", "A2-7", "x_ENG-1", "abc9ENG-1", "See https://linear.app/acme/issue/ENG-1/slug",
-  ])("breaks every key in %j and keeps it readable", (line) => {
-    expect(keys(line).length).toBeGreaterThan(0);
-    const broken = breakLinearKeys(line);
-    expect(keys(broken), broken).toEqual([]);
-    expect(broken.replaceAll("\u200D", "")).toBe(line);
+    "Fixes ENG-1 ENG-2", "Fixes ENG-1, and ENG-2", "fixes ENG-1;OPS-2", "Fixes ENG-1/ENG-2", "Fixes ENG-1\tENG-2",
+    // A long team key, a key with a digit and one that follows a letter or an underscore.
+    "Fixes ABCDEFGHIJKLM-12", "Fixes A2-7", "Fixes _ENG-1_", "Fixes abc9ENG-1", "Fixes ENG-0142", "closes UTF-8",
+  ])("neutralizes the magic word in %j, keeps the key as it was, and keeps the text readable", (line) => {
+    expect(linked(line).length).toBeGreaterThan(0);
+    const out = neutralizeLinearWords(line);
+    expect(linked(out), out).toEqual([]);
+    expect(keys(out)).toEqual(keys(line));
+    expect(out.replaceAll(JOINER, "")).toBe(line);
   });
 
-  it("is what inertLine does to every line it makes inert", () => {
-    for (const line of ["_Fixes OPS-3_ by retrying", "Fixes `OPS-3`", "OPS-3 is related", "see (OPS-3)"]) expect(keys(inertLine(line, 200)), line).toEqual([]);
-    expect(inertLine("_Fixes OPS-3_ by retrying", 200).replaceAll("\u200D", "")).toBe("_Fixes OPS-3_ by retrying");
-  });
+  it.each(["_ENG-1_", "~~ENG-1~~", "[ENG-1](x)", "<ENG-1>", "\"ENG-1\"", "ENG-1|ENG-2", "ENG-1", "ABCDEFGHIJKLM-12", "A2-7", "x_ENG-1", "See https://linear.app/acme/issue/ENG-1/slug", "Ships ENG-1", "Relates ENG-1"])(
+    "leaves %j exactly as it is: no magic word is in it", (line) => {
+      expect(neutralizeLinearWords(line)).toBe(line);
+    });
 
-  it("leaves text without a key alone, dates and version numbers included", () => {
-    for (const line of ["Add a retry flag", "The fix for UTF8 is done", "ENG 142", "ENG-", "-142", "2026-10-26", "v1.2.3", "12-34", "Fixes #12", "Fixes nothing"]) {
-      expect(breakLinearKeys(line), line).toBe(line);
+  it("leaves technical text byte for byte: UTF-8, SHA-256, node-22, x86-64, ISO-8601, paths, versions and dates", () => {
+    for (const line of [
+      "UTF-8", "SHA-256", "node-22", "x86-64", "ISO-8601", "python-3.11", "TLS-1.3", "COVID-19", "CVE-2024-1234", "iPhone-15", "2026-10-26", "v1.2.3", "12-34",
+      "src/utf-8-handler.ts", "db/V1-2__init.sql", "docs/ADR-0007.md", "git checkout feature-2", "npm i node-22 && sha256sum -c SHA-256.txt", "Use UTF-8 and SHA-256 for the digest",
+      "```sh\nnpm i node-22\nopenssl dgst -sha-256 file\n```", "`git checkout feature-2`", "- Passed: Unit tests (x86-64)",
+    ]) {
+      expect(neutralizeLinearWords(line), line).toBe(line);
     }
   });
 
+  it("changes only the magic word inside code and fences, and leaves the rest of them", () => {
+    const fenced = "```\nfixes ENG-1\nnode-22\n```";
+    const out = neutralizeLinearWords(fenced);
+    expect(linked(out)).toEqual([]);
+    expect(out).toContain("node-22");
+    expect(out.replaceAll(JOINER, "")).toBe(fenced);
+    const span = neutralizeLinearWords("run `closes UTF-8` now");
+    expect(linked(span)).toEqual([]);
+    expect(span).toContain("UTF-8");
+  });
+
+  it("leaves ordinary use of the words alone: no key follows", () => {
+    for (const line of ["Fixes the null check", "The fix for UTF8 is done", "Closes the connection", "This updates the docs", "Completed the migration", "Fixes #12", "Fixes nothing", "part of the plan", "a ref to the base", "Fixes from PR feedback"]) {
+      expect(neutralizeLinearWords(line), line).toBe(line);
+    }
+  });
+
+  it("is what inertLine does to every line it makes inert, and does not mangle a path", () => {
+    for (const line of ["_Fixes OPS-3_ by retrying", "Fixes `OPS-3`", "Part of OPS-3", "see (OPS-3)"]) expect(linked(inertLine(line, 200)), line).toEqual([]);
+    expect(inertLine("_Fixes OPS-3_ by retrying", 200).replaceAll(JOINER, "")).toBe("_Fixes OPS-3_ by retrying");
+    expect(inertLine("db/V1-2__init.sql and UTF-8 and node-22", 200)).toBe("db/V1-2__init.sql and UTF-8 and node-22");
+  });
+
+  it("runs in time proportional to the text, however it is shaped", () => {
+    const started = Date.now();
+    for (const text of ["fix ".repeat(50_000), `fix ${"a".repeat(200_000)}-1`, "fixes &".repeat(30_000), `${"a1".repeat(100_000)}-5`]) neutralizeLinearWords(text);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
   it("seals every line but Rovara's own Fixes line", () => {
-    const lines = ["Fixes ENG-142", "- note: fixes ENG-142 too", "Fixes ENG-142 ", "fixes ENG-142", "Fixes ENG-1432", "FixesENG-142"];
-    const sealed = sealLinearKeys(lines, "ENG-142");
+    const lines = ["Fixes ENG-142", "- note: fixes ENG-142 too", "Fixes ENG-142 ", "fixes ENG-142", "Fixes ENG-1432", "Part of ENG-142"];
+    const sealed = sealLinearText(lines, "ENG-142");
     expect(sealed[0]).toBe("Fixes ENG-142");
-    for (const line of sealed.slice(1)) expect(keys(line), line).toEqual([]);
-    expect(sealLinearKeys(lines, undefined).every((line) => keys(line).length === 0)).toBe(true);
-    expect(sealLinearKeys(["Fixes ENG-142"], undefined)).not.toEqual(["Fixes ENG-142"]);
+    for (const line of sealed.slice(1)) expect(linked(line), line).toEqual([]);
+    expect(sealLinearText(lines, undefined).every((line) => linked(line).length === 0)).toBe(true);
+    expect(sealLinearText(["Fixes ENG-142"], undefined)).not.toEqual(["Fixes ENG-142"]);
+  });
+});
+
+describe("breakLinearKeys, for a pull request's title", () => {
+  it.each(["ENG-142", "ENG-0142", "ENG-0", "eng-9", "Fixes ENG-1", "_ENG-1_", "(OPS-2)", "ABCDEFGHIJKLM-12", "x_ENG-1", "ENG-1 ENG-2"])("breaks every key in %j and keeps it readable", (line) => {
+    const broken = breakLinearKeys(line);
+    expect(keys(broken), broken).toEqual([]);
+    expect(broken.replaceAll(JOINER, "")).toBe(line);
+  });
+
+  it("leaves text with no key alone", () => {
+    for (const line of ["Add a retry flag", "ENG 142", "ENG-", "-142", "2026-10-26", "12-34"]) expect(breakLinearKeys(line), line).toBe(line);
   });
 });
 
