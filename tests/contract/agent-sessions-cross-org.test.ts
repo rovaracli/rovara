@@ -341,3 +341,14 @@ describe("answers and foreign underlying task references", () => {
     expect(w.taskView).not.toHaveBeenCalled();
   });
 });
+
+it("M1 refuses inside-org subscriptions to private task and unshared local sessions", async () => {
+  const w = await world();
+  await unchanged(w, async () => {
+    for (const [who, sessionId] of [[ARJUN, w.s4.sessionId], [MAX, w.s3.sessionId]] as const) {
+      const token = (await w.call(who, ORG_A, "POST", "/v1/app/realtime/token") as { token: string }).token;
+      const reply = await authorizeRealtime({ authorizationToken: token, requestContext: { operation: "EVENT_SUBSCRIBE", channel: sessionChannel(ORG_A, sessionId) } }, { ...w.table, publicKey: async () => jwk, log: () => undefined });
+      expect(reply).toEqual({ isAuthorized: false, ttlOverride: 0 });
+    }
+  });
+});
