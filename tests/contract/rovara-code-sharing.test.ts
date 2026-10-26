@@ -9,7 +9,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted } from "../supp
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { routeDeveloperTaskRequest, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
+import { proposeTaskOwnershipForPage, submitSlackTaskOwnership, routeDeveloperTaskRequest, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { takeTaskOwnership } from "../../packages/broker/src/developer/task-people.js";
 import { codeShareItems, undoCodeShare } from "../../packages/broker/src/rovara-code/sharing.js";
@@ -273,3 +273,19 @@ it("widening resolves the effective owner from the current task rather than its 
   expect(w.notices()).toHaveLength(1);
   expect(w.notices()[0]).toMatchObject({ pk: changesKey(ORG_A, ARJUN, at, 0).pk, by: PRIYA });
 });
+
+for (const [surface, propose] of [["page", proposeTaskOwnershipForPage], ["Slack", submitSlackTaskOwnership]] as const) {
+  it(`I2: ${surface} ownership returns the session_owner confirmation`, async () => {
+    const w = world();
+    w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    const approvals = { store: new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }),
+      ...w.deps, agentSessions: w.deps, confirmOrigin: w.deps.origin, mintConfirmUrl: async () => "https://cell.example.com/v1/app/approve/test" };
+    const before = structuredClone(w.db.get(taskKey(w.taskId)));
+    const result = await propose({ ...w.deps, orgId: ORG_A, issuer: w.deps.origin, agentRuns: approvals } as unknown as DeveloperTaskRouteDependencies,
+      w.caller(ARJUN), w.taskId, { requestId: randomUUID(), expectedPeopleRevision: 1 });
+    expect(result).toMatchObject({ status: "PENDING", confirmationUrl: "https://cell.example.com/v1/app/approve/test" });
+    expect(w.db.get(taskKey(w.taskId))).toEqual(before);
+    expect(w.db.find((item) => (item.subject as { kind?: string } | undefined)?.kind === "session_owner")).toHaveLength(1);
+    expect(w.db.find((item) => item.entityType === "TASK_PEOPLE_PROPOSAL")).toEqual([]);
+  });
+}
