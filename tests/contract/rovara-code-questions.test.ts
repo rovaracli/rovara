@@ -14,6 +14,8 @@ import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer }
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
 import { intentAnswerItems } from "../../packages/broker/src/rovara-code/question-answers.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -247,9 +249,17 @@ describe("answers in the next prompt", () => {
 
 // ---- through the real broker
 
-async function world(options: { orgs?: boolean } = {}) {
+async function world(options: { orgs?: boolean; people?: boolean } = {}) {
   const access = fakeModelAccess();
   const h = await createDeveloperTaskBroker({
+    ...(options.people === true ? {
+      // Everyone in the test's Slack channel is proven a member, so a task's People list (co-owners) can be read.
+      channelMembers: async (request: { channelIds: string[] }) => ({ ok: true as const, memberOf: [...request.channelIds] }),
+      developerExtra: {
+        taskPeopleConfiguration: { peopleChangesEnabled: true },
+        taskPersonProof: async (request: { slackUserId: string; channelIds: string[] }) => ({ ok: true as const, user: { id: request.slackUserId, teamId: SLACK_TEAM, name: "Someone" }, memberOf: [...request.channelIds] }),
+      },
+    } : {}),
     ...(options.orgs === true ? { orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG) } : {}),
     brokerExtra: { agents: { rovaraCodeV2Live: true }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true },
   });
@@ -298,8 +308,8 @@ async function world(options: { orgs?: boolean } = {}) {
   };
   /** What the session projector does when the task changes: the session's summary is worked out again. */
   const refreshSummary = (sessionId: string) => refreshSessionSummary({ documentClient: h.db, tableName: "state", now: Date.now, log: () => undefined }, TEST_ORG, sessionId);
-  const share = (sessionId: string, who: Developer, level: "view" | "use" | "edit") =>
-    h.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: who.developerId }, level });
+  const share = (sessionId: string, who: Developer, level: "view" | "use" | "edit", by: Developer = MAYA) =>
+    h.dev(by, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: who.developerId }, level });
   const answers: IntentAnswer[] = [{ questionId: "q1", optionId: "a" }, { questionId: "q2", text: "billing" }];
   const respond = (who: Developer, sessionId: string, body: Record<string, unknown> = {}) =>
     h.dev(who, "POST", `/v1/app/sessions/${sessionId}/answers`, { requestId: randomUUID(), round: 1, answers, ...body });
@@ -682,18 +692,33 @@ describe("Home's question cards", () => {
 
 describe("an owner's Slack reply while the task waits", () => {
   const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000021" };
+  /** A Slack member of the org with the project role named, who may be given a share of the session. */
+  const slackMember = async (t: Awaited<ReturnType<typeof world>>, slackUserId: string, name: string, role: "viewer" | "developer" | undefined = "developer") => {
+    const who: Developer = { developerId: developerIdForSlackUser(slackUserId), name, provider: "slack", sessionId: `s-${slackUserId}`, slackUserId };
+    await t.member(who, role);
+    // The sign-in record of a Slack member, as the task's People checks read it.
+    t.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: "slack", issuer: "https://slack.com", subject: slackUserId, displayName: name, slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    return who;
+  };
+
   async function slackTask() {
     const t = await world();
+    // A task started in Slack is owned by the member its Slack user maps to; that member is in the org.
+    const owner = await slackMember(t, MAYA.slackUserId!, "Maya Chen");
     const started = await t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
     const workspaceId = t.meta(taskId).workspaceId;
+    // This harness starts a Slack task without a session; it gets one as a read would give it (the owner's, started by the owner).
+    const stored = { ...t.db.get(`DEVTASK#${taskId}`, "META")!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 2 }, origin: "slack", startedBy: { developerId: owner.developerId } };
+    await ensureTaskSession({ documentClient: t.db, tableName: "state", now: Date.now }, stored as never, { ownerName: "Maya Chen", title: "Fix the retry bug" });
     await t.finish(workspaceId, String(t.operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
     const run = { taskId, workspaceId, operationId: String(t.understands(workspaceId).at(-1)!.id), sessionId: t.meta(taskId).sessionId };
     await t.finishUnderstand(run, questions());
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "WAITING" });
+    expect(run.sessionId).toMatch(/^ses_/u);
     const reply = (userId: string, messageTs: string, text: string, eventId = `Ev${messageTs}`) =>
       t.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId, messageTs, eventId, text }).then((response) => JSON.parse(response.body) as { outcome: string });
-    return { t, run, reply };
+    return { t, run, reply, owner };
   }
 
   it("answers every open question, once, and Understand runs again with the reply in the answers block", async () => {
@@ -714,6 +739,99 @@ describe("an owner's Slack reply while the task waits", () => {
     // Once for each of the two questions, inside the answers block, and nowhere else.
     expect(again.split("go with billing, and no to retries")).toHaveLength(3);
     expect(again.slice(0, again.indexOf(ANSWERS_BLOCK_HEADER))).not.toContain("go with billing");
+  });
+
+
+  it("is recorded under the replier's own id and name when that is a member with 'can use', not the task's owner", async () => {
+    const { t, run, reply, owner } = await slackTask();
+    const ana = await slackMember(t, "U0ANA000001", "Ana Lopez");
+    const shared = await t.share(run.sessionId, ana, "use", owner);
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+    expect(await reply(ana.slackUserId!, "1695500005.000001", "go with billing")).toEqual({ outcome: "captured" });
+    const by = t.meta(run.taskId).workflow.intent?.answers[0]!.by as { actorId: string; name: string };
+    expect(by.actorId).toBe(taskOwnerKey(ana.developerId, run.taskId));
+    expect(by.actorId).not.toBe(taskOwnerKey(MAYA.developerId, run.taskId));
+    expect(by.name).toBe("Ana Lopez");
+    const line = t.db.find((item) => item.pk === agentSessionKey(TEST_ORG, run.sessionId, "META").pk && String(item.sk).startsWith("EVENT#") && /answered/.test(String(item.text)));
+    expect(line.map((item) => [(item.actor as { developerId: string; name: string }).developerId, item.text])).toEqual([[ana.developerId, "Ana Lopez answered Rovara's questions."]]);
+  });
+
+  it("stays a note, and the task keeps waiting, when the replier has only 'can view', has no share, or is a project viewer with a use share", async () => {
+    const { t, run, reply, owner } = await slackTask();
+    const vera = await slackMember(t, "U0VERA000001", "Vera View");
+    const nina = await slackMember(t, "U0NINA000001", "Nina None");
+    const vic = await slackMember(t, "U0VIC0000001", "Vic Viewer");
+    expect((await t.share(run.sessionId, vera, "view", owner)).status).toBe(200);
+    expect((await t.share(run.sessionId, vic, "use", owner)).status).toBe(200);
+    await t.member(vic, "viewer");
+    for (const [who, ts] of [[vera, "1695500006.000001"], [nina, "1695500006.000002"], [vic, "1695500006.000003"]] as const) {
+      // A project viewer's reply is not even a note (the thread refuses them); the others' replies are notes.
+      expect(await reply(who.slackUserId!, ts, "I say billing"), who.name).toEqual({ outcome: who === vic ? "refused" : "captured" });
+    }
+    expect(t.meta(run.taskId).workflow).toMatchObject({ state: "WAITING", intent: { answers: [] } });
+    expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && String(item.sk).startsWith("NOTE#"))).toHaveLength(2);
+    // The viewer whose reply was refused outright is not told anything about answers.
+    expect(t.db.find((item) => item.entityType === "WORKFLOW_ACTION_REFUSAL" && item.taskId === run.taskId)).toEqual([]);
+  });
+
+  it("is told to a person who may answer, privately in the thread, when their reply cannot be taken as an answer, once for the message", async () => {
+    const { t, run, reply } = await slackTask();
+    const refusals = () => t.db.find((item) => item.entityType === "WORKFLOW_ACTION_REFUSAL" && item.taskId === run.taskId);
+    expect(await reply(MAYA.slackUserId!, "1695500002.000020", "x".repeat(2001))).toEqual({ outcome: "refused" });
+    expect(refusals().map((item) => [item.slackUserId, item.channelId, item.threadTs, item.message])).toEqual([
+      [MAYA.slackUserId, SLACK_CHANNEL, thread.threadTs, "I couldn't take that as an answer. Keep it under 2,000 characters and reply again."],
+    ]);
+    expect(await reply(MAYA.slackUserId!, "1695500002.000020", "x".repeat(2001), "EvRedelivered")).toEqual({ outcome: "refused" });
+    expect(refusals()).toHaveLength(1);
+    // A teammate who may not answer is not told anything (their long reply is a note).
+    expect(await reply("U0TEAMMATE1", "1695500002.000021", "y".repeat(3000))).toEqual({ outcome: "captured" });
+    expect(refusals()).toHaveLength(1);
+  });
+
+  it("judges who may answer like the app route: the session level at 'use' with the project role included; an owner lowered to viewer keeps the owner's level, a non-owner viewer with a use share does not", async () => {
+    const { t, run, owner } = await slackTask();
+    const { mayAnswerFromSlack } = await import("../../packages/broker/src/aws/broker.js");
+    const vic = await slackMember(t, "U0VIC0000002", "Vic Viewer");
+    const ana = await slackMember(t, "U0ANA000003", "Ana Lopez");
+    const nina = await slackMember(t, "U0NINA000002", "Nina None");
+    expect((await t.share(run.sessionId, vic, "use", owner)).status).toBe(200);
+    expect((await t.share(run.sessionId, ana, "use", owner)).status).toBe(200);
+    const task = t.meta(run.taskId);
+    const callerOf = (who: Developer) => ({ developerId: who.developerId, sessionId: "slack-workflow", amr: "slack" as const, name: who.name, slackUserId: who.slackUserId!, orgId: TEST_ORG, orgRole: "member" as const });
+    const may = (who: Developer) => mayAnswerFromSlack(t.brokerInput as never, t.actions, callerOf(who), task as never);
+    expect(await may(owner)).toBe(true);
+    expect(await may(ana)).toBe(true);
+    expect(await may(nina)).toBe(false);
+    // A project viewer with a use share only watches; they were allowed before the demotion.
+    expect(await may(vic)).toBe(true);
+    await t.member(vic, "viewer");
+    expect(await may(vic)).toBe(false);
+    // An owner lowered to a viewer is still the session's owner, as the app route sees it.
+    await t.member(owner, "viewer");
+    expect(await may(owner)).toBe(true);
+    // Another org's caller, and a task with no session, are never allowed.
+    expect(await mayAnswerFromSlack(t.brokerInput as never, t.actions, { ...callerOf(ana), orgId: ORG_B }, task as never)).toBe(false);
+    expect(await mayAnswerFromSlack(t.brokerInput as never, t.actions, callerOf(ana), { ...task, sessionId: undefined } as never)).toBe(false);
+  });
+
+  it("records the answer under whoever answerBy names, never under the task's owner (the write path itself)", async () => {
+    const { t, run, owner } = await slackTask();
+    const ana = await slackMember(t, "U0ANA000002", "Ana Lopez");
+    const result = await recordWorkflowThreadNote(
+      { documentClient: t.db, tableName: "state", actions: t.actions, now: Date.now },
+      { taskId: run.taskId, thread, userId: ana.slackUserId!, messageTs: "1695500009.000001", eventId: "EvAna", text: "billing", answerBy: { developerId: ana.developerId, name: ana.name } },
+    );
+    expect(result).toEqual({ outcome: "captured" });
+    const by = t.meta(run.taskId).workflow.intent?.answers[0]!.by as { actorId: string; name: string };
+    expect(by).toEqual({ actorId: taskOwnerKey(ana.developerId, run.taskId), name: "Ana Lopez" });
+    expect(by.actorId).not.toBe(taskOwnerKey(owner.developerId, run.taskId));
+    // Without answerBy, whoever sent it, the reply is only a note.
+    const again = await recordWorkflowThreadNote(
+      { documentClient: t.db, tableName: "state", actions: t.actions, now: Date.now },
+      { taskId: run.taskId, thread, userId: owner.slackUserId!, messageTs: "1695500009.000002", eventId: "EvOwner", text: "x" },
+    );
+    expect(again).toEqual({ outcome: "captured" });
+    expect(t.meta(run.taskId).workflow.intent?.answers).toHaveLength(1);
   });
 
   it("is refused at 2,001 characters, and answers nothing", async () => {
@@ -739,7 +857,7 @@ describe("an owner's Slack reply while the task waits", () => {
     const documentClient = { send: (command: GetCommand | TransactWriteCommand | { input: unknown }) => (command instanceof GetCommand && command.input.Key?.pk === taskKeyOf.pk && command.input.Key?.sk === "META" ? Promise.resolve({ Item: frozen }) : t.db.send(command as never)) };
     const deliver = (messageTs: string, peopleAccess?: { peopleRevision?: number; isOwner: boolean }) => recordWorkflowThreadNote(
       { documentClient, tableName: "state", actions: t.actions, now: Date.now },
-      { taskId: run.taskId, thread, userId: MAYA.slackUserId!, messageTs, eventId: `Ev${messageTs}`, text: "billing", peopleAccess: peopleAccess ?? { isOwner: true } },
+      { taskId: run.taskId, thread, userId: MAYA.slackUserId!, messageTs, eventId: `Ev${messageTs}`, text: "billing", peopleAccess: peopleAccess ?? { isOwner: true }, answerBy: { developerId: MAYA.developerId, name: MAYA.name } },
     );
     expect(await deliver("1695500002.000011")).toEqual({ outcome: "captured" });
     expect(await deliver("1695500002.000011")).toEqual({ outcome: "duplicate" });
@@ -749,14 +867,14 @@ describe("an owner's Slack reply while the task waits", () => {
     t.db.set({ ...t.meta(run.taskId), workflow: frozen.workflow });
     for (const row of t.rows()) t.db.delete(row.pk as string, row.sk as string);
     t.db.set({ pk: `DEVTASK#${run.taskId}`, sk: "PEOPLE", entityType: "TASK_PEOPLE", schemaVersion: 1, revision: 2, people: [{ developerId: MAYA.developerId, role: "owner" }] });
-    await expect(deliver("1695500002.000012", { peopleRevision: 1, isOwner: true })).rejects.toThrow("the answer could not be saved");
+    await expect(deliver("1695500002.000012", { peopleRevision: 1, isOwner: true })).rejects.toMatchObject({ name: "AgentXError", code: "RUNTIME_UNAVAILABLE" });
     expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && item.sk === "NOTE#1695500002.000012")).toEqual([]);
     expect(t.rows()).toEqual([]);
     // With the proof current, the same reply goes through.
     expect(await deliver("1695500002.000012", { peopleRevision: 2, isOwner: true })).toEqual({ outcome: "captured" });
   });
 
-  it("is not an answer from anyone but the owner: a teammate's reply stays a note and the task keeps waiting", async () => {
+  it("is not an answer from a teammate with no share: the reply stays a note and the task keeps waiting", async () => {
     const { t, run, reply } = await slackTask();
     expect(await reply("U0TEAMMATE1", "1695500003.000001", "I say billing")).toEqual({ outcome: "captured" });
     expect(t.meta(run.taskId).workflow).toMatchObject({ state: "WAITING", intent: { answers: [] } });
