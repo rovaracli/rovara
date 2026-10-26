@@ -88,7 +88,9 @@ export interface DeveloperIdentityDependencies {
    * Called after a GitHub sign-in resolved the org, with the GitHub account that signed in, so a trial org's trial unlocks (unlockTrial).
    * Best effort: TRIAL_GITHUB_USED (that account already unlocked another org) and any other failure are logged and never fail the sign-in.
    */
-  onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
+  onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string; developerId: string }) => Promise<void>;
+  /** Plan 6 Task 14: told after a person unlinked their GitHub sign-in, with the org they belong to, so the org stops reading their approvals on GitHub as theirs. Best effort. */
+  onGithubUnlinked?: (input: { orgId: OrgId; developerId: string }) => Promise<void>;
   /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b). Without it duplicates are left alone. */
   mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
   /** Says whether the duplicate's own org is a disposable leftover of the first-sign-in race, which a merge may close; bound with `mergeDuplicate`. */
@@ -624,13 +626,13 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const outcome = await finishJoin(request, org, described, method);
       // Joining an org with a GitHub sign-in unlocks that org's trial as any GitHub sign-in does; no other outcome touches an org.
       if (outcome === "joined" && method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined && org.orgId !== undefined) {
-        await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+        await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
       }
       return redirect(endpoint(`/join/done?request=${request.id}`));
     }
     // Only a join answers without an org; this sign-in created or joined one.
     if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
-    if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+    if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
     // When the person signed in: the callback's time, or the provider's own `auth_time` when that is earlier (a provider that reused its browser
     // session says so here). A stale one makes the session not fresh, so it cannot be used to change sign-in methods.
     const authTime = signInTime(identity.authTime);
@@ -751,9 +753,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   }
 
   /** A trial org opens when a GitHub account connects (unlockTrial is a no-op for any other plan or an already open org); a failure never fails the sign-in. */
-  async function unlockTrialBestEffort(orgId: OrgId, githubUserId: string): Promise<void> {
+  async function unlockTrialBestEffort(orgId: OrgId, githubUserId: string, developerId: string): Promise<void> {
     try {
-      await deps.onGithubSignIn!({ orgId, githubUserId });
+      await deps.onGithubSignIn!({ orgId, githubUserId, developerId });
     } catch (error) {
       const code = (error as { code?: unknown } | null)?.code;
       // Only the error's code or name is logged, never its message.
@@ -960,6 +962,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       throw error;
     }
     deps.log({ event: "signin.identity_unlinked", developerId, provider });
+    // The member's GitHub account is no longer theirs to approve with (best effort: the approval check reads the link again).
+    if (provider === "github" && deps.onGithubUnlinked !== undefined) {
+      try {
+        const org = await deps.orgs.orgForDeveloper(developerId);
+        if (org !== undefined) await deps.onGithubUnlinked({ orgId: org.orgId, developerId });
+      } catch (error) {
+        deps.log({ event: "signin.github_member_unlink_failed", developerId, error: errorName(error) });
+      }
+    }
     return { ok: true };
   }
 

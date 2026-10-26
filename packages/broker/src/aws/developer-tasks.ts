@@ -282,6 +282,7 @@ import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type Ag
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
 import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
+import { publicTrackingItem, readMergeTracking } from "../rovara-code/merge-tracking.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
@@ -1538,8 +1539,11 @@ export async function taskView(
   // Plan 6, Task 12: a Rovara Code version 2 task shows its verification report (once checks have run on its current code; the changed files come with the full
   // read) and the review round being fixed. A version 1 task shows neither (m20), and a client that does not ask for the version 2 view never receives them.
   const rovaraCodeV2 = task.workflow?.definitionVersion === "1.1.0" && removedReason === undefined;
+  // Plan 6, Task 14: what merge tracking read from GitHub for each pull request (without the merge claim), and the checks basis it found, which the report says.
+  const tracked = rovaraCodeV2 && options.details && task.orgId !== undefined && (task.workflow?.pullRequests ?? []).length > 0 ? await readMergeTracking(deps, task.taskId, task.orgId) : [];
+  const ciBasis = tracked.some((item) => item.ciBasis === "all_checks") ? "all_checks" as const : tracked.length > 0 ? "required" as const : undefined;
   const verification = rovaraCodeV2 && options.details && task.workflow?.verification !== undefined
-    ? verificationReport(task.workflow, details.changedFiles ?? [], {}) : undefined;
+    ? verificationReport(task.workflow, details.changedFiles ?? [], { ...(ciBasis === undefined ? {} : { ciBasis }) }) : undefined;
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
   return {
     taskId: task.taskId,
@@ -1549,6 +1553,7 @@ export async function taskView(
     ...(workflow === undefined ? {} : { workflow }),
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
+    ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),

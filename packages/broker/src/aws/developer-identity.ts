@@ -2,6 +2,7 @@
 // The DeveloperIdentity Lambda (spec 025 phase 25a): wires the sign-in server to AWS. The only
 // new role that reads the Slack secret (R2); it never logs a secret, and never repeats a secret's
 // text in an error (a JSON parse error can quote it, so parse errors are replaced).
+import { linkGithubMember, unlinkGithubMember } from "../rovara-code/github-members.js";
 import { CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
@@ -296,7 +297,17 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     orgs,
     ...(singleOrg === undefined ? {} : { singleOrgId: singleOrg }),
     // Signing in with GitHub opens a trial org (unlockTrial): it claims the GitHub account for the org in the State table.
-    ...(github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient, tableName: stateTableName, now }, input) }),
+    // Rovara Code (Plan 6 Task 14): the member's GitHub account is linked in their org, both ways, so an approval on GitHub can be told from a requester's. Best effort and first, so a
+    // trial that cannot unlock still links; a failure is the sign-in's log, never its refusal.
+    ...(github === undefined ? {} : {
+      onGithubSignIn: async (input: { orgId: OrgId; githubUserId: string; developerId: string }) => {
+        await linkGithubMember({ documentClient, tableName: stateTableName, now }, input.orgId, input.developerId, input.githubUserId).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "developer-identity", event: "github_member.link_failed", error: error instanceof Error ? error.name : "unknown" }));
+        });
+        await unlockTrial({ documentClient, tableName: stateTableName, now }, { orgId: input.orgId, githubUserId: input.githubUserId });
+      },
+      onGithubUnlinked: async (input: { orgId: OrgId; developerId: string }) => { await unlinkGithubMember({ documentClient, tableName: stateTableName, now }, input.orgId, input.developerId); },
+    }),
     ...(modelAccess === undefined ? {} : {
       onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs, cloud: config.cloud !== undefined }, orgId, [developerId]),
     }),

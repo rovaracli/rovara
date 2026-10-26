@@ -29,6 +29,7 @@ import { findLinkedGithubWorkflowPullRequest } from "../aws/github-webhooks.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
+import { prHeadItems } from "./head-index.js";
 import { readCodeSettings } from "./code-settings.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
@@ -535,7 +536,11 @@ async function trackOne(
     const decision = nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now);
     if (decision.slot !== "none") action = decision;
     if (unchanged && action === undefined) return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
-    if (!unchanged) items.push(trackingWriteItem(deps.tableName, current, nextItem));
+    if (!unchanged) {
+      items.push(trackingWriteItem(deps.tableName, current, nextItem));
+      // The index a check or status event finds the task by: kept up to date whenever the item is, for a head that is Rovara's.
+      if (merged.headByRovara) items.push(...prHeadItems(deps.tableName, { orgId: task.orgId, repositoryFullName: fullName, headSha: status.headSha, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, now).slice(0, 1));
+    }
     if (action !== undefined) {
       items.push({ Update: {
         TableName: deps.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "META" }, UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
@@ -546,13 +551,13 @@ async function trackOne(
     if (justReady) {
       const index = Math.max(0, (task.workflow.pullRequests ?? []).findIndex((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number));
       items.push(...codeMilestoneItems({ tableName: deps.tableName }, {
-        kind: "pr_ready", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId as never }), at: stamp,
+        kind: "pr_ready", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: stamp,
         text: `Rovara marked ${inertLine(pullRequest.repositoryId)} pull request ${String(pullRequest.number)} ready for review.`,
         pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
       }, index, { definitionVersion: task.workflow.definitionVersion }));
     }
     if (flipped && task.sessionId !== undefined) {
-      items.push(sessionEventItem({ tableName: deps.tableName }, { orgId: task.orgId, sessionId: task.sessionId as never }, {
+      items.push(sessionEventItem({ tableName: deps.tableName }, { orgId: task.orgId, sessionId: task.sessionId }, {
         eventId: sessionEventId("merge_tracking", `${task.taskId}\n${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${String(nextItem.version)}`),
         at: stamp, type: "status", actor: { kind: "system" }, text: merged.headByRovara ? PUSH_WAS_MINE_MESSAGE : SOMEONE_ELSE_PUSHED_MESSAGE,
       }));

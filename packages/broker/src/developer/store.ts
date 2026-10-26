@@ -545,6 +545,12 @@ export class DeveloperSignInStore {
     return { emails };
   }
 
+  /** Plan 6 Task 14: the GitHub account (its numeric id) the developer signs in with, or undefined. For the org's member link; the subject goes no further than that. */
+  async githubUserIdOf(developerId: string): Promise<string | undefined> {
+    const link = (await this.activeIdentityItems(developerId)).find((entry) => entry.provider === "github");
+    return link !== undefined && /^[1-9][0-9]{0,19}$/.test(link.subject) ? link.subject : undefined;
+  }
+
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
   async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
     return (await this.activeIdentityItems(developerId)).map((link) => ({

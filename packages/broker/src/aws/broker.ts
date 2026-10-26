@@ -221,6 +221,7 @@ import {
   EgressApproveBodySchema,
   EgressRejectBodySchema,
   OrgIdSchema,
+  githubInstallationKey,
   OrgRoleSchema,
   type OrgRole,
   type ProjectRole,
@@ -492,7 +493,10 @@ import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
-import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
+import { backfillGithubMembers } from "../rovara-code/github-members.js";
+import { prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -689,7 +693,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -1917,13 +1921,24 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     }
     if (isWorkflowMergeRecoveryEvent(event)) {
       try {
+        const sweepStartedAt = Date.now();
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
           now: Date.now,
           reconcile: (taskId, budget) => reconcileWorkflowMergeRecoveryTask(dependencies, taskId, budget),
         });
-        return json(result, "workflow-merge-recovery");
+        // The tracking pass (Rovara Code) runs after the merge pass with the time that is left, in its own partition, behind its own gate: neither starves the other.
+        const tracking = await runDueWorkflowMergeTracking({
+          documentClient: dependencies.documentClient,
+          tableName: dependencies.tableName,
+          now: Date.now,
+          reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
+        }, { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { attempted: 0, reconciled: 0, deferred: 0 };
+        });
+        return json({ ...result, tracking }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -2120,7 +2135,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             rawBody: request.body ?? "",
             headers: request.headers,
             secret: webhookSecret,
-            authorizeRepository: (scope) => authorizeLinkedGithubWebhook({
+            authorizeRepository: (scope) => "headSha" in scope
+              ? resolveHeadEventTask(headEventDependencies(dependencies), scope).then((followed) => followed !== undefined)
+              : authorizeLinkedGithubWebhook({
               documentClient: dependencies.documentClient,
               tableName: dependencies.tableName,
               scope,
@@ -11429,7 +11446,13 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk) for the code now on the pull request; its changed files come from the task's latest workspace diff.
     const changedFiles = pushedChecked && workflow.definitionVersion === "1.1.0"
       ? await candidateChangedFiles({ actions: developerTaskActions(dependencies), log: () => undefined }, task) : undefined;
-    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, changedFiles === undefined ? undefined : { changedFiles })) : undefined;
+    // The tracked pull request's checks basis and base branch (Plan 6 Task 14), so the description says when every check counted, because the base has no required ones.
+    const tracked = workflow.definitionVersion === "1.1.0" && task.orgId !== undefined
+      ? (await readMergeTracking(dependencies, task.taskId, task.orgId).catch(() => [])).find((item) => item.repositoryId === record.repository && item.number === record.number) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined ? undefined : {
+      ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+    };
+    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;
     const fixed = withFeedbackFixes(withStatus, fixes, earlier);
     const next = { ...fixed, ...(fixed.body === undefined && withStatus !== current ? { body: withStatus } : {}) };
@@ -12352,6 +12375,11 @@ export async function processGithubWorkflowEvent(
   deliveryId: string,
   options?: { observationMode: "merge"; budget: GithubMergeReadBudget; release: "queue" },
 ): Promise<void> {
+  // A check or status event only wakes the task's tracking row; the pass that follows reads GitHub (Plan 6 Task 14).
+  if (event.kind === "HEAD_STATUS") {
+    await wakeFromHeadEvent(headEventDependencies(dependencies), event);
+    return;
+  }
   const getFeedback = options === undefined
     ? dependencies.githubPullRequests.getPullRequestFeedback
     : dependencies.githubPullRequests.getPullRequestMergeObservation;
@@ -12472,6 +12500,8 @@ export async function processGithubWorkflowEvent(
 }
 
 const MERGE_RECOVERY_RETRY_MS = 5 * 60_000;
+/** What one run of the merge-recovery schedule may spend in all (the merge pass, then the tracking pass), inside the broker's 30-second timeout. */
+const SWEEP_EVENT_BUDGET_MS = 26_000;
 
 async function stronglyRead<T>(dependencies: AwsBrokerDependencies, key: { pk: string; sk: string }): Promise<T | undefined> {
   const response = await dependencies.documentClient.send(new GetCommand({
@@ -12495,6 +12525,69 @@ async function mergeRecoveryReleaseConfirmed(dependencies: AwsBrokerDependencies
     || !Number.isInteger(organization.count) || (organization.count as number) < 0) return false;
   if (member.tasks !== undefined && (!(member.tasks instanceof Set) || member.tasks.has(task.taskId))) return false;
   return true;
+}
+
+/** What a check or status delivery is matched with (Plan 6 Task 14): the installation's org, the task, and the project's pinned repository. */
+function headEventDependencies(dependencies: AwsBrokerDependencies): HeadEventDependencies {
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    verifyRepository: (repositoryUrl, scope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, scope),
+    orgOfInstallation: async (installationId) => {
+      if (dependencies.cloud !== true) return installOrgId(dependencies);
+      const bound = await getItem<{ orgId?: unknown; status?: unknown }>(dependencies, githubInstallationKey(installationId));
+      const org = OrgIdSchema.safeParse(bound?.orgId);
+      return org.success && bound?.status === "active" ? org.data : undefined;
+    },
+  };
+}
+
+/** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
+function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
+  const github = dependencies.githubPullRequests;
+  if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.markPullRequestReady === undefined || github.requestReviewers === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    github: {
+      getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
+      getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
+      markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
+      requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
+    },
+    scope: (orgId) => githubScope(dependencies, orgId),
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
+    log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+  };
+}
+
+/** The tracking pass's reconcile for one tracking row: tracking, then today's merge observation (Plan 6 Task 14). Without a provider that can read status it is today's merge observation alone. */
+export async function reconcileWorkflowTrackingTask(
+  dependencies: AwsBrokerDependencies,
+  taskId: string,
+  budget: GithubMergeReadBudget,
+): Promise<MergeRecoveryResult> {
+  const tracking = mergeTrackingDependencies(dependencies);
+  const observeMerge = (id: string, merged: GithubMergeReadBudget) => reconcileWorkflowMergeRecoveryTask(dependencies, id, merged);
+  if (tracking === undefined) return observeMerge(taskId, budget);
+  // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
+  if (task?.orgId !== undefined && dependencies.developer !== undefined) {
+    const store = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+    const orgs = new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+    const orgId = task.orgId;
+    await backfillGithubMembers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, async () => {
+      const found: Array<{ developerId: string; githubUserId: string }> = [];
+      for (const member of (await orgs.listMembers(orgId)).slice(0, 500)) {
+        const githubUserId = await store.githubUserIdOf(member.developerId);
+        if (githubUserId !== undefined) found.push({ developerId: member.developerId, githubUserId });
+      }
+      return found;
+    }).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "github_member.backfill_failed", error: error instanceof Error ? error.name : "unknown" })));
+  }
+  return reconcileTrackingTask({ ...tracking, observeMerge }, taskId, budget);
 }
 
 /** Reconciles one recovery row using one exact reverse-linked PR and the bounded merge-only GitHub reader. */
@@ -12555,6 +12648,7 @@ export async function reconcileWorkflowMergeRecoveryTask(
 }
 
 async function githubEventStillAuthorized(dependencies: AwsBrokerDependencies, event: ReceivedGithubWebhook["event"]): Promise<boolean> {
+  if (event.kind === "HEAD_STATUS") return await resolveHeadEventTask(headEventDependencies(dependencies), event) !== undefined;
   return authorizeLinkedGithubWebhook({
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
@@ -14093,6 +14187,8 @@ async function completedPullRequestUpdateItems(
     ExpressionAttributeNames: { "#state": "state" },
     ExpressionAttributeValues: { ":head": head, ":state": current.pullRequest.state, ":now": now, ":previous": maintenance.expectedHeadCommit },
   } }] : []),
+  // The new head, for the check and status events that name only a commit.
+  ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
   ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "UPDATE", next.candidate.digest, now)] : [])];
@@ -14246,7 +14342,14 @@ async function completedWorkflowItems(
     // More repositories to go: the next draft pull request is due, as the first one was after the reviews.
     ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
       ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PUBLISH", next.candidate.digest, now)] : []),
-    ...((task.workflow.pullRequests ?? []).length === 0 ? [mergeRecoveryItem(dependencies.tableName, task.taskId, now)] : [])];
+    // The head, for the check and status events that name only a commit (Plan 6 Task 14).
+    ...(task.orgId === undefined || task.workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, {
+      orgId: task.orgId, repositoryFullName, headSha: publishedRecord.expectedHeadCommit, taskId: task.taskId, repositoryId: published.data.repository,
+      number: published.data.number, branch: publishedRecord.headBranch,
+    }, Date.parse(now))),
+    // The task's recovery row: a Rovara Code (version 2) task's becomes its tracking row; any other task's stays the merge row it always was.
+    ...((task.workflow.pullRequests ?? []).length === 0
+      ? [(task.workflow.definitionVersion === "1.1.0" ? trackingRecoveryItem : mergeRecoveryItem)(dependencies.tableName, task.taskId, now)] : [])];
   }
   if (operation.kind === "maintain") return completedPullRequestUpdateItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind !== "task" || operation.workflowMode === undefined || task.workflow.state !== "RUNNING") return [];
