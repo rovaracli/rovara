@@ -332,6 +332,9 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const runEnd = run !== undefined && (run.state === "COMPLETE" || run.state === "FAILED" || run.state === "CANCELLED") ? run.state : task.agentRunEnd?.state;
   if (task.outcome === "creator_removed") ended = { status: "failed", at: task.outcomeAt ?? at };
   else if (runEnd !== undefined) ended = { status: runEnd === "COMPLETE" ? "succeeded" : runEnd === "FAILED" ? "failed" : "cancelled", at };
+  // A workspace that could not be prepared (the repository would not clone) never started the workflow: its step stays marked running with nothing behind it, and nothing can continue it
+  // (a continue is refused as never started; only a close is left). The session ends failed when the preparation does (v0.4.9 staging: it read `Running: Coding plan`, and a stop changed nothing).
+  else if (workflow !== undefined && derived.failedPrepare !== undefined) ended = { status: "failed", at: derived.failedPrepare.updatedAt ?? at };
   else if (workflow?.stage === "MERGED") ended = { status: "succeeded", at };
   else if (workflow?.stage === "CLOSED") ended = { status: "cancelled", at };
   else if (task.closedAt !== undefined) ended = { status: closedStatus, at };
