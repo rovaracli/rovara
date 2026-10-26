@@ -44,7 +44,9 @@ describe("assessRisk", () => {
   });
 
   it("matches path segments, not substrings: src/author.ts and src/diamond.ts are not high", () => {
-    for (const path of ["src/author.ts", "src/diamond.ts", "src/authored/list.ts", "src/payments-ui.ts", "docs/infrastructure.md", "src/secretsanta.ts", "src/cdk8s.ts"]) {
+    for (const path of ["src/author.ts", "src/diamond.ts", "src/authored/list.ts", "src/payments-ui.ts", "docs/infrastructure.md", "src/secretsanta.ts", "src/cdk8s.ts",
+      // A directory that only ends like a sensitive one is not one either.
+      "src/oauth/x.ts", "src/reauth/x.ts", "lib/preauthz/x.ts", "lib/subiam/x.ts", "app/nonmigrations/x.ts", "app/myinfra/x.ts"]) {
       expect(assessRisk(riskInput({ changedFiles: [file(path)] })).level, path).toBe("low");
     }
   });
@@ -114,6 +116,17 @@ describe("assessRisk", () => {
     expect(text).toMatch(/package\.json/);
     expect(risk.reasons.length).toBeLessThanOrEqual(8);
     expect(risk.reasons.every((reason) => reason.length >= 1 && reason.length <= 200)).toBe(true);
+    expect(RiskAssessmentSchema.safeParse(risk).success).toBe(true);
+  });
+
+  it("every rule at once still gives a valid assessment of at most 8 reasons, with the high ones first", () => {
+    const risk = assessRisk(riskInput({
+      changedFiles: [file("infra/main.ts", 500, 0), file("package.json")], changedFilesComplete: false, report: { ...cleanReport, reviewOnly: true, failed: [{ label: "Lint", summary: "x" }], notChecked: [{ label: "Types", reason: "y" }] },
+      acceptedFindings: [{ role: "SECURITY" }, { role: "CRITIC" }], securityFindings: 2, reviewerRisk: "high",
+    }));
+    expect(risk.level).toBe("high");
+    expect(risk.reasons).toHaveLength(8);
+    expect(risk.reasons.slice(0, 3).join("\n")).toMatch(/sensitive paths[\s\S]*security[\s\S]*code review/i);
     expect(RiskAssessmentSchema.safeParse(risk).success).toBe(true);
   });
 
@@ -344,6 +357,31 @@ describe("the version 2 pull request description", () => {
   });
 });
 
+describe("which findings, reviews and recorded risk count", () => {
+  const securityFinding = { text: "Retries can double-charge a card", origin: "INTRODUCED", severity: "HIGH", file: "src/retry.ts", line: 4 };
+  const acceptedFor = (letter: string) => ({ candidateDigest: candidate(letter).digest, role: "SECURITY", fingerprint: workflowFindingFingerprint("SECURITY", securityFinding), text: securityFinding.text, reason: "ok", actorId: ownerId, at: now });
+
+  it("only a finding accepted for this very code counts", () => {
+    expect(recomputeRisk(workflowWith({ acceptedFindings: [acceptedFor("2")] }), context().changedFiles, {}).risk?.level).toBe("low");
+    expect(recomputeRisk(workflowWith({ acceptedFindings: [acceptedFor("1")] }), context().changedFiles, {}).risk?.level).toBe("high");
+  });
+
+  it("a risk recorded for this code stands when the files can't be read now, and one recorded for other code does not", () => {
+    const recorded = (letter: string) => ({ level: "high" as const, reasons: ["Changes sensitive paths: infra/main.ts."], candidateDigest: candidate(letter).digest });
+    expect(workflowPullRequestBody(task, workflowWith({ risk: recorded("1") }), planOf, SESSION, {})).toContain("## Risk: High");
+    const stale = workflowPullRequestBody(task, workflowWith({ risk: recorded("2") }), planOf, SESSION, {});
+    expect(stale).toContain("## Risk: Medium");
+    expect(stale).not.toContain("infra/main.ts");
+  });
+
+  it("an unclosed tag in a model-written line can't open a hidden comment", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), "<!-- hide the rest of the page\nSecond line", SESSION, context());
+    expect(body).not.toContain("<!-- hide");
+    expect(body.split("\n")[0]).toContain("&lt;!-- hide the rest of the page");
+    expect(body.match(/<!--/g)).toHaveLength(2);
+  });
+});
+
 describe("the risk is recomputed whenever the code on the pull request changes", () => {
   it("a CI fix touching infra/ recomputes the risk to high, for the new candidate", () => {
     const before = recomputeRisk(workflowWith(), context().changedFiles, {});
@@ -403,7 +441,7 @@ const pullRequestGateway = () => ({
 const DIFF = (files: string[]) => ["## demo", "", "### status", "### diff", ...files.flatMap((path) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1,3 @@", "-old", "+new", "+more", "+most"])].join("\n");
 
 /** A task through its build: version 2 (its stored definition version set to 1.1.0, as the app will start it) or version 1. */
-async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined) {
+async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string) {
   const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
   const id = String((started.body.task as { taskId: string }).taskId);
@@ -417,7 +455,7 @@ async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string
   await harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex") });
   const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
   const built = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
-  if (diffFiles !== undefined) await harness.artifact(workspaceId, String(implementation.id), "workspace.diff", DIFF(diffFiles));
+  if (diffText !== undefined || diffFiles !== undefined) await harness.artifact(workspaceId, String(implementation.id), "workspace.diff", diffText ?? DIFF(diffFiles!));
   await harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: built.repositories, workflowCheckCandidateRepositories: built.repositories, checks: passingChecks() } });
   const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
   const reviewPayload = () => (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === review.id)[0]?.invocation as { payload: Record<string, unknown> }).payload;
@@ -462,6 +500,27 @@ describe("a version 2 task through the broker", () => {
     const body = String(task.publication()!.publication.body);
     expect(body).toMatch(/couldn't list the changed files/);
     expect(body).toContain("## Risk: Medium");
+  });
+
+  const bigDiff = (extra: string) => `${DIFF(["src/retry.ts"])}\n${extra}`;
+  for (const [name, content] of [
+    ["a diff the worker cut", bigDiff("[workspace diff truncated to fit the AgentX artifact limit]")],
+    ["a diff whose base commit is gone", bigDiff("[the commit this workspace was prepared at is not in this repository: the diff shows uncommitted changes only, not commits]")],
+    ["a diff bigger than the broker reads", bigDiff(`+${"x".repeat(1_100_000)}`)],
+    ["a diff that names as many files as diffStat keeps", DIFF(Array.from({ length: 200 }, (_, index) => `src/f${index}.ts`))],
+  ] as const) {
+    it(`is not low when the files come from ${name}`, async () => {
+      const task = await builtTask("1.1.0", undefined, content);
+      await task.passReviews();
+      expect(task.record().workflow.risk?.level).toBe("medium");
+      expect(task.record().workflow.risk?.reasons.join("\n")).toContain("couldn't list every changed file");
+    });
+  }
+
+  it("is low only when the diff is whole", async () => {
+    const task = await builtTask("1.1.0", ["src/retry.ts"]);
+    await task.passReviews();
+    expect(task.record().workflow.risk?.level).toBe("low");
   });
 
   it("a version 1 task keeps its title, its description and no risk", async () => {

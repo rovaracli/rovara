@@ -67,6 +67,16 @@ describe("the review report", () => {
     expect(WorkflowReviewReportSchema.safeParse(report({ role: "SECURITY", risk: "high" })).success).toBe(false);
   });
 
+  it("a stored version 1 snapshot can't hold one", () => {
+    const code = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    const withRisk = (definitionVersion: "1.0.0" | "1.1.0") => WorkflowSnapshotSchema.safeParse({
+      ...createWorkflowSnapshot({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", ownerId: "a".repeat(64), now, definitionVersion }),
+      stage: "REVIEW", state: "WAITING", candidate: code, reviews: [report({ candidateDigest: code.digest, risk: "high" })],
+    }).success;
+    expect(withRisk("1.1.0")).toBe(true);
+    expect(withRisk("1.0.0")).toBe(false);
+  });
+
   it("is kept on a version 2 task and dropped from a version 1 task when it is recorded", () => {
     const code = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]);
     const at = (definitionVersion: "1.0.0" | "1.1.0") => WorkflowSnapshotSchema.parse({
