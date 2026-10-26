@@ -25,9 +25,9 @@ import { handoffSession, type HandoffRuntime } from "./handoff.js";
 import { retrySession } from "./retry.js";
 import { answerIntentOnSession } from "../rovara-code/questions.js";
 import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
-import { linkLinearOnSession, unlinkLinearOnSession } from "../rovara-code/link-linear.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
+import { linkLinearOnSession, unlinkLinearOnSession } from "../rovara-code/link-linear.js";
 import { readChanges } from "../realtime/changes.js";
 import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
@@ -52,9 +52,11 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway)|\/(bindings)(?:\/(linear))?)?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway))?)?$/;
 const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
 const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
+/** Plan 6 Task 20: `POST …/bindings` links a session to a Linear issue and `DELETE …/bindings/linear` lets it go (a path of its own, beside the local-session ones). */
+const BINDINGS_PATH = /^\/v1\/app\/sessions\/([^/]+)\/bindings(?:\/(linear))?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
@@ -139,7 +141,7 @@ function liveQueryOf(url: URL): LiveQuery {
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
- * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `POST …/handoff` (Task 19: move the session between a Mac and the cloud); `POST …/answers` (Rovara Code: people answer Understand's questions, needs "can use"); `POST …/change-anyway` (Rovara Code: make the change after an Answered task); `POST …/bindings` and `DELETE …/bindings/linear` (Rovara Code: link a session to a Linear issue, and let it go; both need "can edit"); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `POST …/handoff` (Task 19: move the session between a Mac and the cloud); `POST …/answers` (Rovara Code: people answer Understand's questions, needs "can use"); `POST …/change-anyway` (Rovara Code: make the change after an Answered task); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`; `GET /v1/app/home` and `POST /v1/app/home/cards/{cardId}/dismiss` (Task 15: Home's ranked cards); `GET /v1/app/live?filter=&project=&cursor=&limit=` (Task 14: the Live wall's tiles). Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -210,9 +212,18 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (request.method !== "POST") throw notFound();
     return recordLocalUpdate({ ...read, realtimePublish: deps.realtimePublish }, caller, localUpdate[1]!, jsonBody(request));
   }
+  const bindingsOf = BINDINGS_PATH.exec(url.pathname);
+  if (bindingsOf !== null) {
+    // Both need "can edit" on the session; an id that can't be a session is no session.
+    const bound = SessionIdSchema.safeParse(bindingsOf[1]);
+    if (!bound.success) throw agentXError("NOT_FOUND", "session not found");
+    if (request.method === "POST" && bindingsOf[2] === undefined) return linkLinearOnSession(read, caller, bound.data, jsonBody(request));
+    if (request.method === "DELETE" && bindingsOf[2] === "linear") return unlinkLinearOnSession(read, caller, bound.data);
+    throw notFound();
+  }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId, makeAgent, takeOver, control, bindings, bindingKind] = matched;
+  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId, makeAgent, takeOver, control] = matched;
   const method = request.method;
   if (rawId === undefined) {
     if (method !== "GET") throw notFound();
@@ -236,12 +247,6 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (method !== "POST") throw notFound();
     const reply = await askTakeOver(read, caller, sessionId, jsonBody(request), deps.approvals);
     return new StatusReply(reply.status, reply.body);
-  }
-  if (bindings !== undefined) {
-    // Plan 6 Task 20: link a session to a Linear issue (`POST …/bindings`) and let it go (`DELETE …/bindings/linear`); both need "can edit".
-    if (method === "POST" && bindingKind === undefined) return linkLinearOnSession(read, caller, sessionId, jsonBody(request));
-    if (method === "DELETE" && bindingKind === "linear") return unlinkLinearOnSession(read, caller, sessionId);
-    throw notFound();
   }
   if (control !== undefined) {
     // Task 13: stop (Plan 3's cancel, or Plan 4's for a chain) and retry (the same workflow, or a new run); each answers the session that carries on. Task 19: handoff.
