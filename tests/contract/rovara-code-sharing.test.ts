@@ -1,3 +1,4 @@
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { bindingItemsForOpenSession, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { httpControlPlaneClient } from "../../packages/mcp/src/client.js";
 import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
@@ -473,4 +474,24 @@ it("M4: an owner's own widening keeps its undo without sending a self-notice", (
   const items = codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, randomUUID(), PRIYA, at);
   expect(items.some((entry) => entry.Put?.Item?.entityType === "CODE_SHARE_UNDO")).toBe(true);
   expect(items.filter((entry) => entry.Put?.Item?.entityType === "CHANGE_NOTICE")).toEqual([]);
+});
+
+it("I2 ingress: a Slack ownership action returns the session confirmation link", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} }, channelMembers: async (request) => ({ ok: true, memberOf: [...request.channelIds] }) });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "view" })).status).toBe(200);
+  markThreadPosted(h.db, taskId);
+  const task = h.db.get(taskKey(taskId))!;
+  const share = task.share as { teamId: string; channelId: string; threadTs: string };
+  const userId = "U0TAKER01";
+  const developerId = developerIdForSlackUser(userId);
+  h.db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", slackUserId: userId, displayName: "Taker", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+  h.db.set({ ...projectMemberKey(TEST_ORG, developerId, "payments"), role: "developer", projectRole: "maintainer" });
+  const response = await h.handler({ source: "agentx.slack-ingress", action: "task-people-take-ownership", taskId, requestId: randomUUID(), expectedPeopleRevision: 1, userId,
+    thread: { teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs } });
+  const body = JSON.parse(response.body) as { status?: string; confirmationUrl?: string };
+  expect(body.status).toBe("PENDING");
+  expect(body.confirmationUrl).toContain("/v1/app/approve/apr_");
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("currentOwner");
 });
