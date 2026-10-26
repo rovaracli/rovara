@@ -256,7 +256,7 @@ async function admissionNeedsModelFreeLimits(invocation: WorkerInvocation, read:
  * "publish.reportChecks". A review's workflowReviewChecks goes only to one whose /ping lists "task.workflowReviewChecks";
  * an older one reviews without being told which checks ran, and its workflowReviewPlan goes only to one whose /ping lists
  * "task.workflowReviewPlan"; an older one reviews without seeing the approved plan, and its workflowReviewFeedback goes only to one whose
- * /ping lists "task.workflowReviewFeedback"; an older one judges a feedback fix against the plan alone. The retry note goes only to one whose /ping lists "task.workflowReviewNote"; older workers review without it. A planning run's workflowPhase and planFormat go only to one whose /ping lists
+ * /ping lists "task.workflowReviewFeedback"; an older one judges a feedback fix against the plan alone. The retry note goes only to one whose /ping lists "task.workflowReviewNote"; older workers review without it. A Rovara Code version 2 review's workflowReviewRisk (the code reviewer states a risk level) goes only to one whose /ping lists "task.workflowReviewRisk"; an older one reviews as before, and the risk comes from the paths, the size and the checks alone. A planning run's workflowPhase and planFormat go only to one whose /ping lists
  * "task.structuredPlans"; an older one plans without checking the answer's format. A planning run's workflowE2EPlanVersion (the schema-v2 application plan)
  * goes only to one whose /ping lists "task.workflowE2EApplicationPlan"; an older one is sent the portable-only prompt, and its review plan without a v2 intent. A planning prompt asks for anchor lines on
  * code citations only on one whose /ping lists "task.codeAnchors"; for an older one that text is left out of the prompt. The invoke token signs the operation, not the payload, so
@@ -524,8 +524,18 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const anchored = withoutCodeAnchors(withNote, features);
-  if (anchored !== withNote) {
+  const withRisk = withoutReviewRisk(withNote, features);
+  if (withRisk !== withNote) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.review_risk_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const anchored = withoutCodeAnchors(withRisk, features);
+  if (anchored !== withRisk) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.code_anchors_omitted",
@@ -647,6 +657,17 @@ function withoutReviewNote(invocation: WorkerInvocation, features: readonly stri
   if (invocation.kind !== "task" || invocation.payload.workflowReviewNote === undefined || features.includes("task.workflowReviewNote")) return invocation;
   const payload = { ...invocation.payload };
   delete payload.workflowReviewNote;
+  return { ...invocation, payload };
+}
+
+/**
+ * A review without the request for a risk level, for a worker that does not parse it. The level is one more input of the risk shown on the pull request; such a worker reviews the same change
+ * as before, and the risk comes from the paths, the size and the checks alone.
+ */
+function withoutReviewRisk(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowReviewRisk === undefined || features.includes("task.workflowReviewRisk")) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowReviewRisk;
   return { ...invocation, payload };
 }
 

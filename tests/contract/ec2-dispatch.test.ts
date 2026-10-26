@@ -407,6 +407,24 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];
+      const record = taskRecord({ workflowMode: "REVIEW", workflowBase, workflowReviewRisk: true });
+      const base = ["task.workflowMode", "task.workflowReview", "task.workflowBase"];
+      const capable = delivery({ workerFeatures: async () => [...base, "task.workflowReviewRisk"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowReviewRisk).toBe(true);
+      const older = delivery({ workerFeatures: async () => base });
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("workflowReviewRisk");
+      expect(postedPayload(older.post).workflowBase).toEqual(workflowBase);
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({
+        event: "dispatch.review_risk_omitted", reason: "worker-lacks-feature", operationId: record.operationId,
+      }));
+      log.mockRestore();
+    });
+
     it("tells a planning run its document kind and structured format only on a worker that lists them; an older worker plans without them", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "PLAN", workflowPhase: "DESIGN", planFormat: "structured" });

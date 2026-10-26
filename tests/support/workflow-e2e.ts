@@ -345,6 +345,8 @@ export async function createWorkflowE2E(options: {
     boundChannels?: readonly string[];
     developers?: readonly Developer[];
   };
+  /** Plan 6 Task 14: the GitHub reads and writes merge tracking uses (a pull request's status, a person's permission, marking ready, asking for reviewers); absent, the broker has none. */
+  trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
   const taskPeopleConfiguration = options.taskPeople?.changesEnabled === undefined
@@ -367,8 +369,8 @@ export async function createWorkflowE2E(options: {
     getPullRequestFeedback: (...args: Parameters<typeof github.gateway.getPullRequestFeedback>) => github.gateway.getPullRequestFeedback(...args),
   };
   const githubPullRequests = options.github?.wire === true
-    ? { ...github.gateway, ...mutableGithubReads, getPullRequestFeedback: wireFeedbackReader(github), getPullRequestMergeObservation: mergeObservationReader(github, true, mergeObservationRequests, options.mergeObservation) }
-    : { ...github.gateway, ...mutableGithubReads, getPullRequestMergeObservation: mergeObservationReader(github, false, mergeObservationRequests, options.mergeObservation) };
+    ? { ...github.gateway, ...mutableGithubReads, ...options.trackingGithub, getPullRequestFeedback: wireFeedbackReader(github), getPullRequestMergeObservation: mergeObservationReader(github, true, mergeObservationRequests, options.mergeObservation) }
+    : { ...github.gateway, ...mutableGithubReads, ...options.trackingGithub, getPullRequestMergeObservation: mergeObservationReader(github, false, mergeObservationRequests, options.mergeObservation) };
   // The plan evidence jobs the broker started: the background Lambda is run by the test, with `runPlanEvidenceJobs`.
   const planEvidenceJobs: PlanEvidenceEvent[] = [];
   const workflowDependenciesConfiguration = workflowDependenciesConfigurationFromEnvironment(options.workflowDependenciesEnvironment ?? {});
@@ -1347,6 +1349,18 @@ export async function createWorkflowE2E(options: {
         version: "2.0", rawPath: "/v1/github/webhooks", rawQueryString: "", body, isBase64Encoded: false,
         headers: { "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`,
           "x-github-delivery": deliveryOptions.deliveryId ?? randomUUID(), "x-github-event": deliveryOptions.eventName ?? event.kind },
+        requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+    },
+
+    /** Plan 6 Task 14: a signed GitHub delivery of any event with any body (a check run, a status), as GitHub sends it: installation 77, repository example/demo (id 4242). */
+    async signedWebhook(eventName: string, payload: Record<string, unknown>, deliveryOptions: { deliveryId?: string } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+      const body = JSON.stringify({ installation: { id: 77 }, repository: { id: 4242, full_name: "example/demo" }, ...payload });
+      const response = await harness.handler({
+        version: "2.0", rawPath: "/v1/github/webhooks", rawQueryString: "", body, isBase64Encoded: false,
+        headers: { "x-hub-signature-256": `sha256=${createHmac("sha256", configuredSecret ?? WEBHOOK_SECRET).update(body, "utf8").digest("hex")}`,
+          "x-github-delivery": deliveryOptions.deliveryId ?? randomUUID(), "x-github-event": eventName },
         requestContext: { requestId: randomUUID(), http: { method: "POST" } },
       });
       return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };

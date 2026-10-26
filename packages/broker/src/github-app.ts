@@ -3,6 +3,13 @@ import { PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, gith
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
+import {
+  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
+  type RequiredCheck,
+  type PullRequestCheck, type PullRequestReview, type PullRequestStatus,
+} from "./github-pull-status.js";
+
+export type { PullRequestCheck, PullRequestReview, PullRequestStatus } from "./github-pull-status.js";
 
 const GITHUB_APP_ID = /^[1-9][0-9]*$/;
 /** A GitHub user or organization login: letters, digits and single hyphens inside, at most 39 characters. */
@@ -228,6 +235,13 @@ const AGENT_LABEL_PAGES = 10;
 /** The scope of a read made for a signed webhook delivery (or a bare installation lookup): it names no org. */
 const WEBHOOK_SCOPE: GitHubTokenScope = { system: "webhook" };
 
+/** What a tracking pass's reads ask for: the pull request, its reviews, the head's checks and statuses, the base branch and the workflow files, all at read. */
+const STATUS_TOKEN_PERMISSIONS = { contents: "read", pull_requests: "read", checks: "read", statuses: "read" } as const;
+/** The same without the checks and statuses access, for an installation that has not accepted it yet. */
+/** How many pages of 100 reviews a tracking read takes. */
+const REVIEW_PAGES_MAX = 5;
+const BASIC_TOKEN_PERMISSIONS = { contents: "read", pull_requests: "read" } as const;
+
 /** A repository the App can reach: its installation, and the owner as GitHub spells it. */
 interface InstalledRepository {
   owner: string;
@@ -247,6 +261,10 @@ export class GitHubAppCredentialProvider {
   private readonly installations = new Map<string, Promise<{ id: number; login: string }>>();
   private readonly readTokens = new Map<string, { token: Promise<string>; expiresAt: number }>();
   private slug: string | undefined;
+  /** The bounded provider of each tracking pass's budget, so one pass's reads share one installation lookup. */
+  private readonly passProviders = new WeakMap<GithubMergeReadBudget, GitHubAppCredentialProvider>();
+  /** A tracking pass's provider keeps the installation tokens it minted, per repository and permission set, for the pass: a pass mints each kind once, not once per call. */
+  private tokenCache: Map<string, Promise<string>> | undefined;
 
   constructor(private readonly options: GitHubAppCredentialProviderOptions) {
     if (typeof options.appId === "string" && !GITHUB_APP_ID.test(options.appId)) throw new Error("GitHub App ID must be numeric");
@@ -536,13 +554,11 @@ export class GitHubAppCredentialProvider {
     throw agentXError("RUNTIME_UNAVAILABLE", "this repository has too many labels to look up");
   }
 
-  /** A bounded, stable merge-state read that cannot reuse or populate the singleton provider's caches. */
-  async getPullRequestMergeObservation(
-    repositoryUrl: string,
-    number: number,
-    budget: GithubMergeReadBudget,
-    tokenScope: GitHubTokenScope,
-  ): Promise<GitHubPullRequestDetails & { headTreeSha: string }> {
+  /**
+   * A provider whose every request counts against `budget` (and stops with it) and whose rate-limit answers become `GithubMergeRateLimitError`. It is a new instance,
+   * so it cannot reuse or populate the singleton provider's caches.
+   */
+  private boundedProvider(budget: GithubMergeReadBudget): GitHubAppCredentialProvider {
     const boundedFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       if (budget.signal.aborted) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge observation was cancelled");
       budget.beforeRequest();
@@ -554,7 +570,17 @@ export class GitHubAppCredentialProvider {
       if (retryAt !== undefined) throw new GithubMergeRateLimitError(retryAt);
       return response;
     }) as typeof fetch;
-    const scoped = new GitHubAppCredentialProvider({ ...this.options, fetchImplementation: boundedFetch, now: this.now });
+    return new GitHubAppCredentialProvider({ ...this.options, fetchImplementation: boundedFetch, now: this.now });
+  }
+
+  /** A bounded, stable merge-state read that cannot reuse or populate the singleton provider's caches. */
+  async getPullRequestMergeObservation(
+    repositoryUrl: string,
+    number: number,
+    budget: GithubMergeReadBudget,
+    tokenScope: GitHubTokenScope,
+  ): Promise<GitHubPullRequestDetails & { headTreeSha: string }> {
+    const scoped = this.boundedProvider(budget);
     const repository = parseGitHubRepository(repositoryUrl);
     let installed: InstalledRepository;
     try {
@@ -577,6 +603,225 @@ export class GitHubAppCredentialProvider {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge observation changed during the read");
     }
     return { ...after, headTreeSha };
+  }
+
+  /** The provider a tracking pass reads through: itself with no budget, else one bounded provider per budget (a pass's reads share its installation lookup). */
+  private trackingProvider(budget: GithubMergeReadBudget | undefined): GitHubAppCredentialProvider {
+    if (budget === undefined) return this;
+    let provider = this.passProviders.get(budget);
+    if (provider === undefined) {
+      provider = this.boundedProvider(budget);
+      provider.tokenCache = new Map();
+      this.passProviders.set(budget, provider);
+    }
+    return provider;
+  }
+
+  private async trackingJson(url: string, token: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; body: unknown }> {
+    const response = await this.fetchImplementation(url, {
+      method: init.method ?? "GET", headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000),
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    });
+    let body: unknown;
+    try {
+      body = response.status === 204 ? undefined : await response.json();
+    } catch {
+      body = undefined;
+    }
+    return { status: response.status, body };
+  }
+
+  /**
+   * What GitHub says about one pull request for merge tracking (Plan 6 Task 14): the pull request, its reviews (paged), the head's checks with whether the base requires
+   * each (GraphQL `statusCheckRollup`, `isRequired`), whether the base requires any check and whether the head holds workflow files. Read-only: the token asks for
+   * `contents`, `pull_requests`, `checks` and `statuses` at read. With a `budget` every request counts against it. An answer that does not fit throws.
+   */
+  async getPullRequestStatus(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<PullRequestStatus> {
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    // The checks and statuses permissions are new to the App: an installation that has not accepted them refuses the token. Then everything else is still read, with a token
+    // that asks for less, and the checks are said to be unavailable (never passing).
+    let token: string;
+    let checksUnavailable = false;
+    try {
+      token = await provider.createInstallationToken(repository, STATUS_TOKEN_PERMISSIONS, scope);
+    } catch (error) {
+      if (!isAgentXError(error) || (error.code !== "GITHUB_NOT_CONNECTED" && error.code !== "RUNTIME_UNAVAILABLE")) throw error;
+      token = await provider.createInstallationToken(repository, BASIC_TOKEN_PERMISSIONS, scope);
+      checksUnavailable = true;
+    }
+    const root = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+    const pulled = await provider.trackingJson(pullRequestUrl(repository, number), token);
+    if (pulled.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${pulled.status}`);
+    const raw = statusRecord(pulled.body);
+    const details = parsePullRequestDetails(raw, repository);
+    if (details.number !== number || typeof raw.draft !== "boolean" || !/^[a-f0-9]{40}$/.test(details.headCommit)) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid pull request status identity");
+    }
+    const reviews: PullRequestReview[] = [];
+    let reviewsIncomplete = false;
+    // At most five pages of reviews: past that, what is on the pull request is not known, and no approval is read from the list.
+    for (const value of await provider.feedbackPages(`${pullRequestUrl(repository, number)}/reviews`, token, { maxPages: REVIEW_PAGES_MAX, onTruncated: () => { reviewsIncomplete = true; } })) {
+      const review = parseReview(value);
+      if (review !== undefined) reviews.push(review);
+    }
+    let checks: PullRequestCheck[] = [];
+    if (!checksUnavailable) {
+      try {
+        checks = await provider.rollupChecks(token, repository, number, details.headCommit);
+      } catch (error) {
+        // GitHub refused or failed the list (the field, the access): the checks are unknown. A rate limit or a spent allowance is not this and goes on up.
+        if (!isAgentXError(error) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
+        checksUnavailable = true;
+      }
+    }
+    const mergeableState = parseMergeableState(raw.mergeable_state);
+    const baseRef = details.baseBranch.split("/").map(encodeURIComponent).join("/");
+    let behindBy: number | undefined;
+    if (mergeableState !== "dirty" && mergeableState !== "behind" && mergeableState !== "unknown" && details.state === "open") {
+      const compared = await provider.trackingJson(`${root}/compare/${baseRef}...${details.headCommit}`, token);
+      if (compared.status !== 403) {
+        const count = compared.status === 200 ? statusRecord(compared.body).behind_by : undefined;
+        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid comparison");
+        behindBy = count;
+      }
+    }
+    // Workflow files: a refusal reads as "there may be some", which only delays reading "no CI".
+    const files = await provider.trackingJson(`${root}/contents/.github/workflows?ref=${details.headCommit}`, token);
+    let headHasWorkflowFiles = files.status === 403;
+    if (files.status === 200) {
+      headHasWorkflowFiles = Array.isArray(files.body) && files.body.some((entry) => typeof entry === "object" && entry !== null && typeof (entry as { name?: unknown }).name === "string" && /\.ya?ml$/iu.test((entry as { name: string }).name));
+    } else if (files.status !== 404 && files.status !== 403) {
+      throw agentXError("RUNTIME_UNAVAILABLE", `GitHub workflow files lookup failed with HTTP ${files.status}`);
+    }
+    // Which checks the base requires, from classic protection and from the rulesets, taken together. A read that fails, is refused, finds no branch or does not parse leaves
+    // the required checks unknown, and unknown checks are never a pass.
+    const requiredChecks: RequiredCheck[] = [];
+    const branch = await provider.trackingJson(`${root}/branches/${baseRef}`, token);
+    if (branch.status === 200) {
+      try {
+        mergeRequiredChecks(requiredChecks, requiredChecksFromProtection(branch.body));
+      } catch {
+        checksUnavailable = true;
+      }
+    } else {
+      checksUnavailable = true;
+    }
+    const rules = await provider.trackingJson(`${root}/rules/branches/${baseRef}`, token);
+    if (rules.status === 200) {
+      try {
+        mergeRequiredChecks(requiredChecks, requiredChecksFromRules(rules.body));
+      } catch {
+        checksUnavailable = true;
+      }
+    } else {
+      checksUnavailable = true;
+    }
+    return {
+      number: details.number, state: details.state, draft: raw.draft, headSha: details.headCommit, baseBranch: details.baseBranch, mergeableState,
+      ...(typeof raw.mergeable === "boolean" ? { mergeable: raw.mergeable } : {}),
+      ...(behindBy === undefined ? {} : { behindBy }), checks, ...(checksUnavailable ? { checksUnavailable: true as const } : {}), requiredChecks,
+      baseHasRequiredChecks: requiredChecks.length > 0 || checks.some((check) => check.required),
+      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
+    };
+  }
+
+  /** The head commit's checks and commit statuses, five pages of 100 at most (more throws: the list would be incomplete). */
+  private async rollupChecks(token: string, repository: InstalledRepository, number: number, head: string): Promise<PullRequestCheck[]> {
+    const checks: PullRequestCheck[] = [];
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (let page = 0; page < 5; page += 1) {
+      const data = await this.feedbackGraphql(token, `query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+        repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$number) { number headRefOid
+          commits(last:1) { nodes { commit { oid statusCheckRollup { state contexts(first:100,after:$cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { __typename
+              ... on CheckRun { name status conclusion detailsUrl databaseId checkSuite { app { databaseId } } isRequired(pullRequestNumber:$number) }
+              ... on StatusContext { context state targetUrl isRequired(pullRequestNumber:$number) } } } } } } }
+        } }
+      }`, { owner: repository.owner, name: repository.name, number, cursor });
+      const repo = statusRecord(data.repository);
+      const pull = statusRecord(repo.pullRequest);
+      if (repo.nameWithOwner !== `${repository.owner}/${repository.name}` || pull.number !== number || pull.headRefOid !== head) {
+        throw agentXError("RUNTIME_UNAVAILABLE", "GitHub pull request status read refused: scope or head changed");
+      }
+      const nodes = Array.isArray(statusRecord(pull.commits).nodes) ? statusRecord(pull.commits).nodes as unknown[] : [];
+      const commit = nodes.length === 0 ? undefined : statusRecord(statusRecord(nodes[0]).commit);
+      if (commit === undefined || commit.oid !== head) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub pull request status read refused: head commit missing");
+      const rollup = commit.statusCheckRollup === null || commit.statusCheckRollup === undefined ? undefined : statusRecord(commit.statusCheckRollup);
+      // No rollup: nothing has reported on this commit yet.
+      if (rollup === undefined) return checks;
+      const connection = feedbackConnection(rollup.contexts);
+      for (const node of connection.nodes) checks.push(parseRollupContext(node));
+      cursor = nextFeedbackCursor(connection, seen);
+      if (cursor === null) return checks;
+    }
+    throw agentXError("RUNTIME_UNAVAILABLE", "GitHub pull request status read refused: too many checks to read");
+  }
+
+  /**
+   * The person's permission on the repository (`GET collaborators/{login}/permission`): `admin`, `write` (`maintain` reads as `write`), `read` or `none` (a 404). The App
+   * permission this needs is checked at staging.
+   */
+  async getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none"> {
+    if (!GITHUB_LOGIN.test(login)) throw agentXError("CONFIG_INVALID", "GitHub login is invalid");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, BASIC_TOKEN_PERMISSIONS, scope);
+    const answered = await provider.trackingJson(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/collaborators/${encodeURIComponent(login)}/permission`, token,
+    );
+    // 404: not a collaborator. 403: the App may not ask about this person; a person it cannot vouch for has no permission here (and does not count).
+    if (answered.status === 404 || answered.status === 403) return "none";
+    if (answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub permission lookup failed with HTTP ${answered.status}`);
+    return parseRepositoryPermission(answered.body);
+  }
+
+  /** Takes a draft pull request out of draft (GraphQL `markPullRequestReadyForReview`); one that is ready already is left alone. */
+  async markPullRequestReady(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"ready" | "already_ready"> {
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { contents: "read", pull_requests: "write" }, scope);
+    const pulled = await provider.trackingJson(pullRequestUrl(repository, number), token);
+    if (pulled.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${pulled.status}`);
+    const raw = statusRecord(pulled.body);
+    parsePullRequestDetails(raw, repository);
+    if (raw.number !== number || typeof raw.draft !== "boolean" || typeof raw.node_id !== "string" || raw.node_id.length === 0 || raw.node_id.length > 200) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid pull request identity");
+    }
+    if (raw.draft === false) return "already_ready";
+    const data = await provider.feedbackGraphql(token, `mutation($id:ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { isDraft } } }`, { id: raw.node_id });
+    const marked = statusRecord(statusRecord(data.markPullRequestReadyForReview).pullRequest);
+    if (marked.isDraft !== false) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not take the pull request out of draft");
+    return "ready";
+  }
+
+  /**
+   * Asks for reviews: a name with a `/` (`org/team`) is a team, any other a person. One call; `refused` when GitHub refuses it (a name it cannot request, such as the
+   * author), which is not an error: the pull request is simply left as it is.
+   */
+  async requestReviewers(repositoryUrl: string, number: number, reviewers: readonly string[], scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"requested" | "refused"> {
+    if (reviewers.length === 0 || reviewers.length > 10) throw agentXError("CONFIG_INVALID", "reviewers must be one to ten names");
+    const users: string[] = [];
+    const teams: string[] = [];
+    for (const name of reviewers) {
+      const parts = name.split("/");
+      if (parts.length === 1 && GITHUB_LOGIN.test(name)) users.push(name);
+      else if (parts.length === 2 && GITHUB_LOGIN.test(parts[0]!) && /^[A-Za-z0-9_.-]{1,100}$/.test(parts[1]!)) {
+        // A team belongs to an organization: only the repository's own is asked for, so `other-org/admins` never reaches this repository's `admins`.
+        if (parts[0]!.toLowerCase() !== parseGitHubRepository(repositoryUrl).owner.toLowerCase()) throw agentXError("CONFIG_INVALID", "reviewer team is not in the repository's organization");
+        teams.push(parts[1]!);
+      }
+      else throw agentXError("CONFIG_INVALID", "reviewer name is invalid");
+    }
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { contents: "read", pull_requests: "write" }, scope);
+    const answered = await provider.trackingJson(`${pullRequestUrl(repository, number)}/requested_reviewers`, token, { method: "POST", body: { reviewers: users, team_reviewers: teams } });
+    if (answered.status === 422) return "refused";
+    if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reviewer request failed with HTTP ${answered.status}`);
+    return "requested";
   }
 
   /** Reads a bounded PR diff summary for a code-aware, owner-approved feedback proposal. */
@@ -924,10 +1169,11 @@ export class GitHubAppCredentialProvider {
     return feedbackRecord(await response.json());
   }
 
-  private async feedbackPages(path: string, token: string): Promise<unknown[]> {
+  private async feedbackPages(path: string, token: string, limit?: { maxPages: number; onTruncated(): void }): Promise<unknown[]> {
     const values: unknown[] = [];
     let next: string | undefined = `${path}?per_page=100&page=1`;
     const seen = new Set<string>();
+    let pages = 0;
     while (next) {
       if (seen.has(next)) throw feedbackReadError("pagination did not advance");
       seen.add(next);
@@ -947,6 +1193,11 @@ export class GitHubAppCredentialProvider {
       } else if (!link && page.length === 100) {
         const url: URL = new URL(next); url.searchParams.set("page", String(Number(url.searchParams.get("page")) + 1)); next = url.href;
       } else next = undefined;
+      pages += 1;
+      if (next !== undefined && limit !== undefined && pages >= limit.maxPages) {
+        limit.onTruncated();
+        next = undefined;
+      }
     }
     return values;
   }
@@ -1262,9 +1513,22 @@ export class GitHubAppCredentialProvider {
     scope: GitHubTokenScope,
     retried = false,
     options: AgentTokenOptions = {},
+    minting = false,
   ): Promise<string> {
     const installed = "installationId" in repository ? repository : await this.installed(repository, scope);
     requirePinnedInstallation(installed, options);
+    const cache = this.tokenCache;
+    if (cache !== undefined && !minting) {
+      const key = `${String(installed.installationId)}/${installed.name}/${JSON.stringify(Object.entries(permissions).sort())}`;
+      let minted = cache.get(key);
+      if (minted === undefined) {
+        minted = this.createInstallationToken(installed, permissions, scope, retried, options, true);
+        cache.set(key, minted);
+        // A refused mint is not kept: the next call asks again.
+        minted.catch(() => { if (cache.get(key) === minted) cache.delete(key); });
+      }
+      return minted;
+    }
     const response = await this.postInstallationToken(installed.installationId, { repositories: [installed.name], permissions });
     if (response.status === 404 && !retried) {
       this.installations.delete(installed.owner.toLowerCase());

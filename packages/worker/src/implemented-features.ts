@@ -21,4 +21,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanCritique",
   // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
   "task.setupDraft",
+  // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
+  "task.workflowReviewRisk",
 ] as const satisfies readonly WorkerInvocationFeature[];

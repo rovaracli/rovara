@@ -753,11 +753,11 @@ export function taskOwnerLabel(name: string): string {
  * FR-023. The client is one of the fixed names cleanClientName gives, or "Slack" for a task the Slack workflow
  * started, so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
  */
-export function developerFooter(name: string, client: string): string {
+export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX"): string {
   const label = taskOwnerLabel(name);
   const owner = label === TASK_OWNER_LABEL ? label : inertName(label);
   const slack = client === SLACK_CLIENT_NAME || (client === UNKNOWN_CLIENT_NAME && SLACK_FALLBACK_NAME.test(name.trim()));
-  return `Requested by ${owner} via AgentX, started from ${slack ? SLACK_CLIENT_NAME : client}`;
+  return `Requested by ${owner} via ${product}, started from ${slack ? SLACK_CLIENT_NAME : client}`;
 }
 
 /** The identity every workspace handler sees for a developer task: its own owner key (FR-021). */

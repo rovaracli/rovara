@@ -1074,6 +1074,7 @@ async function runTask(
           ...(invocation.payload.workflowReviewFeedback === undefined ? {} : { reviewFeedback: invocation.payload.workflowReviewFeedback }),
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
+          ...(invocation.payload.workflowReviewRisk === true ? { reviewRisk: true } : {}),
           ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
           ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
           ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),

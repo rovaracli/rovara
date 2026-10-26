@@ -222,6 +222,7 @@ describe("the turn record's party, from a task record (F8)", () => {
 describe("the PR footer (FR-023, R14)", () => {
   it("names the developer inertly and the client", () => {
     expect(developerFooter("Maya @here Chen", "Claude Code")).toBe("Requested by `Maya @here Chen` via AgentX, started from Claude Code");
+    expect(developerFooter("Maya @here Chen", "Claude Code", "Rovara")).toBe("Requested by `Maya @here Chen` via Rovara, started from Claude Code");
   });
 });
 

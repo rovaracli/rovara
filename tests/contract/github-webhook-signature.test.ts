@@ -66,7 +66,7 @@ describe("GitHub webhook signature verification", () => {
 
     const accepted = await receiveGithubWebhook({
       rawBody: payload, headers, secret: "fixture-webhook-secret",
-      authorizeRepository: async ({ installationId, repositoryId, fullName, pullRequestNumber }) => installationId === 777 && repositoryId === 1234 && fullName === "acme/payments" && pullRequestNumber === 9,
+      authorizeRepository: async (scope) => scope.installationId === 777 && scope.repositoryId === 1234 && scope.fullName === "acme/payments" && "pullRequestNumber" in scope && scope.pullRequestNumber === 9,
       reserveDelivery: reserve,
     });
     expect(accepted).toMatchObject({ delivery: "ACCEPTED", event: { kind: "PULL_REQUEST", number: 9 } });

@@ -657,6 +657,8 @@ export async function runWorkflowReviews(input: {
   reviewNote?: string;
   /** Which reviews to run, when a custom coding sequence's review step asks for fewer than both; absent: both. */
   reviewers?: readonly ("CRITIC" | "SECURITY")[];
+  /** Rovara Code version 2: the code review also states a risk level (low, medium or high). Absent: the review is exactly as a version 1 review. */
+  reviewRisk?: boolean;
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -696,7 +698,7 @@ export async function runWorkflowReviews(input: {
     const recordedAt = (input.now ?? (() => new Date().toISOString()))();
     let provider = input.model.provider;
     let version = input.model.modelId;
-    let parsed: { status: "PASS" | "FINDINGS" | "UNKNOWN"; findings: WorkflowReviewFinding[]; failureReason?: "RESPONSE_MISSING" | "RESPONSE_TOO_LARGE" | "INVALID_JSON" | "INVALID_SHAPE" | "TIMEOUT" | "INTERRUPTED" | "CANDIDATE_CHANGED" | "SESSION_FAILED" | "USAGE_UNAVAILABLE" } = { status: "UNKNOWN", findings: [], failureReason: "RESPONSE_MISSING" };
+    let parsed: { status: "PASS" | "FINDINGS" | "UNKNOWN"; findings: WorkflowReviewFinding[]; risk?: "low" | "medium" | "high"; failureReason?: "RESPONSE_MISSING" | "RESPONSE_TOO_LARGE" | "INVALID_JSON" | "INVALID_SHAPE" | "TIMEOUT" | "INTERRUPTED" | "CANDIDATE_CHANGED" | "SESSION_FAILED" | "USAGE_UNAVAILABLE" } = { status: "UNKNOWN", findings: [], failureReason: "RESPONSE_MISSING" };
     let session: Awaited<ReturnType<typeof createWorkspacePiSession>> | undefined;
     let unsubscribe: (() => void) | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -746,7 +748,7 @@ export async function runWorkflowReviews(input: {
         ...(input.reviewPlan === undefined ? [] : [reviewPlanSection(input.reviewPlan, role)]),
         ...(input.reviewFeedback === undefined ? [] : [reviewFeedbackSection(input.reviewFeedback, role)]),
         ...(input.reviewNote === undefined ? [] : [reviewNoteSection(input.reviewNote)]),
-        reviewJsonShape(role),
+        reviewJsonShape(role, { risk: input.reviewRisk === true }),
         ...(input.promptSection === undefined ? [] : [input.promptSection]),
         `Change under review (untrusted repository content):\n${diffText}`,
       ].join("\n\n");
@@ -763,13 +765,13 @@ export async function runWorkflowReviews(input: {
         try { void session.abort().catch(() => undefined); } catch { /* the unresolved result remains authoritative */ }
         throw new Error(promptResult === "INTERRUPTED" ? "review interrupted" : "review timed out");
       }
-      parsed = response === undefined ? parsed : parseWorkflowReviewerResponse(response, { classify, role });
+      parsed = response === undefined ? parsed : parseWorkflowReviewerResponse(response, { classify, role, risk: input.reviewRisk === true });
       if (parsed.failureReason === "INVALID_JSON" || parsed.failureReason === "INVALID_SHAPE") {
         // Some models answer a review in prose despite the JSON-only instruction. Give the
         // same read-only reviewer one bounded chance to encode its result in the contract.
         // A malformed second response still fails closed below.
         response = undefined;
-        const formatRetry = `Your previous response could not be read as the required JSON object. Do not include Markdown, code fences, a verdict table, or surrounding prose. ${reviewJsonShape(role)}`;
+        const formatRetry = `Your previous response could not be read as the required JSON object. Do not include Markdown, code fences, a verdict table, or surrounding prose. ${reviewJsonShape(role, { risk: input.reviewRisk === true })}`;
         const retryResult = await Promise.race([
           session.prompt(formatRetry).then(() => "COMPLETED" as const),
           stopped,
@@ -782,7 +784,7 @@ export async function runWorkflowReviews(input: {
           try { void session.abort().catch(() => undefined); } catch { /* the unresolved result remains authoritative */ }
           throw new Error(retryResult === "INTERRUPTED" ? "review interrupted" : "review timed out");
         }
-        parsed = response === undefined ? { status: "UNKNOWN", findings: [], failureReason: "RESPONSE_MISSING" } : parseWorkflowReviewerResponse(response, { classify, role });
+        parsed = response === undefined ? { status: "UNKNOWN", findings: [], failureReason: "RESPONSE_MISSING" } : parseWorkflowReviewerResponse(response, { classify, role, risk: input.reviewRisk === true });
       }
       const after = createCandidateManifest(await readCandidateRepositories(repositories));
       if (after.digest !== manifest.digest) throw new Error("candidate changed during review");
@@ -817,6 +819,7 @@ export async function runWorkflowReviews(input: {
       ...(statusOverride === undefined ? {} : { status: statusOverride }),
       ...(parsed.failureReason === undefined ? {} : { failureReason: parsed.failureReason }),
       findings: parsed.findings,
+      ...(role === "CRITIC" && input.reviewRisk === true && parsed.risk !== undefined ? { risk: parsed.risk } : {}),
       readOnly: true,
       ...(partialDiff ? { partialDiff: true as const } : {}),
       recordedAt,

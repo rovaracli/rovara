@@ -58,8 +58,8 @@ describe("GitHub App manifest", () => {
       redirect_url: "http://127.0.0.1:50123/github/created",
       public: false,
       hook_attributes: { url: WEBHOOK_URL, active: true },
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read" },
-      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"],
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", checks: "read", statuses: "read" },
+      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status"],
     });
   });
 
@@ -74,8 +74,8 @@ describe("GitHub App manifest", () => {
       request_oauth_on_install: true,
       setup_on_update: true,
       hook_attributes: { url: WEBHOOK_URL, active: true },
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", members: "read" },
-      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"],
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", checks: "read", statuses: "read", members: "read" },
+      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status"],
     });
   });
 
@@ -280,7 +280,7 @@ describe("GitHub App step", () => {
     // An App made beforehand may have no webhook, and GitHub's API cannot switch it on.
     expect(context.lines).toContain("GitHub webhook: turn on Active at https://github.com/organizations/acme/settings/apps/agentx-acme-staging if it is off");
     // The App made beforehand may not listen for the events: say which and where, never the secret.
-    expect(context.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues");
+    expect(context.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues, check_suite, check_run, status");
     expect(context.lines.join("\n")).not.toContain(stored.webhookSecret);
   });
 

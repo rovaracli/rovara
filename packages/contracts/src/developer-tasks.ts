@@ -7,7 +7,7 @@ import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RunInputSchema } from "./age
 import { StepIdSchema } from "./agent-recipe.js";
 import { SessionIdSchema } from "./agent-sessions.js";
 import { RunEstimateSchema } from "./spend.js";
-import { VerificationReportSchema } from "./rovara-code.js";
+import { MergeTrackingItemSchema, VerificationReportSchema } from "./rovara-code.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -373,6 +373,11 @@ export const DeveloperTaskViewSchema = z.object({
   verificationReport: VerificationReportSchema.optional(),
   /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
   reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
+  /**
+   * Plan 6, Task 14 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): what GitHub says about each pull request of the task,
+   * as merge tracking last read it. The merge claim is the broker's own and is never part of the view.
+   */
+  mergeTracking: z.array(MergeTrackingItemSchema.omit({ mergeClaim: true })).max(32).optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 
