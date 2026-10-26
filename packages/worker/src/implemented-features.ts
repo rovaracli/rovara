@@ -25,4 +25,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
   "task.workflowFix",
+  // Plan 6 Task 16: a coding run whose PR feedback approval is Rovara's own (it carries the autonomy it was decided under).
+  "task.workflowFeedbackAutonomy",
 ] as const satisfies readonly WorkerInvocationFeature[];

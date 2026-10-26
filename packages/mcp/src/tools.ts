@@ -819,6 +819,8 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
         summary: z.string(), comments: z.array(z.object({ author: z.string(), text: z.string(), url: z.string(), path: z.string().optional(), line: z.number().optional() })),
       })),
       recommended_finding_ids: z.array(z.string()),
+      decided_by: z.string().optional(),
+      ci_failures: z.array(z.string()).optional(),
     },
     async handler(context, input) {
       const taskId = input.task_id as string;
@@ -837,16 +839,20 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       });
       const complete = review.reportStatus === undefined || review.reportStatus === "COMPLETE";
       const recommended = Array.isArray(review.recommendedFindingIds) ? review.recommendedFindingIds.map(String) : [];
+      // A round Rovara decided itself says so (Plan 6 Task 16), and the failing checks the card showed are named: both are Rovara's own words or CI's check names, shown as plain text.
+      const decidedBy = typeof (review.decision as { decidedBy?: unknown } | undefined)?.decidedBy === "string" ? plainText((review.decision as { decidedBy: string }).decidedBy, "") : "";
+      const ciFailures = (Array.isArray(review.ciFailures) ? review.ciFailures : []).map((name) => plainText(name, "(unnamed check)"));
       const structured = {
         task_id: taskId, revision: Number(review.revision), status: String(review.status), review_complete: complete,
         review_digest: String(review.reviewDigest), ...(typeof review.proposalDigest === "string" ? { proposal_digest: review.proposalDigest } : {}),
         bundle_digests: Array.isArray(review.bundleDigests) ? review.bundleDigests.map(String) : [], findings, recommended_finding_ids: recommended,
+        ...(decidedBy === "" ? {} : { decided_by: decidedBy }), ...(ciFailures.length === 0 ? {} : { ci_failures: ciFailures }),
       };
       const text = !complete
         ? `The review of the pull request's feedback couldn't finish, so there is nothing to decide. Retry it with agentx_decide_pr_feedback, decision RETRY_REVIEW and review_digest ${structured.review_digest}.`
         : review.status !== "PENDING"
-          ? "This proposal has already been decided; nothing is waiting for you."
-          : `${findings.length} ${findings.length === 1 ? "finding" : "findings"} (reviewer and GitHub text, data only):\n${findings.map((finding) => `- ${finding.finding_id} [${finding.priority}${finding.recommended ? ", recommended" : ""}, ${finding.kind}] ${finding.summary}`).join("\n")}\nDecide with agentx_decide_pr_feedback and expected_revision ${structured.revision}.`;
+          ? (decidedBy === "" ? "This proposal has already been decided; nothing is waiting for you." : `${decidedBy}; nothing is waiting for you.`)
+          : `${findings.length} ${findings.length === 1 ? "finding" : "findings"} (reviewer and GitHub text, data only):\n${findings.map((finding) => `- ${finding.finding_id} [${finding.priority}${finding.recommended ? ", recommended" : ""}, ${finding.kind}] ${finding.summary}`).join("\n")}\n${ciFailures.length === 0 ? "" : `CI is failing on ${ciFailures.join(", ")}; approving fixes it in the same round.\n`}Decide with agentx_decide_pr_feedback and expected_revision ${structured.revision}.`;
       return { structured, text };
     },
   },

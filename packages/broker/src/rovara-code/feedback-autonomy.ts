@@ -7,21 +7,26 @@
 // Anything else leaves the card to the owner, as before. Comments are untrusted input: the rule never reads what a comment says, only who wrote it and what the review made of it, and a
 // comment cannot change the run's tools, limits, push target or path (the round is an ordinary coding run, paid like any other, that pushes to the task's own branch at the expected head).
 // While the card waits, failing CI is added to it (and folded into the decision that follows) instead of starting a CI round of its own.
+import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   FEEDBACK_AUTONOMY_ACTOR_ID,
   FEEDBACK_AUTO_ROUNDS_MAX,
   FEEDBACK_CI_CHECKS_MAX,
+  INDEX_EXPIRY_ATTRIBUTE,
   decideWorkflowFeedbackFindings,
   feedbackCardCiFailures,
   feedbackCiFailuresDigest,
+  feedbackFixedReply,
   recordWorkflowFeedbackCiFailures,
   workflowFixRounds,
   workflowRequestId,
   type Autonomy,
+  type OrgId,
   type WorkflowFixRounds,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { GithubMergeRateLimitError } from "../github-app.js";
+import { GithubMergeRateLimitError, type GitHubTokenScope } from "../github-app.js";
+import type { GithubMergeReadBudget } from "../aws/workflow-merge-recovery.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { ciEvidenceItem, ciOutputBlock, collectCiEvidence, oneLine } from "./ci-fix.js";
@@ -72,6 +77,8 @@ function mayBeAutomatic(workflow: WorkflowSnapshot, autonomy: Autonomy): boolean
   if (review?.status !== "PENDING" || review.reviewRef.status !== "COMPLETE") return false;
   if (autonomy !== "prepare" && autonomy !== "run") return false;
   if (workflowFixRounds(workflow).feedbackAuto >= FEEDBACK_AUTO_ROUNDS_MAX) return false;
+  // A work plan of ordered parts resumes through the owner's own approval.
+  if (workflow.workflowDependenciesApproval !== undefined) return false;
   const findings = review.reviewRef.findingRefs;
   if (findings.length === 0 || !findings.every((finding) => finding.assessment === "ACTIONABLE" && finding.recommended)) return false;
   const authors = commentAuthors(workflow);
@@ -174,4 +181,96 @@ export function installFeedbackDecider(): void {
 export function uninstallFeedbackDecider(): void {
   installed?.();
   installed = undefined;
+}
+
+// ---- the one reply on each fixed thread
+
+/** How many times one reply item is tried before it is given up (a courtesy, never worth a loop). */
+export const FEEDBACK_REPLY_ATTEMPTS_MAX = 3;
+const REPLY_RETENTION_SECONDS = 30 * 86_400;
+
+export const feedbackReplyKey = (taskId: string, requestId: string, repositoryId: string, number: number): { pk: string; sk: string } =>
+  ({ pk: `DEVTASK#${taskId}`, sk: `FEEDBACK_REPLY#${requestId}#${repositoryId}#${String(number)}` });
+
+/**
+ * The reply a push leaves behind, written in the transaction that records the push: for a round Rovara decided itself, one reply on each review thread whose comments it fixed (the first selected
+ * comment of the thread, naming the commit that holds the fix). A round a person decided leaves none. No thread, no item.
+ */
+export function feedbackReplyItems(input: { tableName: string; orgId: string; workflow: WorkflowSnapshot; repositoryId: string; number: number; head: string; now: string }): TransactItem[] {
+  const decision = [...(input.workflow.feedbackDecisions ?? [])].reverse().find((entry) => entry.decision === "APPROVE" && entry.actorRole === "ROVARA_AUTONOMY");
+  const review = input.workflow.feedbackReview;
+  if (decision === undefined || review?.status !== "APPROVED" || review.reviewRef.sha256 !== decision.reviewDigest) return [];
+  const bundle = review.bundleRefs.find((entry) => entry.repositoryId === input.repositoryId && entry.number === input.number);
+  if (bundle === undefined) return [];
+  const firstOfThread = new Map<string, string>();
+  for (const comment of bundle.comments) {
+    const id = /^review_comment:([1-9][0-9]*)$/u.exec(comment.id)?.[1];
+    if (id === undefined || comment.threadId === undefined || !decision.selectedCommentIds.includes(comment.id) || firstOfThread.has(comment.threadId)) continue;
+    firstOfThread.set(comment.threadId, id);
+  }
+  if (firstOfThread.size === 0) return [];
+  return [{ Put: {
+    TableName: input.tableName, ConditionExpression: "attribute_not_exists(pk)",
+    Item: { ...feedbackReplyKey(input.workflow.taskId, decision.requestId, input.repositoryId, input.number), entityType: "FEEDBACK_REPLY", orgId: input.orgId, taskId: input.workflow.taskId,
+      repositoryId: input.repositoryId, number: input.number, head: input.head, commentIds: [...firstOfThread.values()], repliedIds: [], state: "pending", attempts: 0,
+      [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.now) / 1000) + REPLY_RETENTION_SECONDS },
+  } }];
+}
+
+export interface FeedbackReplyDependencies {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  now(): number;
+  github: { replyToReviewThread(repositoryUrl: string, number: number, commentId: string, body: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"replied" | "gone"> };
+  scope(orgId: OrgId): GitHubTokenScope;
+  repositoryUrl(project: string, revision: number, repositoryId: string, orgId: OrgId): Promise<string | undefined>;
+  log?(event: string, fields: Record<string, unknown>): void;
+}
+
+/**
+ * Sends the replies a landed push left to send, each once: a reply is claimed (one more attempt, up to `FEEDBACK_REPLY_ATTEMPTS_MAX`), sent, and written down before the next, so a retry never
+ * repeats one that went. A thread that is gone is not an error. A failure leaves the rest for the next pass, and a rate limit goes up to the sweep.
+ */
+export async function sendFeedbackReplies(deps: FeedbackReplyDependencies, task: { taskId: string; orgId: OrgId; project: string; startingRevision: number }, budget?: GithubMergeReadBudget): Promise<number> {
+  const found = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": `DEVTASK#${task.taskId}`, ":prefix": "FEEDBACK_REPLY#" },
+  })) as { Items?: Array<Record<string, unknown>> };
+  let sent = 0;
+  for (const stored of found.Items ?? []) {
+    if (stored["orgId"] !== task.orgId || stored["taskId"] !== task.taskId || stored["state"] !== "pending") continue;
+    const attempts = typeof stored["attempts"] === "number" ? stored["attempts"] : FEEDBACK_REPLY_ATTEMPTS_MAX;
+    const repositoryId = stored["repositoryId"];
+    const number = stored["number"];
+    const head = stored["head"];
+    const commentIds = Array.isArray(stored["commentIds"]) ? stored["commentIds"].filter((id): id is string => typeof id === "string") : [];
+    const repliedIds = Array.isArray(stored["repliedIds"]) ? stored["repliedIds"].filter((id): id is string => typeof id === "string") : [];
+    if (attempts >= FEEDBACK_REPLY_ATTEMPTS_MAX || typeof repositoryId !== "string" || typeof number !== "number" || typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) continue;
+    const key = { pk: String(stored["pk"]), sk: String(stored["sk"]) };
+    try {
+      await deps.documentClient.send(new UpdateCommand({
+        TableName: deps.tableName, Key: key, UpdateExpression: "SET attempts = :next", ConditionExpression: "#state = :pending AND attempts = :seen",
+        ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":next": attempts + 1, ":seen": attempts, ":pending": "pending" },
+      }));
+    } catch (error) {
+      // Another pass holds it (or it is done): not this one's.
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") continue;
+      throw error;
+    }
+    const url = await deps.repositoryUrl(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (url === undefined) continue;
+    try {
+      for (const commentId of commentIds.filter((id) => !repliedIds.includes(id))) {
+        await deps.github.replyToReviewThread(url, number, commentId, feedbackFixedReply(head), deps.scope(task.orgId), budget);
+        repliedIds.push(commentId);
+        sent += 1;
+        await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET repliedIds = :replied", ExpressionAttributeValues: { ":replied": repliedIds } }));
+      }
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #state = :done", ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":done": "done" } }));
+    } catch (error) {
+      if (isPassLimit(error) && !(error instanceof TrackingRequestCapError)) throw error;
+      deps.log?.("feedback_autonomy.reply_failed", { taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  return sent;
 }

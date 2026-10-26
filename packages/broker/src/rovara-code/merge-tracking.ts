@@ -97,6 +97,8 @@ export interface MergeTrackingDependencies {
    * Task 16). Without it nothing is decided on Rovara's own.
    */
   feedbackRoundCheck?(task: TrackedTask & { workflow: WorkflowSnapshot; orgId: OrgId }): Promise<boolean>;
+  /** Sends the replies a landed push of an automatic comment fix left to send (Plan 6 Task 16): best effort, at the end of a pass; a failure is logged and tried again by the next. */
+  sendFeedbackReplies?(task: TrackedTask & { orgId: OrgId }, budget?: GithubMergeReadBudget): Promise<unknown>;
   /** Every request counts against this (the sweep's budget); each task's pass is held to its own cap inside it. */
   budget?: GithubMergeReadBudget;
   log?(event: string, fields: Record<string, unknown>): void;
@@ -543,6 +545,16 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     if (one.acted) break;
   }
   await setCursor(0);
+  // The replies a landed push of an automatic comment fix left to send: a courtesy, so a failure is logged and never fails the pass (a rate limit goes up to the sweep).
+  if (deps.sendFeedbackReplies !== undefined) {
+    const fresh = await deps.loadTask(taskId);
+    if (fresh !== undefined && fresh.closedAt === undefined && fresh.orgId === orgId) {
+      await deps.sendFeedbackReplies({ ...fresh, orgId }, budget).catch((error: unknown) => {
+        if (error instanceof GithubMergeRateLimitError) throw error;
+        deps.log?.("merge_tracking.replies_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
+      });
+    }
+  }
   return { result: changed ? "changed" : "unchanged", anyNotOpen, ...(recheckAt === undefined ? {} : { recheckAt }) };
 }
 
