@@ -85,7 +85,8 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       }
       if (after !== undefined && before === undefined) notices.push({ id: `${taskId}:start`, kind: "start", taskId, at });
       // A mode notice is named by its stream event; without one, two changes would collapse into one ID.
-      else if (after !== undefined && before !== undefined && after.mode !== before.mode && eventId !== "") {
+      else if (after !== undefined && before !== undefined && after.mode !== before.mode && eventId !== ""
+        && !(afterWorkflow?.definitionId === "agentx-task-to-pr" && after.mode === "view")) {
         notices.push({ id: `${taskId}:mode:${eventId}`, kind: "mode", taskId, at, mode: after.mode === "continue" ? "continue" : "view" });
       }
       // A stored NULL counts as unset.

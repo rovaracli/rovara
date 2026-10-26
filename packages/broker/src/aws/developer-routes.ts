@@ -1620,6 +1620,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
         return registered?.definition.repositories.find(item => item.name === repository)?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
+    ...(taskDeps.actions.turnRecordsTableName === undefined ? {} : { turnRecordsTableName: taskDeps.actions.turnRecordsTableName }),
     ...(chainDeps === undefined ? {} : {
       chain: chainSessionReads(chainDeps, caller.orgId),
       chainSteer: chainSteerReadsFor(chainDeps),

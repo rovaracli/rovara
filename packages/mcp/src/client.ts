@@ -16,6 +16,7 @@ import {
   SessionMessageSchema,
   SessionResponseReaderSchema,
   TaskPeopleChangeResponseSchema,
+  NeedsConfirmationSchema,
   TaskPeopleViewResponseSchema,
   type AgentXConfigurationConfirm,
   type ContinueDeveloperTaskRequest,
@@ -47,6 +48,10 @@ import { CLOSE_BUSY_STEP, NEXT_STEPS, SHARE_BUSY_STEP, START_BUSY_STEP, ToolErro
 const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 export type SessionListRead = z.output<typeof SessionListReaderSchema>;
 export type SessionViewRead = z.output<typeof SessionResponseReaderSchema>["session"];
+/** Session ownership confirmations do not advertise an expiry on the wire. */
+export type TaskOwnershipResult = Exclude<TaskPeopleChangeResult, { status: "PENDING" }> | {
+  status: "PENDING"; requestId: string; confirmationUrl: string; expiresAt?: string;
+};
 export type SessionMessageRead = z.output<typeof SessionMessageReaderSchema>;
 
 /**
@@ -116,7 +121,7 @@ export interface ControlPlaneClient {
   getTaskPeople(taskId: string): Promise<TaskPeopleView>;
   getTaskPeopleRequest(taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   setTaskPerson(taskId: string, request: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
-  takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
+  takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskOwnershipResult>;
   /** Task 14: how far the signed-in person's organization audit log is sealed. Owners and admins only; anyone else gets the route's refusal. */
   auditStatus(): Promise<AuditStatusView>;
   /** Plan 3 Task 35a: the agents the person can see, or those that work on a project. */
@@ -350,7 +355,10 @@ export function httpControlPlaneClient(options: {
     getTaskPeople: async (taskId) => (await call(TaskPeopleViewResponseSchema, "GET", path(taskId, "/people"))).view,
     getTaskPeopleRequest: async (taskId, requestId) => (await call(TaskPeopleChangeResponseSchema, "GET", path(taskId, `/people/requests/${encodeURIComponent(requestId)}`))).change,
     setTaskPerson: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/role"), request)).change,
-    takeTaskOwnership: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/take-ownership"), request)).change,
+    takeTaskOwnership: async (taskId, request) => {
+      const answer = await call(z.union([TaskPeopleChangeResponseSchema, NeedsConfirmationSchema.extend({ requestId: z.string().optional() })]), "POST", path(taskId, "/people/take-ownership"), request);
+      return "change" in answer ? answer.change : { status: "PENDING", requestId: request.requestId, confirmationUrl: answer.confirmUrl };
+    },
     auditStatus: () => call(AuditStatusSchema, "GET", "/v1/dev/org/audit/status"),
     listAgents: async (query) => (await call(z.object({ agents: z.array(AgentSummarySchema) }), "GET", `/v1/app/agents${query.project === undefined ? "" : `?project=${encodeURIComponent(query.project)}`}`)).agents,
     runAgent: async (agentId, request) => {

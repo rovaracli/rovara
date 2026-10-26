@@ -89,6 +89,8 @@ export interface DeveloperTaskRecord {
   share?: TaskShare;
   /** C1: every write of `share` replaces the whole map, conditioned on this number. */
   shareVersion?: number;
+  /** Latest legacy Code share request; a later change invalidates every older undo. */
+  codeShareRequestId?: string;
   /** Serializes append-only task Canvas lineage mutations without advancing workflow revision. */
   canvasLineageVersion?: number;
   canvasCloseoutVersion?: number;

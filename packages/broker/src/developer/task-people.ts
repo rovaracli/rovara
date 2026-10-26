@@ -1,3 +1,4 @@
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
@@ -31,6 +32,7 @@ export interface TaskPersonCheck {
 export type CheckTaskPerson = (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
 
 export interface TaskPeopleDependencies {
+  agentSessions?: SessionAccessDependencies;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now(): number;
@@ -793,6 +795,13 @@ export async function takeTaskOwnership(
     throw agentXError("CONFIG_INVALID", "ownership request is invalid");
   }
   const task = await loadTask(deps, taskId);
+  // Session ownership moves payer and all authority together, only on the confirmation page.
+  if (task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr") {
+    if (task.orgId !== caller.orgId) return denied();
+    if (deps.agentSessions === undefined) return unavailable();
+    await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "take it over");
+    throw agentXError("REAUTH_REQUIRED", "Confirm the session take-over in your browser.");
+  }
   const people = await currentPeople(deps, task);
   await authorizedRead(deps, task, people, caller);
   const payload = { expectedPeopleRevision: input.expectedPeopleRevision };

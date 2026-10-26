@@ -57,6 +57,7 @@ import {
   StartDeveloperTaskRequestSchema,
   WorkspaceClosePreflightResultSchema,
   agentXError,
+  agentSessionKey,
   cleanClientName,
   developerTaskPolicy,
   diffStat,
@@ -244,6 +245,7 @@ import {
   taskShare,
   isTaskOwner,
   ownerDisplayName,
+  ownerFenceOf,
   tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
@@ -295,7 +297,10 @@ import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
-import type { SessionAccessDependencies } from "../agent-sessions/access.js";
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { codeTask, codeShareItems } from "../rovara-code/sharing.js";
+import { askTakeOver } from "../agent-sessions/take-over.js";
+import { StatusReply } from "./status-reply.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
@@ -522,8 +527,8 @@ export const confirmTaskPeopleProposal = (deps: DeveloperTaskRouteDependencies, 
   confirmPeopleProposal(taskPeopleEffectsDependencies(deps), caller, taskId, requestId);
 export const proposeTaskPeopleRoleForPage = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
   input: z.infer<typeof TaskPeopleRoleRequestSchema>) => proposeTaskPeopleRole(taskPeopleEffectsDependencies(deps), caller, taskId, input);
-export const proposeTaskOwnershipForPage = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
-  input: z.infer<typeof TaskPeopleTakeOwnershipRequestSchema>) => proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
+export const proposeTaskOwnershipForPage = async (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
+  input: z.infer<typeof TaskPeopleTakeOwnershipRequestSchema>) => (await codeOwnershipConfirmation(deps, caller, taskId, input))?.pending ?? proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
 
 export async function getTaskPersonPresentationName(deps: DeveloperTaskRouteDependencies, taskId: string, personId: string): Promise<string | undefined> {
   return (await getTaskPeoplePresentation(deps, taskId)).find((person) => person.personId === personId)?.name;
@@ -531,8 +536,8 @@ export async function getTaskPersonPresentationName(deps: DeveloperTaskRouteDepe
 export const submitSlackTaskPeopleRole = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
   input: { requestId: string; expectedPeopleRevision: number; slackUserId: string; role: "owner" | "commenter" | "viewer" | "denied"; teamId: string; channelId: string }) =>
   commitSlackTaskPeopleRole(taskPeopleEffectsDependencies(deps), caller, taskId, input);
-export const submitSlackTaskOwnership = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
-  input: { requestId: string; expectedPeopleRevision: number }) => commitSlackTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
+export const submitSlackTaskOwnership = async (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
+  input: { requestId: string; expectedPeopleRevision: number }) => (await codeOwnershipConfirmation(deps, caller, taskId, input))?.pending ?? commitSlackTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
 
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const iso = (deps: Pick<DeveloperTaskRouteDependencies, "now">) => new Date(deps.now()).toISOString();
@@ -704,6 +709,7 @@ export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller
 }
 
 interface AuthorizedTask extends TaskAccess {
+  shareSession?: { sessionId: string; revision: number };
   actorId: string;
   authority: { actorId: string; ownerIds: readonly string[] };
 }
@@ -7879,7 +7885,7 @@ function withMode(current: TaskShare, mode: { mode: "view" | "continue"; modeRea
 
 /** An AgentX admin who changed a task's share mode (C25), named on the audit record. */
 export interface ShareAdmin { issuer: string; subject: string; displayName?: string }
-export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "orgId" | "now" | "log">;
+export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "orgId" | "now" | "log" | "issuer">;
 
 /**
  * C1, C5, C25: one share change's items: the task's whole share map under shareVersion, the index
@@ -7894,15 +7900,16 @@ function shareItems(
   audit: { idempotencyKey: { pk: string; sk: string }; payloadHash: string; receivedAt: string; request: string; admin?: ShareAdmin; actor?: DeveloperCaller },
 ): TransactItems {
   const version = task.shareVersion ?? 0;
+  const ownerFence = codeTask(task) ? ownerFenceOf(task) : undefined;
   return [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
-      UpdateExpression: "SET #share = :share, #shared = :true, shareVersion = :next, updatedAt = :now",
-      ConditionExpression: version === 0
+      UpdateExpression: `SET #share = :share, #shared = :true, shareVersion = :next, updatedAt = :now${codeTask(task) ? ", codeShareRequestId = :shareRequest" : ""}`,
+      ConditionExpression: (version === 0
         ? "attribute_exists(pk) AND attribute_not_exists(shareVersion) AND attribute_not_exists(closedAt)"
-        : "shareVersion = :current AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#share": "share", "#shared": "shared" },
-      ExpressionAttributeValues: { ":share": share, ":true": true, ":next": version + 1, ":now": audit.receivedAt, ...(version === 0 ? {} : { ":current": version }) },
+        : "shareVersion = :current AND attribute_not_exists(closedAt)") + (ownerFence === undefined ? "" : ` AND orgId = :shareOrg AND ${ownerFence.expression}`),
+      ExpressionAttributeNames: { "#share": "share", "#shared": "shared", ...ownerFence?.names },
+      ExpressionAttributeValues: { ":share": share, ":true": true, ":next": version + 1, ":now": audit.receivedAt, ...(ownerFence === undefined ? {} : { ":shareOrg": task.orgId, ...ownerFence.values }), ...(codeTask(task) ? { ":shareRequest": audit.idempotencyKey.sk.slice(8) } : {}), ...(version === 0 ? {} : { ":current": version }) },
     } },
     // Unconditional, as the close's: the start wrote this row with the task.
     { Update: {
@@ -7920,6 +7927,7 @@ function shareItems(
       ExpressionAttributeNames: { "#mode": "mode" }, ExpressionAttributeValues: { ":mode": share.mode },
     } }]),
     putNew(deps.tableName, { ...audit.idempotencyKey, entityType: "IDEMPOTENCY", action: "share", payloadHash: audit.payloadHash }),
+    ...codeShareItems(deps.tableName, task, share, audit.idempotencyKey.sk.slice(8), audit.actor?.developerId ?? hashJson({ issuer: audit.admin?.issuer, subject: audit.admin?.subject }), audit.receivedAt, audit.actor?.name ?? audit.admin?.displayName ?? "An administrator", deps.issuer),
     // Q9: a share or mode change is audited like the task's other actions.
     putNew(turns, aiToolTurn({
       party: audit.actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, audit.actor), turnId: randomUUID(), action: "share", phase: "accepted", outcome: "accepted", receivedAt: audit.receivedAt, finishedAt: iso(deps),
@@ -7927,6 +7935,20 @@ function shareItems(
       ...(audit.admin === undefined ? {} : { admin: audit.admin }),
     })),
   ];
+}
+
+async function authorizeShare(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<AuthorizedTask> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!codeTask(task)) return authorizeLegacyTaskAction(deps, caller, taskId, "work");
+  if (deps.agentSessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Session access cannot be checked right now.");
+  const access = await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "share it");
+  if (task.closedAt !== undefined || task.workflow?.stage === "CLOSED" || task.workflow?.stage === "MERGED") throw agentXError("CONFIG_INVALID", CLOSED_TASK);
+  await requireProjectWorkRole(deps, task, caller);
+  const people = await loadTaskPeople(deps, taskId);
+  const actorId = taskOwnerKey(caller.developerId, taskId);
+  const ownerIds = [taskOwnerKey(access.effectiveOwner.developerId, taskId)];
+  return { task, role: "owner", actorId, ownerActorIds: ownerIds, authority: { actorId, ownerIds }, shareSession: { sessionId: access.session.sessionId, revision: access.session.revision }, ...(people === undefined ? {} : { peopleRevision: people.revision }) };
 }
 
 const shareIdempotencyKey = (task: DeveloperTaskRecord, requestId: string) => ({ pk: `IDEMPOTENCY#${task.ownerKey}#${task.workspaceId}`, sk: `REQUEST#${requestId}` });
@@ -7940,7 +7962,7 @@ const REUSED_REQUEST = "this request_id was already used for another action on t
  */
 async function shareTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ShareDeveloperTaskRequestSchema, value, deps, "share");
-  let access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
+  let access = await authorizeShare(deps, caller, taskId);
   let task = access.task;
   const turns = turnTable(deps);
   const idempotencyKey = shareIdempotencyKey(task, request.requestId);
@@ -7964,10 +7986,14 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       idempotencyKey, payloadHash, receivedAt,
       request: `share ${request.shareMode ?? "default mode"}${request.channel === undefined ? "" : ` in ${request.channel}`}`,
       actor: caller,
-    }), accessFence(deps, access)];
+    }), accessFence(deps, access), ...(access.shareSession === undefined ? [] : [{ ConditionCheck: {
+      TableName: deps.tableName, Key: agentSessionKey(caller.orgId, access.shareSession.sessionId, "META"),
+      ConditionExpression: "orgId = :org AND #revision = :revision", ExpressionAttributeNames: { "#revision": "revision" },
+      ExpressionAttributeValues: { ":org": caller.orgId, ":revision": access.shareSession.revision },
+    } }])];
     try {
       await deps.actions.transact(items);
-      access = await authorizeTaskAction(deps, caller, taskId, "work");
+      access = await authorizeShare(deps, caller, taskId);
       task = access.task;
       return answer();
     } catch (error) {
@@ -7976,7 +8002,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       const concurrent = await get<{ payloadHash: string }>(deps, idempotencyKey);
       if (concurrent !== undefined) return shareTask(deps, caller, taskId, value);
       // The notifier (or a close) changed the task meanwhile: decide again from a fresh read.
-      access = await authorizeTaskAction(deps, caller, taskId, "work");
+      access = await authorizeShare(deps, caller, taskId);
       task = access.task;
     }
   }
@@ -7991,6 +8017,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
  * Ruling F5 (D22): the answer is the task's ID and share only, never its title or results.
  */
 export async function adminShareMode(deps: ShareModeDependencies, admin: ShareAdmin, task: DeveloperTaskRecord, value: unknown): Promise<{ task: { taskId: string; share?: DeveloperTaskShare } }> {
+  if (task.orgId !== deps.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   const request = parse(AdminShareModeRequestSchema, value, deps, "admin-share-mode");
   const turns = turnTable(deps);
   const idempotencyKey = shareIdempotencyKey(task, request.requestId);
@@ -7999,7 +8026,7 @@ export async function adminShareMode(deps: ShareModeDependencies, admin: ShareAd
   const answer = () => ({ task: { taskId: current.taskId, ...(current.share === undefined ? {} : { share: shareView(current.share) }) } });
   const reload = async () => {
     const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
-    if (fresh === undefined) throw agentXError("TASK_NOT_FOUND", `no task ${task.taskId}`);
+    if (fresh === undefined || fresh.orgId !== deps.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
     current = fresh;
   };
   const previous = await get<{ payloadHash: string }>(deps, idempotencyKey);
@@ -8050,6 +8077,19 @@ async function retryTaskWorkflowFeedback(deps: DeveloperTaskRouteDependencies, c
   return { ...read, started: retried.started };
 }
 
+/** All legacy Code ownership surfaces use the same live session confirmation. */
+async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, input: { requestId: string }) {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (task.workflow?.definitionId !== "agentx-task-to-pr") return undefined;
+  const sessions = deps.agentRuns?.agentSessions;
+  if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+  const sessionId = task.sessionId ?? await ensureTaskSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
+  if (sessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This task's session cannot be created right now.");
+  const reply = await askTakeOver(sessions, caller, sessionId, { requestId: input.requestId }, deps.agentRuns);
+  return { reply, pending: { status: "PENDING" as const, requestId: input.requestId, confirmationUrl: reply.body.confirmUrl, expiresAt: reply.expiresAt } };
+}
+
 /** Every developer task route answers 200 with its body; errors are AgentXErrors. */
 export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (request.method === "POST" && url.pathname === "/v1/dev/tasks") return startTask(deps, caller, body(request));
@@ -8075,6 +8115,8 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "people/take-ownership") {
     const input = parse(TaskPeopleTakeOwnershipRequestSchema, body(request), deps, "people/take-ownership");
+    const code = await codeOwnershipConfirmation(deps, caller, taskId, input);
+    if (code !== undefined) return new StatusReply(code.reply.status, code.reply.body);
     return { change: await proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input) };
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "continue") return continueTask(deps, caller, taskId, body(request));
