@@ -56,3 +56,7 @@ it("does not deduplicate a reviewed change against a previous legacy CLI change"
  expect((await f.request({ requestId: nextId, role: "member" })).result).toBeTruthy();
  expect((await f.request()).result).toBeTruthy();expect(f.role()).toBe("admin");expect(f.audit.recordedBy("member.role_changed")).toHaveLength(3);
 });
+it("uses a fixed validation refusal without echoing untrusted field names", async () => {
+ const f = fixture(), path = `/v1/app/org/members/${target}/role`;
+ await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, expectedRole: "member", role: "admin", "untrusted-private-field": "fixture" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "Review a valid company role change before submitting." });
+});
