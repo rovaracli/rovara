@@ -342,7 +342,11 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     const { e2e, prompts, pullRequest } = await waitingForMerge({ reviews: { CODE: [reviewerReply.pass(), found, reviewerReply.pass()], SECURITY: [reviewerReply.pass()] } });
     await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
     await trackAndFix(e2e);
-    expect(prompts.some((prompt) => prompt.includes("Address the problems below") && prompt.includes("Finding 1: the greeting is not trimmed."))).toBe(true);
+    const sentBack = prompts.find((prompt) => prompt.includes("Address the problems below") && prompt.includes("Finding 1: the greeting is not trimmed."))!;
+    expect(sentBack).toBeDefined();
+    // Its scope is the findings it was given for the comments, not the approved plan again.
+    expect(sentBack).toContain("keep to those findings and change nothing else");
+    expect(sentBack).not.toContain("Approved plan (sha256");
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });
     expect(e2e.workflow().fixSource).toBeUndefined();
     expect(dispatchRows(e2e)).toEqual([]);
