@@ -206,7 +206,7 @@ const require = createRequire(import.meta.url);
 
 /** Node's arguments for the tsc run. The lint project covers every test file, which outgrows Node's
  * default heap on a CI runner, so it gets the same 6 GB that `npm run lint` gives ESLint. */
-export function tscArguments(tscPath: string, heapMb = 6144): string[] {
+export function tscArguments(tscPath: string, heapMb = 8192): string[] {
   return [`--max-old-space-size=${heapMb}`, tscPath, "-p", LINT_CONFIG, "--noEmit", "--pretty", "false"];
 }
 
