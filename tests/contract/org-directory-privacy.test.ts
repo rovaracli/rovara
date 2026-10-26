@@ -34,3 +34,8 @@ it("rates exact-email attempts per caller/org and fails closed when rate storage
 it("does not return a lookup result if rate storage is unavailable", async () => { const f = fixture();f.db.injectFault({ command: "UpdateCommand", error: { name: "ServiceUnavailable" } });await expect(f.request("POST", "/v1/app/org/members/lookup", { email: "maya@example.test" })).rejects.toThrow(); });
 it("refuses directory reads when the live membership lookup fails", async () => { const f = fixture("owner");f.db.injectFault({ command: "GetCommand", error: { name: "ServiceUnavailable" } });await expect(f.request("GET", "/v1/app/org/members")).rejects.toThrow(); });
 it("refuses lookup by a stale owner caller in another org", async () => { const f = fixture("owner");expect((await f.request("POST", "/v1/app/org/members/lookup", { email: "other@example.test" }, { ...f.caller, orgId: B })).status).toBe(403); });
+it("independently refuses a foreign-org email pointer even when every candidate membership agrees locally", async () => {
+ const f = fixture();expect((await f.request("POST", "/v1/app/org/members/lookup", { email: "maya@example.test" })).body).toEqual({ match: { developerId: colleague, name: "Maya" } });
+ f.db.set({ ...orgEmailKey("maya@example.test"), orgId: B, developerId: colleague });
+ expect((await f.request("POST", "/v1/app/org/members/lookup", { email: "maya@example.test" })).body).toEqual({ match: null });
+});
