@@ -81,7 +81,7 @@ describe("a workflow task's merge of the base branch", () => {
     await git(fixture.checkout, ["checkout", "--force", fixture.headBranch]);
     for (const base of [stray, "e".repeat(40)]) {
       const update = sink();
-      await expect(maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update }), base).rejects.toThrow(/STALE_FENCE|base/);
+      await expect(maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update }), base).rejects.toThrow(/STALE_FENCE: the base commit is not part of the base branch/);
       expect(update).not.toHaveBeenCalled();
       expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
     }

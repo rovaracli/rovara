@@ -371,6 +371,16 @@ describe("the sync slot of merge tracking", () => {
     expect(trackingOf(w).syncs.count).toBe(0);
   });
 
+  it("waits when the head GitHub shows is one the pull request record has but the workflow has not recorded yet: no merge of the day is used on it", async () => {
+    installBranchSyncDeciders();
+    const w = syncWorld({ overrides: { headSha: HEAD_B } });
+    (w.deps as { recordedHead?: unknown }).recordedHead = async () => HEAD_B;
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(trackingOf(w)).toMatchObject({ headByRovara: true, syncs: { count: 0 } });
+    expect(workflowOf(w)).toMatchObject({ revision: 9, state: "WAITING" });
+    expect(dispatchRows(w)).toEqual([]);
+  });
+
   it("does nothing while the owner's card waits, while a fix is under way, or for a pull request that is not open", async () => {
     installBranchSyncDeciders();
     const fixing = syncWorld({ workflow: startWorkflowFix(waiting(), { source: "ci", problems: ["test"], now: at }) });
@@ -537,6 +547,11 @@ describe("what a finished merge of the base is", () => {
     expect(plan({ github: github({ headBranch: "agentx/other" }) }).kind).toBe("unchanged");
     expect(plan({ github: github({ state: "closed" }) }).kind).toBe("unchanged");
     expect(plan({ github: undefined }).kind).toBe("unchanged");
+  });
+
+  it("is not a conflict round when the head moved meanwhile (a person pushed): nothing is started over their push", () => {
+    const outcome = plan({ result: result({ commit: HEAD_A, treeSha: undefined, reconciled: true, conflicts: ["a"] }), github: github({ headCommit: HEAD_B, parents: [HEAD_A] }) });
+    expect(outcome.kind).toBe("unchanged");
   });
 
   it("is nothing to record when the branch already had the base, or when GitHub shows a head that is not the merge (a person pushed)", () => {
