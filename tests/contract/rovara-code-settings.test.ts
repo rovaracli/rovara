@@ -195,12 +195,13 @@ describe("turning self-approval on", () => {
   });
 
   it("applies to the project it was asked for, and to no other", async () => {
-    const w = mergeWorld();
-    const reply = await put(w, OLA, { allowSelfApproval: true }, "ops");
+    // `web` has settings at revision 1; `ops` has none, so a change read from the wrong project would find the wrong revision.
+    const w = mergeWorld({ mergeMethod: "merge" });
+    const reply = await put(w, OLA, { allowSelfApproval: true, expectedRevision: 0 }, "ops");
     const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl);
     await w.decide(approvalId, await w.browser(OLA, approvalId));
-    expect((await live(w, "ops")).allowSelfApproval).toBe(true);
-    expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
+    expect(await live(w, "ops")).toEqual({ allowSelfApproval: true, mergeMethod: "squash", codeReviewers: [], revision: 1 });
+    expect(await live(w)).toEqual({ allowSelfApproval: false, mergeMethod: "merge", codeReviewers: [], revision: 1 });
   });
 
   it("never applies a change nobody decided", async () => {
