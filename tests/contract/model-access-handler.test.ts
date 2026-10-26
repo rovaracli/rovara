@@ -155,14 +155,15 @@ describe("ModelAccessFunction handler", () => {
     let status = 200;
     const fetch = routeFetch(async (_url, init) => {
       seenAuth.push(new Headers(init?.headers).get("authorization") ?? "");
-      return new Response(JSON.stringify(status === 200 ? { key: VIRTUAL } : { error: { message: "down" } }), { status });
+      const team = { team_info: { models: ["us.anthropic.claude-sonnet-4-6"] } };
+      return new Response(JSON.stringify(status !== 200 ? { error: { message: "down" } } : new URL(String(_url)).pathname === "/team/info" ? team : { key: VIRTUAL }), { status });
     });
-    const run = createModelAccessHandler({ access: new ModelProxyClient({ baseUrl: "http://proxy:4000", masterKey, fetch, now: () => 0 }), log: quiet });
+    const run = createModelAccessHandler({ access: new ModelProxyClient({ baseUrl: "http://proxy:4000", masterKey, fetch, now: () => 0, catalog: ["us.anthropic.claude-sonnet-4-6"] }), log: quiet });
     const mint = { op: "mintKey", args: { orgId: ORG, developerId: DEV, purpose: "task", refId: "t", maxBudgetUsd: 1, ttlSeconds: 60 } };
     expect(await run(mint)).toEqual({ ok: true, result: { key: VIRTUAL, expiresAt: 60_000 } });
     status = 503;
     expect(await run(mint)).toMatchObject({ ok: false, code: "MODEL_PROXY_UNAVAILABLE" });
-    expect(seenAuth).toEqual([`Bearer ${MASTER}`, `Bearer ${MASTER}`]);
+    expect(seenAuth).toEqual([`Bearer ${MASTER}`, `Bearer ${MASTER}`, `Bearer ${MASTER}`]);
     expect(reads).toBe(1);
   });
 });

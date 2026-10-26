@@ -275,18 +275,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
     // Staging 0.4.3 fix: the broker's `rt` name is the DNS prefix of the events API's HTTP host (Fn::Select of Fn::Split of Dns.Http), not the API's id, so the named and foreign digests were taken again; legacy did not move.
     // Round 5 merge (Tasks 17, 21 and the staging 0.4.3 fixes onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Staging 0.4.5 fix: a named environment's API gains `GET /v1/internal/agent-tools` and `GET /v1/internal/agent-skills` (AgentToolsListRoute, AgentSkillsReadRoute, no authorizer; the broker
+    // verifies the callback capability), so the named and foreign digests were retaken from the test's output; the legacy digests did not move (named environments only).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4d4a16b5c244c692aa62c8a068a5fc36d10d5d3324bf9057cc335d117a911966",
-        withoutRoute: "ba8159b0f93f6e562ecd35c5f43bb29b6996ede067116e305a516d8debc044e2",
+        withRoute: "be2a694b1b9f126cb6dcea4e6f9274e72e5e92f94c6c9b6d118b8a8c8f5fc0c8",
+        withoutRoute: "aeb04f0a3c05249b376a6f47b67178ef932a3f32cddc18870fde4f6f6c6ecb81",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "942ac5af3a2d43675aaeac9a946c819459fffe07de521b18638b45d0709c3eea",
-        withoutRoute: "a60f894f0653a4aeffea66ac9f885f00daa39f74ca3a2ed45cada8909493185a",
+        withRoute: "f3f3addca9b902cc15cf4ca5c335545d6a66151c7b8729d355fdf039197fcb64",
+        withoutRoute: "6d9fe7334ba17e5cb7aefe2fa957e93ef0916aa7997863101341ed5d0cddf367",
       },
       {
         label: "legacy",
