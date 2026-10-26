@@ -87,7 +87,8 @@ export function nextNudgeAt(item: MergeTrackingItem): number | undefined {
   const lastAt = item.nudges.lastAt === undefined ? Number.NaN : Date.parse(item.nudges.lastAt);
   // A count with no time (it should not happen) counts from where the schedule would have put the last reminder.
   const last = Number.isFinite(lastAt) ? lastAt : asked + REVIEW_NUDGE_FIRST_HOURS * HOUR_MS + REVIEW_NUDGE_REPEAT_HOURS * HOUR_MS * (count - 1);
-  return onWeekday(last + REVIEW_NUDGE_REPEAT_HOURS * HOUR_MS);
+  // A review asked for again (the reviewersRequestedAt moved on) starts the first window over, whatever the last reminder's time says.
+  return onWeekday(Math.max(last + REVIEW_NUDGE_REPEAT_HOURS * HOUR_MS, asked + REVIEW_NUDGE_FIRST_HOURS * HOUR_MS));
 }
 
 export interface NudgeDue {
@@ -289,7 +290,8 @@ async function sendNudge(deps: NudgeDependencies, input: NudgeInput & { task: Nu
     ...gone.map((entry): TransactItem => ({ Delete: { TableName: deps.tableName, Key: waitKeyOf(item, entry.developerId) } })),
     ...codeMilestoneItems({ tableName: deps.tableName }, {
       kind: "review_nudge", orgId: task.orgId, taskId: task.taskId, at: stamp,
-      text: `"${titleOf(task, pullRequest)}" has been waiting for your review for ${String(days)} ${days === 1 ? "day" : "days"}`,
+      // The text goes to Slack for every recipient, and a reviewer may not be allowed to view the session: it names the pull request, never the task's words.
+      text: `${inertLine(pullRequest.repositoryId, 60)} #${String(pullRequest.number)} has been waiting for your review for ${String(days)} ${days === 1 ? "day" : "days"}`,
       pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }], to: recipients.map((recipient) => recipient.developerId),
     }, place * REVIEW_NUDGES_MAX + due.number - 1, { definitionVersion: task.workflow?.definitionVersion ?? "1.1.0" }),
   ];
@@ -359,6 +361,8 @@ export async function runReviewNudges(deps: NudgeDependencies, input: NudgeInput
     if (input.requested === undefined) return { sent: "none", ...(item.nudges.count < REVIEW_NUDGES_MAX ? future(nextNudgeAt(item)) : {}) };
     let ledger = item.nudges.count > 0 ? await readLedger(deps, task.orgId, item) : undefined;
     if (ledger !== undefined) ledger = await settleLedger(deps, item, ledger, input.requested);
+    // A fix round (or anything but the wait for the merge) is running: the code under review is about to change, so nobody is reminded now. The clock runs on.
+    if (task.workflow !== undefined && (task.workflow.stage !== "WAIT_FOR_MERGE" || task.workflow.state !== "WAITING")) return { sent: "none" };
     const due = nudgesDue(item, input.requested, now);
     if (due !== undefined) {
       const sent = await sendNudge(deps, guarded, due, ledger);

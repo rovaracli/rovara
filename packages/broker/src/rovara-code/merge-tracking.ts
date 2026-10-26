@@ -268,6 +268,7 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
   const checksEverSeen = prior?.checksEverSeen === true || status.checks.length > 0;
   const ci = readCi(status, { checksEverSeen, lastRovaraPushAt, now });
   const today = new Date(now).toISOString().slice(0, 10);
+  const reAsked = (prior?.review === "changes_requested" || prior?.review === "approved") && input.reviews.review === "requested";
   return {
     orgId: task.orgId, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number,
     headSha: status.headSha, draft: status.draft, state: status.state, baseBranch: status.baseBranch,
@@ -276,7 +277,8 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
     branch: readBranch(status), headByRovara,
     ...(lastRovaraPushAt === undefined ? {} : { lastRovaraPushAt: new Date(lastRovaraPushAt).toISOString() }),
     ...(prior?.readyAt === undefined ? {} : { readyAt: prior.readyAt }),
-    ...(prior?.reviewersRequestedAt === undefined ? {} : { reviewersRequestedAt: prior.reviewersRequestedAt }),
+    // A decision withdrawn (a dismissed review) puts the pull request back to waiting: the review is asked for again, so the reminders' clock starts over (Task 18).
+    ...(reAsked ? { reviewersRequestedAt: new Date(now).toISOString() } : prior?.reviewersRequestedAt === undefined ? {} : { reviewersRequestedAt: prior.reviewersRequestedAt }),
     nudges: prior?.nudges ?? { count: 0 },
     syncs: prior?.syncs ?? { day: today, count: 0 },
     ...(prior?.mergeClaim === undefined ? {} : { mergeClaim: prior.mergeClaim }),

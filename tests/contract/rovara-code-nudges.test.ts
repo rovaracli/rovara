@@ -150,17 +150,17 @@ describe("reminders on the tracking pass", () => {
     await pass(w, MON + 23 * H);
     expect(heard).toEqual([]);
     await pass(w, MON + DAY);
-    expect(heard).toEqual([{ kind: "review_nudge", text: "\"Bump the SDK\" has been waiting for your review for 1 day", to: [ALICE], sessionId: undefined }]);
+    expect(heard).toEqual([{ kind: "review_nudge", text: "payments #7 has been waiting for your review for 1 day", to: [ALICE], sessionId: undefined }]);
     await pass(w, MON + DAY + 6 * H);
     await pass(w, MON + 2 * DAY);
     expect(heard).toHaveLength(1);
     await pass(w, MON + 3 * DAY);
-    expect(heard[1]).toMatchObject({ kind: "review_nudge", text: "\"Bump the SDK\" has been waiting for your review for 3 days", to: [ALICE] });
+    expect(heard[1]).toMatchObject({ kind: "review_nudge", text: "payments #7 has been waiting for your review for 3 days", to: [ALICE] });
     await pass(w, Date.parse("2026-10-31T09:00:00.000Z"));
     await pass(w, Date.parse("2026-11-01T09:00:00.000Z"));
     expect(heard).toHaveLength(2);
     await pass(w, Date.parse("2026-11-02T09:00:00.000Z"));
-    expect(heard[2]).toMatchObject({ kind: "review_nudge", text: "\"Bump the SDK\" has been waiting for your review for 7 days", to: [ALICE] });
+    expect(heard[2]).toMatchObject({ kind: "review_nudge", text: "payments #7 has been waiting for your review for 7 days", to: [ALICE] });
     expect(itemOf(w).nudges).toEqual({ count: 3, lastAt: "2026-11-02T09:00:00.000Z" });
     // The third reminder gets its window before the owner is told.
     await pass(w, Date.parse("2026-11-03T09:00:00.000Z"));
@@ -239,7 +239,7 @@ describe("reminders on the tracking pass", () => {
     await linkGithubMember({ documentClient: w.db, tableName: TABLE, now: () => w.now() }, TEST_ORG, "gone-dev", "4004");
     await linkGithubMember({ documentClient: w.db, tableName: TABLE, now: () => w.now() }, "org_zzzzzzzzzzzzzzzzzzzz", BOB, "5005");
     await pass(w, MON + DAY);
-    expect(heard).toEqual([{ kind: "review_nudge", text: "\"Bump the SDK\" has been waiting for your review for 1 day", to: [ALICE], sessionId: undefined }]);
+    expect(heard).toEqual([{ kind: "review_nudge", text: "payments #7 has been waiting for your review for 1 day", to: [ALICE], sessionId: undefined }]);
 
     const nobody = await waiting({ linked: false, ids: ["1001", "3003"] });
     await pass(nobody, MON + DAY);
@@ -385,6 +385,63 @@ describe("reminders on the tracking pass", () => {
     expect(milestonesOf(w, "review_nudge")).toHaveLength(6);
     expect(milestonesOf(w, "stuck")).toHaveLength(3);
     expect(w.db.get(mergeTrackingKey(TASK_ID, "ledger", 3))).toMatchObject({ nudges: { count: 3 } });
+  });
+
+  it("puts no word of the task, its title included, in the text that goes to Slack: a reviewer may not be allowed to view the session", async () => {
+    const heard = hear();
+    const w = await waiting();
+    w.setTask({ title: "Rotate the SECRET-PROJECT keys" });
+    for (const at of [MON + DAY, MON + 3 * DAY, Date.parse("2026-11-02T09:00:00.000Z")]) await pass(w, at);
+    const nudges = heard.filter((entry) => entry.kind === "review_nudge");
+    expect(nudges.map((entry) => entry.text)).toEqual([
+      "payments #7 has been waiting for your review for 1 day", "payments #7 has been waiting for your review for 3 days", "payments #7 has been waiting for your review for 7 days",
+    ]);
+    expect(JSON.stringify(milestonesOf(w, "review_nudge"))).not.toMatch(/SECRET-PROJECT|Rotate/u);
+  });
+
+  it("starts the 24 hours again when a decision is withdrawn and the review is asked for again, keeping the three", async () => {
+    const heard = hear();
+    const w = await waiting();
+    w.github.permissions.set("bob", "write");
+    const review = (state: "CHANGES_REQUESTED" | "DISMISSED") => [{ githubUserId: "2002", login: "bob", userType: "User", state, commitId: HEAD_A, submittedAt: iso(MON + 2 * H) }];
+    await pass(w, MON + DAY);
+    expect(heard).toHaveLength(1);
+    requestedBy(w, ["1001"], { reviews: review("CHANGES_REQUESTED") });
+    await pass(w, MON + 2 * DAY);
+    expect(itemOf(w).review).toBe("changes_requested");
+    // Thursday 09:00 would have been the second reminder; the review was withdrawn and asked for again, so the day starts over.
+    requestedBy(w, ["1001"], { reviews: review("DISMISSED") });
+    await pass(w, MON + 3 * DAY);
+    expect(itemOf(w)).toMatchObject({ review: "requested", reviewersRequestedAt: iso(MON + 3 * DAY), nudges: { count: 1 } });
+    expect(heard).toHaveLength(1);
+    await pass(w, MON + 4 * DAY - 1);
+    expect(heard).toHaveLength(1);
+    await pass(w, MON + 4 * DAY);
+    expect(heard).toHaveLength(2);
+    expect(heard[1]!.text).toBe("payments #7 has been waiting for your review for 1 day");
+    expect(itemOf(w).nudges.count).toBe(2);
+  });
+
+  it("holds the reminders while a fix round is running, and sends the one that was due when the pull request waits again", async () => {
+    const heard = hear();
+    const w = await waiting();
+    w.setWorkflow({ stage: "IMPLEMENT", state: "RUNNING" });
+    await pass(w, MON + DAY);
+    await pass(w, MON + DAY + 2 * H);
+    expect(heard).toEqual([]);
+    expect(itemOf(w).nudges.count).toBe(0);
+    w.setWorkflow({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    await pass(w, MON + DAY + 3 * H);
+    expect(heard).toHaveLength(1);
+    // The owner's note waits too.
+    const late = await waiting();
+    for (const at of [MON + DAY, MON + 3 * DAY, Date.parse("2026-11-02T09:00:00.000Z")]) await pass(late, at);
+    late.setWorkflow({ stage: "IMPLEMENT", state: "RUNNING" });
+    await pass(late, Date.parse("2026-11-04T09:00:00.000Z"));
+    expect(heard.filter((entry) => entry.kind === "stuck")).toEqual([]);
+    late.setWorkflow({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    await pass(late, Date.parse("2026-11-04T10:00:00.000Z"));
+    expect(heard.filter((entry) => entry.kind === "stuck")).toHaveLength(1);
   });
 
   it("asks to be looked at again when the next reminder is due, so a quiet pull request is not missed", async () => {
