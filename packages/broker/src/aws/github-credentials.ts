@@ -77,6 +77,8 @@ export function createGitHubAppCredentials(
     // The slug and the OAuth client come from the same secret; a forced read is spaced out like the webhook secret's.
     getAppSecret: (options) => (options?.refresh === true ? reread() : loadSecret()),
     ...(cloud?.requireInstallationBound === undefined ? {} : { requireInstallationBound: cloud.requireInstallationBound }),
+    // v0.4.9 staging: a clone sometimes got "Repository not found" for a token GitHub had just issued; each repository token is checked before the worker gets it.
+    tokenReadiness: { onProbe: (event) => console.log(JSON.stringify({ component: "broker", event: "github.installation_token_probe", ...event })) },
   });
   const webhookSecret = async (options?: { refresh?: boolean }): Promise<string> => {
     if (options?.refresh === true) return webhookSecretFromSecret(await reread());

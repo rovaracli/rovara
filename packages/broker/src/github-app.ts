@@ -49,7 +49,35 @@ export interface GitHubAppCredentialProviderOptions {
   requireInstallationBound?: (orgId: OrgId, installationId: number, repository?: { owner: string; name: string }) => Promise<void>;
   fetchImplementation?: typeof fetch;
   now?: () => number;
+  /**
+   * Staging v0.4.9: `git clone` with a repository token GitHub had just issued sometimes got "Repository not found" (and succeeded a minute later with
+   * the same code and settings). With this set, `resolve` checks the new token against GitHub's git endpoint, the request `git clone` makes first, and waits
+   * while GitHub answers 404 for it. Absent: the token is handed over unchecked.
+   */
+  tokenReadiness?: GitHubTokenReadinessOptions;
 }
+
+export interface GitHubTokenReadinessOptions {
+  /** Waits between probes; one more probe than there are delays is made at most. Default 150, 300, 600, 1200, 2400 ms. */
+  delaysMs?: readonly number[];
+  /** Reports each probe (never the token), for the broker log. */
+  onProbe?: (event: GitHubTokenProbeEvent) => void;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface GitHubTokenProbeEvent {
+  repository: string;
+  access: RepositoryAccess;
+  attempt: number;
+  /** HTTP status of the probe; absent when the probe itself failed. */
+  status?: number;
+  /** `ready`: GitHub accepted the token; `not_found`: 404, the answer a clone turns into "Repository not found"; `other`: any other status; `error`: the probe failed. */
+  outcome: "ready" | "not_found" | "other" | "error";
+  /** Milliseconds from the token being issued to this probe's answer. */
+  sinceIssuedMs: number;
+}
+
+const DEFAULT_TOKEN_READINESS_DELAYS_MS: readonly number[] = [150, 300, 600, 1_200, 2_400];
 
 export interface GitHubPullRequestInput {
   repositoryUrl: string;
@@ -262,10 +290,44 @@ export class GitHubAppCredentialProvider {
     scope: GitHubTokenScope,
   ): Promise<RepositoryCredential> {
     if (credentialRef !== this.options.credentialRef) return {};
-    const token = await this.createInstallationToken(parseGitHubRepository(repositoryUrl), {
+    const repository = parseGitHubRepository(repositoryUrl);
+    const token = await this.createInstallationToken(repository, {
       contents: access === "push" ? "write" : "read",
     }, scope);
+    await this.waitUntilGitAccepts(repository, token, access);
     return { username: "x-access-token", password: token };
+  }
+
+  /**
+   * Asks GitHub's git endpoint for the repository's refs with the new token, as `git clone` does, until it stops answering 404 (a few seconds at most).
+   * It never refuses: a token that stays unaccepted is handed over all the same, so the worker reports GitHub's own error, and a failed probe changes nothing.
+   */
+  private async waitUntilGitAccepts(repository: { owner: string; name: string }, token: string, access: RepositoryAccess): Promise<void> {
+    const readiness = this.options.tokenReadiness;
+    if (readiness === undefined) return;
+    const delays = readiness.delaysMs ?? DEFAULT_TOKEN_READINESS_DELAYS_MS;
+    const sleep = readiness.sleep ?? ((ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }));
+    const service = access === "push" ? "git-receive-pack" : "git-upload-pack";
+    const url = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}.git/info/refs?service=${service}`;
+    const headers = { authorization: `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`, "user-agent": "git/2.45.0", accept: "*/*" };
+    const issuedAt = this.now();
+    for (let attempt = 0; ; attempt += 1) {
+      const event = { repository: `${repository.owner}/${repository.name}`, access, attempt };
+      let status: number;
+      try {
+        const response = await this.fetchImplementation(url, { headers, signal: AbortSignal.timeout(3_000), redirect: "error" });
+        status = response.status;
+        await response.body?.cancel().catch(() => undefined);
+      } catch {
+        readiness.onProbe?.({ ...event, outcome: "error", sinceIssuedMs: this.now() - issuedAt });
+        return;
+      }
+      const outcome = status === 404 ? "not_found" : status >= 200 && status < 300 ? "ready" : "other";
+      readiness.onProbe?.({ ...event, status, outcome, sinceIssuedMs: this.now() - issuedAt });
+      const delay = delays[attempt];
+      if (outcome !== "not_found" || delay === undefined) return;
+      await sleep(delay);
+    }
   }
 
   /**
