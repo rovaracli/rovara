@@ -736,7 +736,7 @@ describe("an owner's Slack reply while the task waits", () => {
     const taskKeyOf = { pk: `DEVTASK#${run.taskId}`, sk: "META" };
     const frozen = structuredClone(t.db.get(taskKeyOf.pk, taskKeyOf.sk)!);
     // Both deliveries read the task as it was when the questions were asked.
-    const documentClient = { send: (command: unknown) => (command instanceof GetCommand && command.input.Key?.pk === taskKeyOf.pk && command.input.Key?.sk === "META" ? Promise.resolve({ Item: frozen }) : t.db.send(command)) };
+    const documentClient = { send: (command: GetCommand | TransactWriteCommand | { input: unknown }) => (command instanceof GetCommand && command.input.Key?.pk === taskKeyOf.pk && command.input.Key?.sk === "META" ? Promise.resolve({ Item: frozen }) : t.db.send(command as never)) };
     const deliver = (messageTs: string, peopleAccess?: { peopleRevision?: number; isOwner: boolean }) => recordWorkflowThreadNote(
       { documentClient, tableName: "state", actions: t.actions, now: Date.now },
       { taskId: run.taskId, thread, userId: MAYA.slackUserId!, messageTs, eventId: `Ev${messageTs}`, text: "billing", peopleAccess: peopleAccess ?? { isOwner: true } },
