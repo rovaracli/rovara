@@ -185,8 +185,8 @@ describe("a workflow task's merge of the base branch", () => {
 
 describe("a conflict round's fix, pushed as a merge commit", () => {
   /** The conflict round up to the fix: the merge conflicted, and the coder resolved the file. */
-  async function resolved(options: { resolution?: string } = {}) {
-    const fixture = await createFixture({ conflict: true });
+  async function resolved(options: { resolution?: string; ignored?: boolean; extras?: boolean } = {}) {
+    const fixture = await createFixture({ conflict: true, ...(options.ignored === true ? { ignored: true } : {}), ...(options.extras === true ? { extras: true } : {}) });
     const base = fixture.conflictBase!;
     await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
     await writeFile(join(fixture.checkout, "README.md"), options.resolution ?? "both versions\n", "utf8");
@@ -230,6 +230,30 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
     await attempt(pushOf(fixture, tree, "e".repeat(40)));
     // The pull request's own head is a commit of the repository, but not of the base branch.
     await attempt(pushOf(fixture, tree, fixture.pullRequestHead));
+  });
+
+  it("refuses a fix whose tree drops what the base brought: a tracked file the repository ignores, or a file the coder took back", async () => {
+    for (const drop of ["ignored", "reverted"] as const) {
+      const { fixture, base } = await resolved({ ignored: drop === "ignored", extras: true });
+      if (drop === "reverted") await rm(join(fixture.checkout, "BASE.md"));
+      const tree = await temporaryIndexTree({ directory: fixture.checkout });
+      const update = sink();
+      const failure = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update }).then(() => undefined, (error: unknown) => error as Error);
+      expect(failure?.message, drop).toMatch(/would drop changes the base branch made/);
+      expect(failure?.message).toContain(drop === "ignored" ? "dist/app.js" : "BASE.md");
+      expect(update).not.toHaveBeenCalled();
+      expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
+    }
+  });
+
+  it("takes a fix that resolves the conflict and also changes other files of its own", async () => {
+    const { fixture, base } = await resolved({ extras: true });
+    await writeFile(join(fixture.checkout, "FEATURE.md"), "feature, adapted to the base\n", "utf8");
+    await writeFile(join(fixture.checkout, "NEW.md"), "added by the coder\n", "utf8");
+    const tree = await temporaryIndexTree({ directory: fixture.checkout });
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    expect(await parentsOf(fixture.checkout, result.commit)).toEqual([fixture.pullRequestHead, base]);
+    expect((await git(fixture.checkout, ["show", `${result.commit}:BASE.md`]))).toBe("from the base\n");
   });
 
   it("an append over unresolved conflicts is still refused, unless it is the push of a merge: its tree is the reviewed one, whatever the index says", async () => {
@@ -296,7 +320,7 @@ async function advanceBase(fixture: Fixture, file: string, content: string): Pro
   return (await git(fixture.seed, ["rev-parse", "HEAD"])).trim();
 }
 
-async function createFixture(options: { conflict?: boolean; conflictFile?: string; gates?: boolean } = {}): Promise<Fixture> {
+async function createFixture(options: { conflict?: boolean; conflictFile?: string; gates?: boolean; ignored?: boolean; extras?: boolean } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "agentx-workflow-sync-test-"));
   temporaryDirectories.push(root);
   const bare = join(root, "remote.git");
@@ -307,6 +331,11 @@ async function createFixture(options: { conflict?: boolean; conflictFile?: strin
   await git(root, ["init", "--initial-branch=main", seed]);
   await writeFile(join(seed, conflictFile), "initial\n", "utf8");
   await git(seed, ["add", conflictFile]);
+  // With `ignored`, the repository ignores dist/: the base can still track a file there (added with -f), which no `git add --all` of a workspace would pick up.
+  if (options.ignored === true) {
+    await writeFile(join(seed, ".gitignore"), "dist/\n", "utf8");
+    await git(seed, ["add", ".gitignore"]);
+  }
   await commit(seed, "initial");
   await git(seed, ["remote", "add", "origin", pathToFileURL(bare).href]);
   await git(seed, ["push", "origin", "main"]);
@@ -348,6 +377,14 @@ async function createFixture(options: { conflict?: boolean; conflictFile?: strin
     // The base changes the same file differently.
     await writeFile(join(seed, conflictFile), "base version\n", "utf8");
     await git(seed, ["add", conflictFile]);
+    // What the base brings that does not conflict: an ordinary new file, and a file under dist/ (tracked with -f when the repository ignores that folder).
+    if (options.extras === true || options.ignored === true) {
+      await mkdir(join(seed, "dist"), { recursive: true });
+      await writeFile(join(seed, "dist", "app.js"), "built\n", "utf8");
+      await writeFile(join(seed, "BASE.md"), "from the base\n", "utf8");
+      await git(seed, ["add", "BASE.md"]);
+      await git(seed, options.ignored === true ? ["add", "-f", "dist/app.js"] : ["add", "dist/app.js"]);
+    }
     await commit(seed, "base conflict");
     await git(seed, ["push", "origin", "main"]);
     fixture.conflictBase = (await git(seed, ["rev-parse", "HEAD"])).trim();

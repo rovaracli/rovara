@@ -220,6 +220,13 @@ describe("a conflict, recorded", () => {
     expect(WorkflowSnapshotSchema.safeParse(next).success).toBe(true);
   });
 
+  it("pins the round's review base to the base commit whose merge conflicted, so the reviewers' diff shows a base change the fix took back", () => {
+    const next = conflicted(["src/a.ts"]);
+    expect(next.reviewBase).toEqual([{ repositoryId: "payments", baseCommitSha: BASE_NEW }]);
+    // The candidate the round makes is on that base; the one on the pull request stays on the old base until the fix lands.
+    expect(next.candidate?.repositories[0]?.baseCommitSha).toBe(BASE_OLD);
+  });
+
   it("names at most five files, one clean line each, and counts rounds of its own kind", () => {
     const many = Array.from({ length: 30 }, (_, index) => `src/file-${String(index)}.ts`);
     expect(conflicted(many).fixProblems).toEqual(many.slice(0, 5));
