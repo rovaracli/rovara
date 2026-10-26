@@ -349,3 +349,30 @@ it("M1: an owner change racing sharing aborts the write and reauthorizes", async
   expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
   expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
 });
+
+it("M2: revoking an editor share before transact aborts widening and reauthorizes", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  const sessionId = String(h.db.get(taskKey(taskId))!.sessionId);
+  await h.orgOf(OMAR);
+  h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "contributor" });
+  const key = agentSessionKey(TEST_ORG, sessionId, `SHARE#MEMBER#${OMAR.developerId}`);
+  h.db.set({ ...key, principal: { kind: "member", developerId: OMAR.developerId }, level: "edit", sharedBy: { developerId: MAYA.developerId, name: MAYA.name }, sharedAt: new Date().toISOString() });
+  const send = h.db.send;
+  let raced = false;
+  h.db.send = async (command) => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some((entry) => entry.Update?.UpdateExpression?.includes("codeShareRequestId"))) {
+      raced = true;
+      h.db.delete(key);
+      const meta = h.db.get(agentSessionKey(TEST_ORG, sessionId, "META"))!;
+      h.db.set({ ...meta, revision: Number(meta.revision) + 1 });
+    }
+    return send(command);
+  };
+  const result = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "continue" });
+  expect(raced).toBe(true);
+  expect(result.body.error).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
+  expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
+});
