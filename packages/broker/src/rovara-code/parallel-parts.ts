@@ -54,3 +54,19 @@ export async function parallelPartsForTask(
     return { max: 1 };
   }
 }
+
+/**
+ * The trees a part of a parallel run may start from: the tree the run began at, and every tree a finished part was merged into. A part that was built one after another (a
+ * worker that was not sent the parts setting) ends on its own tree, which counts as the tree it was merged into.
+ */
+export function parallelStartTrees(
+  history: ReadonlyArray<{ state: string; integratedTreeSha?: string | undefined; candidateTreeSha?: string | undefined }>,
+  firstBaseTree: string | undefined,
+): Set<string> {
+  const trees = new Set<string>(firstBaseTree === undefined ? [] : [firstBaseTree]);
+  for (const entry of history) {
+    const tree = entry.state === "IMPLEMENTED" ? entry.integratedTreeSha ?? entry.candidateTreeSha : undefined;
+    if (tree !== undefined) trees.add(tree);
+  }
+  return trees;
+}

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { PARALLEL_PARTS_MAX, WORKER_INVOCATION_FEATURES, taskGraphDigest } from "@agentx/contracts";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
+import { workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { assertJourneyInvariants, registerJourneyInvariants } from "../support/workflow-e2e-invariants.js";
 
 registerJourneyInvariants();
@@ -189,6 +191,8 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     const promptsBefore = itemTitles(e2e).length;
 
     failA = false;
+    // The org's room shrank while the task waited: the retry is sent a fresh setting, not the first operation's.
+    e2e.db.set({ ...workspaceLimitsKey(TEST_ORG), entityType: "SETTING", perPerson: 1, perOrganization: 1, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
     await e2e.click("agentx_workflow_retry_implementation");
     await e2e.settle();
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
@@ -196,7 +200,81 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     expect(itemTitles(e2e).slice(promptsBefore).sort()).toEqual(["A: create formatter", "C: integration assertion"]);
     expect(implementInvocations(e2e)).toHaveLength(2);
     expect(dependenciesOf(implementInvocations(e2e)[1]!)?.resumeProgress?.map((entry) => entry.itemId)).toContain(ITEM_B);
+    expect(dependenciesOf(implementInvocations(e2e)[0]!)?.parallel).toEqual({ max: PARALLEL_PARTS_MAX });
+    expect(dependenciesOf(implementInvocations(e2e)[1]!)?.parallel).toEqual({ max: 1 });
     expect(await e2e.repoFile("formatter.mjs")).toContain("formatGreeting");
+    expect(e2e.github.pullRequests).toHaveLength(1);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("when the last part fails, the finished parts are kept on their merged tree and the retry builds only that part", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    let failC = true;
+    const model = modelFor(context);
+    const e2e = await createWorkflowE2E({
+      readiness: READINESS, realProjectCommands: true,
+      model: { ...model, edits: (latest) => {
+        if (failC && /Title: C: integration assertion/.test(latest)) throw new Error("model stopped before a result");
+        return itemEdits(latest);
+      } },
+    });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const first = progressOf(e2e).filter((entry) => entry.state === "IMPLEMENTED");
+    expect(first.map((entry) => entry.itemId).sort()).toEqual([ITEM_A, ITEM_B]);
+    expect(new Set(first.map((entry) => entry.integratedTreeSha)).size).toBe(2);
+    expect(await e2e.repoFile("formatter.mjs")).toContain("formatGreeting");
+    expect(await e2e.repoFile("clock.mjs")).toContain("today");
+    failC = false;
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    // The retry starts from the tree the later of the two parts was merged into, not the earlier.
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(itemTitles(e2e).slice(-1)).toEqual(["C: integration assertion"]);
+    const cStart = progressOf(e2e).filter((entry) => entry.itemId === ITEM_C && entry.state === "STARTED").at(-1)!;
+    expect(cStart.baseTreeSha).toBe(first.sort((left, right) => right.sequence - left.sequence)[0]!.integratedTreeSha);
+    expect(e2e.github.pullRequests).toHaveLength(1);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("a cancel while parts are running leaves no part marked as still running, and the owner's retry can go on", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    let cancelled = false;
+    const started = new Set<string>();
+    const e2e = await createWorkflowE2E({
+      readiness: READINESS, realProjectCommands: true, model: modelFor(context),
+      workerCallbackResponse: async ({ path, body, statusCode }) => {
+        if (!cancelled && path.endsWith("/events") && statusCode === 200) {
+          const parsed = JSON.parse(body) as { events?: Array<{ payload?: { workItemProgress?: { state?: string; itemId?: string } } }> };
+          for (const event of parsed.events ?? []) if (event.payload?.workItemProgress?.state === "STARTED") started.add(event.payload.workItemProgress.itemId ?? "");
+          if (started.size >= 2) {
+            cancelled = true;
+            const operationId = /\/operations\/([^/]+)\/events$/.exec(path)?.[1];
+            await context.current!.worker.cancelOperation(operationId!);
+          }
+        }
+        return undefined;
+      },
+    });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(cancelled).toBe(true);
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    // Every part that started has an end: the worker's, or the broker's "unknown" for one it could not report.
+    const progress = progressOf(e2e);
+    for (const itemId of new Set(progress.map((entry) => entry.itemId))) {
+      const own = progress.filter((entry) => entry.itemId === itemId);
+      expect(own.at(-1)!.state, `part ${itemId.slice(0, 2)} ends without a result`).not.toBe("STARTED");
+    }
+    expect(progress.some((entry) => entry.itemId === ITEM_C)).toBe(false);
+    expect(e2e.github.pullRequests).toEqual([]);
+    cancelled = true;
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(e2e.github.pullRequests).toHaveLength(1);
     assertJourneyInvariants(e2e);
   }, 240_000);

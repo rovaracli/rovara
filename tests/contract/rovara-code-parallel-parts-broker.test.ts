@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PARALLEL_PARTS_MAX, orgPk, type OrgId } from "@agentx/contracts";
-import { parallelPartsForTask, workflowDependenciesAllowed } from "../../packages/broker/src/rovara-code/parallel-parts.js";
+import { parallelPartsForTask, parallelStartTrees, workflowDependenciesAllowed } from "../../packages/broker/src/rovara-code/parallel-parts.js";
 import { developerCharge, workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -73,5 +73,27 @@ describe("when ordered work is allowed", () => {
     expect(workflowDependenciesAllowed({ workflowDependenciesEnabled: false }, { definitionVersion: "1.0.0" })).toBe(false);
     expect(workflowDependenciesAllowed({}, undefined)).toBe(false);
     expect(workflowDependenciesAllowed({ workflowDependenciesEnabled: true }, { definitionVersion: "1.0.0" })).toBe(true);
+  });
+});
+
+describe("the trees a part may start from", () => {
+  const t = (digit: string) => digit.repeat(40);
+  it("are the tree the run began at and each tree a finished part was merged into, and no other", () => {
+    const trees = parallelStartTrees([
+      { state: "STARTED", candidateTreeSha: undefined }, { state: "IMPLEMENTED", candidateTreeSha: t("1"), integratedTreeSha: t("2") },
+      { state: "FAILED" }, { state: "IMPLEMENTED", candidateTreeSha: t("3"), integratedTreeSha: t("4") }, { state: "UNKNOWN" },
+    ], t("0"));
+    expect([...trees].sort()).toEqual([t("0"), t("2"), t("4")]);
+    expect(trees.has(t("1"))).toBe(false);
+    expect(trees.has(t("3"))).toBe(false);
+  });
+
+  it("count a part built one after another by the tree it ended on", () => {
+    expect([...parallelStartTrees([{ state: "IMPLEMENTED", candidateTreeSha: t("5") }], t("0"))].sort()).toEqual([t("0"), t("5")]);
+  });
+
+  it("are only the finished parts' when the run has no first tree", () => {
+    expect([...parallelStartTrees([{ state: "IMPLEMENTED", integratedTreeSha: t("2") }], undefined)]).toEqual([t("2")]);
+    expect(parallelStartTrees([], undefined).size).toBe(0);
   });
 });

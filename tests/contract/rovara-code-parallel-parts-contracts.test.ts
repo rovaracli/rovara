@@ -88,6 +88,8 @@ describe("parallel parts: the checkpoints of one attempt", () => {
     const failed = [event(A, 1, "STARTED", tree("a")), event(B, 2, "STARTED", tree("a")), event(A, 3, "FAILED", tree("a"))];
     expect(project([...failed, event(B, 4, "IMPLEMENTED", tree("a"), { integratedTreeSha: tree("1") })])?.map((entry) => entry.state)).toEqual(["FAILED", "IMPLEMENTED"]);
     expect(project([...failed, event(C, 4, "STARTED", tree("a"))])).toBeUndefined();
+    // An independent part that has not started is not started after a failure either.
+    expect(project([event(A, 1, "STARTED", tree("a")), event(A, 2, "FAILED", tree("a")), event(B, 3, "STARTED", tree("a"))])).toBeUndefined();
   });
 
   it("allows one restart of a part after a merge conflict, never a second", () => {

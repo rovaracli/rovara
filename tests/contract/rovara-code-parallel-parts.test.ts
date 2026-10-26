@@ -136,6 +136,19 @@ describe("executeParallelWorkflowDependencies", () => {
     expect("candidateTreeSha" in failed!).toBe(false);
   });
 
+  it("a failure stops new starts even when a slot is free and a part is ready", async () => {
+    const h = harness(graphOf(item(A), item(B), item(D)), {
+      maxParallel: 2,
+      run: async (itemId) => {
+        if (itemId === A) { await new Promise((resolve) => setTimeout(resolve, 2)); throw new Error("model stopped"); }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      },
+    });
+    await expect(executeParallelWorkflowDependencies(h.input)).rejects.toThrow(/paused after a failed part/);
+    expect(h.log.some((line) => line.startsWith("start 44"))).toBe(false);
+    expect(states(h.events).sort()).toEqual(["11:FAILED", "11:STARTED", "22:IMPLEMENTED", "22:STARTED"]);
+  });
+
   it("on a merge conflict re-runs the part once, alone, at the integrated tree, and keeps both edits", async () => {
     const h = harness(graphOf(item(A), item(B)), {
       conflicts: (itemId, attempt) => itemId === B && attempt === 1,

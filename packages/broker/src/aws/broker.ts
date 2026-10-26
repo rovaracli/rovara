@@ -363,7 +363,7 @@ import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, 
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { deliverDueCodeMilestones } from "../rovara-code/milestones.js";
-import { workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
+import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -11956,8 +11956,7 @@ async function validateWorkflowProgressChunk(
       const stored = [...(nextWorkflow.workflowDependenciesProgress ?? []), progress];
       const projected = workflowDependencyAttemptTerminalProgress({ graph: invocation.graph, approval: invocation.approval, operationId: operation.id,
         sequenceStart: invocation.sequenceStart, resumeProgress: invocation.resumeProgress, history: stored, parallel: invocation.parallel });
-      const startTrees = new Set<string>(firstBaseTree === undefined ? [] : [firstBaseTree]);
-      for (const entry of stored) if (entry.state === "IMPLEMENTED") startTrees.add(entry.integratedTreeSha ?? entry.candidateTreeSha!);
+      const startTrees = parallelStartTrees(stored, firstBaseTree);
       if (projected === undefined || (progress.state === "STARTED" && !startTrees.has(progress.baseTreeSha))) {
         throw agentXError("CALLBACK_FORBIDDEN", "work breakdown progress does not continue the retained graph's trees and order");
       }
