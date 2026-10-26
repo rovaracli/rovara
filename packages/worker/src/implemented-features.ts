@@ -25,4 +25,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
   "task.workflowFix",
+  // Rovara Code v2: independent parts of an approved plan build side by side (parallel-parts.ts).
+  "task.workflowParallelParts",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -22,6 +22,11 @@ export const WorkItemProgressV1Schema = z.object({
   operationId: z.string().uuid(),
   baseTreeSha: TreeSchema,
   candidateTreeSha: TreeSchema.optional(),
+  /**
+   * Parallel parts (Rovara Code v2): the tree of everything merged so far once this part was merged in, which the next part starts from. A serial run never sets it.
+   * Only implemented progress names one.
+   */
+  integratedTreeSha: TreeSchema.optional(),
   at: z.string().datetime(),
   producer: z.string().trim().min(1).max(80),
 }).strict().superRefine((progress, context) => {
@@ -30,5 +35,8 @@ export const WorkItemProgressV1Schema = z.object({
   }
   if (progress.state !== "IMPLEMENTED" && progress.candidateTreeSha !== undefined) {
     context.addIssue({ code: "custom", path: ["candidateTreeSha"], message: "only implemented progress may name a candidate tree" });
+  }
+  if (progress.state !== "IMPLEMENTED" && progress.integratedTreeSha !== undefined) {
+    context.addIssue({ code: "custom", path: ["integratedTreeSha"], message: "only implemented progress may name an integrated tree" });
   }
 });

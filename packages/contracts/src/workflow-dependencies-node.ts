@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { canonicalJson } from "./canonical-json.js";
+import { PARALLEL_PARTS_MAX } from "./rovara-code.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema, DigestSchema, TreeSchema } from "./workflow-dependencies.js";
 import { createHash } from "node:crypto";
 
@@ -90,9 +91,24 @@ export const WorkflowDependencyResultSchema = z.object({
 
 export type WorkflowDependencyResult = z.infer<typeof WorkflowDependencyResultSchema>;
 
+/**
+ * Independent parts that build at once on the task's one machine (Rovara Code v2 only). `max` is the most that run together, never above PARALLEL_PARTS_MAX. It is the
+ * only knob: parts have no spending limit of their own. They all draw on the operation's one model key, so their total can never pass the task's limits.
+ */
+export const WorkflowParallelSchema = z.object({ max: z.number().int().min(1).max(PARALLEL_PARTS_MAX) }).strict();
+export type WorkflowParallel = z.infer<typeof WorkflowParallelSchema>;
+
+/** How many parts may run together when the org has room for `capacity` of them: at most the plan's cap, at least one (one part is the serial run). */
+export function parallelPartsFor(capacity: number): number {
+  if (!Number.isFinite(capacity)) return 1;
+  return Math.max(1, Math.min(PARALLEL_PARTS_MAX, Math.floor(capacity)));
+}
+
 export const WorkflowDependencyInvocationSchema = z.object({
   approval: WorkflowDependencyApprovalSchema,
   graph: TaskGraphV1Schema,
+  /** Present only for a Rovara Code v2 task, and only sent to a worker that lists task.workflowParallelParts. Absent: one item at a time. */
+  parallel: WorkflowParallelSchema.optional(),
   /** Exact retained tree checkpoint required for an explicit retry after a stopped run. */
   resumeTreeSha: TreeSchema.optional(),
   /** Monotonic progress cursor for this approved run, including acknowledged checkpoints from prior operations. */
@@ -191,11 +207,14 @@ export function workflowDependencyAttemptTerminalProgress(input: {
   sequenceStart: number | undefined;
   resumeProgress: readonly WorkItemProgressV1[] | undefined;
   history: readonly WorkItemProgressV1[];
+  /** The operation's parallel setting (Rovara Code v2). With it several items may run at once; without it the rules are the serial ones, unchanged. */
+  parallel?: WorkflowParallel | undefined;
 }): WorkItemProgressV1[] | undefined {
   const { graph, approval, operationId } = input;
   if (operationId === undefined || !/^[0-9a-f-]{36}$/.test(operationId)) return undefined;
   const sequenceStart = input.sequenceStart ?? 0;
   if (!Number.isSafeInteger(sequenceStart) || sequenceStart < 0 || taskGraphDigest(graph) !== approval.graphDigest) return undefined;
+  if (input.parallel !== undefined) return parallelAttemptTerminalProgress({ ...input, operationId, sequenceStart, parallel: input.parallel });
   const order = taskGraphOrder(graph);
   const retained = input.resumeProgress ?? [];
   if (retained.length > order.length) return undefined;
@@ -228,6 +247,73 @@ export function workflowDependencyAttemptTerminalProgress(input: {
     }
     if (active === undefined || active.itemId !== entry.itemId || active.baseTreeSha !== entry.baseTreeSha) return undefined;
     active = undefined;
+    terminals.set(entry.itemId, entry);
+    if (entry.state !== "IMPLEMENTED") halted = true;
+  }
+  return order.flatMap((itemId) => {
+    const entry = terminals.get(itemId);
+    return entry === undefined ? [] : [entry];
+  });
+}
+
+/**
+ * The checkpoint rules of an operation that may run several items at once. Retained progress is any set of finished items closed under dependencies (a finished item's
+ * dependencies are finished too). Within the attempt, an item starts only when its dependencies are implemented and fewer than `parallel.max` are running; nothing new
+ * starts once an item failed (items already running may still finish). An item may start once more, at a different tree, after its first run conflicted when merged.
+ * A finish needs a running start with the same base tree. Tree continuity is the broker's check; here only the shape is judged.
+ */
+function parallelAttemptTerminalProgress(input: {
+  graph: TaskGraphV1;
+  approval: WorkflowDependencyApproval;
+  operationId: string;
+  sequenceStart: number;
+  resumeProgress: readonly WorkItemProgressV1[] | undefined;
+  history: readonly WorkItemProgressV1[];
+  parallel: WorkflowParallel;
+}): WorkItemProgressV1[] | undefined {
+  const { graph, approval, operationId, sequenceStart } = input;
+  const order = taskGraphOrder(graph);
+  const itemById = new Map(graph.items.map((item) => [item.id, item] as const));
+  const terminals = new Map<string, WorkItemProgressV1>();
+  const retained = input.resumeProgress ?? [];
+  if (retained.length > order.length) return undefined;
+  for (const entry of retained) {
+    if (!itemById.has(entry.itemId) || terminals.has(entry.itemId) || entry.state === "STARTED" || entry.graphDigest !== approval.graphDigest || entry.runId !== approval.runId
+      || entry.sequence > sequenceStart || !input.history.some((historical) => historical.sequence === entry.sequence && canonicalJson(historical) === canonicalJson(entry))) return undefined;
+    terminals.set(entry.itemId, entry);
+  }
+  const implemented = (itemId: string): boolean => terminals.get(itemId)?.state === "IMPLEMENTED";
+  for (const entry of terminals.values()) {
+    if (entry.state === "IMPLEMENTED" && itemById.get(entry.itemId)!.dependsOn.some((dependency) => !implemented(dependency))) return undefined;
+  }
+
+  if (input.history.some((entry) => entry.operationId === operationId && entry.sequence <= sequenceStart)) return undefined;
+  const later = input.history.filter((entry) => entry.sequence > sequenceStart);
+  if (later.some((entry) => entry.operationId !== operationId)) return undefined;
+  later.sort((left, right) => left.sequence - right.sequence);
+  let expectedSequence = sequenceStart + 1;
+  const running = new Map<string, WorkItemProgressV1>();
+  const starts = new Map<string, number>();
+  let halted = false;
+  for (const entry of later) {
+    if (entry.sequence !== expectedSequence++ || entry.operationId !== operationId || entry.graphDigest !== approval.graphDigest || entry.runId !== approval.runId) return undefined;
+    const item = itemById.get(entry.itemId);
+    if (item === undefined) return undefined;
+    if (entry.state === "STARTED") {
+      if (halted || implemented(entry.itemId) || item.dependsOn.some((dependency) => !implemented(dependency))) return undefined;
+      const open = running.get(entry.itemId);
+      if (open !== undefined) {
+        if (open.baseTreeSha === entry.baseTreeSha || (starts.get(entry.itemId) ?? 1) >= 2) return undefined;
+      } else if (running.size >= input.parallel.max) {
+        return undefined;
+      }
+      starts.set(entry.itemId, (starts.get(entry.itemId) ?? 0) + 1);
+      running.set(entry.itemId, entry);
+      continue;
+    }
+    const open = running.get(entry.itemId);
+    if (open === undefined || open.baseTreeSha !== entry.baseTreeSha) return undefined;
+    running.delete(entry.itemId);
     terminals.set(entry.itemId, entry);
     if (entry.state !== "IMPLEMENTED") halted = true;
   }
