@@ -41,7 +41,7 @@ function github(options: { probeStatuses?: Array<number | "throw">; readiness?: 
       tokenReadiness: {
         ...(options.delaysMs === undefined ? {} : { delaysMs: options.delaysMs }),
         sleep: async (ms: number) => { sleeps.push(ms); },
-        onProbe: (event: Record<string, unknown>) => { events.push(event); },
+        onProbe: (event) => { events.push({ ...event }); },
       },
     }),
   });
