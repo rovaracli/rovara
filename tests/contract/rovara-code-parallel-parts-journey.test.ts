@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PARALLEL_PARTS_MAX, WORKER_INVOCATION_FEATURES, taskGraphDigest } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, PARALLEL_PARTS_MAX, WORKER_INVOCATION_FEATURES, taskGraphDigest } from "@agentx/contracts";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
 import { workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
@@ -303,6 +303,8 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     await e2e.settle();
     expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
     expect(e2e.prompts).toHaveLength(prompts);
+    // The dispatcher refused it with the worker-outdated words; the older worker was never sent a run it could not resume.
+    expect(e2e.worker.deliveryFailures.map((failure) => failure.error).join("\n")).toContain(AGENT_WORKER_OUTDATED);
     expect(e2e.github.pullRequests).toEqual([]);
     // A worker that can build parts resumes it.
     e2e.worker.features(WORKER_INVOCATION_FEATURES);

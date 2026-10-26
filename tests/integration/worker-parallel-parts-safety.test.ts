@@ -104,6 +104,23 @@ describe("the folders of the parts are never followed through a link", () => {
     expect((await lstat(join(root, PARTS_DIRECTORY, A)).catch(() => undefined))?.isSymbolicLink() ?? false).toBe(false);
   });
 
+  it("removes links the agent planted inside its part (a file link, a folder link, a link in a nested folder) without following them", async () => {
+    const decoy = join(outside, "decoy-inner");
+    await mkdir(join(decoy, "sub"), { recursive: true });
+    await writeFile(join(decoy, "keep.txt"), "keep\n");
+    await writeFile(join(decoy, "sub/keep.txt"), "keep\n");
+    const copy = await copyOf();
+    await symlink(decoy, join(copy.directory, "folder-link"));
+    await symlink(join(decoy, "keep.txt"), join(copy.directory, "file-link"));
+    await mkdir(join(copy.directory, "nested/deeper"), { recursive: true });
+    await symlink(decoy, join(copy.directory, "nested/deeper/link"));
+    execFileSync("mkfifo", [join(copy.directory, "nested/fifo")]);
+    await copy.remove();
+    expect(existsSync(join(root, PARTS_DIRECTORY, A))).toBe(false);
+    expect(await readFile(join(decoy, "keep.txt"), "utf8")).toBe("keep\n");
+    expect(await readFile(join(decoy, "sub/keep.txt"), "utf8")).toBe("keep\n");
+  });
+
   it("removes a part whose repository folder was swapped for a link, without touching what it pointed at", async () => {
     const decoy = join(outside, "decoy2");
     await mkdir(decoy, { recursive: true });
