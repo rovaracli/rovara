@@ -154,7 +154,7 @@ describe("assessRisk", () => {
 
 describe("parseChangedFiles", () => {
   const section = (status: string[], diff: string[]) => ["## payments", "", "### status", ...status, "### diff", ...diff].join("\n");
-  const hunk = (path: string, plus = 2, minus = 1) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", ...Array(minus).fill("-old"), ...Array(plus).fill("+new")];
+  const hunk = (path: string, plus = 2, minus = 1): string[] => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", ...Array.from({ length: minus }, () => "-old"), ...Array.from({ length: plus }, () => "+new")];
 
   it("counts a tracked file's lines inside its hunks, and leaves a file it can't count without a count (not 0)", () => {
     const text = section([" M src/a.ts", "?? src/big.ts", "?? src/other.ts"], [

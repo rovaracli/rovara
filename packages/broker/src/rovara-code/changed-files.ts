@@ -27,7 +27,8 @@ export function unquoteGitPath(token: string): string {
       index += 3;
     } else {
       const next = inner[index + 1];
-      if (next !== undefined && simple[next] !== undefined) bytes.push(simple[next]!);
+      const code = next === undefined ? undefined : simple[next];
+      if (code !== undefined) bytes.push(code);
       else if (next !== undefined) bytes.push(...Buffer.from(next, "utf8"));
       index += 1;
     }
