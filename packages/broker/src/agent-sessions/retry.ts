@@ -40,6 +40,8 @@ import {
 
 export const NOTHING_TO_RETRY = "There's nothing to retry right now.";
 export const RETRY_ON_MAC = "Retry it on your Mac.";
+/** A workflow task that ended failed (its workspace setup failed: the workflow never started) is not retried; a retry would start no new workspace. */
+export const FAILED_TASK_NEEDS_NEW_TASK = "This task failed and has ended, so it can't be retried. Start a new task; if its setup failed, fix the project's setup or test command first.";
 const ALREADY_RETRIED = "This session was already retried.";
 const CHAIN_RETRY_UNAVAILABLE = "Retrying a chain run isn't available right now.";
 const NOT_AVAILABLE = "Retrying a session isn't available right now.";
@@ -149,7 +151,11 @@ function nameOrClient(client: string | undefined): string {
 
 async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCaller, access: SessionAccess, task: DeveloperTaskRecord, requestId: string): Promise<{ session: SessionView }> {
   const { session } = access;
-  if (isEnded(session) || task.workflow?.state !== "BLOCKED") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
+  if (isEnded(session) || task.workflow?.state !== "BLOCKED") {
+    // Only a failed ending says more than "nothing to retry": the person is told a new task is the way on (Bug F, v0.4.11 rehearsal).
+    const failedAndEnded = isEnded(session) && session.summary.status === "failed" && task.outcome !== "creator_removed";
+    throw agentXError("CONFIG_INVALID", failedAndEnded ? FAILED_TASK_NEEDS_NEW_TASK : NOTHING_TO_RETRY);
+  }
   if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_AVAILABLE);
   // The payer keeps paying (it is the same run), so their room is what is checked, and nothing is asked of Plan 3 when there is none.
   await admitCurrentPayer(deps, session, task);
