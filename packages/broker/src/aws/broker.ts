@@ -523,8 +523,9 @@ import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
-import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, wakeTrackingRow, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
+import type { CodeMergeHost } from "../rovara-code/merge.js";
 import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
 import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
@@ -726,7 +727,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -1258,6 +1259,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // Plan 4's move of a chain run's owner and payer to the person who took its session over.
     chainOwner: agents.sessions?.chainOwner ?? chainOwnerMoverFor(routeDependencies as ChainRouteDependencies),
   };
+  // Plan 6, Task 19: what pressing Merge and its confirmation need (GitHub's reads and the merge, the task and its repositories), on the same dependencies.
+  const codeMerge = codeMergeHostOf(dependencies);
+  if (codeMerge !== undefined) routeDependencies.codeMerge = codeMerge;
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
@@ -12758,10 +12762,35 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     },
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
     autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
+    // The origin session links are made from (the approved milestone's "Ready to merge" link).
+    ...(dependencies.developer === undefined ? {} : { origin: new URL(dependencies.developer.issuer).origin }),
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
+    log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+  };
+}
+
+/**
+ * What merging a task's pull requests needs of the broker (Plan 6 Task 19): GitHub's status and permission reads and the merge, the task, the repository's URL as the project pins it and the
+ * base branch Rovara opened the pull request against. Undefined where the provider cannot read status or merge (a test double without them). A press that finds a branch GitHub needs up to date
+ * wakes the tracking row, whose sync slot merges the base in.
+ */
+function codeMergeHostOf(dependencies: AwsBrokerDependencies): CodeMergeHost | undefined {
+  const github = dependencies.githubPullRequests;
+  if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.mergePullRequest === undefined) return undefined;
+  return {
+    github: {
+      getPullRequestStatus: (url, number, scope) => github.getPullRequestStatus!.call(github, url, number, scope),
+      getRepositoryPermission: (url, login, scope) => github.getRepositoryPermission!.call(github, url, login, scope),
+      mergePullRequest: (url, number, input, scope) => github.mergePullRequest!.call(github, url, number, input, scope),
+    },
+    scope: (orgId) => githubScope(dependencies, orgId),
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    recordedBase: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.baseBranch,
+    requireSyncForMerge: async (task) => { await wakeTrackingRow({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.taskId); },
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
   };
 }

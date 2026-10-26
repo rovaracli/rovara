@@ -150,6 +150,7 @@ export function mergeWorld(options: MergeWorldOptions = {}) {
     github, scope: (id) => ({ orgId: id }),
     loadTask: async (id) => w.db.get(taskKey(id)) as never,
     repositoryUrl: async (_project, _revision, repositoryId) => `https://github.com/acme/${repositoryId}`,
+    recordedBase: async () => "main",
   };
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now });
   const shareDeps: SessionShareDependencies = { documentClient: w.db, tableName: "state", now, projectMembers: w.members, signInStore: w.signInStore };

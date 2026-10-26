@@ -15,11 +15,13 @@ import {
   mergeTrackingDecisionDigest,
   mergeTrackingKey,
   sessionEventId,
+  sessionLink,
   type AgentXError,
   type Autonomy,
   type CodeSettings,
   type MergeTrackingItem,
   type OrgId,
+  type SessionId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { type GitHubTokenScope, parseGitHubRepository, GithubMergeRateLimitError } from "../github-app.js";
@@ -32,6 +34,7 @@ import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { prHeadItems } from "./head-index.js";
 import { readCodeSettings } from "./code-settings.js";
+import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
@@ -64,6 +67,10 @@ export interface TrackedTask {
   closedAt?: string | undefined;
   releasedAt?: string | undefined;
   workflow?: WorkflowSnapshot | undefined;
+  /** Who asked for the task (Plan 6 Task 19): the approval rule tells a requester's own approval from a reviewer's. */
+  developerId?: string | undefined;
+  startedBy?: { developerId?: string | undefined } | undefined;
+  currentOwner?: unknown;
 }
 
 export interface MergeTrackingDependencies {
@@ -83,6 +90,8 @@ export interface MergeTrackingDependencies {
   autonomy?(task: TrackedTask): Promise<Autonomy> | Autonomy;
   /** Every request counts against this (the sweep's budget); each task's pass is held to its own cap inside it. */
   budget?: GithubMergeReadBudget;
+  /** The origin session links are made from (the control plane's own): the approved milestone links to the session with it. Without it the milestone says no link. */
+  origin?: string | undefined;
   log?(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -622,6 +631,23 @@ async function trackOne(
   const fields = reviewsOf(reviews);
   if (markedReady) fields.draft = false;
 
+  // Plan 6 Task 19: an approval that counts (a person with write access who is a member and not a requester, unless the org allows self-approval, on the head) is announced once,
+  // when the approval is new. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
+  let announce: { login: string } | undefined;
+  const approvalIsNew = fields.approval !== undefined && (prior?.approval === undefined || prior.approval.githubUserId !== fields.approval.githubUserId || prior.approval.commitId !== fields.approval.commitId);
+  if (approvalIsNew && !capped) {
+    const reviewers = latestReviewers(status.reviews);
+    const known = new Map<string, RepositoryPermission>();
+    for (const reviewer of reviewers) known.set(reviewer.login, await permission(reviewer.login));
+    const members = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+    const counted = humanApprovalOf({
+      reviews: status.reviews, headSha: status.headSha, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ci.ci === "passing" || ci.ci === "none", permissions: known,
+      requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
+      allowSelfApproval: settings.allowSelfApproval,
+    });
+    if (counted.approved) announce = { login: counted.by.login };
+  }
+
   for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
     const current = attempt === 0 ? prior : trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
     const stamp = new Date(now).toISOString();
@@ -673,6 +699,14 @@ async function trackOne(
         pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
       }, index, { definitionVersion: task.workflow.definitionVersion }));
     }
+    if (announce !== undefined) {
+      const index = Math.max(0, (task.workflow.pullRequests ?? []).findIndex((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number));
+      const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId as SessionId)}` : ".";
+      items.push(...codeMilestoneItems({ tableName: deps.tableName }, {
+        kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId as SessionId }), at: stamp,
+        text: `Approved by ${inertLine(announce.login)}. Ready to merge${where}`, pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
+      }, index * 100_000 + nextItem.version, { definitionVersion: task.workflow.definitionVersion }));
+    }
     if (flipped && task.sessionId !== undefined) {
       items.push(sessionEventItem({ tableName: deps.tableName }, { orgId: task.orgId, sessionId: task.sessionId }, {
         eventId: sessionEventId("merge_tracking", `${task.taskId}\n${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${String(nextItem.version)}`),
@@ -687,7 +721,7 @@ async function trackOne(
       if (isCancelled(error)) throw agentXError("RUNTIME_UNAVAILABLE", "the tracking item was changed by another writer");
       throw error;
     }
-    if (justReady) {
+    if (justReady || announce !== undefined) {
       // After the commit: the handlers are told (a failure is theirs, and the sweep tells them again).
       await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
     }

@@ -46,6 +46,7 @@ import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, sanitizeServerText, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
+import { projectCodeSettings } from "./developer/code-settings.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import {
@@ -1981,6 +1982,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
     });
+  // Plan 6, Task 19 (the Task 25 slice): a project's code settings. A maintainer changes them; self-approval turned on waits for an organization owner or admin to confirm it in a browser.
+  projectCommand
+    .command("code-settings")
+    .description("show or change how Rovara merges a project's pull requests: self-approval (on needs an organization owner or admin to confirm it in a browser), the merge method and the reviewers it asks")
+    .argument("<project>", "the project's name")
+    .option("--self-approval <on|off>", "let the person who asked for a pull request approve it (on waits for an organization owner or admin to confirm)")
+    .option("--merge-method <squash|merge>", "how a pull request is merged")
+    .option("--reviewers <names>", "GitHub names Rovara asks for a review, separated by commas (a person, or org/team), or none")
+    .action(async (project: string, options: { selfApproval?: string; mergeMethod?: string; reviewers?: string }, command: Command) => printResult(command, await projectCodeSettings(developerSession(), developerEnv(command), project, options)));
   // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
   projectCommand
     .command("check")

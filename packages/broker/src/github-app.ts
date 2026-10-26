@@ -177,6 +177,12 @@ export interface GitHubPullRequestDetails {
   body: string;
 }
 
+/** What a merge came to (Plan 6 Task 19): merged (by the method asked, or the other one when the repository does not allow it), merged already, or refused for a fixed reason. */
+export type MergePullRequestResult =
+  | { outcome: "merged"; method: "squash" | "merge"; fellBack: boolean; mergeCommitSha?: string }
+  | { outcome: "already_merged" }
+  | { outcome: "refused"; reason: "head_changed" | "not_mergeable" | "closed" | "forbidden" };
+
 export class GithubMergeRateLimitError extends Error {
   constructor(readonly retryAt: number) {
     if (!Number.isSafeInteger(retryAt) || retryAt < 1 || !Number.isFinite(new Date(retryAt).getTime())) {
@@ -863,6 +869,58 @@ export class GitHubAppCredentialProvider {
     if (answered.status === 422) return "refused";
     if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reviewer request failed with HTTP ${answered.status}`);
     return "requested";
+  }
+
+  /**
+   * Merges a pull request (Plan 6 Task 19): `PUT pulls/{n}/merge` with `sha`, the head the caller checked, so GitHub refuses when the head moved. The token asks for `contents` and
+   * `pull_requests` at write on this one repository. A method the repository does not allow is tried once more with the other of `squash` and `merge` (never `rebase`). A refusal
+   * (405, 409, 422, or a 200 that does not say merged) reads the pull request again and says what it finds: already merged, closed, head changed, or not mergeable; GitHub's own words
+   * are never passed on. A rate limit, a server fault and an unreadable pull request throw `RUNTIME_UNAVAILABLE`, to be tried again (the caller's claim keeps that from merging twice).
+   */
+  async mergePullRequest(repositoryUrl: string, number: number, input: { sha: string; method: "squash" | "merge" }, scope: GitHubTokenScope): Promise<MergePullRequestResult> {
+    if (!/^[a-f0-9]{40}$/u.test(input.sha)) throw agentXError("CONFIG_INVALID", "the commit to merge is invalid");
+    if (input.method !== "squash" && input.method !== "merge") throw agentXError("CONFIG_INVALID", "the merge method is invalid");
+    if (!Number.isInteger(number) || number < 1) throw agentXError("CONFIG_INVALID", "pull request number is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "write", pull_requests: "write" }, scope);
+    let method = input.method;
+    let fellBack = false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImplementation(`${pullRequestUrl(repository, number)}/merge`, {
+          method: "PUT", headers: githubHeaders(token), body: JSON.stringify({ sha: input.sha, merge_method: method }), redirect: "error", signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        // The request may or may not have reached GitHub: the caller's next run reads the pull request and finds out.
+        throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge outcome is unknown");
+      }
+      const body = await response.json().then((value: unknown) => (value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}), () => ({} as Record<string, unknown>));
+      if (response.status === 200 && body.merged === true) {
+        const commit = typeof body.sha === "string" && /^[a-f0-9]{40}$/u.test(body.sha) ? body.sha : undefined;
+        return { outcome: "merged", method, fellBack, ...(commit === undefined ? {} : { mergeCommitSha: commit }) };
+      }
+      if (mergeRateLimitRetryAt(response, this.now()) !== undefined || response.status === 429) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub is limiting requests; the merge will be tried again");
+      if (response.status === 403) return { outcome: "refused", reason: "forbidden" };
+      const message = typeof body.message === "string" ? body.message : "";
+      // GitHub words a method the repository does not allow as "Squash merges are not allowed on this repository." (verify at staging, Task 27).
+      if (response.status === 405 && /\b(?:squash|merge commits?|merge)\b[^.]*\bnot allowed\b/iu.test(message)) {
+        if (attempt === 0) {
+          method = method === "squash" ? "merge" : "squash";
+          fellBack = true;
+          continue;
+        }
+        return { outcome: "refused", reason: "not_mergeable" };
+      }
+      if (response.status !== 405 && response.status !== 409 && response.status !== 422 && response.status !== 200) {
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub merge failed with HTTP ${response.status}`);
+      }
+      const now = await this.getPullRequestWithToken(repository, number, token);
+      if (now.state === "merged") return { outcome: "already_merged" };
+      if (now.state === "closed") return { outcome: "refused", reason: "closed" };
+      return { outcome: "refused", reason: now.headCommit !== input.sha ? "head_changed" : "not_mergeable" };
+    }
+    return { outcome: "refused", reason: "not_mergeable" };
   }
 
   /**

@@ -104,6 +104,7 @@ import {
   type TaskPeopleDisplayReadResponse,
   SESSION_PROJECT_BINDINGS_MAX,
   workflowAnswer,
+  type MergeTrackingItem,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -157,6 +158,8 @@ import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
+import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
+import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
 import { startCodeIntent } from "../rovara-code/intent.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -1754,6 +1757,7 @@ export function developerTaskRouteDependencies(
     ...(deps.validateWorkflowE2EApplicationPlan === undefined ? {} : { validateWorkflowE2EApplicationPlan: deps.validateWorkflowE2EApplicationPlan }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
+    ...(agents?.codeMerge === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
@@ -1925,6 +1929,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
+  // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.
+  const codeSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/code-settings$/.exec(url.pathname);
+  if (codeSettingsRoute !== null && (request.method === "GET" || request.method === "PUT")) {
+    const settingsDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) };
+    return request.method === "GET" ? getCodeSettings(settingsDeps, caller, codeSettingsRoute[1]!) : putCodeSettings(settingsDeps, caller, codeSettingsRoute[1]!, jsonBody(request), deps.agents);
+  }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
     const drafting = setupDraftDepsOf(deps);

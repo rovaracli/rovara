@@ -386,7 +386,7 @@ describe("confirming a merge", () => {
     const { approvalId } = await pressed(w);
     const cookie = await w.browser(MAX, approvalId);
     const posted = await w.decide(approvalId, cookie);
-    expect(posted.status).toBe(403);
+    expect(posted.statusCode).toBe(403);
     expect(w.github.mergeCalls).toEqual([]);
   });
 
@@ -562,8 +562,8 @@ describe("confirming a merge", () => {
 describe("the task view's merge field", () => {
   it("is not shown to a client that does not ask for the version 2 view", () => {
     const view = { taskId: "t", title: "x", project: "web", status: "RUNNING", merge: { ready: false, message: "x" } } as never;
-    expect("merge" in taskViewForClient(view, new Headers())).toBe(false);
-    expect("merge" in taskViewForClient(view, new Headers({ "x-agentx-task-view": "2" }))).toBe(true);
+    expect("merge" in taskViewForClient(view, {} as never)).toBe(false);
+    expect("merge" in taskViewForClient(view, { "x-agentx-task-view": "2" } as never)).toBe(true);
   });
 
   it("says whether the viewer pressing Merge now would be allowed, with the viewer as the presser", async () => {

@@ -43,12 +43,12 @@ describe("changing the settings that apply at once", () => {
   it("applies the merge method and the reviewers under the revision read, and bumps the revision", async () => {
     const w = mergeWorld();
     const reply = await put(w, MAX, { mergeMethod: "merge", codeReviewers: ["alice", "acme/core"] });
-    expect(reply.status).toBe(200);
+    expect(reply.statusCode).toBe(200);
     expect(reply.body).toEqual({ settings: { allowSelfApproval: false, mergeMethod: "merge", codeReviewers: ["alice", "acme/core"], revision: 1 } });
     expect(await live(w)).toEqual({ allowSelfApproval: false, mergeMethod: "merge", codeReviewers: ["alice", "acme/core"], revision: 1 });
     // The next change must name the revision it read.
     expect(await codeOf(put(w, MAX, { mergeMethod: "squash" }))).toEqual({ code: "CONFIG_INVALID", message: CODE_SETTINGS_STALE_MESSAGE });
-    expect((await put(w, MAX, { mergeMethod: "squash", expectedRevision: 1 })).status).toBe(200);
+    expect((await put(w, MAX, { mergeMethod: "squash", expectedRevision: 1 })).statusCode).toBe(200);
     expect((await live(w)).revision).toBe(2);
   });
 
@@ -62,7 +62,7 @@ describe("changing the settings that apply at once", () => {
   it("turns self-approval off at once", async () => {
     const w = mergeWorld({ allowSelfApproval: true });
     const reply = await put(w, MAX, { allowSelfApproval: false, expectedRevision: 1 });
-    expect(reply.status).toBe(200);
+    expect(reply.statusCode).toBe(200);
     expect((await live(w)).allowSelfApproval).toBe(false);
   });
 
@@ -72,7 +72,7 @@ describe("changing the settings that apply at once", () => {
     const body = { requestId, expectedRevision: 0, mergeMethod: "merge" };
     const first = await putCodeSettings(settingsDeps(w), w.caller(MAX), "web", body, w.deps);
     const again = await putCodeSettings(settingsDeps(w), w.caller(MAX), "web", body, w.deps);
-    expect(again.status).toBe(200);
+    expect(again.statusCode).toBe(200);
     expect(again.body).toEqual(first.body);
     expect((await live(w)).revision).toBe(1);
     // The same id with another body is another request, and is refused.
@@ -82,7 +82,7 @@ describe("changing the settings that apply at once", () => {
   it("changes nothing for a self-approval setting that is already the way it is asked", async () => {
     const w = mergeWorld({ allowSelfApproval: true });
     const reply = await put(w, MAX, { allowSelfApproval: true, expectedRevision: 1 });
-    expect(reply.status).toBe(200);
+    expect(reply.statusCode).toBe(200);
     expect((await live(w)).revision).toBe(1);
     expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
   });
@@ -102,7 +102,7 @@ describe("changing the settings that apply at once", () => {
 
   it("lets an organization admin change them without a project grant", async () => {
     const w = mergeWorld();
-    expect((await put(w, OLA, { mergeMethod: "merge" })).status).toBe(200);
+    expect((await put(w, OLA, { mergeMethod: "merge" })).statusCode).toBe(200);
   });
 });
 
@@ -110,7 +110,7 @@ describe("turning self-approval on", () => {
   it("answers 202 NEEDS_CONFIRMATION with a link, changes nothing, and records one pending change bound to the revision", async () => {
     const w = mergeWorld();
     const reply = await put(w, MAX, { allowSelfApproval: true });
-    expect(reply.status).toBe(202);
+    expect(reply.statusCode).toBe(202);
     const body = NeedsConfirmationSchema.parse(reply.body);
     expect(body.confirmUrl.startsWith("https://")).toBe(true);
     expect(body.changes).toEqual(["Let a person approve a pull request that Rovara made for them, in project web"]);
@@ -128,7 +128,7 @@ describe("turning self-approval on", () => {
     const approvalId = w.approvalIdOf(body.confirmUrl);
     expect(await w.kind.inspect({ orgId: ORG_A, developerId: MAX, approvalId })).toEqual({ status: "forbidden", who: "an organization owner or admin" });
     const refused = await w.decide(approvalId, await w.browser(MAX, approvalId));
-    expect(refused.status).toBe(403);
+    expect(refused.statusCode).toBe(403);
     expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
     const open = await w.kind.inspect({ orgId: ORG_A, developerId: OLA, approvalId });
     expect(open).toMatchObject({ status: "open", view: { title: changeTitleOf("code_settings") } });
@@ -158,7 +158,7 @@ describe("turning self-approval on", () => {
   it("applies the other settings of the same request at once, and waits only for self-approval", async () => {
     const w = mergeWorld();
     const reply = await put(w, MAX, { allowSelfApproval: true, mergeMethod: "merge" });
-    expect(reply.status).toBe(202);
+    expect(reply.statusCode).toBe(202);
     expect(await live(w)).toEqual({ allowSelfApproval: false, mergeMethod: "merge", codeReviewers: [], revision: 1 });
     const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl);
     expect(await getAnyApproval(w.deps, ORG_A, approvalId)).toMatchObject({ subject: { settingsRevision: 1 } });

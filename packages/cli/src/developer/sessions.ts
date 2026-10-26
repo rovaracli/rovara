@@ -26,7 +26,7 @@ const UNEXPECTED = `AgentX answered with something unexpected; try again, or upg
  * A server's web address, only when it is plainly an https address on the control plane's own origin (the environment's URL) with no user name or
  * password in it. This is where a person is told to sign in or decide, so a link to another host, port or `host@evil` address is never printed.
  */
-function safeUrl(value: unknown, origin: string): string | undefined {
+export function safeUrl(value: unknown, origin: string): string | undefined {
   if (typeof value !== "string" || value.length > URL_MAX || !SAFE_URL.test(value)) return undefined;
   try {
     const url = new URL(value);

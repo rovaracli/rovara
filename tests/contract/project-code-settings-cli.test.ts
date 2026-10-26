@@ -13,7 +13,7 @@ const URL_ = "https://abc123.execute-api.us-west-2.amazonaws.com";
 const ISSUER = `${URL_}/v1/auth`;
 const entry = { url: URL_, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CONFIRM = "https://cell.example.com/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa?ticket=t";
+const CONFIRM = `${URL_}/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa?ticket=t`;
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
@@ -93,11 +93,11 @@ describe("agentx project code-settings", () => {
     expect(h.out.join("")).toContain("Changed now: merge method merge.");
   });
 
-  it("prints only a plain https link", async () => {
+  it("prints only a link on the control plane's own address", async () => {
     const h = await cli((method) => (method === "GET" ? Response.json({ settings: settings() })
-      : Response.json({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "javascript:alert(1)", changes: [] }, { status: 202 })));
+      : Response.json({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://evil.example.com/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: [] }, { status: 202 })));
     expect(await h.run(["project", "code-settings", "web", "--self-approval", "on"])).not.toBe(0);
-    expect(h.out.join("")).not.toContain("javascript");
+    expect(h.out.join("")).not.toContain("evil.example.com");
   });
 
   it("refuses a value it cannot send, before it asks the server anything", async () => {
@@ -116,7 +116,7 @@ describe("agentx project code-settings", () => {
 
   it("shows the server's refusal as it words it: a stale revision, a contributor", async () => {
     const stale = await cli((method) => (method === "GET" ? Response.json({ settings: settings() })
-      : Response.json({ error: { code: "CONFIG_INVALID", message: "Someone changed these settings. Reload and try again." } }, { status: 409 })));
+      : Response.json({ error: { code: "CONFIG_INVALID", message: "Someone changed these settings. Reload and try again." } }, { status: 400 })));
     expect(await stale.run(["project", "code-settings", "web", "--merge-method", "merge"])).toBe(2);
     expect(stale.err.join("")).toContain("Someone changed these settings. Reload and try again.");
     const forbidden = await cli(() => Response.json({ error: { code: "FORBIDDEN", message: "only a project maintainer can change its code settings" } }, { status: 403 }));
