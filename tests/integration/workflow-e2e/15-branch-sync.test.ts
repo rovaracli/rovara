@@ -3,7 +3,9 @@
 // the pull request's head a fast-forward and moves the candidate to the new base; a conflict becomes one coding round, checked, reviewed and pushed as a merge commit whose parents are the old head and
 // the base commit; GitHub refusing workflow files stops with its text. Nothing is rebased, nothing is force-pushed, and a person's push wins.
 import { describe, expect, it } from "vitest";
-import { BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { BRANCH_WORKFLOW_FILES_MESSAGE, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
+import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, PLAN, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
@@ -12,7 +14,6 @@ const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
   { id: "review", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "build", maxRounds: 3 } }, { id: "pull_request", kind: "pull_request" },
 ] };
-void EMPTY_RECIPE;
 const RESOLVED = [{ path: "repo/demo/greeting.ts", content: "export function greet(name: string): string {\n  return `Hi, ${name}`;\n}\n" }];
 const BASE_GREETING = "export function greet(name: string): string {\n  return 'Hi ' + name;\n}\n";
 
@@ -265,6 +266,34 @@ describe("Suite 15: keeping the branch up to date", () => {
     // It does not go on trying: the task waits for a person (a block is not woken by the schedule), and the merge is still followed.
     expect(dispatchRows(e2e)).toEqual([]);
   });
+
+  /** The task's frozen recipe says how far Rovara may go on its own. */
+  const freezeAutonomy = (e2e: WorkflowE2E, autonomy: "suggest" | "prepare" | "run") =>
+    e2e.db.set({ ...taskRecipeKey(e2e.taskId()), entityType: "TASK_RECIPE", orgId: TEST_ORG, recipe: { ...structuredClone(EMPTY_RECIPE), autonomy }, digest: "d".repeat(64) });
+
+  it("15.9 with the agent set to suggest a conflict is asked about, not left silent: no machine starts; the owner's Retry (the MCP tool) lets the next pass resolve it, once", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    freezeAutonomy(e2e, "suggest");
+    const base = await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    const invocationsBefore = e2e.invocations.length;
+    await trackAndRun(e2e, 2);
+    const asked = e2e.workflow();
+    expect(asked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: branchConflictAskMessage("main") });
+    expect(e2e.invocations).toHaveLength(invocationsBefore);
+    expect(said(e2e).at(-1)).toBe(asked.blockReason);
+    expect(milestones(e2e, "stuck")).toHaveLength(1);
+    expect((await e2e.mcp("agentx_get_task", { task_id: e2e.taskId() })).text ?? "").toContain("agentx_retry_workflow");
+
+    const done = await e2e.mcp("agentx_retry_workflow", { task_id: e2e.taskId(), request_id: "11111111-2222-4333-8444-555555555561", instructions: "Resolve it.", expected_revision: asked.revision });
+    expect(done.isError, JSON.stringify(done)).not.toBe(true);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", conflictApproved: [before] });
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { conflict: 1 } });
+    expect(e2e.workflow().conflictApproved).toBeUndefined();
+    expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
+  }, 240_000);
 
   it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();

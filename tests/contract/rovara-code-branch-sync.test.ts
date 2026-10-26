@@ -3,6 +3,7 @@
 // is (clean, conflicted, refused for workflow files, lost) from what GitHub shows. Nothing here rebases or force-pushes, and nothing a person did not leave to Rovara is overwritten.
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
   createWorkflowSnapshot, endWorkflowBranchSync, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
   recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
@@ -275,8 +276,8 @@ describe("a conflict, recorded", () => {
 
 // ---- the day, the count, the decisions
 
-const itemOf = (overrides: Partial<MergeTrackingItem> = {}): Pick<MergeTrackingItem, "branch" | "review" | "approval" | "syncs" | "headByRovara"> => ({
-  branch: "behind", review: "approved", approval: { githubUserId: "1", login: "maint", commitId: HEAD_A }, syncs: { day: "2026-10-25", count: 0 }, headByRovara: true, ...overrides,
+const itemOf = (overrides: Partial<MergeTrackingItem> = {}): Pick<MergeTrackingItem, "branch" | "review" | "approval" | "syncs" | "headByRovara" | "headSha"> => ({
+  headSha: HEAD_A, branch: "behind", review: "approved", approval: { githubUserId: "1", login: "maint", commitId: HEAD_A }, syncs: { day: "2026-10-25", count: 0 }, headByRovara: true, ...overrides,
 });
 const DAY = Date.parse("2026-10-25T12:00:00.000Z");
 
@@ -315,7 +316,8 @@ describe("when to merge the base", () => {
   });
 
   it("a conflict is a merge to try, until the conflict rounds are used up; then the stop; with the day's merges used up it waits", () => {
-    const decide = (item: ReturnType<typeof itemOf>, conflict = 0) => decideConflict({ item, workflow: { fixRounds: { ci: 0, conflict, feedbackAuto: 0 } }, now: DAY });
+    const decide = (item: ReturnType<typeof itemOf>, conflict = 0, autonomy: "suggest" | "prepare" | "run" = "prepare", approved?: string[]) =>
+      decideConflict({ item, workflow: { fixRounds: { ci: 0, conflict, feedbackAuto: 0 }, ...(approved === undefined ? {} : { conflictApproved: approved }) }, autonomy, now: DAY });
     expect(decide(itemOf({ branch: "conflicted", review: "requested", approval: undefined }))).toBe("sync");
     expect(decide(itemOf({ branch: "conflicted" }), 1)).toBe("sync");
     expect(decide(itemOf({ branch: "conflicted" }), CONFLICT_ROUNDS_MAX)).toBe("stop");
@@ -323,7 +325,15 @@ describe("when to merge the base", () => {
     // The stop does not wait for the day: it needs no machine.
     expect(decide(itemOf({ branch: "conflicted", syncs: { day: "2026-10-25", count: 4 } }), CONFLICT_ROUNDS_MAX)).toBe("stop");
     for (const branch of ["behind", "up_to_date", "unknown"] as const) expect(decide(itemOf({ branch }))).toBe("none");
-    expect(decideConflict({ item: itemOf({ branch: "conflicted" }), workflow: {}, now: DAY })).toBe("sync");
+    expect(decideConflict({ item: itemOf({ branch: "conflicted" }), workflow: {}, autonomy: "run", now: DAY })).toBe("sync");
+    // With the agent set to suggest a conflict is asked about, never left silent (even when the day's merges are used up: asking needs no machine); a go-ahead for this head lets it go on.
+    const conflicted = itemOf({ branch: "conflicted" });
+    expect(decide(conflicted, 0, "suggest")).toBe("ask");
+    expect(decide(itemOf({ branch: "conflicted", syncs: { day: "2026-10-25", count: 4 } }), 0, "suggest")).toBe("ask");
+    expect(decide(conflicted, 1, "suggest")).toBe("ask");
+    expect(decide(conflicted, 0, "suggest", [HEAD_A])).toBe("sync");
+    expect(decide(conflicted, 0, "suggest", [HEAD_B])).toBe("ask");
+    expect(decide(conflicted, CONFLICT_ROUNDS_MAX, "suggest", [HEAD_A])).toBe("stop");
   });
 });
 
@@ -439,26 +449,65 @@ describe("a head the workflow has not recorded yet", () => {
 });
 
 describe("the agent's autonomy", () => {
-  it("with suggest, Rovara merges nothing on its own: not a behind branch, not a conflicted one; it still stops when the conflict rounds are used up", async () => {
+  it("with suggest, Rovara merges nothing behind a base on its own, and a conflict is asked about: a block with the owner's text and a stuck milestone, no machine, no count", async () => {
     installBranchSyncDeciders();
-    for (const overrides of [{}, { mergeable: false, mergeableState: "dirty" as const }]) {
-      const w = syncWorld({ overrides });
-      (w.deps as { autonomy?: unknown }).autonomy = () => "suggest";
-      await trackPullRequest(w.deps, TASK_ID);
-      expect(workflowOf(w)).toMatchObject({ revision: 9, state: "WAITING" });
-      expect(dispatchRows(w)).toEqual([]);
-      expect(trackingOf(w).syncs.count).toBe(0);
-    }
+    const behind = syncWorld();
+    (behind.deps as { autonomy?: unknown }).autonomy = () => "suggest";
+    await trackPullRequest(behind.deps, TASK_ID);
+    expect(workflowOf(behind)).toMatchObject({ revision: 9, state: "WAITING" });
+    expect(dispatchRows(behind)).toEqual([]);
+
+    const w = syncWorld({ overrides: { mergeable: false, mergeableState: "dirty" } });
+    (w.deps as { autonomy?: unknown }).autonomy = () => "suggest";
+    await trackPullRequest(w.deps, TASK_ID);
+    const asked = "The branch conflicts with main. Rovara is set to suggest, so it won't change the branch on its own. Retry to let it resolve the conflict, or update the branch on GitHub.";
+    expect(branchConflictAskMessage("main")).toBe(asked);
+    expect(workflowOf(w)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: asked });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(trackingOf(w).syncs.count).toBe(0);
+    expect(milestones(w, "stuck")).toEqual([expect.objectContaining({ text: asked })]);
+    // Asked once: the blocked task is not decided about again.
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(milestones(w, "stuck")).toHaveLength(1);
+
+    // The owner's Retry is one go-ahead for this head; the next pass starts the merge, marked as approved, and the go-ahead is used up.
+    w.setTask({ workflow: retryWorkflowBranchSync(workflowOf(w), at) });
+    expect(workflowOf(w)).toMatchObject({ state: "WAITING", conflictApproved: [HEAD_A] });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(workflowOf(w)).toMatchObject({ state: "READY", branchSync: { reason: "conflict", approved: true } });
+    expect(workflowOf(w).conflictApproved).toBeUndefined();
+    expect(dispatchRows(w)).toEqual([expect.objectContaining({ kind: "SYNC" })]);
+
     const used = syncWorld({ workflow: waiting({ fixRounds: { ci: 0, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: 0 } }), overrides: { mergeable: false, mergeableState: "dirty" } });
     (used.deps as { autonomy?: unknown }).autonomy = () => "suggest";
     await trackPullRequest(used.deps, TASK_ID);
     expect(workflowOf(used)).toMatchObject({ state: "BLOCKED", blockReason: branchConflictStopMessage("main") });
     for (const autonomy of ["prepare", "run"] as const) {
-      const w = syncWorld();
-      (w.deps as { autonomy?: unknown }).autonomy = () => autonomy;
-      await trackPullRequest(w.deps, TASK_ID);
-      expect(workflowOf(w)).toMatchObject({ state: "READY" });
+      const other = syncWorld();
+      (other.deps as { autonomy?: unknown }).autonomy = () => autonomy;
+      await trackPullRequest(other.deps, TASK_ID);
+      expect(workflowOf(other)).toMatchObject({ state: "READY" });
     }
+  });
+
+  it("Retry is for the ask only, and keeps the rounds counted", () => {
+    const asked = blockWorkflowBranchSync(waiting({ fixRounds: { ci: 0, conflict: 1, feedbackAuto: 0 } }), { reason: branchConflictAskMessage("main"), now: at });
+    expect(isBranchConflictAskReason(asked.blockReason)).toBe(true);
+    expect(isBranchSyncBlockReason(asked.blockReason)).toBe(true);
+    expect(isBranchConflictAskReason(branchConflictStopMessage("main"))).toBe(false);
+    const retried = retryWorkflowBranchSync(asked, at);
+    expect(retried).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", conflictApproved: [HEAD_A], fixRounds: { conflict: 1 } });
+    expect(retried.blockReason).toBeUndefined();
+    expect(workflowFollowsOnlyMerge(asked)).toBe(true);
+    for (const other of [waiting(), blockWorkflowBranchSync(waiting(), { reason: branchConflictStopMessage("main"), now: at }), blockWorkflowBranchSync(waiting(), { reason: BRANCH_WORKFLOW_FILES_MESSAGE, now: at })]) {
+      expect(() => retryWorkflowBranchSync(other, at)).toThrow(WorkflowTransitionError);
+    }
+    expect(() => retryWorkflowBranchSync(blockWorkflowBranchSync(waiting({ pullRequests: [{ ...PULL_REQUEST, headSha: undefined }] }), { reason: branchConflictAskMessage("main"), now: at }), at)).toThrow(WorkflowTransitionError);
+    // A go-ahead is used by the merge it starts.
+    const started = startWorkflowBranchSync(retried, { repositoryId: "payments", number: 7, reason: "conflict", now: at });
+    expect(started.conflictApproved).toBeUndefined();
+    expect(started.branchSync?.approved).toBe(true);
+    expect(startWorkflowBranchSync(waiting(), { repositoryId: "payments", number: 7, reason: "conflict", now: at }).branchSync?.approved).toBeUndefined();
   });
 });
 
@@ -543,11 +592,11 @@ describe("what a finished merge of the base is", () => {
     previousCommit: HEAD_A, commit: MERGE, treeSha: MERGED_TREE, checks: [], codeBuildChecks: [], reconciled: false, ...overrides,
   });
   const github = (overrides: Record<string, unknown> = {}) => ({ state: "open" as const, headBranch: "agentx/00000000-0000-4000-8000-000000000001", headCommit: MERGE, headTreeSha: MERGED_TREE, parents: [HEAD_A, BASE_NEW], ...overrides });
-  const plan = (input: { workflow?: WorkflowSnapshot; status?: "SUCCEEDED" | "FAILED"; error?: string; result?: Record<string, unknown> | undefined; github?: ReturnType<typeof github> | undefined; baseBranch?: string }) =>
+  const plan = (input: { askFirst?: boolean; workflow?: WorkflowSnapshot; status?: "SUCCEEDED" | "FAILED"; error?: string; result?: Record<string, unknown> | undefined; github?: ReturnType<typeof github> | undefined; baseBranch?: string }) =>
     planBranchSyncOutcome({
       workflow: input.workflow ?? syncing(), binding, terminalStatus: input.status ?? "SUCCEEDED", ...(input.error === undefined ? {} : { terminalError: input.error }),
       result: "result" in input ? input.result as never : result(), github: "github" in input ? input.github : github(), baseBranch: input.baseBranch ?? "main",
-      recordedBranch: "agentx/00000000-0000-4000-8000-000000000001", now: at,
+      recordedBranch: "agentx/00000000-0000-4000-8000-000000000001", now: at, ...(input.askFirst === undefined ? {} : { askFirst: input.askFirst }),
     });
 
   it("is a clean merge when GitHub shows the merge commit on the recorded head and the base, with the tree the worker said", () => {
@@ -599,6 +648,13 @@ describe("what a finished merge of the base is", () => {
     if (outcome.kind !== "conflict") return;
     expect(outcome.paths).toEqual(["src/a.ts", "src/b.ts"]);
     expect(outcome.workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "conflict", fixProblems: ["src/a.ts", "src/b.ts"], fixRounds: { conflict: 1 } });
+  });
+
+  it("asks instead of starting the round when the agent is set to suggest by now and the merge was not approved (autonomy is read again at the paid step)", () => {
+    const outcome = plan({ result: result({ commit: HEAD_A, treeSha: undefined, reconciled: true, conflicts: ["a"] }), github: github({ headCommit: HEAD_A, parents: [BASE_OLD] }), askFirst: true });
+    expect(outcome).toMatchObject({ kind: "asked", message: branchConflictAskMessage("main") });
+    if (outcome.kind === "asked") expect(outcome.workflow).toMatchObject({ state: "BLOCKED", blockReason: outcome.message });
+    expect(plan({ result: result({ commit: HEAD_A, treeSha: undefined, reconciled: true, conflicts: ["a"] }), github: github({ headCommit: HEAD_A, parents: [BASE_OLD] }), askFirst: false }).kind).toBe("conflict");
   });
 
   it("stops with the exact text when it conflicts after the conflict rounds, naming the pull request's base branch", () => {
