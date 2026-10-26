@@ -425,9 +425,11 @@ describe("the GitHub App asks for what the events need", () => {
     for (const cloud of [true, false]) {
       const found = manifest(cloud);
       expect(found.default_events, String(cloud)).toEqual(expect.arrayContaining(["deployment_status", "workflow_run", "issues", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"]));
-      expect(found.default_permissions, String(cloud)).toMatchObject({ contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read" });
+      expect(found.default_permissions, String(cloud)).toMatchObject({ contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", checks: "read", statuses: "read" });
+      // Plan 6 Task 14: merge tracking follows checks and commit statuses.
+      expect(found.default_events, String(cloud)).toEqual(expect.arrayContaining(["check_suite", "check_run", "status"]));
     }
-    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"]);
+    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status"]);
   });
 
   it("makes agentx doctor name the events and permissions an older App lacks, and say nothing of a permission GitHub did not report", async () => {
@@ -447,7 +449,10 @@ describe("the GitHub App asks for what the events need", () => {
     silent.getApp = async () => ({ slug: "agentx-acme-staging", owner: { login: "acme", type: "Organization" }, events: [...GITHUB_WEBHOOK_EVENTS] });
     expect((await githubWebhookChecks(doctorContext({ services: doctorServices({ github: silent }) })))[1]).toMatchObject({ status: "ok" });
     // A stronger permission than the one asked for is enough.
-    expect((await githubWebhookChecks(context({ permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "write", deployments: "write" } })))[1]).toMatchObject({ status: "ok" });
+    expect((await githubWebhookChecks(context({ permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "write", deployments: "write", checks: "write", statuses: "write" } })))[1]).toMatchObject({ status: "ok" });
+    const noChecks = (await githubWebhookChecks(context({ permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read" } })))[1]!;
+    expect(noChecks).toMatchObject({ status: "warn" });
+    expect(noChecks.detail).toContain("checks: read, statuses: read");
   });
 });
 

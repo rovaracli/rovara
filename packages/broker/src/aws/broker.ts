@@ -221,7 +221,6 @@ import {
   EgressApproveBodySchema,
   EgressRejectBodySchema,
   OrgIdSchema,
-  githubInstallationKey,
   OrgRoleSchema,
   type OrgRole,
   type ProjectRole,
@@ -496,7 +495,7 @@ import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, asses
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
-import { prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -12536,9 +12535,7 @@ function headEventDependencies(dependencies: AwsBrokerDependencies): HeadEventDe
     verifyRepository: (repositoryUrl, scope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, scope),
     orgOfInstallation: async (installationId) => {
       if (dependencies.cloud !== true) return installOrgId(dependencies);
-      const bound = await getItem<{ orgId?: unknown; status?: unknown }>(dependencies, githubInstallationKey(installationId));
-      const org = OrgIdSchema.safeParse(bound?.orgId);
-      return org.success && bound?.status === "active" ? org.data : undefined;
+      return boundInstallationOrg({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, installationId);
     },
   };
 }

@@ -325,7 +325,7 @@ export function fakeGitHubApi(input: { owner?: string; ownerType?: string; insta
     polls: () => polls,
     tokens: () => tokens,
     async convertManifest(code) { conversions.push(code); return { id: 424242, slug: "agentx-acme-staging", pem: TEST_PRIVATE_KEY, owner, ...(input.webhookSecret === undefined ? {} : { webhook_secret: input.webhookSecret }), ...(input.clientId === undefined ? {} : { client_id: input.clientId }), ...(input.clientSecret === undefined ? {} : { client_secret: input.clientSecret }) }; },
-    async getApp() { return { slug: "agentx-acme-staging", owner, events: input.events ?? [...GITHUB_WEBHOOK_EVENTS], permissions: input.permissions ?? { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read" } }; },
+    async getApp() { return { slug: "agentx-acme-staging", owner, events: input.events ?? [...GITHUB_WEBHOOK_EVENTS], permissions: input.permissions ?? { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", checks: "read", statuses: "read" } }; },
     async getHookConfig() { return hook; },
     // By default one delivery an hour before T0 that GitHub's endpoint accepted.
     async listHookDeliveries() { return input.deliveries ?? [{ deliveredAt: new Date(T0 - 60 * 60 * 1000).toISOString(), status: "OK", statusCode: 202 }]; },

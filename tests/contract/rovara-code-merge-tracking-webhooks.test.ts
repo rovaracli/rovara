@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { githubInstallationKey } from "../../packages/contracts/src/org.js";
 import { handleGithubWebhook, receiveGithubWebhook, GithubWebhookRefusal, type HeadWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
 import { trackingRecoveryItem, mergeRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
-import { prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../../packages/broker/src/rovara-code/tracking-events.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../../packages/broker/src/rovara-code/tracking-events.js";
 import { HEAD_A, HEAD_B, NOW, TABLE, TASK_ID, sha, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -32,10 +32,7 @@ async function setup(options: { kindlessRow?: boolean; installationOrg?: string;
     scope.installationId === INSTALLATION && scope.repositoryId === REPOSITORY && scope.fullName === "acme/payments");
   const deps: HeadEventDependencies = {
     documentClient: w.db, tableName: TABLE, now: () => w.now(), loadTask: (id) => w.deps.loadTask(id), repositoryUrl: (...args) => w.deps.repositoryUrl(...args), verifyRepository: verify,
-    orgOfInstallation: async (id) => {
-      const found = w.db.get(githubInstallationKey(id).pk, githubInstallationKey(id).sk);
-      return found?.status === "active" ? found.orgId as typeof TEST_ORG : undefined;
-    },
+    orgOfInstallation: (id) => boundInstallationOrg({ documentClient: w.db, tableName: TABLE }, id),
   };
   return { w, deps, verify };
 }
@@ -222,6 +219,20 @@ describe("the event as received", () => {
       reserveDelivery: async () => "reserved",
     });
     expect(seen).toEqual([{ installationId: INSTALLATION, repositoryId: REPOSITORY, fullName: "acme/payments", pullRequestNumber: 7 }]);
+  });
+});
+
+describe("the installation's org", () => {
+  it("is the org an active binding names, read fresh, and nothing for a missing, suspended or malformed one", async () => {
+    const w = world();
+    const deps = { documentClient: w.db, tableName: TABLE };
+    expect(await boundInstallationOrg(deps, INSTALLATION)).toBeUndefined();
+    w.db.set({ ...githubInstallationKey(INSTALLATION), orgId: TEST_ORG, status: "active" });
+    expect(await boundInstallationOrg(deps, INSTALLATION)).toBe(TEST_ORG);
+    w.db.set({ ...githubInstallationKey(INSTALLATION), orgId: TEST_ORG, status: "suspended" });
+    expect(await boundInstallationOrg(deps, INSTALLATION)).toBeUndefined();
+    w.db.set({ ...githubInstallationKey(INSTALLATION), orgId: "not-an-org", status: "active" });
+    expect(await boundInstallationOrg(deps, INSTALLATION)).toBeUndefined();
   });
 });
 
