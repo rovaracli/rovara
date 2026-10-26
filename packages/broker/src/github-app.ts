@@ -670,6 +670,7 @@ export class GitHubAppCredentialProvider {
     }
     return {
       number: details.number, state: details.state, draft: raw.draft, headSha: details.headCommit, baseBranch: details.baseBranch, mergeableState,
+      ...(typeof raw.mergeable === "boolean" ? { mergeable: raw.mergeable } : {}),
       ...(behindBy === undefined ? {} : { behindBy }), checks, baseHasRequiredChecks: protectedRequires || checks.some((check) => check.required),
       headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews,
     };

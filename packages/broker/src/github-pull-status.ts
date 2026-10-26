@@ -36,6 +36,8 @@ export interface PullRequestStatus {
   headSha: string;
   baseBranch: string;
   mergeableState: PullRequestMergeableState;
+  /** GitHub's `mergeable` when it has worked it out: false means the branch conflicts with its base. Absent while GitHub is still working it out. */
+  mergeable?: boolean;
   /** How many commits of the base the branch lacks, when it was worked out (it is not asked of a branch GitHub already calls dirty, behind or unknown). */
   behindBy?: number;
   checks: PullRequestCheck[];

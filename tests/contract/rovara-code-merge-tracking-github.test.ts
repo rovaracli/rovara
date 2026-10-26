@@ -25,7 +25,7 @@ interface Fixture {
 function pull(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     number: 42, html_url: "https://github.com/acme/payments/pull/42", node_id: "PR_node_42", state: "open", merged: false, draft: false, merge_commit_sha: null,
-    mergeable_state: "clean", requested_reviewers: [], requested_teams: [],
+    mergeable_state: "clean", mergeable: true, requested_reviewers: [], requested_teams: [],
     head: { ref: "agentx/op", sha: HEAD, repo: { full_name: "acme/payments" } }, base: { ref: "main", repo: { full_name: "acme/payments" } },
     title: "Title", body: "Body", ...extra,
   };
@@ -101,7 +101,7 @@ describe("reading a pull request's status", () => {
     });
     const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
     expect(status).toEqual({
-      number: 42, state: "open", draft: true, headSha: HEAD, baseBranch: "main", mergeableState: "blocked", behindBy: 3,
+      number: 42, state: "open", draft: true, headSha: HEAD, baseBranch: "main", mergeableState: "blocked", mergeable: true, behindBy: 3,
       checks: [
         { name: "build", status: "completed", conclusion: "success", required: true, url: "https://github.com/acme/payments/actions/runs/1/job/77", jobId: "77" },
         { name: "lint", status: "pending", required: false, url: "https://github.com/acme/payments/actions/runs/1/job/77", jobId: "78" },
@@ -163,9 +163,10 @@ describe("reading a pull request's status", () => {
   });
 
   it("reads an unknown mergeable state as unknown and a missing workflow directory as no workflow files", async () => {
-    const h = harness({ pull: pull({ mergeable_state: null }) });
+    const h = harness({ pull: pull({ mergeable_state: null, mergeable: null }) });
     const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
     expect(status.mergeableState).toBe("unknown");
+    expect(status).not.toHaveProperty("mergeable");
     expect(status.headHasWorkflowFiles).toBe(false);
   });
 
