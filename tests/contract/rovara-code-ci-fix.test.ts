@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CI_BLOCK_BYTES_MAX, CI_FAILED_JOBS_MAX, CI_FIX_ROUNDS_MAX, CI_OUTPUT_BLOCK_HEADER, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowCiFix, ciFixAskMessage, ciFixStopMessage,
   ciFixUnrelatedMessage, createCandidateManifest, createWorkflowSnapshot, endWorkflowCiFixUnrelated, isCiFixBlockReason, recordWorkflowPullRequestUpdate, retryWorkflowCiFix, startWorkflowFix,
-  workflowFixRoundsLeft, type WorkflowProgram, type WorkflowSnapshot,
+  workflowFixRoundsLeft, blockWorkflowPullRequestUpdate, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
@@ -103,6 +103,35 @@ describe("startWorkflowFix", () => {
     expect(landed.fixSource).toBeUndefined();
     expect(landed.fixProblems).toBeUndefined();
     expect(WorkflowSnapshotSchema.safeParse(landed).success).toBe(true);
+  });
+
+  it("a fix whose push to the pull request fails, or that is merged past, drops the marks of the fix; the rounds stay counted", () => {
+    const started = startWorkflowFix(waiting(), { source: "ci", problems: ["test"], now: at });
+    const fixed = createCandidateManifest([{ repositoryId: "payments", commitSha: "f".repeat(40), treeSha: "c".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    const pushing = WorkflowSnapshotSchema.parse({
+      ...started, revision: 14, stage: "PULL_REQUEST", state: "RUNNING", candidate: fixed,
+      verification: { candidateDigest: fixed.digest, producer: "broker", environmentId: "test", recordedAt: at, results: [{ checkId: "unit", status: "PASS" }] },
+      reviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: "11111111-1111-4111-8111-111111111111", candidateDigest: fixed.digest, role, provider: "scripted", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: at })),
+    });
+    const refused = blockWorkflowPullRequestUpdate(pushing, { numbers: [7], cause: "PUSH_REFUSED", now: at });
+    expect(refused).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", fixRounds: { ci: 1 } });
+    expect(refused.fixSource).toBeUndefined();
+    expect(refused.fixProblems).toBeUndefined();
+    const merged = observeWorkflowPullRequestMergedWithFix(pushing, { repositoryId: "payments", number: 7, headSha: "9".repeat(40), headTreeSha: "c".repeat(40), observedAt: at }, at);
+    expect(merged).toMatchObject({ stage: "MERGED", state: "COMPLETE", fixRounds: { ci: 1 } });
+    expect(merged.fixSource).toBeUndefined();
+    expect(WorkflowSnapshotSchema.safeParse(merged).success).toBe(true);
+  });
+
+  it("a task waiting for a person to retry its CI fix follows only the merge; an ordinary wait does not", () => {
+    const blocked = blockWorkflowCiFix(waiting(), { reason: ciFixAskMessage("test"), now: at });
+    expect(workflowFollowsOnlyMerge(blocked)).toBe(true);
+    expect(workflowFollowsOnlyMerge(waiting())).toBe(false);
+    // An observation of the open pull request leaves the block as it is; a merge still completes the task.
+    const observed = observeWorkflowPullRequest(blocked, { repositoryId: "payments", number: 7, candidateDigest: candidate.digest, state: "OPEN", source: "GITHUB_API", observedAt: at }, at);
+    expect(observed).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: blocked.blockReason });
+    const merged = observeWorkflowPullRequest(blocked, { repositoryId: "payments", number: 7, candidateDigest: candidate.digest, state: "MERGED", source: "GITHUB_API", observedAt: at }, at);
+    expect(merged).toMatchObject({ stage: "MERGED", state: "COMPLETE", outcome: "MERGED" });
   });
 
   it("a fix problems list needs its source", () => {
