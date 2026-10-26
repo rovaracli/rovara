@@ -1,8 +1,9 @@
+import { bindingItemsForOpenSession, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { httpControlPlaneClient } from "../../packages/mcp/src/client.js";
 import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey } from "@agentx/contracts";
+import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey } from "@agentx/contracts";
 import { putSessionShare, deleteSessionShare } from "../../packages/broker/src/agent-sessions/shares.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
@@ -234,7 +235,7 @@ it("narrowing a Code Slack thread emits no notification; plain task behavior sta
   expect(noticesOf({ ...base, workflow }, { ...next, workflow }, "2026-10-26T12:00:00.000Z", "event")).toEqual([]);
 });
 
-it("undoing an initial Slack share after thread posting removes access, without losing the owner", async () => {
+it("I4: undoing an initial posted Slack share removes both binding directions", async () => {
   const w = world();
   const task = { ...w.db.get(taskKey(w.taskId)), title: "Retry" } as unknown as DeveloperTaskRecord;
   const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", sharedReason: "requested" as const, sharedAt: new Date(w.clock.now).toISOString(), mode: "continue" as const };
@@ -242,9 +243,15 @@ it("undoing an initial Slack share after thread posting removes access, without 
   await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, share, requestId, ARJUN, share.sharedAt) }));
   // Posting the thread advances shareVersion but preserves the request marker.
   w.db.set({ ...task, share: { ...share, threadTs: "1695500000.000100" }, shared: true, shareVersion: 2, codeShareRequestId: requestId });
+  const binding = { kind: "slack_thread" as const, teamId: share.teamId, channelId: share.channelId, threadTs: "1695500000.000100" };
+  await w.db.send(new TransactWriteCommand({ TransactItems: bindingItemsForOpenSession(w.deps, ORG_A, w.sessionId, binding, share.sharedAt) }));
+  expect(await sessionForSurface(w.deps, ORG_A, binding)).toBeDefined();
   await undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`);
   expect(w.db.get(taskKey(w.taskId))).toMatchObject({ shared: false, developerId: PRIYA });
   expect(w.db.get(taskKey(w.taskId))).not.toHaveProperty("share");
+  expect(w.db.get(sessionBindingKey(ORG_A, w.sessionId, "slack_thread"))).toBeUndefined();
+  expect(w.db.get(sessionSurfaceKey(ORG_A, binding))).toBeUndefined();
+  expect(await sessionForSurface(w.deps, ORG_A, binding)).toBeUndefined();
 });
 
 it("expired and malformed undo records fail closed with no writes", async () => {
