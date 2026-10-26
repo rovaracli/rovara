@@ -63,6 +63,8 @@ export interface ChangedFileEntry {
   testsRemoved?: true | undefined;
   /** A test file in which a line the change adds skips a test (`.skip(`, `xit(`, `@Disabled`, `t.Skip(`, `pytest.mark.skip`, ...). */
   testsSkipped?: true | undefined;
+  /** package.json: a line of the `test` scripts was added or removed (Plan 6 Task 16): what a fix looks like that makes the tests not run. */
+  testCommandChanged?: true | undefined;
 }
 
 /**

@@ -25,7 +25,11 @@ export const RISK_SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
  * what CI checks, so it is high risk (Plan 6 Task 16). Matched on the whole path, lower-cased and written with `/`.
  */
 export const CI_CONFIG_PATH_PATTERNS: readonly RegExp[] = [
-  /(^|\/)\.github\/workflows(\/|$)/,
+  /(^|\/)\.github\/(workflows|actions)(\/|$)/,
+  /(^|\/)\.gitlab(\/|$)/,
+  // What decides which tests CI runs: the test runners' own configuration.
+  /(^|\/)(vitest|jest|playwright|karma|cypress)\.config\.[cm]?[jt]s$/,
+  /(^|\/)(pytest\.ini|tox\.ini|conftest\.py|\.mocharc(\.[\w]+)?|karma\.conf\.[cm]?js)$/,
   /(^|\/)\.(circleci|buildkite|drone)(\/|$)/,
   /(^|\/)(\.gitlab-ci\.ya?ml|jenkinsfile|azure-pipelines\.ya?ml|\.travis\.ya?ml|bitbucket-pipelines\.ya?ml|appveyor\.ya?ml|\.drone\.ya?ml|buildkite\.ya?ml)$/,
 ];
@@ -71,6 +75,8 @@ export interface RiskFile {
   testsRemoved?: true | undefined;
   /** A line the change adds skips a test in this file. */
   testsSkipped?: true | undefined;
+  /** package.json: the change adds or removes a line of the `test` scripts. */
+  testCommandChanged?: true | undefined;
 }
 
 export interface RiskInput {
@@ -113,6 +119,8 @@ export function assessRisk(input: RiskInput): RiskAssessment {
     const hidden = [...new Set(input.changedFiles.filter((file) => file.testsRemoved === true || file.testsSkipped === true).map((file) => file.path))];
     if (hidden.length > 0) high.push(`A fix removes or skips tests (${shown(hidden)}), so a failure may be hidden rather than fixed.`);
     const ci = [...new Set(input.changedFiles.flatMap((file) => named(file).filter((path) => CI_CONFIG_PATH_PATTERNS.some((pattern) => pattern.test(normalized(path))))))];
+    const command = [...new Set(input.changedFiles.filter((file) => file.testCommandChanged === true).map((file) => file.path))];
+    if (command.length > 0) high.push(`A fix changes the command that runs the tests (${shown(command)}), so a check may pass because the tests no longer run.`);
     if (ci.length > 0) high.push(`A fix changes CI configuration (${shown(ci)}), so a check may pass because CI changed.`);
   }
   if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");

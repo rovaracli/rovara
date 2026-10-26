@@ -10,7 +10,9 @@ export const CHANGED_FILES_MAX = 200;
 const INCOMPLETE_NOTES = [/\[workspace diff truncated/u, /\[the commit this workspace was prepared at is not in this repository/u];
 
 /** An added line that switches a test off: a skipped or pending test in the common frameworks. */
-const SKIP_MARKER = /(?:\b(?:it|test|describe|context|specify)\.(?:skip|todo)\b|\b(?:xit|xtest|xdescribe|xcontext)\s*\(|\bpending\s*\(|@(?:Disabled|Ignore)\b|\bt\.Skip(?:Now)?\s*\(|\bpytest\.mark\.skip|@unittest\.skip|\bskipTest\s*\()/u;
+const SKIP_MARKER = /(?:\b(?:it|test|describe|context|specify)(?:\.concurrent)?\.(?:skip|todo|only|fixme)\b|\b(?:xit|xtest|xdescribe|xcontext|fit|fdescribe)\s*\(|\.skipIf\s*\(|\bpending\s*\(|@(?:Disabled|Ignore)\b|#\[ignore\]|\bt\.Skip(?:Now)?\s*\(|\bpytest\.mark\.skip|@unittest\.skip|\bskipTest\s*\()/u;
+/** A line of package.json that sets a `test` script (`test`, `test:unit`, ...), added or removed. */
+const TEST_SCRIPT_LINE = /^[+-]\s*"test(?::[\w:.-]+)?"\s*:/u;
 
 /** Git's C-style quoting (`"a/\303\274.ts"`, `\"`, `\\`, `\t`, `\n`) undone; an unquoted name is returned as it is. */
 export function unquoteGitPath(token: string): string {
@@ -76,6 +78,7 @@ export function parseChangedFiles(text: string): { files: ChangedFileEntry[]; co
   let inHunk = false;
   const deleted = new Set<ChangedFileEntry>();
   const skipped = new Set<ChangedFileEntry>();
+  const testCommand = new Set<ChangedFileEntry>();
   for (const line of text.split("\n")) {
     const heading = /^## (\S+)$/u.exec(line);
     if (heading !== null) {
@@ -114,11 +117,14 @@ export function parseChangedFiles(text: string): { files: ChangedFileEntry[]; co
       current.added = (current.added ?? 0) + 1;
       if (SKIP_MARKER.test(line)) skipped.add(current);
     } else if (line.startsWith("-")) current.removed = (current.removed ?? 0) + 1;
+    if (TEST_SCRIPT_LINE.test(line) && (current.path === "package.json" || current.path.endsWith("/package.json"))) testCommand.add(current);
   }
-  // What a change does to the tests it touches (Plan 6 Task 16): a test file deleted, or only taken lines out of; a line added that skips a test.
+  // What a change does to the tests it touches (Plan 6 Task 16): a test file deleted, moved out of the test paths, or losing more lines than it gains; a line added that skips or focuses a test; the test command changed.
   for (const file of tracked) {
-    if (!isTestPath(file.path) && (file.renamedFrom === undefined || !isTestPath(file.renamedFrom))) continue;
-    if (deleted.has(file) || ((file.removed ?? 0) > 0 && (file.added ?? 0) === 0)) file.testsRemoved = true;
+    if (testCommand.has(file)) file.testCommandChanged = true;
+    const wasTest = file.renamedFrom !== undefined && isTestPath(file.renamedFrom);
+    if (!isTestPath(file.path) && !wasTest) continue;
+    if (deleted.has(file) || (wasTest && !isTestPath(file.path)) || (file.removed ?? 0) > (file.added ?? 0)) file.testsRemoved = true;
     if (skipped.has(file)) file.testsSkipped = true;
   }
   const known = new Set(tracked.map((file) => `${file.repository}\u0000${file.path}`));
