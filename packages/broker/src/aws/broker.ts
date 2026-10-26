@@ -15233,7 +15233,7 @@ export async function finishPlanGrounding(dependencies: AwsBrokerDependencies, t
         ...(unreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}) } } },
     { Delete: { TableName: dependencies.tableName, Key: rowKey } },
     { Delete: { TableName: dependencies.tableName, Key: markerKey } },
-    ...(stored?.revision === undefined ? [] : [workflowDispatchItem(dependencies.tableName, taskId, next.revision, "REPLAN", createHash("sha256").update(stored.revision.prompt, "utf8").digest("hex"), now, stored.revision.prompt)]),
+    ...(stored?.revision === undefined ? [] : [workflowDispatchItem(dependencies.tableName, taskId, next.revision, "REPLAN", createHash("sha256").update(stored.revision.prompt, "utf8").digest("hex"), now, now, stored.revision.prompt)]),
     ...(stored?.evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId, ...stored.evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
     ...(stored?.plannerReplies === undefined ? [] : [{ Put: plannerRepliesItem(dependencies.tableName, stored.plannerReplies, now) }]),
   ];
@@ -16282,7 +16282,7 @@ async function completedWorkflowItems(
       { Put: { TableName: dependencies.tableName, Item: { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${task.taskId}`, entityType: "PLAN_GROUNDING_HOLD", taskId: task.taskId, deadlineAt: planHold.deadlineAt,
         [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(planHold.deadlineAt) / 1000) + 7 * 86_400 } } }]
     : planRevision !== undefined
-    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REPLAN", createHash("sha256").update(planRevision.prompt, "utf8").digest("hex"), now, planRevision.prompt)]
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REPLAN", createHash("sha256").update(planRevision.prompt, "utf8").digest("hex"), now, now, planRevision.prompt)]
       : operation.workflowMode === "UNDERSTAND" && next.stage === "PLAN" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
