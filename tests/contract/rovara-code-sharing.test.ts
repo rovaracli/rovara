@@ -423,3 +423,21 @@ it("M6: undo cannot create a phantom current-owner index row", async () => {
   expect(w.db.get(index)).toBeUndefined();
   expect(w.db.get(taskKey(w.taskId))).toMatchObject({ shared: true, shareVersion: 1 });
 });
+
+it("M8: a company grant disappearing before narrowing cannot become an unconfirmed share", async () => {
+  const w = world();
+  w.seedShare(ORG_A, w.sessionId, { kind: "org" }, "edit");
+  const key = agentSessionKey(ORG_A, w.sessionId, "SHARE#ORG");
+  const send = w.db.send;
+  let raced = false;
+  w.db.send = async (command) => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some((entry) => entry.Put?.Item?.sk === "SHARE#ORG")) {
+      raced = true;
+      w.db.delete(key); // TTL-style removal does not bump the session revision.
+    }
+    return send(command);
+  };
+  await expect(putSessionShare(w.deps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID(), principal: { kind: "org" }, level: "view" })).rejects.toBeDefined();
+  expect(raced).toBe(true);
+  expect(w.db.get(key)).toBeUndefined();
+});
