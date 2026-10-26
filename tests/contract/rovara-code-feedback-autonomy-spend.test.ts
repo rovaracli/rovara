@@ -146,6 +146,8 @@ describe("a round Rovara decided is paid like the first build", () => {
     expect(payload.prompt).not.toContain("Approved plan (sha256");
     expect(payload["workflowFeedbackApproval"]).toBeUndefined();
     expect(runs[1]).toMatchObject({ workspaceId, programStepId: "build" });
+    // A Retry goes on with the same round: it counts nothing and gives nothing back.
+    expect(t.meta(taskId).workflow).toMatchObject({ fixSource: "feedback", fixRounds: { ci: 0, conflict: 0, feedbackAuto: 1 } });
   });
 
   it("is refused when the member who pays has no budget left, before any key", async () => {

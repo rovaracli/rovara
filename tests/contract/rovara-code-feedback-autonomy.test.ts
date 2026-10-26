@@ -411,7 +411,18 @@ describe("the feedback slot of merge tracking", () => {
       if (type !== undefined) w.github.types.set(author, type);
       await trackPullRequest(w.deps, TASK_ID);
       expect(storedWorkflow(w), author).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+      // A bot known by its name is not looked up at all (GitHub would refuse such a login).
+      if (type === undefined) expect(lookups(w), author).toEqual([]);
     }
+  });
+
+  it("a task with an approved work plan of ordered parts is the owner's", async () => {
+    const w = feedbackWorld();
+    w.setWorkflow({ workflowDependenciesApproval: { artifactDigest: "a".repeat(64), graphDigest: "b".repeat(64), workflowRevision: 5, actorId: OWNER, runId: "11111111-2222-4333-8444-555555555555" } });
+    await trackPullRequest(w.deps, TASK_ID);
+    // (The stored record is read raw: the approval needs its whole-plan decision to parse, which this fixture has no need of.)
+    expect((w.task().workflow as { revision: number; stage: string }).revision).toBe(10);
+    expect(lookups(w)).toEqual([]);
   });
 
   it("more different people than a pass looks up wait for the owner", async () => {
@@ -650,5 +661,24 @@ describe("the tracking pass sends the replies a landed push left", () => {
     (w.deps as { sendFeedbackReplies?: unknown }).sendFeedbackReplies = async () => { throw new GithubMergeRateLimitError(Date.now() + 60_000); };
     w.setNow(w.now() + 120_000);
     await expect(trackPullRequest(w.deps, TASK_ID)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+  });
+});
+
+describe("what was stored before this change still reads and still works", () => {
+  it("a review decided by a person, with the approval the worker presents, parses exactly as the earlier release wrote it (no autonomy, no failing checks)", () => {
+    const card = pendingCard();
+    const decided = decideWorkflowFeedbackFindings(card.workflow, requestFor(card), owner, at);
+    const stored = JSON.parse(JSON.stringify(decided)) as WorkflowSnapshot;
+    expect(stored.feedbackDecisions?.[0]).not.toHaveProperty("autonomy");
+    expect(stored.feedbackDecisions?.[0]).not.toHaveProperty("ciFailures");
+    expect(WorkflowSnapshotSchema.safeParse(stored).success).toBe(true);
+    // The earlier release's decision record, field for field.
+    const earlier = { ...stored.feedbackDecisions![0]! } as Record<string, unknown>;
+    delete earlier["autonomy"];
+    delete earlier["ciFailures"];
+    expect(WorkflowFeedbackDecisionSchema.safeParse(earlier).success).toBe(true);
+    const binding = { taskId: TASK_ID, requestId: REQUEST, ownerId: OWNER, decisionWorkflowRevision: 9, activeWorkflowRevision: 11, reviewDigest: hash("b"), proposalDigest: hash("d"),
+      bundleDigests: [hash("e")], candidateDigest: hash("f"), selectedFindingIds: ["f1"], selectedCommentIds: ["c1"] };
+    expect(JSON.stringify(WorkflowFeedbackApprovalBindingSchema.parse(binding))).toBe(JSON.stringify(binding));
   });
 });
