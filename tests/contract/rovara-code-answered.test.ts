@@ -27,8 +27,6 @@ import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer }
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-import { ORG_A, PRIYA, decisionBy, setupWorld } from "../support/chain-run-world.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const NOW = "2026-10-26T12:00:00.000Z";

@@ -18,6 +18,7 @@ import { approverWords, displayNameOf } from "./gates.js";
 import { cancelChainRun } from "./lifecycle.js";
 import { iso, readChainRun, readStepAttempt, runKey, startChainRun, update, type ChainRunRecord, type ChainRunnerDependencies, type StepAttemptRecord } from "./runner.js";
 import type { ChainRouteDependencies } from "./routes.js";
+import { gateStepOf } from "./answered-gate.js";
 import { chainRunView, chainStepTask, mayReadRun, type ChainSessionActor } from "./view.js";
 
 type Deps = ChainRouteDependencies;
@@ -52,8 +53,8 @@ const statusOf = (status: ChainRunStatus): ChainSessionFacts["status"] => (statu
 /** Who a waiting gate waits for, one phrase per rule: the starter by name, the project's maintainers, the chain's owner and each person listed. */
 async function needsPeopleOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord): Promise<string[] | undefined> {
   const definition = (await deps.chains?.getVersion(run.orgId, run.chainId, run.chainVersion).catch(() => undefined))?.definition;
-  const step = definition?.steps.find((candidate) => candidate.id === attempt.stepId);
-  if (step === undefined || step.kind !== "gate") return undefined;
+  const step = gateStepOf(definition, attempt);
+  if (step === undefined) return undefined;
   const people: string[] = [];
   for (const rule of step.approvers) {
     const memberNames = new Map<string, string>();
