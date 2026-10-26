@@ -126,6 +126,8 @@ import {
   recordWorkflowBranchSync,
   endWorkflowBranchSync,
   CONFLICT_ROUNDS_MAX,
+  BRANCH_SYNC_UNSURE_MESSAGE,
+  blockWorkflowBranchSync,
   observeWorkflowPullRequestMergedWithFix,
   workflowPullRequestUpdateDue,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
@@ -12993,7 +12995,7 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
     }
     // Plan 6 Task 17: a merge of the base that could not be started is not a reason to stop the task: it ends, and the task waits for the merge as it did (the day's count keeps a retry bounded).
     if (item.kind === "SYNC") {
-      await endUnstartedBranchSync(dependencies, item);
+      await endUnstartedBranchSync(dependencies, item, { gaveUp: true });
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
       return;
     }
@@ -13071,7 +13073,7 @@ async function settleLostBranchSync(dependencies: AwsBrokerDependencies, task: D
  * Plan 6 Task 17: a merge of the base branch that could not be started, however often it was tried: its dispatch row goes and the task waits for the merge again, as it did. One transaction, conditional on the
  * row and on the task still waiting to start exactly this merge; a task that moved on, or a row someone else took, is left alone.
  */
-async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, options: { gaveUp?: boolean } = {}): Promise<void> {
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
   const workflow = task?.workflow;
   const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
@@ -13081,14 +13083,22 @@ async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item:
     return;
   }
   const now = new Date().toISOString();
+  // A lost merge that GitHub could not be asked about through every retry may or may not have pushed: that is said (a stop), never left as a silent stall behind the guard that waits for the workflow to
+  // learn the head. A merge that could not even be started is only tried again later, after a delay.
+  const unsure = options.gaveUp === true && workflow.state === "RUNNING";
+  const next = unsure ? blockWorkflowBranchSync(workflow, { reason: BRANCH_SYNC_UNSURE_MESSAGE, now }) : endWorkflowBranchSync(workflow, now, options.gaveUp === true ? { failed: "transient" } : {});
+  const pullRequest = workflow.pullRequests?.find((entry) => entry.repositoryId === workflow.branchSync?.repositoryId && entry.number === workflow.branchSync.number);
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
       TableName: dependencies.tableName, Key: taskKey(item.taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow, now), ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": workflow.state },
-    } }] }));
+      ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": workflow.state },
+    } }, ...(unsure && task.orgId !== undefined && pullRequest !== undefined ? codeMilestoneItems({ tableName: dependencies.tableName }, {
+      kind: "stuck", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: BRANCH_SYNC_UNSURE_MESSAGE,
+      pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
+    }, next.revision) : [])] }));
   } catch (error) {
     if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.branch_sync_end_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
@@ -14677,7 +14687,7 @@ async function completedBranchSyncItems(
     kind, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: text.slice(0, 500), pullRequests: [link],
   }, n);
   if (outcome.kind === "unchanged") return [taskUpdate(outcome.workflow)];
-  if (outcome.kind === "stopped" || outcome.kind === "asked") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
+  if (outcome.kind === "stopped" || outcome.kind === "asked" || outcome.kind === "gave_up") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
   if (outcome.kind === "conflict") {
     const round = outcome.workflow.fixRounds?.conflict ?? 1;
     return [

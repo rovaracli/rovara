@@ -344,7 +344,7 @@ async function assertKeepsBaseChanges(directory: string, head: string, base: str
   });
   if (dropped.length > 0) {
     const shown = dropped.slice(0, 3).map((path) => path.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 120)).join(", ");
-    throw agentXError("CONFIG_INVALID", `${WORKFLOW_FIX_DROPS_BASE_CHANGES} (${shown}${dropped.length > 3 ? ` and ${String(dropped.length - 3)} more` : ""}), so it was not pushed`);
+    throw agentXError("CONFIG_INVALID", `${WORKFLOW_FIX_DROPS_BASE_CHANGES} (${shown}${dropped.length > 3 ? ` and ${String(dropped.length - 3)} more` : ""}), so it was not pushed: a fix may change the files that conflicted and its own new files, not a file the base branch changed without a conflict`);
   }
 }
 

@@ -3,12 +3,12 @@
 // the pull request's head a fast-forward and moves the candidate to the new base; a conflict becomes one coding round, checked, reviewed and pushed as a merge commit whose parents are the old head and
 // the base commit; GitHub refusing workflow files stops with its text. Nothing is rebased, nothing is force-pushed, and a person's push wins.
 import { describe, expect, it } from "vitest";
-import { BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, PLAN, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -59,7 +59,7 @@ async function waitingForMerge(options: { resolves?: boolean } = {}) {
   const github = syncGithub(() => holder.e2e!);
   const prompts: string[] = [];
   const e2e = (holder.e2e = await createWorkflowE2E({
-    model: { plan: PLAN, edits: (latest) => { prompts.push(latest); return latest.includes(CONFLICT_PATHS_BLOCK_HEADER) && options.resolves !== false ? RESOLVED : EDITS; } },
+    model: { plan: PLAN, edits: (latest) => { prompts.push(latest); return latest.includes(CONFLICT_PATHS_BLOCK_HEADER) && options.resolves !== false ? RESOLVED : latest.includes(CI_OUTPUT_BLOCK_HEADER) ? FIXED : EDITS; } },
     trackingGithub: github.methods,
   }));
   await atPlanReview(e2e);
@@ -317,7 +317,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     const head = pullRequest.commit;
     await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
     github.state.baseAhead = true;
-    const maintains = () => e2e.invocations.filter((invocation) => invocation.kind === "maintain").length;
+    const maintains = () => e2e.invocations.filter((invocation) => invocation.kind === "maintain" && invocation.payload.action === "sync").length;
     e2e.worker.failNext("maintain", "CONFIG_INVALID: one or more registered readiness checks failed");
     await trackAndRun(e2e, 3);
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", syncFailures: { headSha: head, count: 1 } });

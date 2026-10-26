@@ -3,7 +3,7 @@ import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, 
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
-  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, type BranchSyncReason, type WorkflowBranchSync,
+  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, SYNC_FAILURES_MAX, SYNC_BACKOFF_MINUTES, isBranchSyncGiveUpReason, type BranchSyncReason, type WorkflowBranchSync,
   intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
@@ -1344,7 +1344,14 @@ const WorkflowSnapshotShapeSchema = z.object({
   /** Both versions: a person told Rovara to go on with a conflict it asked about (Retry): the heads of the open pull requests then. The merge it starts uses it up. */
   conflictApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
   /** Both versions: how many times a merge of the base failed on this head (a head a person pushes starts the count again). Rovara stops at `SYNC_FAILURES_MAX`. */
-  syncFailures: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/), count: z.number().int().min(1).max(SYNC_FAILURES_MAX) }).strict().optional(),
+  syncFailures: z.object({
+    headSha: z.string().regex(/^[a-f0-9]{40}$/),
+    /** Real failures of the merge (its checks failed, Git refused): at `SYNC_FAILURES_MAX` Rovara stops trying this head. */
+    count: z.number().int().min(0).max(SYNC_FAILURES_MAX),
+    /** Failures that were not the merge's (GitHub, a lost machine): never a stop, but each doubles the wait before the next try. */
+    transient: z.number().int().min(1).max(1000).optional(),
+    retryAfter: z.string().datetime().optional(),
+  }).strict().optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -2093,15 +2100,23 @@ export function startWorkflowBranchSync(currentInput: unknown, input: { reposito
 
 /**
  * The owner's Retry of the ask (the branch conflicts and Rovara is set to suggest): WAIT_FOR_MERGE/BLOCKED becomes WAITING with a go-ahead for the heads the open pull requests hold now. The rounds
- * already used stay counted; the next conflict decision for one of those heads starts the merge whatever the autonomy.
+ * already used stay counted; the next conflict decision for one of those heads starts the merge whatever the autonomy. Also the Retry of a merge that failed for real twice: one more try.
  */
 export function retryWorkflowBranchSync(currentInput: unknown, now: string): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || !isBranchConflictAskReason(current.blockReason)) {
+  const ask = isBranchConflictAskReason(current.blockReason);
+  const giveUp = isBranchSyncGiveUpReason(current.blockReason);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || (!ask && !giveUp)) {
     throw new WorkflowTransitionError("the workflow is not waiting for a conflict to be retried");
   }
   const { blockReason: _blockReason, ...rest } = current;
   void _blockReason;
+  if (giveUp) {
+    // After the merge failed for real twice: one more try, and a failure of it stops again.
+    const head = current.syncFailures?.headSha;
+    if (head === undefined) throw new WorkflowTransitionError("no head is recorded for the merge that failed");
+    return WorkflowSnapshotSchema.parse({ ...rest, syncFailures: { headSha: head, count: Math.max(0, SYNC_FAILURES_MAX - 1) }, revision: current.revision + 1, state: "WAITING", updatedAt: now });
+  }
   const heads = [...new Set((current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN").flatMap((pullRequest) => pullRequest.headSha === undefined ? [] : [pullRequest.headSha]))];
   if (heads.length === 0) throw new WorkflowTransitionError("no open pull request has a recorded head to give a go-ahead for");
   return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", conflictApproved: heads, updatedAt: now });
@@ -2115,16 +2130,24 @@ export function startWorkflowBranchSyncRun(currentInput: unknown, now: string): 
 }
 
 /** A merge of the base branch that pushed nothing (it did not start, was not needed, failed, or the branch moved): the task waits for the merge again, as it was. */
-export function endWorkflowBranchSync(currentInput: unknown, now: string, options: { failed?: true } = {}): WorkflowSnapshot {
+export function endWorkflowBranchSync(currentInput: unknown, now: string, options: { failed?: "real" | "transient" } = {}): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   if (current.stage !== "WAIT_FOR_MERGE" || (current.state !== "READY" && current.state !== "RUNNING") || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is under way");
-  const { branchSync, ...rest } = current;
-  // A merge that failed is counted for the head it was for; a different head starts the count again.
+  const { branchSync, syncFailures: prior, ...rest } = current;
+  // A merge that failed is counted for the head it was for (a different head starts again). A failure of the merge itself counts toward the stop; one that is not (GitHub, a lost machine) only
+  // delays the next try, by twice as long each time.
   const head = branchSync.expectedHeadCommit;
-  const failures = options.failed === true ? { headSha: head, count: Math.min(SYNC_FAILURES_MAX, (current.syncFailures?.headSha === head ? current.syncFailures.count : 0) + 1) } : current.syncFailures;
-  const { syncFailures: _failures, ...withoutFailures } = rest;
-  void _failures;
-  return WorkflowSnapshotSchema.parse({ ...withoutFailures, ...(failures === undefined ? {} : { syncFailures: failures }), revision: current.revision + 1, state: "WAITING", updatedAt: now });
+  const same = prior?.headSha === head ? prior : undefined;
+  const transient = options.failed === "transient" ? (same?.transient ?? 0) + 1 : same?.transient;
+  const failures = options.failed === undefined ? prior : {
+    headSha: head,
+    count: Math.min(SYNC_FAILURES_MAX, (same?.count ?? 0) + (options.failed === "real" ? 1 : 0)),
+    ...(transient === undefined ? {} : { transient: Math.min(1000, transient) }),
+    ...(options.failed === "transient"
+      ? { retryAfter: new Date(Date.parse(now) + Math.min(SYNC_BACKOFF_MINUTES.max, SYNC_BACKOFF_MINUTES.first * 2 ** Math.min(20, transient! - 1)) * 60_000).toISOString() }
+      : same?.retryAfter === undefined ? {} : { retryAfter: same.retryAfter }),
+  };
+  return WorkflowSnapshotSchema.parse({ ...rest, ...(failures === undefined ? {} : { syncFailures: failures }), revision: current.revision + 1, state: "WAITING", updatedAt: now });
 }
 
 /**

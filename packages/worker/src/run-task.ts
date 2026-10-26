@@ -1,4 +1,5 @@
 import { readFile, realpath } from "node:fs/promises";
+import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
@@ -499,6 +500,12 @@ async function runTask(
   if (fileToolsNote !== undefined) onDiagnostic(fileToolsNote);
   for (const message of modelChangeDiagnostics(registered, dependencies.model)) onDiagnostic(message);
 
+  // Plan 6 Task 17: a CI or feedback fix begins on the head the pull request has, not on what an abandoned conflict round left.
+  const fixStart = invocation.payload.workflowFix?.startFrom;
+  if (fixStart !== undefined && manifest.repositories.length === 1) {
+    const directory = resolve(canonicalRoot, manifest.repositories[0]!.path);
+    if (await restoreFixStart(directory, fixStart)) onDiagnostic("AgentX put the workspace back on the pull request's head, which an earlier round had left.");
+  }
   // D-16 (#290): files an earlier task left while AgentX ran the original code (its worker stopped mid-check) go back
   // before this task starts. If they cannot, the task does not start on the wrong files.
   const repositoryDirectories = manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path));

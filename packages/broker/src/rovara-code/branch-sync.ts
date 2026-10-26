@@ -99,6 +99,14 @@ export function classifySyncFailure(error: string | undefined): "checks" | "othe
   return error !== undefined && /registered readiness checks failed/iu.test(error) ? "checks" : "other";
 }
 
+/**
+ * Whether a failed merge failed for a reason that is the merge's own (Git or the project refused it: the worker's deterministic `CONFIG_INVALID` refusals, such as its checks failing on the merged tree) or
+ * not (GitHub unavailable or rate limiting, a lost or reclaimed machine, a moved head): only the first counts toward the stop; the others are tried again later, with a growing wait.
+ */
+export function isTransientSyncFailure(error: string | undefined): boolean {
+  return error === undefined || !error.startsWith("CONFIG_INVALID");
+}
+
 /** What GitHub shows of the pull request after a merge was run (read fresh by the caller; undefined where it could not be read). */
 export interface BranchSyncGithub {
   state: "open" | "closed" | "merged";
@@ -116,6 +124,8 @@ export type BranchSyncOutcome =
   | { kind: "conflict"; workflow: WorkflowSnapshot; paths: string[] }
   /** Keeping the branch up to date stops for a person (the workflow is blocked with `message`). */
   | { kind: "stopped"; workflow: WorkflowSnapshot; message: string }
+  /** A merge that was only to bring the branch up to date failed for real twice: Rovara stops trying this head and says so, and nothing else about the task is held up. */
+  | { kind: "gave_up"; workflow: WorkflowSnapshot; message: string }
   /** The merge conflicted and the agent is set to suggest by now (and no person's go-ahead started it): a person is asked before any paid round (the workflow is blocked with the ask). */
   | { kind: "asked"; workflow: WorkflowSnapshot; message: string }
   /** Nothing was pushed, or nothing GitHub shows is the merge: the task waits for the merge as it did. */
@@ -186,16 +196,20 @@ export function planBranchSyncOutcome(input: {
   if (input.terminalStatus !== "SUCCEEDED" && isWorkflowFilesRefusal(input.terminalError) && !headMoved) {
     return { kind: "stopped", workflow: blockWorkflowBranchSync(workflow, { reason: BRANCH_WORKFLOW_FILES_MESSAGE, now: input.now }), message: BRANCH_WORKFLOW_FILES_MESSAGE };
   }
-  // A merge that failed (its checks, a lost machine, GitHub): counted for this head. The second failure stops, in fixed words; a head that moved is a person's push, not the merge failing.
+  // A merge that failed. A moved head is a person's push, not the merge failing. A failure that is not the merge's (GitHub, a lost machine) only delays the next try. The merge's own failure is counted
+  // for this head, and the second stops: a conflict has to be dealt with, so its task waits for a person (with a Retry); a merge that was only to bring the branch up to date gives up quietly, in
+  // one message, and holds nothing else up (CI fixes and feedback go on; this head is not tried again).
   const stale = input.terminalError?.includes("STALE_FENCE") === true;
   if (input.terminalStatus !== "SUCCEEDED" && !stale && !headMoved) {
-    const prior = workflow.syncFailures;
-    const count = (prior?.headSha === binding.expectedHeadCommit ? prior.count : 0) + 1;
-    if (count >= SYNC_FAILURES_MAX) {
+    if (isTransientSyncFailure(input.terminalError)) return { kind: "unchanged", workflow: endWorkflowBranchSync(workflow, input.now, { failed: "transient" }) };
+    const reason = workflow.branchSync?.reason;
+    const ended = endWorkflowBranchSync(workflow, input.now, { failed: "real" });
+    if ((ended.syncFailures?.count ?? 0) >= SYNC_FAILURES_MAX) {
       const message = branchSyncGiveUpMessage(classifySyncFailure(input.terminalError));
-      return { kind: "stopped", workflow: blockWorkflowBranchSync(workflow, { reason: message, now: input.now }), message };
+      if (reason === "conflict") return { kind: "stopped", workflow: blockWorkflowBranchSync(ended, { reason: message, now: input.now }), message };
+      return { kind: "gave_up", workflow: ended, message };
     }
-    return { kind: "unchanged", workflow: endWorkflowBranchSync(workflow, input.now, { failed: true }) };
+    return { kind: "unchanged", workflow: ended };
   }
   return unchanged();
 }
@@ -240,6 +254,9 @@ function begin(input: MergeActionInput, reason: BranchSyncReason): MergeActionRe
   if (context === undefined) return undefined;
   const recorded = (workflow.pullRequests ?? []).find((pullRequest) => pullRequest.repositoryId === context.repositoryId && pullRequest.number === context.pullRequestNumber);
   if (recorded?.headSha !== context.headSha) return undefined;
+  // A head the merge gave up on is not tried again, and one whose last try failed for a reason that is not the merge's waits out its delay.
+  const failures = workflow.syncFailures;
+  if (failures?.headSha === context.headSha && (failures.count >= SYNC_FAILURES_MAX || (failures.retryAfter !== undefined && Date.parse(failures.retryAfter) > input.now))) return undefined;
   const at = iso(input.now);
   let next: WorkflowSnapshot;
   try {
