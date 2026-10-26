@@ -852,4 +852,20 @@ describe("the draft's bookkeeping", () => {
     expect(errorOf(reply).code).toBe("WORKSPACE_BUSY");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(tasks);
   });
+
+  it("does the same for the project's first draft: a pointer that appeared meanwhile refuses it", async () => {
+    const t = await setup();
+    const send = t.db.send.bind(t.db);
+    let moved = false;
+    t.db.send = (async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && !moved) {
+        moved = true;
+        t.db.set({ ...setupDraftKey(TEST_ORG, NAME), entityType: "SETUP_DRAFT", orgId: TEST_ORG, project: NAME, taskId: randomUUID(), requestId: randomUUID(), requestedBy: KIT.developerId, basedOnRevision: 1, startedAt: new Date().toISOString() });
+      }
+      return send(command as never);
+    }) as typeof t.db.send;
+    const reply = await t.ask();
+    expect(reply.status).toBe(409);
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
+  });
 });
