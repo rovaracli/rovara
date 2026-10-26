@@ -266,7 +266,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(dispatchRows(e2e)).toEqual([]);
   });
 
-  it("15.8 a merge whose machine is lost after its push is ended, and Rovara does not touch the branch again: a head it has no record of is not its own", async () => {
+  it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;
     const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
@@ -278,16 +278,23 @@ describe("Suite 15: keeping the branch up to date", () => {
     await e2e.runRecovery();
     await e2e.settle();
     expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
-    // The reconciler's lost-machine step ends the run; the task is not left running.
+    // Until the reconciler ends the lost run and the sweep judges it, the task is still merging: nothing else is decided about the new head.
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "RUNNING" });
+    await e2e.runRecovery();
     await e2e.runRecovery();
     await e2e.settle();
-    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
-    expect(e2e.workflow().branchSync).toBeUndefined();
-    expect(e2e.workflow().pullRequests?.[0]).toMatchObject({ headSha: before });
-    // The head is one the workflow has no record of, so nothing more is merged, fixed or pushed to it.
-    const pushes = e2e.github.pushLog.length;
-    await trackAndRun(e2e, 2);
-    expect(tracking(e2e)).toMatchObject({ headByRovara: false });
-    expect(e2e.github.pushLog).toHaveLength(pushes);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.branchSync).toBeUndefined();
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: pullRequest.commit, candidateDigest: after.candidate!.digest });
+    expect(after.pullRequests?.[0]?.syncedFrom).toBeUndefined();
+    expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: pullRequest.commit, baseCommitSha: base });
+    // The head is Rovara's own: the thread never says someone else pushed, and a red CI on it is fixed.
+    await trackAndRun(e2e, 1);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: true, headSha: pullRequest.commit });
+    expect(said(e2e).some((text) => text.startsWith("Someone else pushed"))).toBe(false);
+    github.state.red = true;
+    await trackAndRun(e2e);
+    expect(e2e.workflow().fixRounds).toMatchObject({ ci: 1 });
   });
 });

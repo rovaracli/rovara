@@ -423,6 +423,21 @@ describe("the sync slot of merge tracking", () => {
   });
 });
 
+describe("a head the workflow has not recorded yet", () => {
+  it("starts no fix round on it: failing CI on a head the pull request record has and the workflow does not (a merge whose result was lost) waits for the workflow to learn it", async () => {
+    installCiFixDecider();
+    installBranchSyncDeciders();
+    const w = syncWorld({ overrides: { headSha: HEAD_B, checks: [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }] } });
+    (w.deps as { recordedHead?: unknown }).recordedHead = async () => HEAD_B;
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(trackingOf(w)).toMatchObject({ headByRovara: true, ci: "failing" });
+    expect(workflowOf(w)).toMatchObject({ revision: 9, stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(milestones(w, "fixing")).toEqual([]);
+    expect(workflowOf(w).fixRounds).toBeUndefined();
+  });
+});
+
 describe("the agent's autonomy", () => {
   it("with suggest, Rovara merges nothing on its own: not a behind branch, not a conflicted one; it still stops when the conflict rounds are used up", async () => {
     installBranchSyncDeciders();
@@ -543,9 +558,16 @@ describe("what a finished merge of the base is", () => {
     expect(outcome).toMatchObject({ headSha: MERGE, headTreeSha: MERGED_TREE, previousHeadSha: HEAD_A, baseCommitSha: BASE_NEW });
   });
 
-  it("is a clean merge even when the worker's result was lost, if GitHub shows it", () => {
+  it("is a merge even when the worker's result was lost, if GitHub shows it: but Rovara's checks are unproven then, so no head is kept for an approval to carry from", () => {
     const outcome = plan({ status: "FAILED", error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined });
     expect(outcome.kind).toBe("synced");
+    if (outcome.kind !== "synced") return;
+    expect(outcome.workflow.pullRequests?.[0]).toMatchObject({ headSha: MERGE });
+    expect(outcome.workflow.pullRequests?.[0]?.syncedFrom).toBeUndefined();
+    expect(outcome.workflow.candidate?.repositories[0]).toMatchObject({ commitSha: MERGE, baseCommitSha: BASE_NEW });
+    // The same merge with its result in hand is one Rovara's checks passed on.
+    const verified = plan({});
+    expect(verified.kind === "synced" && verified.workflow.pullRequests?.[0]?.syncedFrom).toBe(HEAD_A);
   });
 
   it("is refused when the merge commit's second parent is not the base commit, or its first is not the recorded head, or the tree is not the one reported", () => {
