@@ -305,10 +305,10 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
   const slackUser = "U0123456789";
   beforeAll(loadSlackBroker);
 
-  async function slackTask() {
+  async function slackTask(agents = false) {
     const access = sharedFakeModelAccess({ key: PROXY_KEY });
     const mintKey = access.mintKey;
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, ...(agents ? { agents: {} } : {}) } });
     await registerSlackProject(handler);
     const workspace = await ensureWorkspace(handler, thread, slackUser);
     const workspaceId = workspace.body.workspaceId as string;
@@ -337,8 +337,8 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUser), purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
   });
 
-  it("refuses a new key after the Slack requester is removed, even without a payer setting (C1)", async () => {
-    const h = await slackTask();
+  it.each([false, true])("refuses a new key after the Slack requester is removed, even without a payer setting (C1, agents=%s)", async (agents) => {
+    const h = await slackTask(agents);
     const developerId = developerIdForSlackUser(slackUser);
     seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "member" });
     expect((await h.ask()).status).toBe(200);

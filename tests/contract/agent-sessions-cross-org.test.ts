@@ -1,16 +1,27 @@
 // Task 24: adversarial ids travel through the same session router used by app, CLI and MCP.
 import { randomUUID, generateKeyPairSync, sign } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, liveSessionKey, mySessionsKey, projectSessionsKey, sharedSessionsKey, sessionChannel, projectChannel, userChannel, type OrgId } from "../../packages/contracts/src/index.js";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { agentSessionKey, liveSessionKey, mySessionsKey, projectSessionsKey, sharedSessionsKey, sessionChannel, projectChannel, userChannel, type AgentSessionRecord, type OrgId } from "../../packages/contracts/src/index.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
+import { resolveSlackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";
+import { slackThreadKey } from "../../packages/broker/src/aws/failed-preparation.js";
+import { createRealtimeSink } from "../../packages/broker/src/realtime/sink.js";
+import { routeAuditRequest } from "../../packages/broker/src/audit/routes.js";
+import { world as auditWorld } from "../support/audit-routes-bench.js";
 import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";
 import { registerDevice } from "../../packages/broker/src/devices/store.js";
 import { authorizeRealtime } from "../../packages/broker/src/realtime/authorizer.js";
 import { issueRealtimeToken, verifyRealtimeToken } from "../../packages/broker/src/realtime/token.js";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
 import { ARJUN, BO, CELL, MAX, MIA, ORG_A, ORG_B, PRIYA, sessionWorld } from "../support/agent-session-world.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+import { createDeveloperTaskBroker, DEV_ISSUER, type Developer } from "../support/developer-task-broker.js";
+import { agentsCli, cleanHarnessDirs, type Answer } from "../support/agents-cli-harness.js";
+import { httpControlPlaneClient, createAgentXMcpServer } from "../../packages/mcp/src/index.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { chainRunViewOf } from "../support/chain-run-view.js";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -19,7 +30,8 @@ const signer = { publicJwk: async () => jwk, sign: async (input: Buffer) => sign
 const THREAD = { kind: "slack_thread" as const, teamId: "T0123456789", channelId: "C0123456789", threadTs: "1700000000.000100" };
 const ISSUE = { kind: "linear_issue" as const, issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142" };
 const WRITE = /^(Put|Update|Delete|TransactWrite|BatchWrite).*Command$/;
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => { vi.restoreAllMocks(); await cleanHarnessDirs(); });
+beforeAll(loadSlackBroker);
 
 async function world() {
   const w = sessionWorld();
@@ -47,7 +59,7 @@ async function world() {
   const deps: SessionRouteDependencies = {
     ...table, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64), taskView,
     chainReadAccess: async (who) => who.orgId === ORG_A && who.developerId === PRIYA,
-    chain: { runView: async (_actor, id) => chainRunViewOf(id, { status: "needs_person" }), stepTask: async () => taskView({ taskId: s2.taskId, project: "web" }) },
+    chain: { runView: async (_actor, id) => chainRunViewOf(id, { status: "waiting" }), stepTask: async () => taskView({ taskId: s2.taskId, project: "web" }) },
     projectPage: async () => ({ name: "web", status: "active", repositories: [], setup: { status: "ready" }, channels: [] }) as never,
     realtime: { endpoint: "https://example.appsync-api.us-east-1.amazonaws.com/event", projectsOf: async () => ["web"], mint: async (input) => issueRealtimeToken(signer, { ...input, now: w.clock.now }) },
   };
@@ -149,5 +161,174 @@ describe("Task 24: ids never confer authority", () => {
     expect(refresh).not.toHaveBeenCalled();
     await projectSessions([{ eventName: "MODIFY", dynamodb: { NewImage: marshall({ pk: `ORG#${ORG_A}#TASK_SPENT#${w.s1.taskId}`, sk: "META", orgId: ORG_A, settledUsd: 3 }) } }], { ...w.table, refresh, log: () => undefined }, { deadline: w.clock.now + 1000 });
     expect(refresh).toHaveBeenCalledWith(expect.anything(), ORG_A, w.s1.sessionId);
+  });
+});
+
+describe("Slack thread storage tenancy (C24)", () => {
+  it("different orgs cannot alias the same Slack owner key", () => {
+    const key = slackThreadKey;
+    expect(key(ORG_A, "same-thread")).toEqual({ pk: `ORG#${ORG_A}#SLACK_THREAD#same-thread`, sk: "META" });
+    expect(key(ORG_A, "same-thread")).not.toEqual(key(ORG_B, "same-thread"));
+  });
+});
+
+describe("pre-scoping Slack rows", () => {
+  it("uses a legacy row only for its checked workspace's org and owner, without writing", async () => {
+    const w = await world();
+    const owner = "legacy-thread";
+    const legacy = { pk: `SLACK_THREAD#${owner}`, sk: "META" };
+    w.db.set({ ...legacy, workspaceId: "old-workspace", starterUserId: "U0123456789" });
+    w.db.set({ pk: "WORKSPACE#old-workspace", sk: "META", orgId: ORG_A, ownerKey: owner });
+    await unchanged(w, async () => {
+      expect(await resolveSlackThreadKey(w.table, ORG_A, owner)).toEqual(legacy);
+      expect(await resolveSlackThreadKey(w.table, ORG_B, owner)).toEqual(slackThreadKey(ORG_B, owner));
+    });
+    w.db.set({ ...legacy, workspaceId: "old-workspace", orgId: ORG_B });
+    expect(await resolveSlackThreadKey(w.table, ORG_A, owner)).toEqual(slackThreadKey(ORG_A, owner));
+    w.db.set({ ...legacy, workspaceId: "old-workspace" });
+    w.db.set({ pk: "WORKSPACE#old-workspace", sk: "META", orgId: ORG_A, ownerKey: "someone-else" });
+    expect(await resolveSlackThreadKey(w.table, ORG_A, owner)).toEqual(slackThreadKey(ORG_A, owner));
+    w.db.set({ ...slackThreadKey(ORG_A, owner), orgId: ORG_A, workspaceId: "new-workspace" });
+    expect(await resolveSlackThreadKey(w.table, ORG_A, owner)).toEqual(slackThreadKey(ORG_A, owner));
+  });
+});
+
+async function brokerWorld() {
+  const w = await world();
+  const h = await createDeveloperTaskBroker({ register: false, orgResolver: async ({ developerId }) => developerId === BO ? ORG_B : ORG_A, brokerExtra: { agents: { projectMembers: w.members } } });
+  for (const row of w.db.find(() => true)) h.db.set(structuredClone(row));
+  const a: Developer = { developerId: PRIYA, name: "Priya", provider: "oidc", sessionId: randomUUID() };
+  const b: Developer = { developerId: BO, name: "Bo", provider: "oidc", sessionId: randomUUID() };
+  for (const who of [a, b]) {
+    await h.orgOf(who);
+    h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: "oidc", startedAt: new Date().toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 600 });
+  }
+  const send = async (method: string, path: string, body?: unknown) => {
+    const reply = await h.dev(b, method, path, body);
+    return Response.json(reply.body, { status: reply.status });
+  };
+  return { w, h, a, b, send };
+}
+
+describe("the broker and its real CLI/MCP clients", () => {
+  it("every session endpoint returns an empty 404 envelope for B, with no write", async () => {
+    const { w, h, a, b } = await brokerWorld();
+    for (const subject of [w.s1, w.s2, w.s3, w.s4]) for (const [method, path, body] of cases(subject.sessionId, w.bDevice.deviceId)) {
+      const before = h.db.commandNames().length;
+      const data = structuredClone(h.db.find(() => true));
+      const reply = await h.dev(b, method, path, body);
+      expect(reply.status, `${method} ${path}`).toBe(404);
+      expect(reply.body).toMatchObject({ error: { code: "NOT_FOUND" } });
+      expect(Object.keys(reply.body).sort()).toEqual(["error", "requestId"]);
+      expect(JSON.stringify(reply.body)).not.toContain(subject.sessionId);
+      expect(h.db.commandNames().slice(before).filter((name) => WRITE.test(name))).toEqual([]);
+      expect(h.db.find(() => true)).toEqual(data);
+    }
+    expect((await h.dev(a, "GET", `/v1/app/sessions/${w.s1.sessionId}/events`)).status).toBe(200);
+  });
+  it("the retired /s broker route returns 404 without local-session facts for either org", async () => {
+    const { w, h, a, b } = await brokerWorld();
+    const browser = (who: Developer) => h.handler({ version: "2.0", routeKey: "ANY /s/{proxy+}", rawPath: `/s/${w.s3.sessionId}`, rawQueryString: "", headers: { host: new URL(DEV_ISSUER).host, cookie: `__Host-agentx_review_session=${who.sessionId}` }, requestContext: { requestId: randomUUID(), http: { method: "GET" } } });
+    const reply = await browser(b);
+    expect(reply.statusCode).toBe(404);
+    expect(reply.body).not.toContain(w.s3.sessionId);
+    expect((await browser(a)).statusCode).toBe(404);
+    expect((await h.dev(a, "GET", `/v1/app/sessions/${w.s3.sessionId}`)).status).toBe(200);
+  });
+  it("CLI show/follow/comment/tell/stop/retry/take-over/share reach the broker as B", async () => {
+    const { w, h, send } = await brokerWorld();
+    const id = w.s1.sessionId;
+    const routes: Record<string, Answer> = {};
+    for (const [method, path] of cases(id, w.bDevice.deviceId)) routes[`${method} ${path}`] = ((body: unknown) => send(method, path, body)) as unknown as Answer;
+    const cli = await agentsCli(routes);
+    const before = h.db.commandNames().length;
+    for (const args of [["show"], ["follow"], ["unfollow"], ["comment", "Canary"], ["tell", "Canary"], ["stop"], ["retry"], ["take-over"], ["share", "--with", BO, "--level", "view"]]) {
+      const [action, ...rest] = args;
+      expect(await cli.run(["session", action!, id, ...rest]), String(action)).not.toBe(0);
+    }
+    expect(cli.calls).toHaveLength(9);
+    expect(cli.stderr()).toContain("session not found");
+    expect(cli.stdout()).not.toContain("Bump the Stripe SDK");
+    expect(h.db.commandNames().slice(before).filter((name) => WRITE.test(name))).toEqual([]);
+  });
+  it("MCP get/comment/tell/stop and list use B's authority through the HTTP client", async () => {
+    const { w, h, send } = await brokerWorld();
+    const client = httpControlPlaneClient({ session: async () => ({ baseUrl: CELL, accessToken: "synthetic-test", signInCommand: "test login" }), fetch: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      return send(init?.method ?? "GET", url.pathname + url.search, typeof init?.body === "string" ? JSON.parse(init.body) : undefined);
+    }) as typeof fetch, tries: 1, sleep: async () => undefined });
+    const server = createAgentXMcpServer({ version: "0.4.0", context: () => ({ client, clientName: "codex", serverVersion: "0.4.0", adminSignedIn: async () => false, compatibility: async () => ({ env: "staging", apiVersion: "1.2" }), now: Date.now, sleep: async () => undefined, newRequestId: randomUUID }) });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const mcp = new Client({ name: "codex", version: "1.0.0" });
+    await mcp.connect(clientSide);
+    try {
+      const before = h.db.commandNames().length;
+      for (const name of ["agentx_get_session", "agentx_comment_on_session", "agentx_tell_session_agent", "agentx_stop_session"]) {
+        const reply = await mcp.callTool({ name, arguments: { session_id: w.s1.sessionId, ...(/comment|tell/.test(name) ? { text: "Canary" } : {}) } });
+        expect(reply.isError, name).toBe(true);
+        expect(JSON.stringify(reply)).toContain("SESSION_NOT_FOUND");
+        expect(JSON.stringify(reply)).not.toContain("Bump the Stripe SDK");
+      }
+      const listed = await mcp.callTool({ name: "agentx_list_sessions", arguments: { project: "web" } });
+      expect(listed.isError).not.toBe(true);
+      expect(JSON.stringify(listed)).toContain(w.own.sessionId);
+      expect(JSON.stringify(listed)).not.toContain(w.s1.sessionId);
+      expect(h.db.commandNames().slice(before).filter((name) => WRITE.test(name))).toEqual([]);
+    } finally { await mcp.close(); await server.close(); }
+  });
+});
+
+describe("notices and audit cannot bypass session isolation", () => {
+  it("drops unauthorized followers of a private local session from notices and catch-up feeds", async () => {
+    const w = await world();
+    for (const who of [MIA, ARJUN, MAX, BO]) w.follower(ORG_A, w.s4.sessionId, who);
+    const published: Array<{ channel: string; events: string[] }> = [];
+    const sink = createRealtimeSink({ realtime: { endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "synthetic", secretAccessKey: "synthetic" }), fetch: (async (_url: unknown, init: { body: string }) => { published.push(JSON.parse(init.body) as { channel: string; events: string[] }); return Response.json({}); }) as never } });
+    const session = w.db.get(agentSessionKey(ORG_A, w.s4.sessionId, "META")) as unknown as AgentSessionRecord;
+    const summary = { ...session.summary, status: "needs_person" as const };
+    await sink(w.table, { orgId: ORG_A, sessionId: session.sessionId, session: { ...session, summary }, previous: session.summary, summary, summaryRevision: 2, statusChanged: true, stepChanged: false, ended: false, at: new Date(w.clock.now).toISOString() });
+    expect(published.map((entry) => entry.channel)).toContain(userChannel(ORG_A, MIA));
+    expect(published.map((entry) => entry.channel)).not.toContain(projectChannel(ORG_A, "web"));
+    for (const who of [ARJUN, MAX, BO]) expect(published.map((entry) => entry.channel)).not.toContain(userChannel(ORG_A, who));
+    expect(published.every((entry) => !entry.channel.includes(ORG_B))).toBe(true);
+    w.clock.now += 3000;
+    expect(JSON.stringify(await w.call(MIA, ORG_A, "GET", "/v1/app/changes"))).toContain(session.sessionId);
+    for (const [who, org] of [[ARJUN, ORG_A], [MAX, ORG_A], [BO, ORG_B]] as const) expect(JSON.stringify(await w.call(who, org, "GET", "/v1/app/changes"))).not.toContain(session.sessionId);
+  });
+  it("audit reads stay in the checked org and a member cannot read session audit data", async () => {
+    const b = await auditWorld();
+    const url = new URL("/v1/app/org/audit/records", CELL);
+    const before = b.h.db.commandNames().length;
+    await expect(routeAuditRequest(b.deps, { orgId: ORG_B, developerId: BO, orgRole: "member" }, { method: "GET", body: undefined, requestId: randomUUID() }, url)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(b.h.db.commandNames().slice(before).filter((name) => WRITE.test(name))).toEqual([]);
+    const reply = await routeAuditRequest(b.deps, { orgId: ORG_B, developerId: BO, orgRole: "admin" }, { method: "GET", body: undefined, requestId: randomUUID() }, url);
+    expect(reply.status).toBe(200);
+    expect(JSON.stringify(reply.body)).toContain(ORG_B);
+    expect(JSON.stringify(reply.body)).not.toContain(ORG_A);
+  });
+});
+
+describe("answers and foreign underlying task references", () => {
+  it("a foreign owner answer cannot change a workflow or reveal its plan", async () => {
+    const { w, h, b } = await brokerWorld();
+    const before = h.db.commandNames().length;
+    const data = structuredClone(h.db.find(() => true));
+    const body = { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", reason: "Synthetic answer", answers: [{ decisionId: "d1", optionId: "yes", opened: true }], includedCommentIds: [] };
+    const reply = await h.dev(b, "POST", `/v1/dev/tasks/${w.s1.taskId}/workflow/decision`, body);
+    expect(reply.status).toBe(404);
+    expect(reply.body).toMatchObject({ error: { code: "TASK_NOT_FOUND" } });
+    expect(JSON.stringify(reply.body)).not.toContain(w.s1.taskId);
+    expect(h.db.commandNames().slice(before).filter((name) => WRITE.test(name))).toEqual([]);
+    expect(h.db.find(() => true)).toEqual(data);
+  });
+  it("rechecks the task org when a same-org session points at another org's task", async () => {
+    const w = await world();
+    const key = agentSessionKey(ORG_B, w.own.sessionId, "META");
+    w.db.set({ ...w.db.get(key)!, subject: { kind: "task", taskId: w.s1.taskId } });
+    await unchanged(w, async () => {
+      await expect(w.call(BO, ORG_B, "GET", `/v1/app/sessions/${w.own.sessionId}`)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+    expect(w.taskView).not.toHaveBeenCalled();
   });
 });
