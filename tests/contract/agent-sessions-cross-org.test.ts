@@ -367,4 +367,12 @@ it("M3 rejects forged images through the real projector and refresh write path",
   expect(await projectSessions([p.stream(image)], p.deps, { deadline: p.w.clock.now + 1000 })).toMatchObject({ refreshed: 0, unchanged: 0 });
   expect(p.w.db.commandNames().slice(offset).filter((name) => WRITE.test(name))).toEqual([]);
   expect(p.w.db.find(() => true)).toEqual(before);
+  const isB = (row: Record<string, unknown>) => row.orgId === ORG_B || String(row.pk).includes(ORG_B);
+  const beforeB = before.filter(isB);
+  const transactions = p.w.db.transactions().length;
+  p.spent(a.taskId, 3);
+  expect(await p.project([{ ...image, orgId: ORG_A }])).toMatchObject({ refreshed: 1 });
+  expect(p.w.db.transactions().length).toBeGreaterThan(transactions);
+  expect(p.sessionOf(a.sessionId).summary.costUsd).toBe(3);
+  expect(p.w.db.find(isB)).toEqual(beforeB);
 });
