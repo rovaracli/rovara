@@ -8090,7 +8090,11 @@ async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependencies, c
   if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   if (task.workflow?.definitionId !== "agentx-task-to-pr") return undefined;
   const sessions = deps.agentRuns?.agentSessions;
-  if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+  if (sessions === undefined) {
+    // Without the session machinery nothing can be asked, but a person the task's own rules never let take it over is told that, not "unavailable" (as before Task 23).
+    await resolveTaskAccess(deps, caller, taskId, "takeOwnership");
+    throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+  }
   // Authority first (Task 23 re-check N2): the take-over rules are run over the session the task would get, and only a caller who passes them causes the missing row to be made.
   if (task.sessionId === undefined) {
     const pending = lazyTaskSessionRecord(task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });

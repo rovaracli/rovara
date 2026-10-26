@@ -124,7 +124,8 @@ async function nameOf(deps: SessionShareDependencies, developerId: string): Prom
 async function codeSession(deps: SessionShareDependencies, session: AgentSessionRecord): Promise<boolean> {
   if (session.subject.kind !== "task") return false;
   const task = await getItem(deps, { pk: `DEVTASK#${session.subject.taskId}`, sk: "META" });
-  if (task === undefined || task["orgId"] !== session.orgId) throw agentXError("NOT_FOUND", "session not found");
+  // A task that is missing or belongs to another org is no Code task of this one: the session keeps Plan 5's own sharing rules (a take-over recorded on a foreign task is ignored the same way).
+  if (task === undefined || task["orgId"] !== session.orgId) return false;
   return (task["workflow"] as { definitionId?: string } | undefined)?.definitionId === "agentx-task-to-pr";
 }
 
