@@ -199,23 +199,26 @@ it("the real Code start and legacy Slack share route use session authority and s
 
 for (const level of ["view", "use", "edit", "owner", "removed", "otherOrg"] as const) {
   it(`legacy POST share: ${level} (live session authority)`, async () => {
-    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} }, ...(level === "otherOrg" ? { orgResolver: async (subject) => subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG } : {}) });
     const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix the retry" } });
     const { taskId } = started.body.task as { taskId: string };
     const task = h.db.get(taskKey(taskId))!;
     const actor = level === "owner" || level === "removed" ? MAYA : OMAR;
     await h.orgOf(actor);
-    if (actor === OMAR) {
+    if (actor === OMAR && level !== "otherOrg") {
       h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "contributor" });
       if (level !== "otherOrg") h.db.set({ ...agentSessionKey(TEST_ORG, String(task.sessionId), `SHARE#MEMBER#${OMAR.developerId}`), principal: { kind: "member", developerId: OMAR.developerId }, level, sharedBy: { developerId: MAYA.developerId, name: MAYA.name }, sharedAt: new Date().toISOString() });
     }
-    if (level === "otherOrg") h.db.set({ ...task, orgId: ORG_B });
     if (level === "removed") h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
     const writes = h.db.transactions().length;
     const result = await h.dev(actor, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "view" });
     if (level === "edit" || level === "owner") expect(result.status).toBe(200);
     else {
       expect(result.status).not.toBe(200);
+      if (level === "otherOrg") {
+        expect(result.body.error).toMatchObject({ code: "TASK_NOT_FOUND" });
+        expect(h.db.get(taskKey(taskId))!.orgId).toBe(TEST_ORG);
+      }
       expect(h.db.transactions()).toHaveLength(writes);
     }
   });
