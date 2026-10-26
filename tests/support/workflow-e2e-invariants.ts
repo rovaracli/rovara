@@ -27,7 +27,7 @@ import { briefLength, visibleSlackText } from "./strict-slack.js";
 export const JARGON = /\b(?:[Cc]andidates?|[Rr]evisions?|[Dd]igests?|[Oo]perations?|[Aa]rtifacts?|[Ww]orkflows?|[Ii]nvalid [Jj][Ss][Oo][Nn]|SUCCEEDED|FAILED|INTERRUPTED)\b/;
 
 /** What the task had decided when a run started (its workflow at that moment). */
-export type JourneyDecided = Pick<Partial<WorkflowSnapshot>, "decisions" | "feedbackDecisions" | "artifacts">;
+export type JourneyDecided = Pick<Partial<WorkflowSnapshot>, "decisions" | "feedbackDecisions" | "artifacts"> & { automaticFixRounds?: number };
 
 /** One worker run, as the harness saw it start. */
 export interface JourneyLedgerEntry {
@@ -151,11 +151,19 @@ export function codeAuthorisations(decided: JourneyDecided): number {
     || decision.source === "SEND_BACK"
     || (decision.source === "FINDINGS" && decision.decision === "REQUEST_CHANGES"))).length;
   const feedback = (decided.feedbackDecisions ?? []).filter((decision) => decision.actorRole === "TASK_OWNER" && decision.decision === "APPROVE").length;
-  return gate + feedback;
+  return gate + feedback + automaticFixRounds(decided);
+}
+
+/**
+ * The fix rounds Rovara started on its own (Plan 6 Tasks 15 to 17): failing CI, a conflict or a writer's comments, each within its cap and the company's autonomy for the task. Each is
+ * authorised by the autonomy the task runs under, and recorded by a `fixing` milestone in the commit that begins it, so it is as bounded and as visible as an owner's click.
+ */
+function automaticFixRounds(decided: JourneyDecided): number {
+  return decided.automaticFixRounds ?? 0;
 }
 
 function feedbackApprovals(decided: JourneyDecided): number {
-  return (decided.feedbackDecisions ?? []).filter((decision) => decision.actorRole === "TASK_OWNER" && decision.decision === "APPROVE").length;
+  return (decided.feedbackDecisions ?? []).filter((decision) => decision.actorRole === "TASK_OWNER" && decision.decision === "APPROVE").length + automaticFixRounds(decided);
 }
 
 function checkClick(journey: JourneyView): string[] {
@@ -402,7 +410,8 @@ function checkOnce(journey: JourneyView): string[] {
       const ids = decisions.map((decision) => decision.requestId);
       for (const id of new Set(ids)) if (ids.filter((entry) => entry === id).length > 1) violations.push(`INV-ONCE: one request recorded more than one ${name} (${id})`);
     }
-    const approvals = (workflow?.feedbackDecisions ?? []).filter((decision) => decision.decision === "APPROVE").length;
+    const approvals = (workflow?.feedbackDecisions ?? []).filter((decision) => decision.decision === "APPROVE").length
+      + journey.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === "fixing" && item.taskId === task.taskId).length;
     // This task's fix pushes: AgentX's pushes made while the task's own fix was pushed.
     const fixPushes = journey.github.pushLog.filter((push) => push.during === "maintain" && journey.github.tokens.has(push.token)
       && journey.pushedWorkflows.find((entry) => entry.commit === push.commit)?.workflow?.taskId === task.taskId).length;

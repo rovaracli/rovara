@@ -4,7 +4,7 @@
 import {
   DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
+  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
   SessionIdSchema,
 } from "@agentx/contracts";
@@ -275,6 +275,10 @@ function nextFor(shown: DeveloperTaskClientView): string {
       return `The draft pull request did not open because the code changed after its reviews. Use agentx_send_workflow_back with expected_revision ${task.workflow.revision} to have AgentX fix it, or agentx_close_task to stop.`;
     }
     return `The draft pull request did not open because the code changed after its checks and reviews. Use agentx_send_workflow_back with expected_revision ${task.workflow.revision} to have AgentX fix it, or run the checks again on the current code with agentx_retry_workflow and expected_revision ${task.workflow.revision}.`;
+  }
+  // Plan 6 Task 15: CI is failing on the pull request and Rovara is waiting for a person (told to suggest, three fixes did not help, or a fix changed nothing): Retry lets it go on.
+  if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && isCiFixBlockReason(task.workflow.blockReason)) {
+    return `CI is failing on the pull request and Rovara is waiting for you (the reason is in the task's block reason). To let it fix CI, use agentx_retry_workflow with expected_revision ${task.workflow.revision}. Or fix or merge the pull request on GitHub, or use agentx_close_task to stop.`;
   }
   if (task.workflow?.state === "BLOCKED") return `The workflow is blocked: ${task.workflow.blockReason ?? "required evidence is missing"}. Review it before continuing.`;
   // After the draft pull request opens, the task waits for its merge on GitHub; PR feedback is decided here or in Slack.

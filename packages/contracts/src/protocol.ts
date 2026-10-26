@@ -9,6 +9,7 @@ import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
 import { ResultContractSchema, RunCheckoutSchema } from "./agent-run.js";
+import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -262,6 +263,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * "task.workflowReviewRisk" is sent the review without it, and the risk level then comes from the paths, the size and the checks alone.
          */
         workflowReviewRisk: z.literal(true).optional(),
+        /**
+         * Rovara Code (Plan 6 Task 15): this coding run fixes a pull request that is already open (failing CI, a conflict, comments), so it changes that code and leaves it alone when
+         * nothing it can do helps. Implementation mode only. Sent only to a worker whose /ping lists "task.workflowFix"; never dropped, because an older worker would take the run for a first build.
+         */
+        workflowFix: WorkflowFixPayloadSchema.optional(),
         model: ModelSelectionSchema.optional(),
         /**
          * Sign in with ChatGPT (#341): the task runs on its owner's ChatGPT plan, with this model, and the worker asks
@@ -311,6 +317,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowReviewRisk !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewRisk"], message: "the review's risk level requires review mode" });
+        }
+        if (payload.workflowFix !== undefined && (payload.workflowMode !== "IMPLEMENT" || payload.workflowDependencies !== undefined)) {
+          context.addIssue({ code: "custom", path: ["workflowFix"], message: "a fix to an open pull request requires implementation mode and no work breakdown" });
         }
         if (payload.workflowFeedbackApproval !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "feedback approval binding requires implementation mode" });

@@ -516,12 +516,12 @@ describe("the next action", () => {
   it("is none while nothing is filled, and runs the slots in the order conflict, CI fix, feedback, sync, one at a time", async () => {
     const w = world();
     await trackPullRequest(w.deps, TASK_ID);
-    expect(nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toEqual({ slot: "none", reason: "no_action" });
+    expect(await nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toEqual({ slot: "none", reason: "no_action" });
     const order: string[] = [];
     for (const slot of ["sync", "feedback", "ci_fix", "conflict"] as const) {
       unregister.push(registerMergeActionDecider(slot, () => { order.push(slot); return slot === "feedback" ? request(slot, w) : undefined; }));
     }
-    const action = nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW);
+    const action = await nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW);
     expect(order).toEqual(["conflict", "ci_fix", "feedback"]);
     expect(action.slot).toBe("feedback");
     expect(() => registerMergeActionDecider("sync", () => undefined)).toThrow(/already/);
@@ -532,10 +532,10 @@ describe("the next action", () => {
     await trackPullRequest(w.deps, TASK_ID);
     unregister.push(registerMergeActionDecider("conflict", () => request("conflict", w)));
     const workflow = w.task().workflow as never;
-    expect(nextMergeAction({ ...asItem(w), state: "closed" }, workflow, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "not_open" });
-    expect(nextMergeAction({ ...asItem(w), headByRovara: false }, workflow, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "someone_else_pushed" });
+    expect(await nextMergeAction({ ...asItem(w), state: "closed" }, workflow, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "not_open" });
+    expect(await nextMergeAction({ ...asItem(w), headByRovara: false }, workflow, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "someone_else_pushed" });
     for (const change of [{ stage: "IMPLEMENT" }, { state: "RUNNING" }, { state: "BLOCKED" }]) {
-      expect(nextMergeAction(asItem(w), { ...(workflow as object), ...change } as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "in_flight" });
+      expect(await nextMergeAction(asItem(w), { ...(workflow as object), ...change } as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "in_flight" });
     }
   });
 
@@ -550,13 +550,13 @@ describe("the next action", () => {
     expect(decide).not.toHaveBeenCalled();
     expect(itemOf(w)).toMatchObject({ branch: "conflicted", ci: "failing", failingChecks: ["test"] });
     expect((w.task().workflow as { revision: number }).revision).toBe(revision);
-    const action = nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW);
+    const action = await nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW);
     expect(action).toEqual({ slot: "none", reason: "owner_card", ciFailures: ["test"] });
     // A card still being prepared waits too; one the owner decided does not.
     w.setWorkflow({ feedbackReview: { status: "COLLECTING" } });
-    expect(nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "owner_card" });
+    expect(await nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).toMatchObject({ reason: "owner_card" });
     w.setWorkflow({ feedbackReview: { status: "DISMISSED" } });
-    expect(nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW).slot).toBe("conflict");
+    expect((await nextMergeAction(asItem(w), w.task().workflow as never, DEFAULT_CODE_SETTINGS, "prepare", NOW)).slot).toBe("conflict");
   });
 
   it("commits an action's workflow and its dispatch row with the tracking item in one transaction, or none of them", async () => {

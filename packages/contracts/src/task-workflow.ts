@@ -3,8 +3,8 @@ import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, 
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
-  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
-  intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent,
+  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason,
+  intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
@@ -1322,6 +1322,10 @@ const WorkflowSnapshotShapeSchema = z.object({
   /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
   fixRounds: WorkflowFixRoundsSchema.optional(),
   fixSource: FixSourceSchema.optional(),
+  /** Both versions: the names of the failing checks the fix now running is for (at most five, one line each); present only with `fixSource`. */
+  fixProblems: z.array(z.string().trim().min(1).max(200)).min(1).max(CI_FIX_PROBLEMS_MAX).optional(),
+  /** Both versions: a person told Rovara to go on with a CI fix it was waiting to be told about (Retry); the next CI fix round starts whatever the autonomy, and clears it. */
+  ciFixApproved: z.literal(true).optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -1336,6 +1340,9 @@ const WorkflowSnapshotShapeSchema = z.object({
       context.addIssue({ code: "custom", path: ["program"], message: "a plan check step needs definition version 1.1.0" });
     }
     if (workflow.reviews?.some((review) => review.risk !== undefined) === true) context.addIssue({ code: "custom", path: ["reviews"], message: "a review's risk level needs definition version 1.1.0" });
+  }
+  if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
+    context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });
   }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
@@ -1764,10 +1771,12 @@ export function recordWorkflowPullRequestHeadTrees(currentInput: unknown, trees:
   return WorkflowSnapshotSchema.parse({ ...current, pullRequests, updatedAt: now });
 }
 
-/** Whether the task follows its pull requests only for their merge: an approved fix is being made or pushed, or its push failed. */
+/** Whether the task follows its pull requests only for their merge: an approved fix is being made or pushed, its push failed, or a person is to retry its CI fix. */
 export function workflowFollowsOnlyMerge(workflow: Pick<WorkflowSnapshot, "stage" | "state" | "blockReason">): boolean {
   return (workflow.stage !== "WAIT_FOR_MERGE" && workflow.stage !== "MERGED")
-    || (workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
+    || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed
+      // Plan 6 Task 15: a task waiting for a person to retry its CI fix keeps waiting: an observation of the pull request must not read the block away, and comments wait for the Retry.
+      || isCiFixBlockReason(workflow.blockReason)));
 }
 
 /**
@@ -1786,7 +1795,7 @@ function withPullRequestsObserved(current: WorkflowSnapshot, pullRequests: Workf
   void _priorReason;
   const reopened = !keep && !closed && current.state === "BLOCKED" && current.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed;
   return WorkflowSnapshotSchema.parse({
-    ...(keep ? current : reopened ? unblocked : withoutPriorOutcome),
+    ...(complete ? withoutFix(keep ? current : reopened ? unblocked : withoutPriorOutcome) : keep ? current : reopened ? unblocked : withoutPriorOutcome),
     revision: current.revision + 1,
     stage: complete ? "MERGED" : keep ? current.stage : "WAIT_FOR_MERGE",
     state: complete ? "COMPLETE" : keep ? current.state : closed ? "BLOCKED" : "WAITING",
@@ -1875,10 +1884,11 @@ export function recordWorkflowPullRequestUpdate(currentInput: unknown, input: { 
     // A blocked task stays blocked for the pull requests its fix has not reached.
     return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, ...(pushFailed ? {} : { state: "READY" }), pullRequests, updatedAt: input.now });
   }
-  const { blockReason: _blockReason, pullRequestUpdateFailure: _failure, feedbackReview, feedbackDispatchApproval: _approval, ...rest } = current;
+  const { blockReason: _blockReason, pullRequestUpdateFailure: _failure, feedbackReview, feedbackDispatchApproval: _approval, ...restWithFix } = current;
   void _blockReason;
   void _failure;
   void _approval;
+  const rest = withoutFix(restWithFix);
   const history = [...(current.feedbackReviewHistory ?? [])];
   const report = feedbackReview?.reviewRef;
   if (report !== undefined && !history.some((entry) => entry.sha256 === report.sha256)) history.push(report);
@@ -1900,8 +1910,116 @@ export function blockWorkflowPullRequestUpdate(currentInput: unknown, input: { n
     throw new WorkflowTransitionError("workflow is not pushing a fix to its pull requests");
   }
   return WorkflowSnapshotSchema.parse({
-    ...current, revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
+    ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
     blockReason: WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed, pullRequestUpdateFailure: failure.data, updatedAt: input.now,
+  });
+}
+
+/** A snapshot without the marks of a fix in flight (the fix is over: pushed, given up or merged past). */
+function withoutFix(workflow: WorkflowSnapshot): WorkflowSnapshot {
+  const { fixSource: _source, fixProblems: _problems, ...rest } = workflow;
+  void _source;
+  void _problems;
+  return rest;
+}
+
+const FIX_ROUND_KEYS = { ci: "ci", conflict: "conflict", feedback: "feedbackAuto" } as const satisfies Record<FixSource, keyof WorkflowFixRounds>;
+const FIX_ROUNDS_MAX = { ci: CI_FIX_ROUNDS_MAX, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: FEEDBACK_AUTO_ROUNDS_MAX } as const satisfies Record<keyof WorkflowFixRounds, number>;
+
+/** How many fix rounds of each kind have run (none when the workflow has never fixed anything). */
+export function workflowFixRounds(workflow: Pick<WorkflowSnapshot, "fixRounds">): WorkflowFixRounds {
+  return workflow.fixRounds ?? { ci: 0, conflict: 0, feedbackAuto: 0 };
+}
+
+/** How many rounds of this kind are left before the cap. */
+export function workflowFixRoundsLeft(workflow: Pick<WorkflowSnapshot, "fixRounds">, source: FixSource): number {
+  const key = FIX_ROUND_KEYS[source];
+  return Math.max(0, FIX_ROUNDS_MAX[key] - workflowFixRounds(workflow)[key]);
+}
+
+/** Whether the owner's feedback card is being prepared or waits for them (it blocks every automatic action). */
+function ownerCardOpen(workflow: WorkflowSnapshot): boolean {
+  return workflow.feedbackReview?.status === "PENDING" || workflow.feedbackReview?.status === "COLLECTING";
+}
+
+/**
+ * Rovara Code (Plan 6 Task 15): a fix to the open pull requests starts, with no one deciding it: WAIT_FOR_MERGE/WAITING becomes IMPLEMENT/READY, marked with its source (`ci`, `conflict` or
+ * `feedback`) and the names of what is being fixed, and counted in `fixRounds`. The build it goes back to is the program's last build, as for an approved feedback fix, and the review rounds
+ * of the earlier code are not counted against this one. A round counts unless `count` is false (a person told Rovara to go on after its rounds ran out). Refused while the owner's card waits,
+ * while a fix is already under way, and when the source's rounds are used up. Both definition versions may be fixed.
+ */
+export function startWorkflowFix(currentInput: unknown, input: { source: FixSource; problems: readonly string[]; now: string; count?: boolean }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || current.candidate === undefined || current.fixSource !== undefined) {
+    throw new WorkflowTransitionError("the workflow is not waiting for the merge with nothing being fixed");
+  }
+  if (ownerCardOpen(current)) throw new WorkflowTransitionError("the owner's feedback card is waiting, so nothing is fixed on its own");
+  if (!(current.pullRequests ?? []).some((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN")) {
+    throw new WorkflowTransitionError("the workflow has no open pull request to fix");
+  }
+  const key = FIX_ROUND_KEYS[input.source];
+  const rounds = workflowFixRounds(current);
+  const counted = input.count !== false;
+  if (counted && rounds[key] >= FIX_ROUNDS_MAX[key]) throw new WorkflowTransitionError("the rounds of this kind of fix are used up");
+  const problems = z.array(z.string().trim().min(1).max(200)).max(CI_FIX_PROBLEMS_MAX).safeParse(input.problems);
+  if (!problems.success) throw new WorkflowTransitionError("the problems a fix is for are invalid");
+  const candidate = current.candidate;
+  // A pull request recorded without its head's tree keeps the reviewed tree it was opened with: once the fix is coded the candidate is the fix.
+  const pullRequests = current.pullRequests?.map((pullRequest) => pullRequest.headTreeSha !== undefined || pullRequest.candidateDigest !== candidate.digest ? pullRequest
+    : { ...pullRequest, headTreeSha: candidate.repositories.find((repository) => repository.repositoryId === pullRequest.repositoryId)?.treeSha });
+  const { blockReason: _blockReason, ciFixApproved: _approved, programRounds: _rounds, ...rest } = current;
+  void _blockReason;
+  void _approved;
+  void _rounds;
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY",
+    ...(pullRequests === undefined ? {} : { pullRequests }),
+    ...(current.program === undefined ? {} : { programStepId: programBuildAtOrBefore(current.program, current.program.steps.length - 1).id }),
+    fixSource: input.source, ...(problems.data.length === 0 ? {} : { fixProblems: problems.data }),
+    fixRounds: counted ? { ...rounds, [key]: rounds[key] + 1 } : rounds, updatedAt: input.now,
+  });
+}
+
+/** How many fix rounds of every kind have begun: the number a milestone about a round is filed under. */
+export function workflowFixRoundsBegun(workflow: Pick<WorkflowSnapshot, "fixRounds">): number {
+  const rounds = workflowFixRounds(workflow);
+  return rounds.ci + rounds.conflict + rounds.feedbackAuto;
+}
+
+/**
+ * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
+ * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
+ */
+export function blockWorkflowCiFix(currentInput: unknown, input: { reason: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const waiting = current.stage === "WAIT_FOR_MERGE" && current.state === "WAITING";
+  const fixing = current.stage === "IMPLEMENT" && current.fixSource === "ci" && (current.state === "RUNNING" || current.state === "READY");
+  if (!isCiFixBlockReason(input.reason) || (!waiting && !fixing)) throw new WorkflowTransitionError("the workflow is not at a place a CI fix can stop");
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: input.reason.slice(0, 500), updatedAt: input.now });
+}
+
+/** A CI fix round that changed nothing: the failure is not this change's, so a person is asked to look (and the round stays counted). */
+export function endWorkflowCiFixUnrelated(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "IMPLEMENT" || current.fixSource !== "ci") throw new WorkflowTransitionError("the workflow is not fixing CI");
+  return blockWorkflowCiFix(current, { reason: ciFixUnrelatedMessage(current.fixProblems?.[0] ?? "a check"), now });
+}
+
+/**
+ * The owner's Retry of a CI fix that waited for a person (Rovara was told to suggest, the three rounds are used up, or a round changed nothing): WAIT_FOR_MERGE/BLOCKED becomes WAITING with the
+ * go-ahead recorded, so the next CI fix round starts whatever the autonomy. Once the rounds were used up, they start again from none: the person asked for more.
+ */
+export function retryWorkflowCiFix(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || !isCiFixBlockReason(current.blockReason)) {
+    throw new WorkflowTransitionError("the workflow is not waiting for a CI fix to be retried");
+  }
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  const rounds = workflowFixRounds(current);
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, state: "WAITING", ciFixApproved: true as const,
+    ...(rounds.ci >= CI_FIX_ROUNDS_MAX ? { fixRounds: { ...rounds, ci: 0 } } : {}), updatedAt: now,
   });
 }
 

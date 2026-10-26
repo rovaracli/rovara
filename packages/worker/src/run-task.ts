@@ -491,6 +491,11 @@ async function runTask(
   if (invocation.payload.modelSelectionDiagnostic !== undefined) {
     onDiagnostic(invocation.payload.modelSelectionDiagnostic);
   }
+  // Plan 6 Task 15: a coding run that fixes a pull request that is already open says what it is for, so the progress reads right.
+  if (invocation.payload.workflowFix !== undefined) {
+    const reason = { ci: "failing CI checks", conflict: "a conflict with its base branch", feedback: "review comments" }[invocation.payload.workflowFix.source];
+    onDiagnostic(`AgentX is fixing the open pull request: ${reason}.`);
+  }
   if (fileToolsNote !== undefined) onDiagnostic(fileToolsNote);
   for (const message of modelChangeDiagnostics(registered, dependencies.model)) onDiagnostic(message);
 

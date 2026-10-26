@@ -2,6 +2,7 @@ import { createHash, createSign } from "node:crypto";
 import { PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
+import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
 import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
 import {
   mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
@@ -822,6 +823,43 @@ export class GitHubAppCredentialProvider {
     if (answered.status === 422) return "refused";
     if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reviewer request failed with HTTP ${answered.status}`);
     return "requested";
+  }
+
+  /**
+   * The end of a GitHub Actions job's log (Plan 6 Task 15): `GET actions/jobs/{id}/logs` answers with a redirect to a short-lived address, which is followed only when it is on a host GitHub serves
+   * logs from, with no credentials, and read as a stream that keeps its last lines (`logTail`). The token asks for `actions: read` alone, scoped to this one repository. Absent when GitHub has no
+   * log for the job (not an Actions job, expired, or the App has not been given the permission yet); an address Rovara won't read, or GitHub failing, throws. The text is untrusted: the caller
+   * redacts and labels it.
+   */
+  async getJobLogTail(repositoryUrl: string, jobId: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<string | undefined> {
+    if (!/^[0-9]{1,20}$/u.test(jobId)) throw agentXError("CONFIG_INVALID", "GitHub job id is invalid");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    let token: string;
+    try {
+      token = await provider.createInstallationToken(repository, { actions: "read" }, scope);
+    } catch (error) {
+      // An installation that has not accepted the Actions permission refuses the token: no log, and the checks are still named.
+      if (isAgentXError(error) && (error.code === "GITHUB_NOT_CONNECTED" || error.code === "RUNTIME_UNAVAILABLE")) return undefined;
+      throw error;
+    }
+    const located = await provider.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions/jobs/${jobId}/logs`,
+      { method: "GET", headers: githubHeaders(token), redirect: "manual", signal: AbortSignal.timeout(8_000) },
+    );
+    if (located.status === 404 || located.status === 403 || located.status === 410) return undefined;
+    const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(budget === undefined ? [] : [budget.signal])]);
+    // The log is read with this provider's own fetch, not the pass's (its address is not GitHub's API, so it is not one of the pass's requests), and with no credentials.
+    if (located.status >= 300 && located.status < 400) {
+      const address = located.headers.get("location") ?? "";
+      if (!isAllowedLogAddress(address)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub sent the log somewhere Rovara will not read it");
+      const log = await this.fetchImplementation(address, { method: "GET", headers: { accept: "text/plain" }, redirect: "error", signal });
+      if (log.status === 404 || log.status === 403 || log.status === 410) return undefined;
+      if (log.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub log download failed with HTTP ${log.status}`);
+      return logTail(await readLogEnd(log, signal));
+    }
+    if (located.status === 200) return logTail(await readLogEnd(located, signal));
+    throw agentXError("RUNTIME_UNAVAILABLE", `GitHub log lookup failed with HTTP ${located.status}`);
   }
 
   /** Reads a bounded PR diff summary for a code-aware, owner-approved feedback proposal. */

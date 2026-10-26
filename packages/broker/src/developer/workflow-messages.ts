@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -675,6 +675,12 @@ function pushingFixTo(workflow: WorkflowSnapshot): string | undefined {
 
 function implementRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
+  // Plan 6 Task 15: the first run of a fix for failing CI says so, in the failing checks' own names (GitHub's words, escaped); what the fix's own checks and reviews send back says what a send-back says.
+  if (workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0) {
+    const names = (workflow.fixProblems ?? []).map(slackText);
+    const what = names.length === 0 ? "CI" : `the failing CI ${names.length === 1 ? "check" : "checks"} (${names.join(", ")})`;
+    return `Fixing ${what}. The checks and reviews run again after, and I'll push the fix to the pull request if they pass.`;
+  }
   const decision = leadingDecision(workflow);
   const feedback = (workflow.feedbackDecisions ?? []).at(-1);
   if (feedback?.decision === "APPROVE" && feedback.workflowRevision >= workflow.revision - 2 && (decision === undefined || feedback.at >= decision.at)) {
@@ -812,7 +818,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     case "WAIT_FOR_MERGE/RUNNING": return plain(feedbackReviewStarted(workflow));
     // Nothing on GitHub is retried from here: the owner closes the task (its pull request stays on GitHub). Only a changed
     // pull request ends the following; a failed feedback review or push leaves the merge still tracked.
-    case "WAIT_FOR_MERGE/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
+    // Plan 6 Task 15: CI failing and a person needed (Rovara is set to suggest, three fixes did not help, or a fix changed nothing): the reason says it (its check name and log line are GitHub's words, escaped); Retry the fix is in the app.
+    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
+      return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
       ? `I stopped following the pull request. ${plainBlockReason(workflow.blockReason)}`
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed ? plainBlockReason(workflow.blockReason)
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed ? pullRequestUpdateFailed(workflow)

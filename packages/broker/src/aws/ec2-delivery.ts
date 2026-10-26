@@ -314,7 +314,8 @@ async function forWorkerFeatures(
   // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
+  const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -361,6 +362,10 @@ async function forWorkerFeatures(
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // A fix to a pull request that is already open (Plan 6 Task 15) must not be run by a worker that would take it for a first build, so the field is never dropped.
+  if (carriesFix && !features.includes("task.workflowFix")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // A review step that asks for fewer than both reviews must not be run by a worker that would run them all, so the field is never dropped.

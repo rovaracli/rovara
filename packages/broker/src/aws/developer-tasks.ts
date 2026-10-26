@@ -187,6 +187,8 @@ import {
   RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
   isRunLimitBlockReason,
+  isCiFixBlockReason,
+  retryWorkflowCiFix,
   heldPlanStartKey,
   planRunLimitSubject,
   runLimitAskedKey,
@@ -295,6 +297,8 @@ import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions }
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
 import { publicTrackingItem, readMergeTracking } from "../rovara-code/merge-tracking.js";
+import { ciFixPrompt, ciFixPromptWithoutOutput, readCiEvidence, readLatestCiEvidence } from "../rovara-code/ci-fix.js";
+import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
@@ -3130,6 +3134,12 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     if (priorCheckRetry.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used by someone else");
     return { task: await taskView(deps, task, { events: 0, details: false }) };
   }
+  // Plan 6 Task 15: a repeat of a CI fix retry that already took finds the fix on its way and changes nothing (another person's request ID is not it).
+  const priorCiFixRetry = await get<{ actorId: string }>(deps, ciFixRetryKey(taskId, request.requestId));
+  if (priorCiFixRetry !== undefined) {
+    if (priorCiFixRetry.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used by someone else");
+    return { task: await taskView(deps, task, { events: 0, details: false }) };
+  }
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   if (priorRecovery !== undefined) {
@@ -3353,6 +3363,8 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       return retryTaskWorkflow(deps, caller, taskId, request.expectedRevision === undefined ? value : { ...(value as Record<string, unknown>), expectedRevision: fresh.workflow.revision }, true);
     }
   }
+  // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
+  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && isCiFixBlockReason(task.workflow.blockReason)) return retryCiFix(deps, caller, access, request);
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
@@ -3644,7 +3656,9 @@ async function queueWorkflowCoding(
           request: input.request, response: `${input.response} as operation ${operation.id}.`, operationId: operation.id,
         })),
         accessFence(deps, access),
-      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }) });
+      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
+        // A retry or a send-back inside a fix to an open pull request is still that fix (Plan 6 Task 15).
+        ...(input.next.fixSource === undefined ? {} : { workflowFix: { source: input.next.fixSource } }) });
     });
   } catch (error) {
     if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "work");
@@ -3760,6 +3774,55 @@ async function retryPlanCritique(
   return { task: view };
 }
 
+/** The record that a CI fix retry took, under its request ID, so a repeat of it is the same retry. */
+const ciFixRetryKey = (taskId: string, requestId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_CI_FIX_RETRY#${requestId}` });
+
+/**
+ * Plan 6 Task 15: the owner's Retry of a CI fix that waited for a person (Rovara is set to suggest, three fixes did not make CI pass, or a fix changed nothing). The task waits for the merge
+ * again with the go-ahead recorded, and the tracking row is woken so the next pass starts the fix (a start is a tracking pass's own decision: it reads what CI says now). One transaction,
+ * conditional on the revision the owner saw, with the request's record.
+ */
+async function retryCiFix(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
+): Promise<{ task: DeveloperTaskView }> {
+  const { task } = access;
+  const workflow = task.workflow!;
+  if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
+    throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+  }
+  await requireMayGoOn(deps, caller, task);
+  const receivedAt = iso(deps);
+  let next: WorkflowSnapshot;
+  try {
+    next = retryWorkflowCiFix(workflow, receivedAt);
+  } catch (error) {
+    if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
+    throw error;
+  }
+  try {
+    await deps.actions.transact([{ Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :wait AND workflow.#state = :blocked AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":wait": "WAIT_FOR_MERGE", ":blocked": "BLOCKED" },
+    } }, putNew(deps.tableName, { ...ciFixRetryKey(task.taskId, request.requestId), entityType: "WORKFLOW_CI_FIX_RETRY", actorId: access.actorId, at: receivedAt }), accessFence(deps, access)]);
+  } catch (error) {
+    if (isConditional(error)) {
+      const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+      if (fresh.workflow !== undefined && fresh.workflow.revision > workflow.revision) return { task: await taskView(deps, fresh, { events: 0, details: false }) };
+      throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+    }
+    return busyOrClosing(deps, task, error);
+  }
+  // The fix starts at the next tracking pass; the row is woken so that is soon (a failure here only means the pass comes at its own time).
+  await wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task.taskId).catch(() => undefined);
+  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+  const view = await taskView(deps, fresh, { events: 0, details: false });
+  await syncIndex(deps, fresh, view.status, view.updatedAt);
+  return { task: view };
+}
+
 async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
 ): Promise<{ task: DeveloperTaskView }> {
@@ -3771,7 +3834,9 @@ async function retryWorkflowImplementation(
   }
   await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
-  const plan = await approvedCodingPlan(deps, workflow);
+  // Plan 6 Task 15: a CI fix that stopped before it finished is told again what CI said, so the run that goes on has it in its own prompt, not only in the conversation (and needs no plan text).
+  const ciBlock = workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0 ? await readLatestCiEvidence(deps, task.taskId, task.orgId) : undefined;
+  const plan = ciBlock === undefined ? await approvedCodingPlan(deps, workflow) : undefined;
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
   if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it");
@@ -3779,7 +3844,12 @@ async function retryWorkflowImplementation(
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
   const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: iso(deps) };
-  const prompt = (notes: string) => `Implement the human-approved plan below. The previous coding run stopped before it finished; continue from the current code. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nOwner note: ${request.instructions}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
+  const prompt = (notes: string): string => {
+    if (plan === undefined) {
+      return `${ciFixPrompt({ block: ciBlock ?? "", notes: NO_PUBLISH_NOTE })}\n\nThe previous coding run stopped before it finished; continue from the current code.\n\nOwner note: ${request.instructions}${notes}`;
+    }
+    return `Implement the human-approved plan below. The previous coding run stopped before it finished; continue from the current code. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nOwner note: ${request.instructions}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
+  };
   return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
     request: request.instructions, response: workflowDependencies === undefined ? "Restarting the coding step" : "Restarting the approved ordered work plan", ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
 }
@@ -4225,16 +4295,24 @@ export async function startTaskWorkflowImplementationFromSystem(
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
-  const plan = await approvedCodingPlan(deps, workflow);
   const receivedAt = iso(deps);
   const requestId = workflowRequestId("agentx-program-implement", taskId, workflow.revision, workflow.programStepId);
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   // A step sent back by its reviews or checks is given what they found; a step that simply follows another is given the plan.
   const found = sendBackProblems(workflow);
-  const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
-  const prompt = withTestRule(found.length === 0
-    ? `Implement the human-approved plan below, one coding step of a longer sequence: the previous step's work is in the code now. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`
-    : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`, next);
+  // Plan 6 Task 15: the first run of a fix for failing CI is told what CI said (kept when the round started), not the plan again: the coder has the plan in its conversation. What the fix's own
+  // reviews and checks find goes back to the coder as any send-back does, with the CI fix's mark still on the run.
+  let prompt: string;
+  if (workflow.fixSource === "ci" && found.length === 0) {
+    const block = await readCiEvidence(deps, taskId, task.orgId, workflow.revision);
+    prompt = withTestRule(block === undefined ? ciFixPromptWithoutOutput({ names: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE }) : ciFixPrompt({ block, notes: NO_PUBLISH_NOTE }), next);
+  } else {
+    const plan = await approvedCodingPlan(deps, workflow);
+    const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
+    prompt = withTestRule(found.length === 0
+      ? `Implement the human-approved plan below, one coding step of a longer sequence: the previous step's work is in the code now. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`
+      : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`, next);
+  }
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
@@ -4248,7 +4326,8 @@ export async function startTaskWorkflowImplementationFromSystem(
       request: "Run the next coding step", response: `The next coding step of the sequence started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
-  ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), programStepId: workflow.programStepId });
+  ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), programStepId: workflow.programStepId,
+    ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource } }) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -4718,6 +4797,7 @@ export function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: bo
         return { status: "Stopped following the pull request", nextStep: `Merge or close it on GitHub, then close the task ${inSlack}.` };
       }
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed) return { status: "Couldn't push the fix", nextStep: `Merge or update it on GitHub, or close the task ${inSlack}.` };
+      if (isCiFixBlockReason(workflow.blockReason)) return { status: "CI is failing and needs you", nextStep: "Retry the fix, take over on GitHub, or close the task." };
       return { status: isFeedbackReviewFailure(workflow.blockReason) ? "Couldn't review the pull request feedback" : "Something went wrong; still watching the pull request",
         nextStep: "Merge it on GitHub and the task finishes, or close the task in Slack." };
     case "MERGED/COMPLETE": return { status: "Merged", nextStep: "Nothing; this task is complete." };

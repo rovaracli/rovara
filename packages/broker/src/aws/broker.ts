@@ -86,6 +86,7 @@ import {
   workflowPullRequestTrees,
   workflowSelectedChecks,
   blockWorkflow,
+  endWorkflowCiFixUnrelated,
   WorkflowDependencyResultSchema,
   WorkItemProgressV1Schema,
   WorkflowSnapshotSchema,
@@ -186,6 +187,7 @@ import {
   githubRepoProjectKey,
   type ProjectCommand,
   type WorkflowFeedbackApprovalBinding,
+  type WorkflowFixPayload,
   type WorkflowDependencyInvocation,
   type WorkflowReviewBase,
   type WorkflowReviewChecks,
@@ -513,6 +515,7 @@ import { createDeveloperApiConfiguration } from "./workflow-dependencies-configu
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
+import { ciFixUnrelatedItems, installCiFixDecider } from "../rovara-code/ci-fix.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -712,7 +715,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -5930,7 +5933,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -5980,6 +5983,7 @@ async function taskOperationParts(
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: input.workflowReviewers }),
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+      ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
       ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }) }),
     status: "ACCEPTED",
@@ -6090,6 +6094,8 @@ async function taskOperationParts(
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+      // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
+      ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
@@ -6988,7 +6994,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
+  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -6999,6 +7005,7 @@ async function acceptTask(
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+    ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
     ...(options.workflowDependencies === undefined ? {} : { workflowDependencies: options.workflowDependencies }),
     ...(options.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: options.workflowE2EAdmission }) });
   const idempotencyKey = {
@@ -7054,6 +7061,7 @@ async function acceptTask(
     ...(options.programStepId === undefined ? {} : { programStepId: options.programStepId }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+    ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
     ...(options.retiredClaimIds === undefined ? {} : { retiredClaimIds: options.retiredClaimIds }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
@@ -12663,7 +12671,10 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
       getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
       markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
       requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
+      ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
     },
+    // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`).
+    autonomy: async (task) => task.orgId === undefined ? "prepare" : (await readTaskRecipe(dependencies, task.taskId, task.orgId).catch(() => undefined))?.recipe.autonomy ?? "prepare",
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
@@ -12681,6 +12692,8 @@ export async function reconcileWorkflowTrackingTask(
   const tracking = mergeTrackingDependencies(dependencies);
   const observeMerge = (id: string, merged: GithubMergeReadBudget) => reconcileWorkflowMergeRecoveryTask(dependencies, id, merged);
   if (tracking === undefined) return observeMerge(taskId, budget);
+  // Plan 6 Task 15: failing CI is fixed on Rovara's own pull requests; the slot is filled once for the process.
+  installCiFixDecider();
   // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
   if (task?.orgId !== undefined && dependencies.developer !== undefined) {
@@ -14636,6 +14649,8 @@ async function completedWorkflowItems(
   /** Plan 6 Task 4: the finished Understand's watchdog row goes with its result. */
   let understandWatchdog: TransactItems = [];
   let answeredItems: TransactItems = [];
+  /** Plan 6 Task 15: a CI fix round that changed nothing tells a person (the milestone), in the commit that stops it. */
+  let fixExitItems: TransactItems = [];
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -14886,9 +14901,15 @@ async function completedWorkflowItems(
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.verification_blocked", taskId: task.taskId, operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown", reason: verificationFailure, ...(verificationDetail === undefined ? {} : { detail: verificationDetail }) }));
-        next = verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing ? blockWorkflow(task.workflow, verificationFailure, now)
-          : blockWorkflow(verifying, verificationFailure, now, { ...(regressedChecks === undefined ? {} : { regressedChecks }),
-            ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
+        if (verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing && task.workflow.fixSource === "ci" && task.orgId !== undefined) {
+          // A round for failing CI that left the code as the pull request holds it: the failure is not this change's, so a person is asked to look (the round stays counted).
+          next = endWorkflowCiFixUnrelated(task.workflow, now);
+          fixExitItems = ciFixUnrelatedItems({ tableName: dependencies.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), next, at: now });
+        } else {
+          next = verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing ? blockWorkflow(task.workflow, verificationFailure, now)
+            : blockWorkflow(verifying, verificationFailure, now, { ...(regressedChecks === undefined ? {} : { regressedChecks }),
+              ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
+        }
       }
     }
   } else if (operation.workflowMode === "REVIEW") {
@@ -15170,7 +15191,7 @@ async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone, ...answeredItems,
+  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }

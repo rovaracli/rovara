@@ -395,6 +395,9 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
         const expectedTree = pr.headTreeSha ?? current.candidate?.repositories.find(repository => repository.repositoryId === pr.repositoryId)?.treeSha;
         const exactIdentity = exactHead && expectedTree !== undefined && expectedTree === feedback.pullRequest.headTreeSha;
         if ((state === "MERGED" && (!exactIdentity || !completePublishedSet)) || (state === "OPEN" && !exactIdentity)) continue;
+        // While a fix is made or pushed only a merge is followed (as in the feedback path below): an open pull request that was not yet recorded as open is not written down now. Writing it
+        // would move the workflow's revision under the dispatch row a fix has just been given (Plan 6 Task 15), and the run would never start.
+        if (state === "OPEN" && workflowFollowsOnlyMerge(current)) continue;
         if (pr.state !== state) next = observeWorkflowPullRequest(next, { repositoryId: pr.repositoryId, number: pr.number,
           candidateDigest: pr.candidateDigest, state, source: "GITHUB_API", observedAt: input.now }, input.now);
       }

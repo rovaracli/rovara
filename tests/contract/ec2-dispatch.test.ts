@@ -407,6 +407,21 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("never sends a fix to an open pull request to a worker that does not list task.workflowFix: it is refused, not run as a first build, and the field is not dropped (Plan 6 Task 15)", async () => {
+      const record = taskRecord({ workflowMode: "IMPLEMENT", workflowFix: { source: "ci" } });
+      const base = ["task.workflowMode"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.workflowFix"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowFix).toEqual({ source: "ci" });
+      // An ordinary build is delivered to either.
+      const build = taskRecord({ workflowMode: "IMPLEMENT" });
+      const plain = delivery({ workerFeatures: async () => base });
+      expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];

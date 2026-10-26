@@ -133,6 +133,18 @@ describe("workflow-mode worker invocation", () => {
     expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowReviewRisk");
   });
 
+  it("marks a coding run as a fix to an open pull request only on implementation operations, with a known source and no work breakdown (Plan 6 Task 15)", () => {
+    const fix = (workflowFix: unknown, extra: Record<string, unknown> = {}, workflowMode = "IMPLEMENT") => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, workflowMode, workflowFix, ...extra } }).success;
+    for (const source of ["ci", "conflict", "feedback"]) expect(fix({ source })).toBe(true);
+    expect(fix({ source: "other" })).toBe(false);
+    expect(fix({ source: "ci", extra: 1 })).toBe(false);
+    expect(fix({})).toBe(false);
+    expect(fix(true)).toBe(false);
+    for (const mode of ["PLAN", "REVIEW", "CHECKS"]) expect(fix({ source: "ci" }, {}, mode)).toBe(false);
+    expect(WorkerInvocationSchema.parse(base).payload).not.toHaveProperty("workflowFix");
+    expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowFix");
+  });
+
   it("carries the reviewed tree for a pull request update, only as 40 hex on a maintain append", () => {
     const maintain = {
       ...base,

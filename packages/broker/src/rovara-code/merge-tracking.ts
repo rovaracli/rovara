@@ -48,6 +48,8 @@ export interface TrackingGithub {
   getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none">;
   markPullRequestReady(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"ready" | "already_ready">;
   requestReviewers(repositoryUrl: string, number: number, reviewers: readonly string[], scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"requested" | "refused">;
+  /** The end of a GitHub Actions job's log (Plan 6 Task 15), absent where GitHub has none. Without it a CI fix is told which checks failed and where to read them. */
+  getJobLogTail?(repositoryUrl: string, jobId: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<string | undefined>;
 }
 
 /** The part of the task record tracking reads. */
@@ -120,10 +122,23 @@ export function tracksMerge(workflow: WorkflowSnapshot | undefined): workflow is
 
 const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set(["failure", "timed_out", "cancelled", "startup_failure", "error", "stale"]);
 
+/** A failing check that counts, as a CI fix is told of it. */
+export interface FailingCheck {
+  name: string;
+  conclusion: string;
+  url: string;
+  /** The check run's id: the job id when the check is a GitHub Actions job. */
+  jobId?: string;
+  /** The GitHub App that made the check run. */
+  appId?: number;
+}
+
 export interface CiReading {
   ci: MergeTrackingItem["ci"];
   ciBasis: MergeTrackingItem["ciBasis"];
   failingChecks: string[];
+  /** The failing checks that count, one for each name (the first of a name that failed twice), at most ten. */
+  failingDetails: FailingCheck[];
   /** When the answer will change by itself (the wait for "no CI" ends), so the row is looked at again then. */
   recheckAt?: number;
 }
@@ -136,26 +151,32 @@ export interface CiReading {
 export function readCi(status: PullRequestStatus, input: { checksEverSeen: boolean; lastRovaraPushAt: number | undefined; now: number }): CiReading {
   const ciBasis = status.baseHasRequiredChecks ? "required" as const : "all_checks" as const;
   // Checks that could not be read are not known: nothing may say they passed.
-  if (status.checksUnavailable === true) return { ci: "pending", ciBasis, failingChecks: [] };
+  if (status.checksUnavailable === true) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
   const required = status.requiredChecks;
   // A required check is met by a check of that name, from the named app when the setting names one (a commit status has no app, so it cannot meet one that does).
   const meets = (entry: PullRequestStatus["requiredChecks"][number], check: PullRequestStatus["checks"][number]): boolean =>
     check.name === entry.name && (entry.appId === undefined || check.appId === entry.appId);
   if (status.checks.length === 0) {
     const settled = input.lastRovaraPushAt !== undefined && input.now - input.lastRovaraPushAt >= NO_CI_GRACE_MS;
-    if (!input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && settled) return { ci: "none", ciBasis, failingChecks: [] };
+    if (!input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && settled) return { ci: "none", ciBasis, failingChecks: [], failingDetails: [] };
     const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
-    return { ci: "pending", ciBasis, failingChecks: [], ...(waitEnds === undefined || waitEnds <= input.now ? {} : { recheckAt: waitEnds }) };
+    return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [], ...(waitEnds === undefined || waitEnds <= input.now ? {} : { recheckAt: waitEnds }) };
   }
   // A check counts when GitHub says the base requires it for this pull request, or when branch protection or a ruleset names it (the name is the fallback when `isRequired` says nothing).
   const counted = ciBasis === "required" ? status.checks.filter((check) => check.required || required.some((entry) => meets(entry, check))) : status.checks;
   const failing = counted.filter((check) => check.status === "completed" && check.conclusion !== undefined && FAILED_CONCLUSIONS.has(check.conclusion));
-  if (failing.length > 0) return { ci: "failing", ciBasis, failingChecks: [...new Set(failing.map((check) => check.name))].slice(0, 10) };
+  if (failing.length > 0) {
+    const names = [...new Set(failing.map((check) => check.name))].slice(0, 10);
+    const failingDetails = names.map((name) => failing.find((check) => check.name === name)!).map((check): FailingCheck => ({
+      name: check.name, conclusion: check.conclusion ?? "failure", url: check.url, ...(check.jobId === undefined ? {} : { jobId: check.jobId }), ...(check.appId === undefined ? {} : { appId: check.appId }),
+    }));
+    return { ci: "failing", ciBasis, failingChecks: names, failingDetails };
+  }
   // Every required check has to have reported: one that has not is not in the list yet, and nothing has passed for it.
-  if (required.some((entry) => !status.checks.some((check) => meets(entry, check)))) return { ci: "pending", ciBasis, failingChecks: [] };
-  if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [] };
+  if (required.some((entry) => !status.checks.some((check) => meets(entry, check)))) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
+  if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
   const waiting = counted.some((check) => check.status !== "completed" || check.conclusion === "action_required");
-  return { ci: waiting ? "pending" : "passing", ciBasis, failingChecks: [] };
+  return { ci: waiting ? "pending" : "passing", ciBasis, failingChecks: [], failingDetails: [] };
 }
 
 // ---- the reviews
@@ -286,15 +307,33 @@ export type MergeAction =
     ciFailures?: string[];
   };
 
+/** What a decider may read beside the tracking item (Plan 6 Task 15): where the pull request is, which checks fail and how to read a failing job's log. Every GitHub read counts against the pass's allowance. */
+export interface MergeActionContext {
+  tableName: string;
+  orgId: OrgId;
+  taskId: string;
+  sessionId?: string | undefined;
+  repositoryId: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  headSha: string;
+  /** The failing checks that count (at most ten). */
+  failing: readonly FailingCheck[];
+  /** The end of a job's log, or undefined where there is none or this provider cannot read logs. Throws what GitHub's failure throws; a rate limit and a spent allowance are the sweep's to handle. */
+  readJobLog?: ((jobId: string) => Promise<string | undefined>) | undefined;
+  log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
+}
+
 export interface MergeActionInput {
   item: MergeTrackingItem;
   workflow: WorkflowSnapshot;
   settings: CodeSettings;
   autonomy: Autonomy;
   now: number;
+  context?: MergeActionContext | undefined;
 }
 
-type MergeActionDecider = (input: MergeActionInput) => MergeActionRequest | undefined;
+type MergeActionDecider = (input: MergeActionInput) => MergeActionRequest | undefined | Promise<MergeActionRequest | undefined>;
 const deciders = new Map<MergeActionSlot, MergeActionDecider>();
 
 /** Fills a slot (Tasks 15, 16 and 17 each fill theirs). Returns the function that empties it again. One decider per slot. */
@@ -314,13 +353,13 @@ export function ownerCardPending(workflow: WorkflowSnapshot): boolean {
  * while someone else's push stands, while the task is doing something else (a fix or push in flight, or not waiting for the merge), or while the owner's card waits (it
  * blocks every action, a conflict included). Each slot is filled by its own task; an empty slot decides nothing.
  */
-export function nextMergeAction(item: MergeTrackingItem, workflow: WorkflowSnapshot, settings: CodeSettings, autonomy: Autonomy, now: number = Date.now()): MergeAction {
+export async function nextMergeAction(item: MergeTrackingItem, workflow: WorkflowSnapshot, settings: CodeSettings, autonomy: Autonomy, now: number = Date.now(), context?: MergeActionContext): Promise<MergeAction> {
   if (item.state !== "open") return { slot: "none", reason: "not_open" };
   if (!item.headByRovara) return { slot: "none", reason: "someone_else_pushed" };
   if (workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return { slot: "none", reason: "in_flight" };
   if (ownerCardPending(workflow)) return { slot: "none", reason: "owner_card", ...(item.failingChecks.length === 0 ? {} : { ciFailures: item.failingChecks }) };
   for (const slot of MERGE_ACTION_ORDER) {
-    const request = deciders.get(slot)?.({ item, workflow, settings, autonomy, now });
+    const request = await deciders.get(slot)?.({ item, workflow, settings, autonomy, now, ...(context === undefined ? {} : { context }) });
     if (request !== undefined) return request;
   }
   return { slot: "none", reason: "no_action" };
@@ -570,7 +609,12 @@ async function trackOne(
     const nextItem: MergeTrackingItem = { ...digested, version: (current?.version ?? 0) + 1, observedAt: stamp };
     const items: TransactItem[] = [];
     let action: MergeActionRequest | undefined;
-    const decision = nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now);
+    const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now, {
+      tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
+      repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
+      ...(deps.github.getJobLogTail === undefined ? {} : { readJobLog: (jobId: string) => deps.github.getJobLogTail!(url, jobId, scope, budget) }),
+      ...(deps.log === undefined ? {} : { log: deps.log }),
+    });
     if (decision.slot !== "none") action = decision;
     if (unchanged && action === undefined) {
       if (capped) throw new TrackingRequestCapError();

@@ -346,7 +346,7 @@ export async function createWorkflowE2E(options: {
     developers?: readonly Developer[];
   };
   /** Plan 6 Task 14: the GitHub reads and writes merge tracking uses (a pull request's status, a person's permission, marking ready, asking for reviewers); absent, the broker has none. */
-  trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers">>;
+  trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
   const taskPeopleConfiguration = options.taskPeople?.changesEnabled === undefined
@@ -829,7 +829,9 @@ export async function createWorkflowE2E(options: {
     const ownerRetry = owner !== undefined && db.find((item) => item.operationId === invocation.operationId && item.action === "continue" && item.outcome === "accepted"
       && (item.developer as { slackUserId?: unknown } | undefined)?.slackUserId === owner).length > 0;
     ledger.push({ operationId: invocation.operationId, kind: invocation.kind, ...(invocation.kind === "task" && invocation.payload.workflowMode !== undefined ? { mode: invocation.payload.workflowMode } : {}),
-      decided: structuredClone({ decisions: owning?.decisions ?? [], feedbackDecisions: owning?.feedbackDecisions ?? [], artifacts: owning?.artifacts ?? [] }),
+      decided: structuredClone({ decisions: owning?.decisions ?? [], feedbackDecisions: owning?.feedbackDecisions ?? [], artifacts: owning?.artifacts ?? [],
+        // The fix rounds Rovara began on its own so far (Plan 6 Tasks 15 to 17): one `fixing` milestone is written in the commit that begins each, and none is ever taken back.
+        automaticFixRounds: db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === "fixing" && item.taskId === owningTask?.taskId).length }),
       ...(ownerRetry ? { ownerRetry: true } : {}) });
     // The code each review run is given: the workspace as it is when the run starts.
     if (invocation.kind === "task" && invocation.payload.workflowMode === "REVIEW") reviewedTrees.push(await workspaceTree(`review-${invocation.operationId}`));
