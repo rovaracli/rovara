@@ -21,9 +21,10 @@ const RELEASE_ATTEMPTS = 4;
 
 const defaultLog: Log = (entry) => console.log(JSON.stringify({ component: "broker", ...entry }));
 
-export const slackThreadKey = (ownerKey: string) => ({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" });
+import { resolveSlackThreadKey } from "./slack-thread-key.js";
+export { slackThreadKey } from "./slack-thread-key.js";
 
-interface FailedWorkspace { ownerKey?: unknown; status?: unknown; activeOperationId?: unknown; fence?: unknown }
+interface FailedWorkspace { orgId?: unknown; ownerKey?: unknown; status?: unknown; activeOperationId?: unknown; fence?: unknown }
 /** `orgId` is the org whose Slack team counters the thread was charged to, stamped when it was charged. */
 interface ThreadRecord { thread?: unknown; starterUserId?: unknown; closedAt?: unknown; orgId?: unknown }
 
@@ -68,9 +69,11 @@ async function attemptRelease(client: Client, tableName: string, workspaceId: st
     ExpressionAttributeValues: { ":failed": "PREPARATION_FAILED", ":fence": workspace.fence },
   } };
 
-  const thread = await get<ThreadRecord>(slackThreadKey(workspace.ownerKey));
-  if (thread !== undefined && typeof thread.starterUserId === "string" && thread.closedAt === undefined && typeof thread.thread === "string") {
-    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey, orgId: thread.orgId }, stillFailed);
+  const org = OrgIdSchema.safeParse(workspace.orgId);
+  const threadKey = org.success ? await resolveSlackThreadKey({ documentClient: client, tableName }, org.data, workspace.ownerKey) : undefined;
+  const thread = threadKey === undefined ? undefined : await get<ThreadRecord>(threadKey);
+  if (threadKey !== undefined && thread !== undefined && typeof thread.starterUserId === "string" && thread.closedAt === undefined && typeof thread.thread === "string") {
+    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey, orgId: thread.orgId, key: threadKey }, stillFailed);
   }
   // A Slack thread with no charge left falls through: it has no task pointer, so it ends "not_charged".
 
@@ -98,7 +101,7 @@ async function releaseThreadCharge(
   client: Client,
   tableName: string,
   get: <T>(key: { pk: string; sk: string }) => Promise<T | undefined>,
-  thread: { subject: string; starterUserId: string; ownerKey: string; orgId: unknown },
+  thread: { subject: string; starterUserId: string; ownerKey: string; orgId: unknown; key: { pk: string; sk: string } },
   stillFailed: Record<string, unknown>,
 ): Promise<"slack_thread" | "retry"> {
   const { teamId } = parseSlackThreadSubject(thread.subject);
@@ -113,7 +116,7 @@ async function releaseThreadCharge(
       stillFailed,
       { Update: {
         TableName: tableName,
-        Key: slackThreadKey(thread.ownerKey),
+        Key: thread.key,
         // The charge's marker: the thread's next preparation charges again and records its starter.
         UpdateExpression: "REMOVE starterUserId",
         ConditionExpression: "starterUserId = :user AND attribute_not_exists(closedAt)",

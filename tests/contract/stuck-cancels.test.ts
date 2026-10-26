@@ -470,7 +470,7 @@ describe("a failed first cancel (issue 202)", () => {
   it("tells a Slack thread in plain words that its workspace is free again", async () => {
     const postNote = vi.fn<PostNote>(async () => undefined);
     const { db, sweep } = setup({ postNote });
-    const task = failedCancel(db, 1, {}, { ownerKey: "owner-1" });
+    const task = failedCancel(db, 1, {}, { ownerKey: "owner-1", orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
     db.set({ pk: "SLACK_THREAD#owner-1", sk: "META", workspaceId: task.workspaceId, thread: "T1/C1/1695500000.000001" });
     await sweep([{ workspaceId: task.workspaceId, compute: "gone" }]);
     expect(postNote).toHaveBeenCalledExactlyOnceWith({ channelId: "C1", threadTs: "1695500000.000001" }, FAILED_CANCEL_RELEASED_MESSAGE);
@@ -516,7 +516,7 @@ describe("a failed first cancel (issue 202)", () => {
   it("logs a note that could not be posted by its error name, and still counts the release", async () => {
     const failure = Object.assign(new Error("PLANTED-SLACK-MESSAGE"), { name: "SlackSecretInvalid" });
     const { db, sweep, logs } = setup({ postNote: async () => { throw failure; } });
-    const task = failedCancel(db, 1, {}, { ownerKey: "owner-1" });
+    const task = failedCancel(db, 1, {}, { ownerKey: "owner-1", orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
     db.set({ pk: "SLACK_THREAD#owner-1", sk: "META", workspaceId: task.workspaceId, thread: "T1/C1/1695500000.000001" });
     expect((await sweep([{ workspaceId: task.workspaceId, compute: "gone" }])).interrupted).toEqual([task.operationId]);
     expect(task.meta()).not.toHaveProperty("activeOperationId");

@@ -1,3 +1,4 @@
+import { slackThreadKey } from "./slack-thread-key.js";
 // packages/broker/src/aws/activity-index.ts
 // Spec 025 A4, A5: the failure index (FR-038) and the usage index, from the state table's stream.
 // The outbox publisher runs it after dispatching; it is best effort, and never fails the batch.
@@ -126,7 +127,13 @@ async function contextOf(store: IndexStore, workspaceId: string): Promise<Contex
     return { project, origin: "ai_tool", ...orgId, taskId, ...(developerName === undefined ? {} : { developerName }) };
   }
   const ownerKey = text(workspace?.ownerKey);
-  const storedThread = ownerKey === undefined ? undefined : text((await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }))?.thread);
+  let storedThread: string | undefined;
+  if (ownerKey !== undefined && stored.success) {
+    const scoped = await store.get(slackThreadKey(stored.data, ownerKey));
+    const legacy = scoped === undefined ? await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }) : undefined;
+    const row = scoped ?? (legacy?.workspaceId === workspaceId && (legacy.orgId === undefined || legacy.orgId === stored.data) ? legacy : undefined);
+    storedThread = text(row?.thread);
+  }
   // A thread subject too long to parse is left out: the failure is still listed, without its link.
   const thread = storedThread !== undefined && storedThread.length <= THREAD_MAX ? storedThread : undefined;
   return { project, origin: "slack", ...orgId, ...(thread === undefined ? {} : { thread }) };

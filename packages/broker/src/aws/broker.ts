@@ -334,7 +334,8 @@ import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from ".
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
-import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
+import { releaseFailedPreparation } from "./failed-preparation.js";
+import { resolveSlackThreadKey } from "./slack-thread-key.js";
 import { closeSetupCheck } from "./setup-check-close.js";
 import { requireSameRequest } from "../org/request-records.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -4401,10 +4402,10 @@ async function startThreadWorkspaceClose(
     throw agentXError("CONFIG_INVALID", "discard_unpublished must be a boolean");
   }
   const discardUnpublished = input.discard_unpublished === true;
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (!workspace) return { outcome: "NOT_FOUND" };
   if (discardUnpublished) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     if (typeof thread?.starterUserId !== "string" || thread.starterUserId !== identity.slack.requester.userId) {
       return { outcome: "REFUSED", reason: "not_owner" };
     }
@@ -4414,7 +4415,7 @@ async function startThreadWorkspaceClose(
   // #213: a failed preparation that was released holds no slot and has nothing to check, and a
   // lazy turn was told it has no compute; answered as an UNPREPARED thread is.
   if (workspace.status === "PREPARATION_FAILED" && !workspace.activeOperationId) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     if (typeof thread?.starterUserId !== "string") return { outcome: "NOT_FOUND" };
   }
   if (workspace.status === "CLOSED" && workspace.closedAt) {
@@ -4592,7 +4593,7 @@ async function completeThreadWorkspaceClose(
   if (identity.sharedTask !== undefined) throw agentXError("FORBIDDEN", SHARED_CLOSE_REFUSED);
   uuid(input.requestId, "requestId");
   const operationId = uuid(input.operationId, "operationId");
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   const operation = await requireOperation(dependencies, workspace.id, operationId);
   if (operation.kind !== "close") throw agentXError("CONFIG_INVALID", "operation is not a workspace close");
@@ -4614,7 +4615,7 @@ async function completeThreadWorkspaceClose(
   const parsedPreflight = WorkspaceClosePreflightResultSchema.parse(operation.result);
   if (!parsedPreflight.safeToClose && operation.discardUnpublished !== true) throw agentXError("WORKSPACE_NOT_READY", "workspace contains unpublished work");
   if (operation.discardUnpublished === true) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     const requestedBy = operation.requestedBy;
     if (typeof thread?.starterUserId !== "string"
       || thread.starterUserId !== slack.requester.userId
@@ -4629,7 +4630,7 @@ async function completeThreadWorkspaceClose(
   await deleteWorkspaceCompute(dependencies, workspace);
   const storageReleased = closeReleasesStorage(workspace);
 
-  const thread = await getItem<{ starterUserId?: string; closedAt?: string }>(dependencies, slackThreadKey(identity.ownerKey));
+  const thread = await getItem<{ starterUserId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
   if (typeof thread?.starterUserId !== "string") throw agentXError("CONFIG_INVALID", "Slack thread starter is missing");
   const orgId = requireOrgId(identity.orgId);
   const organizationKey = slackOrganizationLimitKey(orgId, slack.thread.teamId);
@@ -4669,7 +4670,7 @@ async function completeThreadWorkspaceClose(
       } },
       { Update: {
         TableName: dependencies.tableName,
-        Key: slackThreadKey(identity.ownerKey),
+        Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
         UpdateExpression: "SET closedAt = :closedAt, closeOperationId = :operation",
         ConditionExpression: "attribute_not_exists(closedAt)",
         ExpressionAttributeValues: { ":closedAt": closedAt, ":operation": operationId },
@@ -4765,7 +4766,7 @@ async function ensureThreadWorkspace(
   // an explicit viewer. Everyone else keeps today's behaviour.
   const requesterRole = await slackRequesterRole(dependencies, identity);
   if (requesterRole === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(slack.binding.projectName));
-  const threadWorkspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const threadWorkspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (threadWorkspace) {
     if (threadWorkspace.status === "CLOSED" && threadWorkspace.closedAt) {
       return { outcome: "CLOSED", workspaceId: threadWorkspace.id, closedAt: threadWorkspace.closedAt };
@@ -4825,7 +4826,7 @@ async function ensureThreadWorkspace(
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         // #213: the starter is recorded with the charge, so a failed preparation can always find it.
-        ...threadChargeItems(dependencies, identity, effective, attempted.workspace.id),
+        ...threadChargeItems(dependencies, identity, effective, attempted.workspace.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey)),
       ] }));
       preparation = attempted;
       break;
@@ -4893,7 +4894,7 @@ async function createUnpreparedThreadWorkspace(
         // Capture creation provenance atomically, before a later participant can touch the thread.
         { Update: {
           TableName: dependencies.tableName,
-          Key: slackThreadKey(identity.ownerKey),
+          Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
           UpdateExpression: "SET #creator = if_not_exists(#creator, :creator)",
           ExpressionAttributeNames: { "#creator": "creator" },
           ExpressionAttributeValues: { ":creator": { userId: identity.slack!.requester.userId, ...(identity.slack!.requesterName === undefined ? {} : { name: identity.slack!.requesterName }) } },
@@ -4981,7 +4982,7 @@ async function prepareThreadWorkspace(
     }
     return { outcome: "WORKSPACE", workspaceId: workspace.id, status: workspace.status, operationId: (await activeOperationForChannel(dependencies, workspace)).operationId, created: false };
   }
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey)
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey)
     ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   if (workspace.status === "CLOSED" && workspace.closedAt) {
@@ -5091,7 +5092,7 @@ async function startThreadPreparation(
       } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
-      ...threadChargeItems(dependencies, identity, effective, workspace.id),
+      ...threadChargeItems(dependencies, identity, effective, workspace.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey)),
     ] }));
   } catch (error) {
     if (!isConditional(error)) throw error;
@@ -5122,6 +5123,7 @@ function threadChargeItems(
   identity: AuthenticatedIdentity,
   effective: SlackServiceConfiguration,
   workspaceId: string,
+  threadKey: { pk: string; sk: string },
 ): TransactItems {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
@@ -5153,7 +5155,7 @@ function threadChargeItems(
     } },
     { Update: {
       TableName: dependencies.tableName,
-      Key: slackThreadKey(identity.ownerKey),
+      Key: threadKey,
       // The same record recordThreadRequester(..., true) writes, so a missing thread row is
       // created whole and the charged member is among its requesters.
       UpdateExpression: "SET #entity = :entity, #thread = if_not_exists(#thread, :thread), #workspace = if_not_exists(#workspace, :workspace), starterUserId = :user, #starter = :starter, orgId = :org ADD #requesters :users",
@@ -5507,7 +5509,7 @@ async function recordThreadRequester(
   if (!slack) return;
   await dependencies.documentClient.send(new UpdateCommand({
     TableName: dependencies.tableName,
-    Key: slackThreadKey(identity.ownerKey),
+    Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
     UpdateExpression: [
       "SET #entity = :entity, #thread = if_not_exists(#thread, :thread), #workspace = if_not_exists(#workspace, :workspace)",
       ...(starter ? [", #starter = if_not_exists(#starter, :user), #creator = if_not_exists(#creator, :creator)"] : []),
@@ -5543,7 +5545,7 @@ async function attributedBody(
   }
   const slack = identity.slack;
   if (!slack) return body;
-  const thread = await getItem<{ requesters?: Iterable<string> }>(dependencies, slackThreadKey(identity.ownerKey));
+  const thread = await getItem<{ requesters?: Iterable<string> }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
   const requesters = [...new Set([...(thread?.requesters ?? []), slack.requester.userId])].sort();
   const link = `https://slack.com/archives/${slack.thread.channelId}/p${slack.thread.threadTs.replace(".", "")}`;
   const attribution = `Requested in Slack thread ${link} by ${requesters.join(", ")}.`;
@@ -5606,18 +5608,18 @@ async function retryThreadPreparation(
   if (!slack || !limits) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
   let current = workspace;
   for (let attempt = 0; attempt < THREAD_RETRY_ATTEMPTS; attempt += 1) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     const starter = typeof thread?.starterUserId === "string" ? thread.starterUserId : undefined;
     const effective = starter === undefined ? await effectiveSlackLimits(dependencies, requireOrgId(identity.orgId), limits) : undefined;
     if (effective !== undefined) await healSlackMemberSlots(dependencies, requireOrgId(identity.orgId), slack.requester, effective);
     const charge: TransactItems = effective === undefined
       ? [{ ConditionCheck: {
         TableName: dependencies.tableName,
-        Key: slackThreadKey(identity.ownerKey),
+        Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
         ConditionExpression: "starterUserId = :user",
         ExpressionAttributeValues: { ":user": starter },
       } }]
-      : threadChargeItems(dependencies, identity, effective, current.id);
+      : threadChargeItems(dependencies, identity, effective, current.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     try {
       const retried = await retryWorkspacePreparation(dependencies, identity, requestId, identity.ownerKey, project, current, charge);
       return { status: "PREPARING", operationId: retried.operationId };
@@ -6681,8 +6683,9 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     // A thread's work has no task record: the org must still be open and the member the key is for still in it (Task 21, Re-check R-2).
     // Check the requester independently of the payer lookup: removing membership makes linkedRequester return undefined,
     // but must not downgrade previously attributable work to anonymous org-funded work (C1).
-    const requesterId = current.requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
-      "kind" in current.requestedBy! ? current.requestedBy!.developerId : developerIdForSlackUser(current.requestedBy!.userId),
+    const requestedBy = current.requestedBy;
+    const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
+      "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
     ));
     await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
     return {
@@ -7927,7 +7930,7 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const existingWorkflowThread = await getItem(dependencies, sharedTaskKey(thread));
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, slackThreadSubject(thread));
-  const existingThreadTask = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, slackThreadKey(threadOwnerKey));
+  const existingThreadTask = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, await slackTeamOrg(dependencies, thread.teamId), threadOwnerKey));
   if (existingWorkflowThread !== undefined || (typeof existingThreadTask?.workspaceId === "string" && existingThreadTask.closedAt === undefined)) {
     throw agentXError("WORKSPACE_BUSY", "this Slack thread already has a task; start the workflow in a new thread");
   }
@@ -8453,11 +8456,12 @@ async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: S
     return cancelRunningTask(dependencies, workspace, { requestedBy: requester },
       sharedStopFences(dependencies, thread, shared, task, workspace, access.peopleRevision));
   }
+  const orgId = await slackTeamOrg(dependencies, thread.teamId);
   const ownerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, slackThreadSubject(thread));
-  const record = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, slackThreadKey(ownerKey));
+  const record = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
   if (typeof record?.workspaceId !== "string" || record.closedAt !== undefined) return { outcome: "NOTHING_RUNNING" };
   const workspace = await requireWorkspace(dependencies, record.workspaceId);
-  if (workspace.ownerKey !== ownerKey) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
+  if (workspace.ownerKey !== ownerKey || workspace.orgId !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
   return cancelRunningTask(dependencies, workspace, { requestedBy: requester });
 }
 
@@ -15787,10 +15791,13 @@ async function getDefaultWorkspace(
 
 async function getThreadWorkspace(
   dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
   ownerKey: string,
 ): Promise<WorkspaceInstance | undefined> {
-  const thread = await getItem<{ workspaceId?: string }>(dependencies, slackThreadKey(ownerKey));
-  return typeof thread?.workspaceId === "string" ? requireWorkspace(dependencies, thread.workspaceId) : undefined;
+  const thread = await getItem<{ workspaceId?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
+  if (typeof thread?.workspaceId !== "string") return undefined;
+  const workspace = await requireWorkspace(dependencies, thread.workspaceId);
+  return workspace.orgId === orgId && workspace.ownerKey === ownerKey ? workspace : undefined;
 }
 
 /**

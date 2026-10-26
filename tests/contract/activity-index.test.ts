@@ -45,7 +45,7 @@ const taskWorkspace = [
 ];
 
 describe("the failure index (FR-038, A5)", () => {
-  it("indexes a Slack task that ends FAILED, with its thread as the turn record link", async () => {
+  it("indexes a Slack task that ends FAILED without disclosing an unscoped legacy thread", async () => {
     const index = store(slackWorkspace);
     const result = await indexActivity([modified(operation({}), operation({
       status: "FAILED", error: "npm test exited 1", updatedAt: "2026-09-30T08:15:00.000Z", requestedBy: { teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" },
@@ -57,7 +57,6 @@ describe("the failure index (FR-038, A5)", () => {
       operationId: OPERATION, workspaceId: WORKSPACE, project: "payments", origin: "slack",
       requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" },
       kind: "task", status: "FAILED", category: "task_failed", error: "npm test exited 1", endedAt: "2026-09-30T08:15:00.000Z",
-      thread: "T0BSHLLUGBD/C0123456789/1695500000.000100",
     }]);
   });
 
@@ -129,7 +128,7 @@ describe("the usage index (A5, A9)", () => {
       pk: orgUsageDayPk(TEST_ORG, "2026-09-30"), sk: `2026-09-30T08:10:00.000Z#${OPERATION}`, entityType: "USAGE_INDEX",
       indexExpiresAt: Math.floor(Date.parse("2026-09-30T08:10:00.000Z") / 1000) + 30 * 86_400,
       operationId: OPERATION, workspaceId: WORKSPACE, project: "payments", origin: "slack",
-      requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" }, thread: "T0BSHLLUGBD/C0123456789/1695500000.000100",
+      requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" },
       at: "2026-09-30T08:10:00.000Z", durationMs: 600_000, inputTokens: 1_050, outputTokens: 200, costUsd: 0.42,
     });
   });
