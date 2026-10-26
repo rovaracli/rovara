@@ -1,6 +1,6 @@
 // Legacy Slack shares use the session's live authority and the existing share DELETE route.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@agentx/contracts";
+import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionBindingKey, sessionSurfaceKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@agentx/contracts";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { widenedShareMessage } from "../developer/share-messages.js";
 import type { TransactItem } from "../agents/table-writes.js";
@@ -88,6 +88,18 @@ export async function undoCodeShare(deps: SessionShareDependencies, caller: Sess
   if (task.share?.threadTs !== undefined) items.push(restore === undefined
     ? { Delete: { TableName: deps.tableName, Key: sharedTaskKey({ teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs }) } }
     : { Update: { TableName: deps.tableName, Key: sharedTaskKey({ teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs }), UpdateExpression: "SET #mode = :mode", ExpressionAttributeNames: { "#mode": "mode" }, ExpressionAttributeValues: { ":mode": restore.mode } } });
+  if (restore === undefined && task.share?.threadTs !== undefined) {
+    const binding = { kind: "slack_thread" as const, teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs };
+    items.push(
+      { Delete: { TableName: deps.tableName, Key: sessionBindingKey(caller.orgId, sessionId, "slack_thread"),
+        ConditionExpression: "attribute_not_exists(pk) OR (orgId = :org AND sessionId = :session AND binding.teamId = :team AND binding.channelId = :channel AND binding.threadTs = :thread)",
+        ExpressionAttributeValues: { ":org": caller.orgId, ":session": sessionId, ":team": binding.teamId, ":channel": binding.channelId, ":thread": binding.threadTs },
+      } },
+      { Delete: { TableName: deps.tableName, Key: sessionSurfaceKey(caller.orgId, binding),
+        ConditionExpression: "attribute_not_exists(pk) OR (orgId = :org AND sessionId = :session)", ExpressionAttributeValues: { ":org": caller.orgId, ":session": sessionId },
+      } },
+    );
+  }
   await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
   return { removed: true };
 }
