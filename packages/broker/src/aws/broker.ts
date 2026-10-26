@@ -6679,7 +6679,12 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const taskKeyIds = current.modelKeyIds ?? [];
     const keyed = slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer);
     // A thread's work has no task record: the org must still be open and the member the key is for still in it (Task 21, Re-check R-2).
-    await requireOrgOpenFor(dependencies, current.orgId, keyed === undefined ? [] : [keyed]);
+    // Check the requester independently of the payer lookup: removing membership makes linkedRequester return undefined,
+    // but must not downgrade previously attributable work to anonymous org-funded work (C1).
+    const requesterId = current.requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
+      "kind" in current.requestedBy! ? current.requestedBy!.developerId : developerIdForSlackUser(current.requestedBy!.userId),
+    ));
+    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
     return {
       orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),
