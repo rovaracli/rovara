@@ -390,6 +390,7 @@ import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
+import { rovaraCodeV2LiveFromEnvironment } from "../rovara-code/v2-switch.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -1169,7 +1170,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
-    ...(agents.rovaraCodeV2Live === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live }),
+    // Rovara Code v2 is on per environment: the explicit dependency (tests) wins, else the packed setting (RovaraCodeV2Enabled, off by default). Only "true" turns it on.
+    ...((agents.rovaraCodeV2Live ?? (rovaraCodeV2LiveFromEnvironment(process.env) ? true : undefined)) === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live ?? true }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
     ...(routing === undefined ? {} : { modelRouting: routing }),
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),

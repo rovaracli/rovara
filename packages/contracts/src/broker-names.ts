@@ -145,6 +145,8 @@ export const BROKER_SETTINGS = {
   signInSlackSince: { code: "sn", variable: "DEVELOPER_SIGNIN_SLACK_SINCE" },
   oidcSince: { code: "os", variable: "DEVELOPER_OIDC_SINCE" },
   mcpConfirmElicitation: { code: "mc", variable: "MCP_CONFIRM_ELICITATION" },
+  // Rovara Code v2, on per environment (stack parameter RovaraCodeV2Enabled, off by default): the broker reads it as rovaraCodeV2Live.
+  rovaraCodeV2: { code: "rv", variable: "AGENTX_ROVARA_CODE_V2_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

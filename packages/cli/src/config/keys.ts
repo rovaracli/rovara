@@ -110,6 +110,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
     target: parameter("control-plane", "AuditLockProfile"), parse: oneOf("audit.lock", ["production", "trial"]),
   },
   { key: "mcp.confirmElicitation", description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button or the CLI", target: parameter("control-plane", "McpConfirmElicitation"), defaultValue: "enabled", parse: oneOf("mcp.confirmElicitation", ["enabled", "disabled"]) },
+  { key: "rovaraCode.v2", description: "true: Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment and an admin may adopt it; false: every org stays on version 1. Existing tasks keep their version", target: parameter("control-plane", "RovaraCodeV2Enabled"), defaultValue: "false", parse: oneOf("rovaraCode.v2", ["true", "false"]) },
 ];
 
 export function configKey(name: string): ConfigKey {
