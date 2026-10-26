@@ -179,7 +179,7 @@ async function nameOf(deps: SessionTakeOverDependencies, developerId: string): P
  * for them (Plan 3's refusal, and nothing is written). It makes a pending change for the caller alone to decide and answers `202` with the ticketed link; nothing changes before it
  * is confirmed. The same `requestId` answers the same approval.
  */
-export async function askTakeOver(deps: SessionTakeOverDependencies, caller: ShareCaller, sessionId: string, body: unknown, approvals?: ApprovalDependencies): Promise<{ status: 202; body: NeedsConfirmation }> {
+export async function askTakeOver(deps: SessionTakeOverDependencies, caller: ShareCaller, sessionId: string, body: unknown, approvals?: ApprovalDependencies): Promise<{ status: 202; body: NeedsConfirmation; expiresAt: string }> {
   const input = parseBody(body);
   const access = await requireTakeOver(deps, caller, sessionId);
   if (approvals === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
@@ -196,7 +196,7 @@ export async function askTakeOver(deps: SessionTakeOverDependencies, caller: Sha
   });
   // A replay of a request that was decided since is not waiting any more.
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
-  return confirmationReply(approvals, caller, record);
+  return { ...await confirmationReply(approvals, caller, record), expiresAt: record.expiresAt };
 }
 
 // ---- the page's facts

@@ -515,8 +515,8 @@ export const confirmTaskPeopleProposal = (deps: DeveloperTaskRouteDependencies, 
   confirmPeopleProposal(taskPeopleEffectsDependencies(deps), caller, taskId, requestId);
 export const proposeTaskPeopleRoleForPage = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
   input: z.infer<typeof TaskPeopleRoleRequestSchema>) => proposeTaskPeopleRole(taskPeopleEffectsDependencies(deps), caller, taskId, input);
-export const proposeTaskOwnershipForPage = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
-  input: z.infer<typeof TaskPeopleTakeOwnershipRequestSchema>) => proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
+export const proposeTaskOwnershipForPage = async (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
+  input: z.infer<typeof TaskPeopleTakeOwnershipRequestSchema>) => (await codeOwnershipConfirmation(deps, caller, taskId, input))?.pending ?? proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
 
 export async function getTaskPersonPresentationName(deps: DeveloperTaskRouteDependencies, taskId: string, personId: string): Promise<string | undefined> {
   return (await getTaskPeoplePresentation(deps, taskId)).find((person) => person.personId === personId)?.name;
@@ -524,8 +524,8 @@ export async function getTaskPersonPresentationName(deps: DeveloperTaskRouteDepe
 export const submitSlackTaskPeopleRole = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
   input: { requestId: string; expectedPeopleRevision: number; slackUserId: string; role: "owner" | "commenter" | "viewer" | "denied"; teamId: string; channelId: string }) =>
   commitSlackTaskPeopleRole(taskPeopleEffectsDependencies(deps), caller, taskId, input);
-export const submitSlackTaskOwnership = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
-  input: { requestId: string; expectedPeopleRevision: number }) => commitSlackTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
+export const submitSlackTaskOwnership = async (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string,
+  input: { requestId: string; expectedPeopleRevision: number }) => (await codeOwnershipConfirmation(deps, caller, taskId, input))?.pending ?? commitSlackTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input);
 
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const iso = (deps: Pick<DeveloperTaskRouteDependencies, "now">) => new Date(deps.now()).toISOString();
@@ -7923,6 +7923,17 @@ async function retryTaskWorkflowFeedback(deps: DeveloperTaskRouteDependencies, c
   return { ...read, started: retried.started };
 }
 
+/** All legacy Code ownership surfaces use the same live session confirmation. */
+async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, input: { requestId: string }) {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!codeTask(task)) return undefined;
+  const sessions = deps.agentRuns?.agentSessions;
+  if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+  const reply = await askTakeOver(sessions, caller, task.sessionId, { requestId: input.requestId }, deps.agentRuns);
+  return { reply, pending: { status: "PENDING" as const, requestId: input.requestId, confirmationUrl: reply.body.confirmUrl, expiresAt: reply.expiresAt } };
+}
+
 /** Every developer task route answers 200 with its body; errors are AgentXErrors. */
 export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (request.method === "POST" && url.pathname === "/v1/dev/tasks") return startTask(deps, caller, body(request));
@@ -7948,14 +7959,8 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "people/take-ownership") {
     const input = parse(TaskPeopleTakeOwnershipRequestSchema, body(request), deps, "people/take-ownership");
-    const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
-    if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
-    if (task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr") {
-      const sessions = deps.agentRuns?.agentSessions;
-      if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
-      const reply = await askTakeOver(sessions, caller, task.sessionId, { requestId: input.requestId }, deps.agentRuns);
-      return new StatusReply(reply.status, reply.body);
-    }
+    const code = await codeOwnershipConfirmation(deps, caller, taskId, input);
+    if (code !== undefined) return new StatusReply(code.reply.status, code.reply.body);
     return { change: await proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input) };
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "continue") return continueTask(deps, caller, taskId, body(request));

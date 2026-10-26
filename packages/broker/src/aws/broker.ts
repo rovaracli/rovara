@@ -7956,8 +7956,9 @@ async function handleSlackTaskPeople(dependencies: AwsBrokerDependencies, tasks:
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
-  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks }, caller);
-  const access = await resolveTaskAccess(routeDeps, caller, taskId, event.action === "task-people-read" ? "read" : event.action === "task-people-change" ? "peopleManage" : "takeOwnership");
+  const agents = agentRouteDependencies(dependencies, tasks);
+  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, ...(agents === undefined ? {} : { agents }) }, caller);
+  const access = await resolveTaskAccess(routeDeps, caller, taskId, event.action === "task-people-read" ? "read" : event.action === "task-people-change" ? "peopleManage" : "read");
   if (access.task.share?.teamId !== thread.teamId || access.task.share.channelId !== thread.channelId || access.task.share.threadTs !== thread.threadTs) {
     throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   }
