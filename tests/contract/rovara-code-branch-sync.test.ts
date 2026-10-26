@@ -211,11 +211,11 @@ describe("a clean merge of the base, recorded", () => {
 });
 
 describe("a conflict, recorded", () => {
-  const conflicted = (paths: readonly string[], extra: Record<string, unknown> = {}) => recordWorkflowSyncConflict(syncing(extra, "conflict"), { paths, now: at });
+  const conflicted = (paths: readonly string[], extra: Record<string, unknown> = {}) => recordWorkflowSyncConflict(syncing(extra, "conflict"), { paths, baseCommit: BASE_NEW, now: at });
 
   it("starts a conflict round: back at coding, counted, with the first conflicting files by name", () => {
     const next = conflicted(["src/a.ts", "src/b.ts"]);
-    expect(next).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "conflict", fixProblems: ["src/a.ts", "src/b.ts"], fixRounds: { ci: 0, conflict: 1, feedbackAuto: 0 }, programStepId: "build" });
+    expect(next).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "conflict", fixProblems: ["src/a.ts", "src/b.ts"], fixRounds: { ci: 0, conflict: 1, feedbackAuto: 0 }, programStepId: "build", conflictBase: BASE_NEW });
     expect(next.branchSync).toBeUndefined();
     expect(WorkflowSnapshotSchema.safeParse(next).success).toBe(true);
   });
@@ -227,9 +227,15 @@ describe("a conflict, recorded", () => {
     expect(conflicted(["a"], { fixRounds: { ci: 3, conflict: 0, feedbackAuto: 2 } }).fixRounds).toEqual({ ci: 3, conflict: 1, feedbackAuto: 2 });
   });
 
+  it("keeps the base commit of the conflict only for a conflict round", () => {
+    expect(WorkflowSnapshotSchema.safeParse({ ...waiting(), conflictBase: BASE_NEW }).success).toBe(false);
+    expect(WorkflowSnapshotSchema.safeParse({ ...conflicted(["a"]), conflictBase: BASE_NEW }).success).toBe(true);
+    expect(() => recordWorkflowSyncConflict(syncing({}, "conflict"), { paths: ["a"], baseCommit: "short", now: at })).toThrow(WorkflowTransitionError);
+  });
+
   it("is refused once the conflict rounds are used up, and when no merge is running", () => {
     expect(() => conflicted(["a"], { fixRounds: { ci: 0, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: 0 } })).toThrow(WorkflowTransitionError);
-    expect(() => recordWorkflowSyncConflict(waiting(), { paths: ["a"], now: at })).toThrow(WorkflowTransitionError);
+    expect(() => recordWorkflowSyncConflict(waiting(), { paths: ["a"], baseCommit: BASE_NEW, now: at })).toThrow(WorkflowTransitionError);
   });
 
   it("the fix pushed as a merge commit is recorded on the new base, with no head to carry an approval from", () => {
@@ -243,6 +249,8 @@ describe("a conflict, recorded", () => {
     const landed = recordWorkflowPullRequestUpdate(pushing, { updates: [{ repositoryId: "payments", number: 7, headSha: MERGE, headTreeSha: "4".repeat(40) }], now: at });
     const next = recordWorkflowBranchSync(landed, { repositoryId: "payments", number: 7, headSha: MERGE, headTreeSha: "4".repeat(40), baseCommitSha: BASE_NEW, now: at });
     expect(next).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { conflict: 1 } });
+    // The base commit of the conflict is kept only while the round runs.
+    expect(landed.conflictBase).toBeUndefined();
     expect(next.candidate?.repositories).toEqual([{ repositoryId: "payments", commitSha: MERGE, treeSha: "4".repeat(40), baseCommitSha: BASE_NEW }]);
     expect(next.reviewBase).toEqual([{ repositoryId: "payments", baseCommitSha: BASE_NEW }]);
     expect(next.pullRequests?.[0]).toMatchObject({ headSha: MERGE, candidateDigest: next.candidate?.digest });

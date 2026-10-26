@@ -215,6 +215,7 @@ export interface DeveloperRouteDependencies {
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
+  currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
@@ -1723,6 +1724,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.currentPullRequestHead === undefined ? {} : { currentPullRequestHead: deps.currentPullRequestHead }),
+    ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),

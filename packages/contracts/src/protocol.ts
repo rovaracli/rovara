@@ -442,7 +442,7 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         workflowFix: WorkflowFixPayloadSchema.optional(),
         /**
          * A workflow task's merge of the base branch into its pull request's branch (Plan 6 Task 17, `sync` only): the worker merges exactly `baseCommit` (no rebase, no force-push), runs the readiness
-         * checks and pushes to the head it was told (`expectedHeadCommit`); a conflict is returned as the conflicting files, nothing pushed, the workspace left in its merge state. Sent only to a
+         * checks and pushes to the head it was told (`expectedHeadCommit`); a conflict is returned as the conflicting files, nothing pushed, the merge's files left in the workspace. Sent only to a
          * worker whose /ping lists "maintain.workflowSync"; never dropped, because an older worker would merge whatever the base is now.
          */
         workflowSync: z.object({ baseCommit: z.string().regex(/^[a-f0-9]{40}$/), expectedHeadCommit: z.string().regex(/^[a-f0-9]{40,64}$/) }).strict().optional(),

@@ -1,5 +1,5 @@
 // Rovara Code (Plan 6 Task 17), with real Git: the worker merges the base branch into a workflow task's pull request branch (`git merge --no-ff`, never a rebase or a force-push), pushes only to the
-// task's own branch on the head it was told, returns the merged tree, and on a conflict returns the conflicting files and leaves the workspace in its merge state. A conflict round's fix is then
+// task's own branch on the head it was told, returns the merged tree, and on a conflict returns the conflicting files and leaves the merge's files in the workspace. A conflict round's fix is then
 // pushed as a merge commit of exactly the reviewed tree.
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, mkdir, realpath, rm, writeFile, readFile } from "node:fs/promises";
@@ -125,15 +125,16 @@ describe("a workflow task's merge of the base branch", () => {
     expect(await remoteHead(fixture)).toBe(moved);
   });
 
-  it("returns the conflicting files, pushes nothing, and leaves the workspace in its merge state", async () => {
+  it("returns the conflicting files, pushes nothing, and leaves the merge's files in the workspace", async () => {
     const fixture = await createFixture({ conflict: true });
     const base = fixture.conflictBase!;
     const update = sink();
     const result = await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update });
     expect(result).toMatchObject({ action: "sync", commit: fixture.pullRequestHead, previousCommit: fixture.pullRequestHead, reconciled: true, conflicts: ["README.md"] });
     expect(result.treeSha).toBeUndefined();
-    // The workspace holds the merge's own state: the paths are unmerged, the file carries the markers, and the branch is still on the pull request's head.
-    expect((await git(fixture.checkout, ["diff", "--name-only", "--diff-filter=U"])).trim()).toBe("README.md");
+    // The workspace holds the merge's files: the conflicting one carries the markers, the branch is still on the pull request's head, and the index holds nothing unmerged (a candidate can be captured).
+    expect((await git(fixture.checkout, ["diff", "--name-only", "--diff-filter=U"])).trim()).toBe("");
+    expect((await git(fixture.checkout, ["status", "--porcelain=v1"])).trim()).toBe("M README.md");
     const marked = await readFile(join(fixture.checkout, "README.md"), "utf8");
     expect(marked).toContain("<<<<<<<");
     expect(marked).toContain(">>>>>>>");
@@ -231,10 +232,18 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
     await attempt(pushOf(fixture, tree, fixture.pullRequestHead));
   });
 
-  it("with no merge base, an append over unresolved conflicts is still refused", async () => {
-    const { fixture, tree } = await resolved();
+  it("an append over unresolved conflicts is still refused, unless it is the push of a merge: its tree is the reviewed one, whatever the index says", async () => {
+    const fixture = await createFixture({ conflict: true });
+    // A merge made in the workspace by hand leaves unmerged entries in its index.
+    await git(fixture.checkout, ["-c", "protocol.file.allow=always", "fetch", "origin", "main"]);
+    await expect(git(fixture.checkout, ["merge", fixture.conflictBase!])).rejects.toThrow();
+    expect((await git(fixture.checkout, ["diff", "--name-only", "--diff-filter=U"])).trim()).toBe("README.md");
+    await writeFile(join(fixture.checkout, "README.md"), "both versions\n", "utf8");
+    const tree = await temporaryIndexTree({ directory: fixture.checkout });
     await expect(maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, undefined), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() })).rejects.toThrow(/unresolved merge conflicts/);
     expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, fixture.conflictBase), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    expect(await parentsOf(fixture.checkout, result.commit)).toEqual([fixture.pullRequestHead, fixture.conflictBase]);
   });
 });
 

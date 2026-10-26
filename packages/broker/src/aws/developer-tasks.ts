@@ -21,6 +21,8 @@ import {
   AgentXError,
   workflowReviewsSawPartialDiff,
   blockWorkflowPullRequestUpdate,
+  endWorkflowBranchSync,
+  startWorkflowBranchSyncRun,
   nextWorkflowPullRequestUpdate,
   startWorkflowPullRequestUpdate,
   workflowPullRequestUpdateDue,
@@ -299,6 +301,7 @@ import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
 import { publicTrackingItem, readMergeTracking } from "../rovara-code/merge-tracking.js";
 import { ciFixPrompt, ciFixPromptWithoutOutput, readCiEvidence, readLatestCiEvidence } from "../rovara-code/ci-fix.js";
+import { branchSyncRequestId, conflictFixPrompt } from "../rovara-code/branch-sync.js";
 import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
@@ -357,6 +360,8 @@ export interface DeveloperTaskRouteDependencies {
   workflowE2EPublicationChecks?(input: { task: DeveloperTaskRecord; operations: readonly unknown[] }): Promise<TransactItems | undefined>;
   /** The head GitHub shows for one of the task's pull requests now (Plan 6 Task 15: checked before a fix's coding run is paid for). Throws when GitHub cannot say. */
   currentPullRequestHead?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
+  /** The commit the base branch of one of the task's pull requests is at now (Plan 6 Task 17: the commit Rovara merges into the branch). Throws when GitHub cannot say. */
+  currentBaseCommit?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
   /** M1.3 Task 3.7: the per-scenario rows of the task's current browser and API round, for the task page; the screenshot behind a row, by digest; the baseline round asked for at APPROVE. */
   workflowE2EScenarioResults?(input: { task: DeveloperTaskRecord; operations: readonly unknown[]; actor: "owner" | "viewer" }): Promise<E2EScenarioResults | undefined>;
   workflowE2EArtifact?(input: { task: DeveloperTaskRecord; sha256: string }): Promise<{ contentType: "image/jpeg"; bytes: Uint8Array } | undefined>;
@@ -3839,7 +3844,9 @@ async function retryWorkflowImplementation(
   await actionableWorkspace(deps, task);
   // Plan 6 Task 15: a CI fix that stopped before it finished is told again what CI said, so the run that goes on has it in its own prompt, not only in the conversation (and needs no plan text).
   const ciBlock = workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0 ? await readLatestCiEvidence(deps, task.taskId, task.orgId) : undefined;
-  const plan = ciBlock === undefined ? await approvedCodingPlan(deps, workflow) : undefined;
+  // Plan 6 Task 17: and a conflict round that stopped is told which files conflicted (the workspace still holds the merge's files).
+  const conflictFix = workflow.fixSource === "conflict" && sendBackProblems(workflow).length === 0;
+  const plan = ciBlock === undefined && !conflictFix ? await approvedCodingPlan(deps, workflow) : undefined;
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
   if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it");
@@ -3848,6 +3855,9 @@ async function retryWorkflowImplementation(
   void _blockReason;
   const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: iso(deps) };
   const prompt = (notes: string): string => {
+    if (conflictFix) {
+      return `${conflictFixPrompt({ paths: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE })}\n\nThe previous coding run stopped before it finished; continue from the current code.\n\nOwner note: ${request.instructions}${notes}`;
+    }
     if (plan === undefined) {
       return `${ciFixPrompt({ block: ciBlock ?? "", notes: NO_PUBLISH_NOTE })}\n\nThe previous coding run stopped before it finished; continue from the current code.\n\nOwner note: ${request.instructions}${notes}`;
     }
@@ -4329,6 +4339,9 @@ export async function startTaskWorkflowImplementationFromSystem(
   if (workflow.fixSource === "ci" && found.length === 0) {
     const block = await readCiEvidence(deps, taskId, task.orgId, workflow.revision);
     prompt = withTestRule(block === undefined ? ciFixPromptWithoutOutput({ names: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE }) : ciFixPrompt({ block, notes: NO_PUBLISH_NOTE }), next);
+  } else if (workflow.fixSource === "conflict" && found.length === 0) {
+    // Plan 6 Task 17: the workspace is in the state the conflicting merge left; the run is told which files, and the plan stays in its conversation.
+    prompt = withTestRule(conflictFixPrompt({ paths: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE }), next);
   } else {
     const plan = await approvedCodingPlan(deps, workflow);
     const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
@@ -5899,7 +5912,9 @@ async function startTaskWorkflowPullRequestUpdate(
       })),
       ...currentE2EChecks,
       ...(ownerAccess === undefined ? [] : [taskAccessFence(deps.tableName, task.taskId, ownerAccess.peopleRevision)]),
-    ], { candidateDigest: expected.candidateDigest, treeSha: repository.treeSha, baseCommitSha, expectedHeadCommit: pullRequest.headSha, ...(workflow.fixSource === undefined ? {} : { fixSource: workflow.fixSource }) });
+    ], { candidateDigest: expected.candidateDigest, treeSha: repository.treeSha, baseCommitSha, expectedHeadCommit: pullRequest.headSha, ...(workflow.fixSource === undefined ? {} : { fixSource: workflow.fixSource }),
+      // A conflict round's fix is pushed as the merge of the base commit whose merge conflicted (Plan 6 Task 17).
+      ...(workflow.fixSource === "conflict" && workflow.conflictBase !== undefined ? { mergeBaseCommit: workflow.conflictBase } : {}) });
   } catch (error) {
     if (error instanceof AgentXError && error.code === "STALE_FENCE") {
       // The pull request changed on GitHub. A merge at the head AgentX recorded completes the task: GitHub is read again
@@ -5913,6 +5928,80 @@ async function startTaskWorkflowPullRequestUpdate(
       if (fresh?.workflow?.revision !== workflow.revision) return "STALE";
       return block("HEAD_MOVED");
     }
+    // The task moved on (or closed) between the read and the commit: nothing was started, and nothing is due.
+    if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || extraItemsCancelled(error) !== undefined)) {
+      const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
+      if (fresh === undefined || fresh.closedAt !== undefined || fresh.workflow?.revision !== workflow.revision || fresh.workflow.state !== workflow.state) return "STALE";
+    }
+    throw error;
+  }
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
+/**
+ * Plan 6 Task 17: the merge of the base branch into a pull request's branch, started with no one asking. The task is at WAIT_FOR_MERGE/READY with the merge marked (the tracking pass queued it and counted it
+ * against the day's merges). Before any machine is asked for, the pull request's head on GitHub must still be the head the merge is for (a person's push wins, and ends the merge) and the base branch's
+ * commit is read now: that exact commit is merged. The worker then merges it (`git merge --no-ff`: never a rebase, never a force-push), runs the readiness checks and pushes onto that head.
+ * Every way the merge cannot start ends it (the task waits for the merge as it did); WORKSPACE_BUSY and WORKSPACE_NOT_READY propagate so the dispatcher tries again, and so does a GitHub that cannot say.
+ * The request ID comes from the task, revision and base commit, so a recovered or repeated dispatch is the broker's duplicate of the first.
+ */
+export async function startTaskWorkflowBranchSyncFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== expected.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE"
+    || workflow.state !== "READY" || workflow.branchSync === undefined) return "STALE";
+  const marker = workflow.branchSync;
+  const unchanged = {
+    ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+  };
+  const at = { ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":state": "READY" };
+  /** The merge cannot start: it ends, and the task waits for the merge as it did. A task that moved on meanwhile is left as it is. */
+  const end = async (): Promise<"STALE"> => {
+    const now = iso(deps);
+    try {
+      await deps.actions.transact([{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
+        ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow, now), ":now": now, ...at } } }]);
+    } catch (error) {
+      if (!isConditional(error)) throw error;
+    }
+    return "STALE";
+  };
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  const pullRequest = (workflow.pullRequests ?? []).find((entry) => entry.repositoryId === marker.repositoryId && entry.number === marker.number && (entry.state === "OPEN" || entry.state === "UNKNOWN"));
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED" || pullRequest === undefined || pullRequest.headSha !== marker.expectedHeadCommit
+    || deps.currentPullRequestHead === undefined || deps.currentBaseCommit === undefined) return end();
+  // A person's push wins: if the head is no longer the one this merge is for, nothing is merged.
+  if (await deps.currentPullRequestHead(task, pullRequest) !== marker.expectedHeadCommit) return end();
+  const baseCommit = await deps.currentBaseCommit(task, pullRequest);
+  if (!/^[a-f0-9]{40}$/u.test(baseCommit)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the base branch is at");
+  const requestId = branchSyncRequestId(taskId, workflow.revision, baseCommit);
+  const receivedAt = iso(deps);
+  const next = startWorkflowBranchSyncRun(workflow, receivedAt);
+  let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequestUpdate"]>>;
+  try {
+    accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
+      requestId, repository: marker.repositoryId, pullRequestNumber: marker.number, action: "sync",
+    }, (operation) => [
+      { Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
+        ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ...at } } },
+      putNew(turnTable(deps), aiToolTurn({
+        party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "pull_request", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+        request: "Merge the base branch into the pull request's branch",
+        response: `AgentX is merging the base branch into pull request #${marker.number} on ${marker.repositoryId} as operation ${operation.id}.`, operationId: operation.id,
+      })),
+      ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+    ], { sync: { baseCommit, expectedHeadCommit: marker.expectedHeadCommit } });
+  } catch (error) {
+    // The pull request changed on GitHub (its head moved, or it is no longer open): nothing is merged, and the task waits for the merge.
+    if (error instanceof AgentXError && error.code === "STALE_FENCE") return end();
     // The task moved on (or closed) between the read and the commit: nothing was started, and nothing is due.
     if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || extraItemsCancelled(error) !== undefined)) {
       const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));

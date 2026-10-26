@@ -1334,6 +1334,11 @@ const WorkflowSnapshotShapeSchema = z.object({
    * runs it. It names the head the merge is for: a head that is no longer that one (a person pushed) stops it.
    */
   branchSync: WorkflowBranchSyncSchema.optional(),
+  /**
+   * Both versions (Plan 6 Task 17): the commit of the base branch whose merge conflicted, while a conflict round resolves it. The round's fix is pushed as a merge commit with this commit as its second
+   * parent. Present only with `fixSource: "conflict"`.
+   */
+  conflictBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -1351,6 +1356,9 @@ const WorkflowSnapshotShapeSchema = z.object({
   }
   if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
     context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });
+  }
+  if (workflow.conflictBase !== undefined && workflow.fixSource !== "conflict") {
+    context.addIssue({ code: "custom", path: ["conflictBase"], message: "the base commit of a conflict is kept only while a conflict round runs" });
   }
   if (workflow.branchSync !== undefined && !(workflow.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING"))) {
     context.addIssue({ code: "custom", path: ["branchSync"], message: "a merge of the base branch is queued or running only while waiting for the merge" });
@@ -1934,9 +1942,10 @@ export function blockWorkflowPullRequestUpdate(currentInput: unknown, input: { n
 
 /** A snapshot without the marks of a fix in flight (the fix is over: pushed, given up or merged past). */
 function withoutFix(workflow: WorkflowSnapshot): WorkflowSnapshot {
-  const { fixSource: _source, fixProblems: _problems, ...rest } = workflow;
+  const { fixSource: _source, fixProblems: _problems, conflictBase: _conflictBase, ...rest } = workflow;
   void _source;
   void _problems;
+  void _conflictBase;
   return rest;
 }
 
@@ -2102,10 +2111,10 @@ export function blockWorkflowBranchSync(currentInput: unknown, input: { reason: 
 }
 
 /**
- * The merge of the base branch conflicted (nothing was pushed; the worker left the workspace in its merge state): a conflict round begins. The task is back to waiting for the merge and a fix of
+ * The merge of the base branch conflicted (nothing was pushed; the worker left the merge's files in the workspace): a conflict round begins. The task is back to waiting for the merge and a fix of
  * source `conflict` starts, counted, with the first conflicting files by name. Refused when the conflict rounds are used up (the caller stops instead).
  */
-export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths: readonly string[]; now: string }): WorkflowSnapshot {
+export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths: readonly string[]; baseCommit: string; now: string }): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "RUNNING" || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is running");
   if (workflowFixRoundsLeft(current, "conflict") === 0) throw new WorkflowTransitionError("the rounds of this kind of fix are used up");
@@ -2113,7 +2122,9 @@ export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths
   void _branchSync;
   const waiting = WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: input.now });
   const names = input.paths.slice(0, CONFLICT_PATHS_MAX).map((path) => redactText(path.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim().slice(0, 200)).filter((name) => name !== "");
-  return startWorkflowFix(waiting, { source: "conflict", problems: names.slice(0, CI_FIX_PROBLEMS_MAX), now: input.now });
+  if (!/^[a-f0-9]{40}$/.test(input.baseCommit)) throw new WorkflowTransitionError("the base commit of the conflict is invalid");
+  const started = startWorkflowFix(waiting, { source: "conflict", problems: names.slice(0, CI_FIX_PROBLEMS_MAX), now: input.now });
+  return WorkflowSnapshotSchema.parse({ ...started, conflictBase: input.baseCommit });
 }
 
 /**

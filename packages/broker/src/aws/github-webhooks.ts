@@ -437,7 +437,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
         const shown = read.feedback.pullRequest.headCommit;
         if (read.feedback.pullRequest.state !== "open" || read.pr.headSha === undefined || shown === read.pr.headSha) continue;
         const parents = await input.commitParents(read.url, read.pr.headSha, task.orgId).catch(() => [] as string[]);
-        if (parents.length === 1 && parents[0] === shown) throw new GithubWebhookRetryableError("GitHub has not caught up with the pull request's head yet");
+        // A fix is one commit on the head; a merge of the base branch (Plan 6 Task 17) is two, the head first.
+        if ((parents.length === 1 || parents.length === 2) && parents[0] === shown) throw new GithubWebhookRetryableError("GitHub has not caught up with the pull request's head yet");
       }
     }
     // The head AgentX recorded, holding the tree recorded with it (the checked tree, for a record that has none).

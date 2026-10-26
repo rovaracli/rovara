@@ -211,10 +211,13 @@ export async function maintainPullRequest(options: {
         "merge", "--no-edit", "--no-ff", remoteBase,
       ]);
     } catch {
-      // A workflow task's merge that conflicted is a result, not an error: the conflicting files are returned and the workspace is left in the merge's state (files with markers, the paths unmerged,
-      // the branch still on the pull request's head) for the coding round that resolves them. Nothing is pushed.
+      // A workflow task's merge that conflicted is a result, not an error: the conflicting files are returned and the workspace is left with the merge's files (markers in the conflicting ones, the branch
+      // still on the pull request's head) for the coding round that resolves them. Nothing is pushed.
       const unmerged = workflowSync === undefined ? [] : await unmergedPaths(repositoryPath);
       if (unmerged.length > 0) {
+        // The merge's files stay as it left them (markers in the conflicting ones, the base's new files in place). The index goes back to the head's: a candidate cannot be captured from a repository with
+        // unmerged entries, and the coder resolving the files by editing them, as it edits anything, must not also have to mark each one in Git.
+        await git(repositoryPath, ["reset", "--quiet"]);
         const callback = await options.pullRequestUpdateSink({
           repository: repository.name,
           pullRequestNumber: invocation.payload.pullRequestNumber,

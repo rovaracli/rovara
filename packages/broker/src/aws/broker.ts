@@ -123,6 +123,9 @@ import {
   blockWorkflowPullRequestUpdate,
   nextWorkflowPullRequestUpdate,
   recordWorkflowPullRequestUpdate,
+  recordWorkflowBranchSync,
+  endWorkflowBranchSync,
+  CONFLICT_ROUNDS_MAX,
   observeWorkflowPullRequestMergedWithFix,
   workflowPullRequestUpdateDue,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
@@ -379,7 +382,7 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
-import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
@@ -510,12 +513,13 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowPlanRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowPlanRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
 import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
+import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -1708,7 +1712,7 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
       .map((item) => ({ repository: String(item.repository), number: Number(item.number), url: String(item.url), state: item.state as "open" | "closed" | "merged" })),
     acceptTask: (identity, workspaceId, request, extra, options) => acceptTask(dependencies, identity, workspaceId, request, extra, options),
     acceptPullRequest: (identity, workspaceId, request, extra, options) => acceptPullRequest(dependencies, identity, workspaceId, request, extra, options),
-    acceptPullRequestUpdate: (identity, workspaceId, request, extra, workflowCandidate) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, { workflowCandidate }),
+    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : { workflowCandidate: binding }),
     failedPublications: async (workspaceId, candidate) => (await query(`WORKSPACE#${workspaceId}`, "OPERATION#"))
       .filter((item) => {
         const publication = item.publication as OperationRecord["publication"];
@@ -7331,7 +7335,14 @@ async function acceptPullRequestLifecycle(
    * exactly the reviewed tree on the task's pinned base, onto the head the workflow recorded. Only the broker's own
    * dispatch passes it; nothing a person asks for changes a workflow task's pull request.
    */
-  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"] } } = {},
+  options: {
+    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"]; mergeBaseCommit?: string };
+    /**
+     * Plan 6 Task 17: a workflow task's merge of the base branch into its pull request's branch: only a sync, of exactly the base commit named, onto the head the workflow recorded. Only the broker's
+     * own dispatch passes it.
+     */
+    workflowSync?: { baseCommit: string; expectedHeadCommit: string };
+  } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
   // Ruling R60: before any access check, as for acceptPullRequest.
@@ -7340,17 +7351,26 @@ async function acceptPullRequestLifecycle(
   await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
+  const branchSync = options.workflowSync;
   if (candidate !== undefined && (request.action !== "append" || !/^[a-f0-9]{64}$/.test(candidate.candidateDigest)
-    || !/^[a-f0-9]{40}$/.test(candidate.treeSha) || !/^[a-f0-9]{40}$/.test(candidate.baseCommitSha) || !/^[a-f0-9]{40}$/.test(candidate.expectedHeadCommit))) {
+    || !/^[a-f0-9]{40}$/.test(candidate.treeSha) || !/^[a-f0-9]{40}$/.test(candidate.baseCommitSha) || !/^[a-f0-9]{40}$/.test(candidate.expectedHeadCommit)
+    || (candidate.mergeBaseCommit !== undefined && !/^[a-f0-9]{40}$/.test(candidate.mergeBaseCommit)))) {
     throw agentXError("CONFIG_INVALID", "workflow pull request update does not match its reviewed fix");
   }
+  if (branchSync !== undefined && (candidate !== undefined || request.action !== "sync" || !/^[a-f0-9]{40}$/.test(branchSync.baseCommit) || !/^[a-f0-9]{40}$/.test(branchSync.expectedHeadCommit))) {
+    throw agentXError("CONFIG_INVALID", "workflow merge of the base branch does not match its request");
+  }
+  // The head the workflow recorded, for either kind of change the workflow makes to its own pull request.
+  const workflowHead = candidate?.expectedHeadCommit ?? branchSync?.expectedHeadCommit;
+  const workflowBound = workflowHead !== undefined;
   const requestHash = hashJson({
     repository: request.repository,
     pullRequestNumber: request.pullRequestNumber,
     action: request.action,
     ...(request.title === undefined ? {} : { title: request.title }),
     ...(request.body === undefined ? {} : { body: request.body }),
-    ...(candidate === undefined ? {} : { candidateDigest: candidate.candidateDigest, candidateTreeSha: candidate.treeSha }),
+    ...(candidate === undefined ? {} : { candidateDigest: candidate.candidateDigest, candidateTreeSha: candidate.treeSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) }),
+    ...(branchSync === undefined ? {} : { branchSyncBase: branchSync.baseCommit, branchSyncHead: branchSync.expectedHeadCommit }),
   });
   const idempotencyKey = {
     pk: `IDEMPOTENCY#${identity.ownerKey}#${workspaceId}`,
@@ -7365,7 +7385,7 @@ async function acceptPullRequestLifecycle(
   }
   // Ruling A: nothing replaces, reverts, edits, closes or reopens a gated task's pull request through AgentX on request.
   // The workflow's own push of its reviewed fix is the one change it makes, and only its dispatch asks for it.
-  if (candidate === undefined && await gatedTaskWorkspace(dependencies, workspaceId)) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_ACTION_REFUSAL);
+  if (!workflowBound && await gatedTaskWorkspace(dependencies, workspaceId)) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_ACTION_REFUSAL);
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
   const repository = project.definition.repositories.find((candidate) => candidate.name === request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
@@ -7374,7 +7394,7 @@ async function acceptPullRequestLifecycle(
     pullRequestKey(workspaceId, request.repository, request.pullRequestNumber),
   );
   // The workflow's pull request was recorded when AgentX opened it, on the head the workflow recorded too.
-  if (candidate !== undefined && existingRecord?.expectedHeadCommit !== candidate.expectedHeadCommit) {
+  if (workflowBound && existingRecord?.expectedHeadCommit !== workflowHead) {
     throw agentXError("STALE_FENCE", "the pull request's recorded head is not the one the task recorded");
   }
   const scope = await githubScopeOf(dependencies, workspace);
@@ -7543,7 +7563,7 @@ async function acceptPullRequestLifecycle(
     throw agentXError("CONFIG_INVALID", "pull request action is not supported");
   }
   // A workflow task's pull request merged or closed on GitHub since AgentX opened it: it changed there, like a moved head.
-  if (remote.state !== "open") throw agentXError(candidate === undefined ? "CONFIG_INVALID" : "STALE_FENCE", "only an open pull request can be maintained");
+  if (remote.state !== "open") throw agentXError(workflowBound ? "STALE_FENCE" : "CONFIG_INVALID", "only an open pull request can be maintained");
   if (!['READY', 'STOPPED'].includes(workspace.status) || workspace.activeOperationId) {
     throw agentXError(workspace.status === "BUSY" ? "WORKSPACE_BUSY" : "WORKSPACE_NOT_READY", `workspace is ${workspace.status}`);
   }
@@ -7564,7 +7584,8 @@ async function acceptPullRequestLifecycle(
     baseBranch: record.baseBranch,
     expectedHeadCommit: record.expectedHeadCommit,
     codeBuildGates: repository.codeBuildGates ?? [],
-    ...(candidate === undefined ? {} : { workflowCandidate: { candidateDigest: candidate.candidateDigest, treeSha: candidate.treeSha, baseCommitSha: candidate.baseCommitSha } }),
+    ...(candidate === undefined ? {} : { workflowCandidate: { candidateDigest: candidate.candidateDigest, treeSha: candidate.treeSha, baseCommitSha: candidate.baseCommitSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) } }),
+    ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -7589,6 +7610,9 @@ async function acceptPullRequestLifecycle(
       ...(candidate === undefined ? {} : { workflowCandidateTreeSha: candidate.treeSha, workflowBaseCommit: candidate.baseCommitSha }),
       // Which fix it is, for its commit's message (Plan 6 Task 15).
       ...(candidate?.fixSource === undefined ? {} : { workflowFix: { source: candidate.fixSource } }),
+      // A conflict round's fix is a merge commit of the base commit the merge was tried with; a merge of the base names that commit and the head it is for (Plan 6 Task 17).
+      ...(candidate?.mergeBaseCommit === undefined ? {} : { workflowMergeBase: candidate.mergeBaseCommit }),
+      ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
     },
   };
   const outbox = outboxRecord(workspace, invocation);
@@ -7616,7 +7640,7 @@ async function acceptPullRequestLifecycle(
     ] }));
   } catch (error) {
     // The workflow's push, as its publication: a concurrent start of the same request is a duplicate, anything else busy.
-    if (candidate === undefined || !isConditional(error)) throw error;
+    if (!workflowBound || !isConditional(error)) throw error;
     const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
     if (concurrent === undefined) throw acceptancePullRequestCancellation(error, { workspaceId, requestId: request.requestId, action: request.action });
     if (concurrent.payloadHash !== requestHash) throw agentXError("IDEMPOTENCY_CONFLICT", "request ID was reused with another payload");
@@ -12406,7 +12430,7 @@ async function completedTurnItems(
   if (pointer === undefined || table === undefined) return [];
   let ended: { operation: OperationRecord; status: OperationStatus } | undefined;
   const recordsTurn = (record: OperationRecord) => record.kind === "task" || record.kind === "publish"
-    || (record.kind === "maintain" && record.maintenance?.workflowCandidate !== undefined);
+    || (record.kind === "maintain" && (record.maintenance?.workflowCandidate !== undefined || record.maintenance?.workflowSync !== undefined));
   if (recordsTurn(operation)) {
     ended = {
       operation: { ...operation, ...(outcome.result === undefined ? {} : { result: outcome.result }), ...(outcome.error === undefined ? {} : { error: outcome.error }) },
@@ -12696,6 +12720,8 @@ export async function reconcileWorkflowTrackingTask(
   if (tracking === undefined) return observeMerge(taskId, budget);
   // Plan 6 Task 15: failing CI is fixed on Rovara's own pull requests; the slot is filled once for the process.
   installCiFixDecider();
+  // Plan 6 Task 17: keeping the branch up to date (a conflict, or behind a base that requires it) fills the conflict and sync slots.
+  installBranchSyncDeciders();
   // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
   if (task?.orgId !== undefined && dependencies.developer !== undefined) {
@@ -12964,6 +12990,12 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
       return;
     }
+    // Plan 6 Task 17: a merge of the base that could not be started is not a reason to stop the task: it ends, and the task waits for the merge as it did (the day's count keeps a retry bounded).
+    if (item.kind === "SYNC") {
+      await endUnstartedBranchSync(dependencies, item);
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
+      return;
+    }
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     const workflow = task?.workflow;
     const deleteRow = { Delete: { TableName: dependencies.tableName, Key: key, ...sameRow } };
@@ -13009,6 +13041,33 @@ async function companyChoseCriticModel(dependencies: AwsBrokerDependencies, task
   const frozen = await readTaskRecipe(dependencies, taskId, task.orgId);
   const step = frozen?.recipe.steps.find((candidate) => candidate.kind === "plan_critic");
   return step !== undefined && (step.settings as { model?: unknown } | undefined)?.model != null;
+}
+
+/**
+ * Plan 6 Task 17: a merge of the base branch that could not be started, however often it was tried: its dispatch row goes and the task waits for the merge again, as it did. One transaction, conditional on the
+ * row and on the task still waiting to start exactly this merge; a task that moved on, or a row someone else took, is left alone.
+ */
+async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+  const workflow = task?.workflow;
+  const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "READY"
+    || workflow.branchSync === undefined) {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow] }));
+    return;
+  }
+  const now = new Date().toISOString();
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
+      TableName: dependencies.tableName, Key: taskKey(item.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow, now), ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": "READY" },
+    } }] }));
+  } catch (error) {
+    if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.branch_sync_end_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /**
@@ -13487,6 +13546,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       // Plan 6 Task 8: the plan check of a version 2 plan, and the one revision a blocking point of it asks for.
       : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
       : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
+      // Plan 6 Task 17: the merge of the base branch the tracking pass queued.
+      : item.kind === "SYNC" ? workflow?.stage === "WAIT_FOR_MERGE" && workflow.state === "READY" && workflow.branchSync !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
@@ -13512,6 +13573,16 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
         const head = (await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, await githubScopeOf(dependencies, target)) as { headCommit?: unknown } | undefined)?.headCommit;
         if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
         return head;
+      },
+      // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
+      currentBaseCommit: async (target, pullRequest) => {
+        const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
+        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+        const scope = await githubScopeOf(dependencies, target);
+        const remote = await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, scope);
+        const getBranchHead = dependencies.githubPullRequests.getBranchHead;
+        if (getBranchHead === undefined || typeof remote.baseBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
+        return getBranchHead.call(dependencies.githubPullRequests, url, remote.baseBranch, scope);
       },
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
@@ -13541,6 +13612,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       outcome = item.kind === "PUBLISH" || item.kind === "UPDATE"
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
         : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
+        : item.kind === "SYNC" ? await startTaskWorkflowBranchSyncFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : item.kind === "REPLAN" ? await startTaskWorkflowPlanRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
@@ -14429,34 +14501,36 @@ async function completedPullRequestUpdateItems(
   // The pull request must still come from the branch AgentX pushed to: the same tree on another branch is not this push.
   const onReviewedTree = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url
     && current.pullRequest.headBranch === maintenance.headBranch && headTree === binding.treeSha && head !== maintenance.expectedHeadCommit && /^[a-f0-9]{40}$/.test(head);
-  const ownFastForward = async (): Promise<boolean> => {
-    if (record?.expectedHeadCommit === head) return true;
+  // A fix is a fast-forward of the head the task recorded: that head is the commit's only parent. A conflict round's fix is a merge commit (Plan 6 Task 17): the head the task recorded first and the commit of
+  // the base it merged second, and nothing else, whoever says the push is recorded.
+  const mergeBase = binding.mergeBaseCommit;
+  const parentsAreOurs = async (): Promise<boolean> => {
     try {
-      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope)) === JSON.stringify([maintenance.expectedHeadCommit]);
+      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope))
+        === JSON.stringify(mergeBase === undefined ? [maintenance.expectedHeadCommit] : [maintenance.expectedHeadCommit, mergeBase]);
     } catch {
       return false;
     }
   };
-  const landed = onReviewedTree && (pushedCommit !== undefined ? head === pushedCommit && record?.expectedHeadCommit === head : await ownFastForward());
+  const ownFastForward = async (): Promise<boolean> => record?.expectedHeadCommit === head || await parentsAreOurs();
+  const landed = onReviewedTree && (pushedCommit !== undefined ? head === pushedCommit && record?.expectedHeadCommit === head : await ownFastForward()) && (mergeBase === undefined || await parentsAreOurs());
   if (!landed || current.pullRequest.state === "closed") return failed(pushedCommit === undefined ? cause : "HEAD_MOVED");
   // Merged at the pushed fix before its result was recorded: the fix is recorded with the merge, which completes the task.
-  const next = current.pullRequest.state === "merged"
+  const updated = current.pullRequest.state === "merged"
     ? observeWorkflowPullRequestMergedWithFix(workflow, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, observedAt: now }, now)
     : recordWorkflowPullRequestUpdate(workflow, { updates: [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha }], now });
+  // A conflict round's fix was pushed as the merge of the base commit: the candidate is now on that base, so the next review and fix see only Rovara's change.
+  const next = mergeBase !== undefined && current.pullRequest.state !== "merged"
+    ? recordWorkflowBranchSync(updated, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, baseCommitSha: mergeBase, now })
+    : updated;
   const repositoryFullName = githubRepositoryFullName(repository.url);
   // A pull request this save moves to MERGED counts in the project's month of merges, in the same transaction as the move (the task update is conditioned on the revision read, so a replay
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
   const countsAsMerged = current.pullRequest.state === "merged" && pullRequest.state !== "MERGED" && task.orgId !== undefined
     && next.pullRequests?.some((after) => after.repositoryId === pullRequest.repositoryId && after.number === pullRequest.number && after.state === "MERGED") === true;
-  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []), { Update: {
-    TableName: dependencies.tableName,
-    Key: githubWorkflowPullRequestKey(repositoryFullName, pullRequest.number),
-    // The pull request's link to the task now names the fix it holds.
-    UpdateExpression: "SET candidateDigest = :candidate, updatedAt = :now",
-    ConditionExpression: "taskId = :taskId AND #url = :url AND candidateDigest = :previous",
-    ExpressionAttributeNames: { "#url": "url" },
-    ExpressionAttributeValues: { ":candidate": binding.candidateDigest, ":now": now, ":taskId": task.taskId, ":url": pullRequest.url, ":previous": pullRequest.candidateDigest },
-  } },
+  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []),
+  // The pull request's link to the task now names the fix it holds (for a conflict round's, the fix on the new base).
+  ...await candidateRekeyItems(dependencies, task, project, workflow, next, now),
   // A push that landed without its update callback: the pull request's record learns its head, for the next push.
   ...(record !== undefined && record.expectedHeadCommit !== head ? [{ Update: {
     TableName: dependencies.tableName,
@@ -14471,6 +14545,131 @@ async function completedPullRequestUpdateItems(
   // More pull requests to go: the next push is due, as the first one was after the reviews.
   ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "UPDATE", next.candidate.digest, now)] : [])];
+}
+
+/**
+ * The link items of the pull requests whose reviewed code was renamed: each one's link to the task names the candidate it holds, and a merge of the base gives a new candidate. Conditional on the digest read,
+ * so a link that moved meanwhile is the newer writer's and cancels the transaction (the result is then recorded by the next attempt, from what is there).
+ */
+async function candidateRekeyItems(
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, project: Awaited<ReturnType<typeof requireRecordProject>>, before: WorkflowSnapshot, after: WorkflowSnapshot, now: string,
+): Promise<TransactItems> {
+  const items: TransactItems = [];
+  for (const pullRequest of after.pullRequests ?? []) {
+    const earlier = before.pullRequests?.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number);
+    if (earlier === undefined || earlier.candidateDigest === pullRequest.candidateDigest) continue;
+    const repository = project.definition.repositories.find((entry) => entry.name === pullRequest.repositoryId);
+    if (repository === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not part of the task's registered project revision");
+    items.push({ Update: {
+      TableName: dependencies.tableName,
+      Key: githubWorkflowPullRequestKey(githubRepositoryFullName(repository.url), pullRequest.number),
+      UpdateExpression: "SET candidateDigest = :candidate, updatedAt = :now",
+      ConditionExpression: "taskId = :taskId AND #url = :url AND candidateDigest = :previous",
+      ExpressionAttributeNames: { "#url": "url" },
+      ExpressionAttributeValues: { ":candidate": pullRequest.candidateDigest, ":now": now, ":taskId": task.taskId, ":url": pullRequest.url, ":previous": earlier.candidateDigest },
+    } });
+  }
+  return items;
+}
+
+/**
+ * Plan 6 Task 17: the result of the merge of the base branch into a workflow task's pull request branch. Only the merge the task is waiting on counts: it must still be at WAIT_FOR_MERGE/RUNNING with this exact
+ * merge marked; anything else (the pull request merged meanwhile, the task closed or moved on) is dropped. What the merge is comes from what GitHub shows (the head is a new commit whose parents are the head the
+ * task recorded and the base commit it merged, on the task's own branch, with the tree the worker reported), never from the worker's word alone: see `planBranchSyncOutcome`. A clean merge is recorded as the
+ * pull request's new head and a candidate on the new base; a conflict starts a conflict round (the workspace holds the merge's files); GitHub refusing workflow files, or the conflict rounds used up, stops with a
+ * plain text and a stuck milestone; anything else ends the merge with nothing recorded and the task waits for the merge as it did.
+ */
+async function completedBranchSyncItems(
+  dependencies: AwsBrokerDependencies,
+  operation: OperationRecord,
+  task: DeveloperTaskRecord & { workflow: WorkflowSnapshot },
+  terminalStatus: OperationStatus,
+  now: string,
+  result: unknown,
+  terminalError: string | undefined,
+): Promise<TransactItems> {
+  const binding = operation.maintenance?.workflowSync;
+  const maintenance = operation.maintenance;
+  const workflow = task.workflow;
+  const marker = workflow.branchSync;
+  if (binding === undefined || maintenance === undefined || task.closedAt !== undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "RUNNING" || marker === undefined
+    || marker.repositoryId !== maintenance.repository || marker.number !== maintenance.pullRequestNumber || marker.expectedHeadCommit !== binding.expectedHeadCommit) return [];
+  const pullRequest = workflow.pullRequests?.find((entry) => entry.repositoryId === marker.repositoryId && entry.number === marker.number);
+  if (pullRequest === undefined || pullRequest.headSha !== binding.expectedHeadCommit) return [];
+  const taskUpdate = (next: WorkflowSnapshot): TransactItems[number] => ({ Update: {
+    TableName: dependencies.tableName,
+    Key: taskKey(task.taskId),
+    UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+    ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+    ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
+  } });
+  const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+  const repository = project.definition.repositories.find((entry) => entry.name === maintenance.repository);
+  const gateway = dependencies.githubPullRequests;
+  const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
+  const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
+  // What GitHub shows now. A merge the worker says it pushed is never judged without it (the result is then recorded by the next attempt); for a merge that failed, an unreadable GitHub shows nothing.
+  let github: BranchSyncGithub | undefined;
+  try {
+    const getFeedback = gateway.getPullRequestFeedback;
+    if (repository === undefined || getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the merged pull request against the merge");
+    const scope = await githubScopeOf(dependencies, task);
+    const current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
+    let head = current.pullRequest.headCommit;
+    let headTree = current.pullRequest.headTreeSha;
+    // GitHub moves a pull request's head a moment after a push to its branch, and the push's result comes right after it: while the open pull request still shows the head before the push, its branch says what it holds.
+    if (head === binding.expectedHeadCommit && current.pullRequest.state === "open" && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
+      try {
+        const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
+        if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
+          headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
+          head = branchHead;
+        }
+      } catch {
+        // GitHub could not say: the pull request's own head stands.
+      }
+    }
+    const sameRequest = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url;
+    const parents = head !== binding.expectedHeadCommit && gateway.getCommitParents !== undefined ? await gateway.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
+    if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
+  } catch (error) {
+    if (reported !== undefined && reported.commit !== binding.expectedHeadCommit) throw error;
+  }
+  const outcome = planBranchSyncOutcome({
+    workflow, binding: { repositoryId: marker.repositoryId, number: marker.number, baseCommit: binding.baseCommit, expectedHeadCommit: binding.expectedHeadCommit },
+    terminalStatus, terminalError, result: reported, github, baseBranch: maintenance.baseBranch, recordedBranch: maintenance.headBranch, now,
+  });
+  const link = { repository: marker.repositoryId, number: marker.number, url: pullRequest.url };
+  const milestone = (kind: "fixing" | "stuck", text: string, n: number): TransactItems => task.orgId === undefined ? [] : codeMilestoneItems({ tableName: dependencies.tableName }, {
+    kind, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: text.slice(0, 500), pullRequests: [link],
+  }, n);
+  if (outcome.kind === "unchanged") return [taskUpdate(outcome.workflow)];
+  if (outcome.kind === "stopped") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
+  if (outcome.kind === "conflict") {
+    const round = outcome.workflow.fixRounds?.conflict ?? 1;
+    return [
+      taskUpdate(outcome.workflow),
+      workflowDispatchItem(dependencies.tableName, task.taskId, outcome.workflow.revision, "IMPLEMENT", outcome.workflow.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now),
+      ...milestone("fixing", `The branch conflicts with ${maintenance.baseBranch}, so Rovara is resolving it (try ${String(round)} of ${String(CONFLICT_ROUNDS_MAX)}).`, outcome.workflow.revision),
+    ];
+  }
+  // A clean merge, on GitHub: the pull request's record learns its head (the worker's callback usually did already), the link follows the new candidate, and the new head is indexed for check events.
+  const repositoryFullName = githubRepositoryFullName(repository!.url);
+  const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
+  return [
+    taskUpdate(outcome.workflow),
+    ...await candidateRekeyItems(dependencies, task, project, workflow, outcome.workflow, now),
+    ...(record !== undefined && record.expectedHeadCommit !== outcome.headSha ? [{ Update: {
+      TableName: dependencies.tableName,
+      Key: pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber),
+      UpdateExpression: "SET expectedHeadCommit = :head, #state = :state, updatedAt = :now",
+      ConditionExpression: "expectedHeadCommit = :previous",
+      ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":head": outcome.headSha, ":state": "open", ":now": now, ":previous": maintenance.expectedHeadCommit },
+    } }] : []),
+    ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: outcome.headSha, taskId: task.taskId, repositoryId: marker.repositoryId, number: marker.number }, Date.parse(now))),
+  ];
 }
 
 async function readStoredCandidateSourceExport(
@@ -14637,6 +14836,8 @@ async function completedWorkflowItems(
     ...((task.workflow.pullRequests ?? []).length === 0
       ? [(task.workflow.definitionVersion === "1.1.0" ? trackingRecoveryItem : mergeRecoveryItem)(dependencies.tableName, task.taskId, now)] : [])];
   }
+  // Plan 6 Task 17: a merge of the base branch is told apart from the push of a reviewed fix by what the operation was asked.
+  if (operation.kind === "maintain" && operation.maintenance?.workflowSync !== undefined) return completedBranchSyncItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind === "maintain") return completedPullRequestUpdateItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind !== "task" || operation.workflowMode === undefined || task.workflow.state !== "RUNNING") return [];
   // M1.3 Task 3.7b: the candidate's completion refuses a baseline round (the unchanged code, for information only), whatever state the workflow is in. Its result moves nothing here:
