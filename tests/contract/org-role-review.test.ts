@@ -41,3 +41,12 @@ it("fails closed without audit configuration", async () => { const f = fixture()
 it("rolls back role and receipt if the transaction cannot persist its audit", async () => { const f = fixture();f.db.injectFault({ command: "TransactWriteCommand", error: { name: "ServiceUnavailable" } });expect(await f.request()).toEqual({ code: "AUDIT_UNAVAILABLE" });expect(f.role()).toBe("member");expect(f.audit.recorded()).toEqual([]);expect((await f.request()).result).toBeTruthy(); });
 it("succeeds with durable pending audit when queue delivery fails", async () => { const f = fixture();f.audit.queueDown();expect((await f.request()).result).toBeTruthy();expect(f.role()).toBe("admin");expect(f.audit.pending()).toHaveLength(1); });
 it("rejects malformed expected roles and supplied authority fields", async () => { const f = fixture();for (const body of [{ requestId: id, role: "admin", expectedRole: "unknown" }, { requestId: id, role: "admin", expectedRole: "member", orgId: other }]) expect(await f.request(body)).toEqual({ code: "CONFIG_INVALID" }); });
+
+it("validates reviewed changes again at the internal write boundary before any storage access", async () => {
+ const { changeReviewedMemberRole } = await import("../../packages/broker/src/org/role-changes.js");
+ for (const [who, callerOrg, change] of [["bad-id", org, { requestId: id, expectedRole: "member", role: "admin" }], [target, "bad-org", { requestId: id, expectedRole: "member", role: "admin" }], [target, org, { requestId: id, expectedRole: "unknown", role: "admin" }], [target, org, { requestId: id, role: "admin" }]] as const) {
+  const f = fixture(), before = f.db.commandNames().length;
+  await expect(changeReviewedMemberRole(f.deps, { ...f.caller, orgId: callerOrg }, who, change as never)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  expect(f.db.commandNames()).toHaveLength(before);
+ }
+});
