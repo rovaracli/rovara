@@ -104,7 +104,7 @@ function harness(fixture: Fixture = {}, options: { beforeRequest?: () => void } 
 describe("reading a pull request's status", () => {
   it("reads state, head, base, checks with their required flag, reviews and whether the head holds workflow files", async () => {
     const h = harness({
-      pull: pull({ draft: true, mergeable_state: "blocked", requested_reviewers: [{ id: 1 }], requested_teams: [{ id: 2 }] }),
+      pull: pull({ draft: true, mergeable_state: "blocked", requested_reviewers: [{ id: 1, type: "User" }], requested_teams: [{ id: 2 }] }),
       rollup: [
         rollupNode({ name: "build", isRequired: true }),
         rollupNode({ name: "lint", status: "IN_PROGRESS", conclusion: null, databaseId: 78 }),
@@ -127,7 +127,7 @@ describe("reading a pull request's status", () => {
         { name: "lint", status: "pending", required: false, url: "https://github.com/acme/payments/actions/runs/1/job/77", jobId: "78" },
         { name: "ci/external", status: "completed", conclusion: "failure", required: false, url: "https://ci.example.test/run/9" },
       ],
-      requiredChecks: [{ name: "build" }], baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2,
+      requiredChecks: [{ name: "build" }], baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2, requestedReviewerIds: ["1"],
       reviews: [{ githubUserId: "501", login: "reviewer", userType: "User", state: "APPROVED", commitId: HEAD, submittedAt: "2026-10-25T11:00:00.000Z" }],
     });
   });

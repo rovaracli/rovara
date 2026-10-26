@@ -5,7 +5,7 @@ import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
 import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
 import {
-  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
+  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requestedReviewerIds, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
   type RequiredCheck,
   type PullRequestCheck, type PullRequestReview, type PullRequestStatus,
 } from "./github-pull-status.js";
@@ -723,7 +723,7 @@ export class GitHubAppCredentialProvider {
       ...(typeof raw.mergeable === "boolean" ? { mergeable: raw.mergeable } : {}),
       ...(behindBy === undefined ? {} : { behindBy }), checks, ...(checksUnavailable ? { checksUnavailable: true as const } : {}), requiredChecks,
       baseHasRequiredChecks: requiredChecks.length > 0 || checks.some((check) => check.required),
-      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
+      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), ...(requestedReviewerIds(raw).length === 0 ? {} : { requestedReviewerIds: requestedReviewerIds(raw) }), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
     };
   }
 
