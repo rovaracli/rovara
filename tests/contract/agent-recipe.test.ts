@@ -16,7 +16,7 @@ import {
   type RecipeOverlay,
   type ResolvedRecipe,
   type ResolvedStep,
-} from "../../packages/contracts/src/agent-recipe.js";
+} from "../../packages/contracts/src/agent-recipe-node.js";
 
 const MIXING = "steps: a recipe can't mix coding steps and agent steps; link the two agents in a chain instead";
 const PULL_REQUEST = "steps: a pull request step needs a check step and a review step with both reviewers after the last build step";

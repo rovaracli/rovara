@@ -1,18 +1,62 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/audit-verifier" },
-    { "path": "packages/contracts" },
-    { "path": "packages/verifier" },
-    { "path": "packages/model-runtime" },
-    { "path": "packages/model-proxy" },
-    { "path": "packages/gateway" },
-    { "path": "packages/broker" },
-    { "path": "packages/worker" },
-    { "path": "packages/orchestrator" },
-    { "path": "packages/mcp" },
-    { "path": "packages/cli" },
-    { "path": "packages/slack-service" },
-    { "path": "infra" }
+    {
+      "path": "packages/audit-verifier"
+    },
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/verifier"
+    },
+    {
+      "path": "packages/model-runtime"
+    },
+    {
+      "path": "packages/model-proxy"
+    },
+    {
+      "path": "packages/gateway"
+    },
+    {
+      "path": "packages/broker"
+    },
+    {
+      "path": "packages/worker"
+    },
+    {
+      "path": "packages/orchestrator"
+    },
+    {
+      "path": "packages/mcp"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/slack-service"
+    },
+    {
+      "path": "infra"
+    },
+    {
+      "path": "packages/design-tokens"
+    },
+    {
+      "path": "packages/ui"
+    },
+    {
+      "path": "packages/web"
+    },
+    {
+      "path": "tests/web"
+    },
+    {
+      "path": "packages/web/tsconfig.server.json"
+    },
+    {
+      "path": "tests/web-e2e"
+    }
   ]
 }

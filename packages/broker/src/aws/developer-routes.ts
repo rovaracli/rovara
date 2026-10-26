@@ -1,3 +1,10 @@
+import { navigationReadCache } from "../app-nav/read-cache.js";
+import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../app-nav/nav.js";
+import { navigationLive } from "../agent-sessions/live.js";
+import { homeCards } from "../agent-sessions/home.js";
+import { listSessions } from "../agent-sessions/read.js";
+import { listRoster } from "../agents/roster.js";
+import { listVisibleAgents } from "../agents/access.js";
 // Spec 025 FR-009, FR-013, FR-014 and FR-016: GET projects, and the project access check the task
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
@@ -10,6 +17,8 @@ import type { SlackRequestQueue } from "../developer/page-comments.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXNameSchema,
+  RenameOrganizationBodySchema,
+  CreateOrganizationInviteBodySchema,
   CHANNEL_MEMBERS_MAX_CHANNELS,
   DEFAULT_AGENT_ALLOW_DOMAINS,
   DEFAULT_DEVCONTAINER_CONFIG_PATH,
@@ -126,19 +135,20 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, retryApplicationRoundOnPage, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
+import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest, type ChainRouteDependencies } from "../chains/routes.js";
 import { chainRunPortsFor, type ChainRunPorts, type ChainRunnerDependencies } from "../chains/runner.js";
 import { chainControlFor, chainSessionReads, chainSteerReadsFor } from "../chains/session-seam.js";
 import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
+import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
 import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
-import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
@@ -209,6 +219,7 @@ export interface DeveloperRouteDependencies {
   /** Builds E2E projections only from the task's current server-owned admission and evidence references. */
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
+  sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
@@ -220,7 +231,7 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  orgs?: Pick<OrgStore, "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
@@ -1529,8 +1540,8 @@ function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOve
 
 /** The session routes' dependencies for one caller: the task view is built with that caller's task dependencies, so the task's own rules apply inside the session. */
 function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: DeveloperCaller): SessionRouteDependencies {
-  const sessions = sessionDependenciesOf(deps);
-  if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+  const sessions = sessionDependenciesOf(deps), tasks = deps.tasks;
+  if (sessions === undefined || tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   const mint = deps.developer.realtimeToken;
   // Plan 4's chain reads, messages, stop and retry, made for this request: the reads need the org of the person asking, which the broker doesn't have when it is built.
@@ -1538,6 +1549,14 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
     ...(deps.handoff === undefined ? {} : { handoff: deps.handoff }),
+    ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
+      files: deps.sessionDiffFiles,
+      pullRequests: workspaceId => taskDeps.actions.pullRequests(workspaceId),
+      repository: async (orgId, project, revision, repository) => {
+        const registered = await tasks.projectRevision(orgId, project, revision);
+        return registered?.definition.repositories.find(item => item.name === repository)?.url;
+      },
+    } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
     ...(chainDeps === undefined ? {} : {
       chain: chainSessionReads(chainDeps, caller.orgId),
       chainSteer: chainSteerReadsFor(chainDeps),
@@ -1729,7 +1748,7 @@ export function developerTaskRouteDependencies(
   };
 }
 
-export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
   // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
   const authenticateSession = async (sessionId: string) => {
     try { return await authenticateDeveloperSessionId(deps, sessionId); }
@@ -1739,14 +1758,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAuditViewPath(url.pathname)) {
     return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
   }
-  // Plan 5, Task 5: a session's link, for a signed-in browser. Until the web app, a task session's goes to the task's page.
-  if (isSessionLinkPath(url.pathname)) {
-    if (deps.tasks === undefined || sessionDependenciesOf(deps) === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
-    return sessionRedirect({
-      authenticateSession, origin: new URL(deps.developer.issuer).origin, taskPageUrl,
-      read: (caller) => sessionReadDependencies(deps, caller),
-    }, request, url);
-  }
+  // RULING Q37: Plan 7 Task 14 shared links are served exclusively by WebAppFunction.
+  if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.
@@ -1792,8 +1805,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return web(request, url);
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
-  const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
+  if (request.method === "GET" && url.pathname === "/v1/app/models") {
+    if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
+    return getModels(deps.agents, caller, url);
+  }
   if (isAgentRoute(url.pathname)) {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
@@ -1805,13 +1822,17 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeChainRequest(chainDeps, caller, request, url);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
+  if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   // Plan 5, Tasks 17, 18 and 22: `/v1/app/devices*` (the Mac's command poll, and a removal that ends the sessions on it) and `/v1/app/org/local-agents`.
   if (isDeviceRoute(url.pathname)) {
     const log = sessionDependenciesOf(deps)?.log;
     return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(log === undefined ? {} : { log }), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller, request, url);
   }
-  if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/me") {
+    const me = await getAppMe(deps, caller);
+    return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };
+  }
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
@@ -1853,6 +1874,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "POST" && (url.pathname === "/v1/app/projects" || url.pathname === "/v1/dev/projects")) return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
+  if (request.method === "PATCH" && url.pathname === "/v1/app/org") {
+    if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can rename the organization");
+    if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+    const parsed = RenameOrganizationBodySchema.safeParse(jsonBody(request));
+    if (!parsed.success) throw bodyError(parsed.error);
+    await deps.orgs.renameOrg({ ...parsed.data, orgId: caller.orgId, developerId: caller.developerId });
+    return getOrganization(deps, caller);
+  }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
@@ -1898,6 +1927,45 @@ async function createProject(deps: DeveloperRouteDependencies, caller: Developer
   return new StatusReply(created.duplicate ? 200 : 201, created);
 }
 
+/** Per-cell, per-person immutable source adapters keep the five-second appNav cache warm across route dependency objects. Authentication still precedes every call. */
+const navigationAdapters = new WeakMap<object, Map<string, { at: number; deps: AppNavDependencies; release: () => void }>>();
+async function getAppNavigation(deps: DeveloperRouteDependencies, caller: DeveloperCaller) {
+ if (deps.agents === undefined || deps.orgs === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Navigation is temporarily unavailable. Try again shortly.");
+ const agents = deps.agents, orgs = deps.orgs;
+ const features = process.env.WEB_FEATURES ?? "";
+ const key = [deps.tableName, deps.developer.issuer, caller.orgId, caller.developerId, caller.orgRole, features].join("#");
+ let adapters = navigationAdapters.get(deps.documentClient);
+ if (adapters === undefined) { adapters = new Map();navigationAdapters.set(deps.documentClient, adapters); }
+ let cached = adapters.get(key);
+ if (cached === undefined || cached.at + APP_NAV_CACHE_MS <= deps.now()) {
+  // RULING Q38: reuse canonical sources and their partitioned access reads; coalesce identical reads, never replace visibility policy.
+  const cache = navigationReadCache(deps.documentClient);
+  const cachedDeps = { ...deps, documentClient: cache.documentClient };
+  const members = projectMembersOf(cachedDeps);
+  const cachedAgents = { ...agents, documentClient: cache.documentClient, store: cache.store(agents.store), projectMembers: members };
+  const sessionReads = { ...sessionReadDependencies(cachedDeps, caller), documentClient: cache.documentClient, projectMembers: members };
+  const reads = { ...sessionReads, approvals: cachedAgents, deciding: sessionReads.deciding ?? decidingOf(cachedAgents) };
+  let wall: ReturnType<typeof navigationLive> | undefined;
+  const live = () => wall ??= navigationLive(reads, caller);
+  const sources: NonNullable<AppNavDependencies["sources"]> = {
+   projects: async () => (await members.projectsOf(caller.orgId, caller)).map(project => ({ name: project.project })),
+   rosters: async (_who, names) => (await mapLimit(names, REVISION_READS_AT_ONCE, async project => (await listRoster(cachedAgents, caller, project)).filter(agent => !agent.disabled && agent.status === "active").map(agent => ({ project, agentId: agent.agentId, name: agent.name })))).flat(),
+   live: async () => (await live()).map(tile => ({ sessionId: tile.sessionId, ...(tile.project === undefined ? {} : { project: tile.project }), ...(tile.agent === undefined ? {} : { agentId: tile.agent.agentId }), running: true, needsYou: tile.needsYou })),
+   home: async () => homeCards(reads, caller),
+   sharedAgents: async () => (await listVisibleAgents(cachedAgents, caller, "shared")).map(agent => ({ agentId: agent.agentId, name: agent.name })),
+   sharedSessions: async () => (await listSessions(reads, caller, { shared: "me", status: "open", limit: 10 })).sessions.map(session => ({ sessionId: session.sessionId, title: session.title, ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }) })),
+   org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },
+  };
+  // PLAN8: local-agent product capabilities are not part of this web launch.
+  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false }, release: cache.release };
+  adapters.delete(key);adapters.set(key, cached);
+  if (adapters.size > 256) { const first = adapters.keys().next().value;if (first !== undefined) adapters.delete(first); }
+ }
+ try { return await appNav(cached.deps, caller); }
+ catch (error) { if (adapters.get(key) === cached) adapters.delete(key);throw error; }
+ finally { cached.release(); }
+}
+
 /** `GET /v1/app/me`: the caller, their org, and every sign-in method linked to them. Never the providers' issuers or subjects. */
 async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<AppMeResponse> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
@@ -1906,7 +1974,7 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
   return {
     developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole },
-    org: { orgId: org.orgId, name: org.name, plan: org.plan },
+    org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
   };
 }
@@ -1958,11 +2026,7 @@ async function getOrganization(deps: DeveloperRouteDependencies, caller: Develop
   return { org: { orgId: org.orgId, name: org.name, plan: org.plan }, role: caller.orgRole };
 }
 
-const CreateInviteBodySchema = z.object({
-  requestId: z.string().uuid(),
-  role: z.enum(["admin", "member"]),
-  email: z.string().trim().email().max(254).optional(),
-}).strict();
+
 
 /**
  * An owner or admin invites someone to their org; only an owner may invite an admin. A replay of one requestId is
@@ -1971,7 +2035,7 @@ const CreateInviteBodySchema = z.object({
 async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ inviteUrl: string }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
-  const parsed = CreateInviteBodySchema.safeParse(body);
+  const parsed = CreateOrganizationInviteBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     // Field names only: the values are the caller's.

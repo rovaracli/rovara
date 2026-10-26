@@ -21,7 +21,7 @@ import { githubConnectorType } from "../../packages/broker/src/aws/connector-typ
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, decideProofOf } from "../../packages/broker/src/developer/decide-session.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { MAYA, OMAR, bearerFor, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";

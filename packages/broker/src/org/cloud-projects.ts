@@ -1,7 +1,7 @@
 // Plan 2, Task 16: an owner or admin of a cloud org creates a project from a repository the org's own GitHub connection reaches (the
 // route checks that), and the project is built here, from the repository alone, the way `agentx project add` builds it.
 import {
-  AgentXNameSchema,
+  CreateProjectBodySchema,
   DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
   Ec2RuntimeBindingSchema,
   ProjectDefinitionSchema,
@@ -15,7 +15,6 @@ import {
   type ProjectCommand,
   type ProjectDefinition,
 } from "@agentx/contracts";
-import { z } from "zod";
 
 /** Where a cloud org's projects run, and the credential their repositories use: the foundation's, the same for every org. */
 export interface CloudProjectDefaults {
@@ -50,19 +49,10 @@ export function cloudProjectDefaultsFromEnvironment(env: Record<string, string |
   return parsed.success ? { runtimeBinding: parsed.data, githubCredentialRef } : undefined;
 }
 
-const COMMAND_MAX_LENGTH = 500;
 const REPOSITORY = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100})$/;
 
-const DESCRIPTION_MAX_LENGTH = 280;
 
-const CreateProjectBodySchema = z.object({
-  requestId: z.string().uuid(),
-  repository: z.string().regex(REPOSITORY, "must be owner/name").refine((value) => !/\/(\.{1,2}|\.git)$/.test(value), "must be owner/name"),
-  name: AgentXNameSchema.optional(),
-  description: z.string().max(DESCRIPTION_MAX_LENGTH).optional(),
-  setupCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
-  testCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
-}).strict();
+
 
 export interface CreateProjectInput {
   /** The request's id: a replay of it answers the project it made. */

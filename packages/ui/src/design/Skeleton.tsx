@@ -1,0 +1,1 @@
+export function Skeleton({ label = "Loading" }: { label?: string }) { return <div className="rv-skeleton" role="progressbar" aria-label={label}><span className="rv-visually-hidden">{label}</span></div>; }

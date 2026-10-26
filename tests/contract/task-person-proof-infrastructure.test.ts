@@ -277,18 +277,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Round 5 merge (Tasks 17, 21 and the staging 0.4.3 fixes onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
     // Staging 0.4.5 fix: a named environment's API gains `GET /v1/internal/agent-tools` and `GET /v1/internal/agent-skills` (AgentToolsListRoute, AgentSkillsReadRoute, no authorizer; the broker
     // verifies the callback capability), so the named and foreign digests were retaken from the test's output; the legacy digests did not move (named environments only).
+    // M3: regenerated named/foreign pins from the merged template; web routes and chain hook throttles coexist. Legacy unchanged.
+    // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "be2a694b1b9f126cb6dcea4e6f9274e72e5e92f94c6c9b6d118b8a8c8f5fc0c8",
-        withoutRoute: "aeb04f0a3c05249b376a6f47b67178ef932a3f32cddc18870fde4f6f6c6ecb81",
+        withRoute: "bd021029d0625dc4693ec48b5c85a241832109d066a5505ae78f38a53150f029",
+        withoutRoute: "34eedce03e2caff80651cf4c1c4d58a5250ce7a896c29cf9b2f37e6905470004",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "f3f3addca9b902cc15cf4ca5c335545d6a66151c7b8729d355fdf039197fcb64",
-        withoutRoute: "6d9fe7334ba17e5cb7aefe2fa957e93ef0916aa7997863101341ed5d0cddf367",
+        withRoute: "094f78141f594ec1ee9f09388ffecefe025a81aef5ba8f0e57009e28ba4c3ec3",
+        withoutRoute: "9f6e4d9228601a198402842e23cec59dd8f6ecc08e598855ff091da184aeed70",
       },
       {
         label: "legacy",

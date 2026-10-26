@@ -1,4 +1,4 @@
-import { slackTeamOrgKey } from "../../packages/contracts/src/org.js";
+import { slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { WorkerInvocation } from "@agentx/contracts";

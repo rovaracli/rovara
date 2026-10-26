@@ -10,7 +10,7 @@ import { monthOf } from "../../packages/broker/src/org/trial.js";
 import { dispatchTriggerEvent, rovaraActorIds, runOwnerFor, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import { connectionKey, connectionsKey } from "../../packages/contracts/src/connections.js";
 import { orgAutonomousKey, triggerRateKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { DANA, HOOK_A, HOOK_A2, MAX, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 import type { WorldOptions } from "../support/chain-run-world.js";

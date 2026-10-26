@@ -5,7 +5,7 @@ import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js"
 import { onMemberRemoved, onMembersMerged } from "../../packages/broker/src/agents/lifecycle.js";
 import { onTriggerOwnersRemoved } from "../../packages/broker/src/triggers/lifecycle.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, OWNER, PRIYA, VIV, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 
 afterEach(disposeGateWorlds);

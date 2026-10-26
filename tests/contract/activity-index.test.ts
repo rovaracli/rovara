@@ -7,7 +7,7 @@ import { FailureIndexRecordSchema, UsageIndexRecordSchema } from "../../packages
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
 import { orgFailureDayPk, orgUsageDayPk } from "../../packages/contracts/src/org-scoped-keys.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 
 // No AGENTX_ENV in a test: the install is the legacy, unnamed one, whose single org derives from "default".
 const TEST_ORG = singleOrgIdForEnv("default");

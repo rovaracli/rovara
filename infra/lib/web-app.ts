@@ -1,0 +1,34 @@
+import { Duration, RemovalPolicy, Stack, aws_apigatewayv2 as apigwv2, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_iam as iam, aws_lambda as lambda, aws_s3 as s3, aws_s3_deployment as deployment, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
+import { Construct } from "constructs";
+import { resolve } from "node:path";
+import { packagedFunction } from "./control-plane.js";
+import type { AgentXNaming } from "./naming.js";
+export interface ThrottledWebRoute { route: apigwv2.CfnRoute; burst: number; rate: number }
+export interface WebAppProps { naming: AgentXNaming; api: apigwv2.CfnApi; assetHosting?: "cloudfront" | "cell"; realtimeHttpHost?: string; realtimeWsHost?: string }
+export class WebApp extends Construct {
+ readonly routes: ThrottledWebRoute[] = [];
+ readonly handlerFunction: lambdaNodejs.NodejsFunction;
+ constructor(scope: Construct, id: string, props: WebAppProps) {
+  super(scope, id);
+  const stack = Stack.of(this), directory = resolve("packages/web/dist/app");
+  let origin = "", upload: deployment.BucketDeployment | undefined;
+  if ((props.assetHosting ?? "cloudfront") === "cloudfront") {
+   const bucket = new s3.Bucket(this, "Assets", { bucketName: `${props.naming.resourcePrefix}-web-assets-${stack.account}-${stack.region}`, blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, enforceSSL: true, versioned: false, removalPolicy: RemovalPolicy.RETAIN });
+   // CDK Bucket.isWebsite includes undefined, unlike IBucket under exactOptionalPropertyTypes (same compatibility cast as the existing pipeline).
+   const headers = new cloudfront.ResponseHeadersPolicy(this, "AssetHeaders", { corsBehavior: { accessControlAllowOrigins: [props.api.attrApiEndpoint], accessControlAllowMethods: ["GET", "HEAD"], accessControlAllowHeaders: ["*"], accessControlAllowCredentials: false, originOverride: true }, securityHeadersBehavior: { contentTypeOptions: { override: true }, strictTransportSecurity: { accessControlMaxAge: Duration.days(365), includeSubdomains: true, override: true } } });
+   const distribution = new cloudfront.Distribution(this, "Distribution", { defaultBehavior: { origin: origins.S3BucketOrigin.withOriginAccessControl(bucket as s3.IBucket), allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD, viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY, cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED, compress: true, responseHeadersPolicy: headers }, priceClass: cloudfront.PriceClass.PRICE_CLASS_100 });
+   origin = `https://${distribution.distributionDomainName}`;
+   upload = new deployment.BucketDeployment(this, "Upload", { sources: [deployment.Source.asset(resolve(directory, "assets"))], destinationBucket: bucket as s3.IBucket, destinationKeyPrefix: "app/assets/", prune: false, retainOnDelete: true, cacheControl: [deployment.CacheControl.setPublic(), deployment.CacheControl.maxAge(Duration.days(365)), deployment.CacheControl.immutable()] });
+  }
+  // RULING Q12: this public file server needs logs only; existing factory callers retain active tracing.
+  const fn = this.handlerFunction = packagedFunction(this, "Function", "packages/web/src/server/handler.ts", { ASSET_ORIGIN: origin, REALTIME_HTTP_HOST: props.realtimeHttpHost ?? "", REALTIME_WS_HOST: props.realtimeWsHost ?? "" }, Duration.seconds(10), [], 256, [[directory, "app"]], lambda.Tracing.DISABLED);
+  (fn.node.defaultChild as lambda.CfnFunction).functionName = `${props.naming.resourcePrefix}-web`;
+  if (upload !== undefined) fn.node.addDependency(upload);
+  const integration = new apigwv2.CfnIntegration(this, "Integration", { apiId: props.api.ref, integrationType: "AWS_PROXY", integrationUri: fn.functionArn, payloadFormatVersion: "2.0" });
+  for (const [name, path] of [["App", "/app"], ["AppSlash", "/app/"], ["AppPath", "/app/{proxy+}"], ["Session", "/s/{sessionId}"]] as const) {
+   const route = new apigwv2.CfnRoute(this, name + "Route", { apiId: props.api.ref, routeKey: "GET " + path, target: `integrations/${integration.ref}`, authorizationType: "NONE" });
+   this.routes.push({ route, burst: 200, rate: 100 });
+   fn.addPermission(name + "Invoke", { principal: new iam.ServicePrincipal("apigateway.amazonaws.com"), sourceArn: `arn:${stack.partition}:execute-api:${stack.region}:${stack.account}:${props.api.ref}/*/GET${path.replace(/\{[^}]+\}/g, "*")}` });
+  }
+ }
+}

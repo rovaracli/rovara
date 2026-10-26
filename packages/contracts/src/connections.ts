@@ -2,11 +2,12 @@
 // A connection is a record with no secret in it; its key or token lives in a Secrets Manager secret named from the
 // org id and the connection id, which only a role session tagged with that org can read.
 import { z } from "zod";
-import { ConnectionIdSchema } from "./agent.js";
+import { ConnectionIdSchema } from "./agent-node.js";
 import { ConnectionLabelSchema, ConnectionSecretText } from "./connection-fields.js";
 import { ObservabilityConnectionSchemas, ObservabilitySecretSchemas } from "./connection-types-observability.js";
 import { McpAuthSchema, McpEndpointSchema } from "./mcp-connector.js";
-import { orgScoped, type OrgId, type OrgKey } from "./org.js";
+import { type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 
 export const ConnectionTypeSchema = z.enum(["linear", "jira", "mcp", "sentry", "datadog", "cloudwatch", "grafana", "vercel", "pagerduty"]);
 export type ConnectionType = z.infer<typeof ConnectionTypeSchema>;

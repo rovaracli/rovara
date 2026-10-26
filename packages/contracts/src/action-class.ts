@@ -1,7 +1,7 @@
 import { itemPathHolders, itemPathValues } from "./item-paths.js";
-import { toolPatternMatches, type ActionPolicy, type ActionPolicyRule } from "./action-policy.js";
-import type { AgentConnectorType } from "./agent-recipe.js";
-import type { ToolHints } from "./connectors.js";
+import { toolPatternMatches, type ActionPolicy, type ActionPolicyRule } from "./action-policy-node.js";
+import type { AgentConnectorType } from "./agent-recipe-node.js";
+import type { ToolHints } from "./connectors-node.js";
 import { redactText } from "./redaction.js";
 
 /**

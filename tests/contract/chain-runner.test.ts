@@ -11,9 +11,7 @@ import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import {
-  CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult,
-} from "../../packages/contracts/src/chains.js";
+import { CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult } from "../../packages/contracts/src/chains.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError } from "@agentx/contracts";
 import { chainKey, chainRunKey, openChainRunKey, projectAiKey, projectMetaKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";

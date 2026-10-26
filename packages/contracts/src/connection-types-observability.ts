@@ -3,7 +3,7 @@
 // write-only like Plan 3's (a record never holds it), and CloudWatch has none: Rovara assumes the customer's role with an external id
 // that Rovara sets. Each type's `check` comes from its own connector task.
 import { z } from "zod";
-import { ConnectionIdSchema } from "./agent.js";
+import { ConnectionIdSchema } from "./agent-node.js";
 import { ConnectionLabelSchema, ConnectionSecretText } from "./connection-fields.js";
 import { publicHttpsUrlSchema } from "./mcp-connector.js";
 import type { OrgId } from "./org.js";

@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   LIVE_PAGE_MAX, ProjectOverviewReaderSchema, ProjectOverviewSchema, agentKey, agentSessionKey, liveSessionKey, projectAiKey, orgMemberKey, projectMonthStatsKey, spendCounterKey, type OrgId, type ProjectOverview, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { mergedPullRequestStats, reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

@@ -7,7 +7,7 @@ import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import { ownerQualifies, triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
 import { triggerKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 

@@ -426,16 +426,3 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
     if (start === undefined) return { sessions: tiles };
   }
 }
-
-// ---- the link
-
-/** What `/s/<id>` leads to for someone who may view the session: the task page of a task session, else a few facts about it. */
-export type SessionLinkTarget =
-  | { kind: "task"; taskId: string }
-  | { kind: "summary"; title: string; status: SessionStatus; owner: string };
-
-export async function sessionLinkTarget(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string): Promise<SessionLinkTarget> {
-  const { session } = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
-  if (session.subject.kind === "task") return { kind: "task", taskId: (await taskOf(deps, session)).taskId };
-  return { kind: "summary", title: session.title, status: session.summary.status, owner: session.owner.name };
-}

@@ -51,7 +51,7 @@ import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js
 import { CSRF_COOKIE, SESSION_COOKIE, type WebResponse } from "../../packages/broker/src/aws/web-session.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { writeBudgets, type BudgetDependencies } from "../../packages/broker/src/org/budget.js";
-import { orgMetaKey } from "../../packages/contracts/src/org.js";
+import { orgMetaKey } from "../../packages/contracts/src/org-node.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import {
   A, B, BUCKET, C, E0, E1, LEDGER, SEALS, at, crash, eventsOf, harness, iso, orgOf, run, snapshot, stateOf, storedRecords, type Command,

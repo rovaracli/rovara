@@ -27,7 +27,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { orgFailureIndexKey, orgProjectCatalogKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgScoped } from "../../packages/contracts/src/org.js";
+import { orgScoped } from "../../packages/contracts/src/org-node.js";
 
 const OPERATION = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";

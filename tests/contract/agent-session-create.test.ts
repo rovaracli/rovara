@@ -8,7 +8,7 @@ import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/stor
 import { createTaskSessionItems, sessionStarterFor } from "../../packages/broker/src/agent-sessions/create.js";
 import { readRunRequest, runRequestFingerprint, startAgentRun, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import {
   AgentSessionRecordSchema,
@@ -16,8 +16,8 @@ import {
   SESSION_TITLE_MAX,
   SessionEventSchema,
   sessionEventId,
-} from "../../packages/contracts/src/agent-sessions.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
+} from "../../packages/contracts/src/agent-sessions-node.js";
+import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks-node.js";
 import {
   agentSessionKey,
   liveSessionKey,
@@ -32,7 +32,7 @@ import {
   sessionBindingKey,
   sessionSurfaceKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";

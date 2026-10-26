@@ -1,7 +1,7 @@
 // How a project's repository and its typed setup and test commands become a project definition: shared by the CLI's
 // `project add` and the control plane's project creation for a cloud org, so both read a command the same way.
 import { agentXError } from "./errors.js";
-import type { ProjectCommand } from "./project.js";
+import type { ProjectCommand } from "./project-node.js";
 
 /** The orchestrator instructions of a project registered by `project add` or created by a cloud org. */
 export const DEFAULT_ORCHESTRATOR_INSTRUCTIONS = "Delegate every repository read, edit, build, and test to the remote AgentX worker.";

@@ -1,3 +1,4 @@
+import { serverPageCss } from "@agentx/design-tokens";
 // Plan 3, Task 21a-presence (R66, R67): the words and shape of the confirmation page, `GET /v1/app/approve/{id}`. Like Plan 2's join page it
 // is built here once, escaped once, and nothing on it is a secret except its own CSRF token (derived from the session cookie, shown only to
 // the browser that holds it). Plan 7 restyles it.
@@ -18,7 +19,13 @@ export const CONFIRM_PAGE_HEADERS: Record<string, string> = {
   "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
+  "cross-origin-opener-policy": "same-origin",
 };
+
+/** Keep every decide response in a browsing-context group isolated from the app's opener. */
+export function withDecideIsolation<T extends { headers: Record<string, string> }>(response: T): T {
+  return { ...response, headers: { ...response.headers, "cross-origin-opener-policy": "same-origin" } };
+}
 
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
@@ -26,14 +33,11 @@ const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? 
 const visible = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, (c) => (c === "\n" || c === "\t" ? c : `[U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}]`));
 const text = (value: string) => escape(visible(value));
 
-const STYLE = "body{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.5}"
-  + "dl{display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem}dt{font-weight:600}dd{margin:0;overflow-wrap:anywhere}"
-  + "pre{padding:.75rem;border:1px solid #888;border-radius:.5rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}"
-  + "button{font:inherit;padding:.6rem 1rem;margin:.5rem .5rem .5rem 0;border-radius:.4rem;cursor:pointer}a.method{display:inline-block;margin:.5rem 0}";
+const STYLE = serverPageCss() + ".rv-wordmark{font-weight:650;letter-spacing:-.025em;margin:0 0 1.5rem}.rv-server-card{background:var(--rv-bg-raised);padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg)}h1{line-height:1.2;margin:0 0 1rem}h2{font-size:var(--rv-font-lg);margin-top:1.5rem}p{margin:1rem 0}button{margin:.5rem .5rem .5rem 0}pre{border-radius:var(--rv-radius-sm)}a.method{display:inline-flex;min-height:44px;align-items:center}main{max-width:44rem}";
 
 function shell(statusCode: number, title: string, main: string): PageResponse {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${text(title)}</title>`
-    + `<style>${STYLE}</style></head><body><main><h1>${text(title)}</h1>${main}</main></body></html>`;
+    + `<style>${STYLE}</style></head><body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${text(title)}</h1>${main}</section></main></body></html>`;
   return { statusCode, headers: { ...CONFIRM_PAGE_HEADERS }, body };
 }
 const paragraphs = (lines: string[]) => lines.map((line) => `<p>${text(line)}</p>`).join("");
@@ -56,7 +60,7 @@ export function confirmPage(view: ConfirmView, input: { approvalId: string; csrf
   const facts = view.facts.length === 0 ? "" : `<dl>${view.facts.map((fact) => `<dt>${text(fact.label)}</dt><dd>${text(fact.value)}</dd>`).join("")}</dl>`;
   const form = `<form method="post" action="/v1/app/approve/${escape(input.approvalId)}">`
     + `<input type="hidden" name="csrf" value="${escape(input.csrf)}">`
-    + `<button type="submit" name="decision" value="approve">Approve</button><button type="submit" name="decision" value="decline">Decline</button></form>`;
+    + `<button type="submit" name="decision" value="approve" class="rv-primary">Approve</button><button type="submit" name="decision" value="decline" class="rv-secondary">Decline</button></form>`;
   return shell(200, view.title, `${paragraphs(view.paragraphs ?? [])}${facts}${view.call === undefined ? "" : callBlock(view.call)}${form}`);
 }
 

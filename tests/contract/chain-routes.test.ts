@@ -13,7 +13,7 @@ import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { agentXError } from "../../packages/contracts/src/errors.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";

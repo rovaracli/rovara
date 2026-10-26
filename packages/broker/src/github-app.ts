@@ -579,6 +579,29 @@ export class GitHubAppCredentialProvider {
     return { ...after, headTreeSha };
   }
 
+  /** A read-only page, keeping full patches for the session boundary's redaction and byte cap. */
+  async listPullRequestFiles(repositoryUrl: string, number: number, options: { page: number }, scope: GitHubTokenScope): Promise<{ files: Array<GitHubPullRequestChangedFile & { previous_filename?: string }>; nextPage?: number }> {
+    if (!Number.isSafeInteger(number) || number < 1 || !Number.isSafeInteger(options.page) || options.page < 1 || options.page > 10_000) throw agentXError("CONFIG_INVALID", "Invalid diff page.");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.diffTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/files?per_page=100&page=${options.page}`,
+      { headers: { ...githubHeaders(token), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8_000), redirect: "error" },
+    );
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", "The pull request diff is unavailable.");
+    const body: unknown = await response.json();
+    if (!Array.isArray(body) || body.length > 100) throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request diff.");
+    const files = body.map((entry: unknown): GitHubPullRequestChangedFile & { previous_filename?: string } => {
+      if (entry === null || typeof entry !== "object") throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request file.");
+      const file = entry as Record<string, unknown>;
+      if (typeof file.filename !== "string" || typeof file.status !== "string" || !Number.isSafeInteger(file.additions) || !Number.isSafeInteger(file.deletions)) throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request file.");
+      return { filename: file.filename, status: file.status, additions: file.additions as number, deletions: file.deletions as number,
+        ...(typeof file.patch === "string" ? { patch: file.patch } : {}), ...(typeof file.previous_filename === "string" ? { previous_filename: file.previous_filename } : {}) };
+    });
+    const hasNext = (response.headers.get("link") ?? "").split(",").some(link => /;\s*rel="next"/.test(link));
+    return { files, ...(hasNext && options.page < 10_000 ? { nextPage: options.page + 1 } : {}) };
+  }
+
   /** Reads a bounded PR diff summary for a code-aware, owner-approved feedback proposal. */
   async getPullRequestChangedFiles(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<GitHubPullRequestChangedFile[]> {
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
@@ -871,6 +894,17 @@ export class GitHubAppCredentialProvider {
     const token = this.createInstallationToken(repository, { contents: "read" }, scope);
     this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
     token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
+    return token;
+  }
+
+  /** Reuse only the two diff read permissions; installed() checks the live org binding before every call. */
+  private diffTokenFor(repository: InstalledRepository, scope: GitHubTokenScope): Promise<string> {
+    const key = `${repository.installationId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:contents=read,pull_requests=read`;
+    const cached = this.readTokens.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.token;
+    const token = this.createInstallationToken(repository, { contents: "read", pull_requests: "read" }, scope);
+    this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
+    void token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
     return token;
   }
 

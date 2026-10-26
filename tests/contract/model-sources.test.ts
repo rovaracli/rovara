@@ -12,7 +12,7 @@ import { CHATGPT_SETTINGS_KEY } from "../../packages/broker/src/chatgpt/settings
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { MODEL_SOURCES_NEED_PROXY, MODEL_SOURCE_STILL_APPLYING, type SourceLaunch } from "../../packages/contracts/src/model-sources.js";
 import { egressDomainsKey, egressRejectedWarning } from "../../packages/contracts/src/egress.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentRequestKey, modelSourcesKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { auditEventId } from "../../packages/contracts/src/audit.js";
 import { INDEX_EXPIRY_ATTRIBUTE } from "../../packages/contracts/src/admin.js";
@@ -27,7 +27,7 @@ import { releaseOrgModelSources } from "../../packages/broker/src/model-sources/
 import { MODEL_SOURCE_SWEEP_BUDGET_MS, sweepModelSources } from "../../packages/broker/src/model-sources/sweep.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { listEgressItems, putEgressDomains } from "../../packages/broker/src/org/egress-domains.js";
-import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org.js";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org-node.js";
 import { createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";

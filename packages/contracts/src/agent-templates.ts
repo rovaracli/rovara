@@ -4,13 +4,8 @@
 // `person`, and the event and schedule triggers a template suggests are trigger records a project maintainer turns on.
 import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from "./agent.js";
 import { agentXError } from "./errors.js";
-import {
-  RESOLVED_RECIPE_SCHEMA_VERSION,
-  recipeDigest,
-  type ResolvedRecipe,
-  type ResolvedStep,
-  type ToolGrant,
-} from "./agent-recipe.js";
+import { RESOLVED_RECIPE_SCHEMA_VERSION } from "./agent-recipe.js";
+import { recipeDigest, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "./agent-recipe-node.js";
 
 export interface BuiltinVersion {
   version: number;

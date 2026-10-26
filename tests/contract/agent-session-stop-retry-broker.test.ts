@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";

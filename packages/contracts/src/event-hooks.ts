@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DnsHostSchema } from "./mcp-connector.js";
-import { orgScoped, type OrgId, type OrgKey } from "./org.js";
+import { type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 import { EVENT_SOURCES, type EventSource } from "./trigger-specs.js";
 
 // ---- limits

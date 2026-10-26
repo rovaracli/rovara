@@ -9,7 +9,7 @@ import {
   codingRequestText,
   renderRunInput,
   type RunInput,
-} from "../../packages/contracts/src/agent-run.js";
+} from "../../packages/contracts/src/agent-run-node.js";
 import {
   AgentStepPayloadSchema,
   AGENT_STEP_FEATURE,

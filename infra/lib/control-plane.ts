@@ -1,3 +1,4 @@
+import { WebApp } from "./web-app.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
@@ -1154,8 +1155,11 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
+      const configuredHosting: unknown = this.node.tryGetContext("agentxWebAssetHosting");
+      if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
+      const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: githubInstallRoutes, ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
@@ -1165,6 +1169,9 @@ export class ControlPlaneStack extends Stack {
       const realtime = new RealtimeEvents(this, "Realtime", {
         env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
       });
+      // RULING Q11: the realtime construct now exists; allow only its actual DNS hosts in the web CSP.
+      web.handlerFunction.addEnvironment("REALTIME_HTTP_HOST", realtime.api.httpDns);
+      web.handlerFunction.addEnvironment("REALTIME_WS_HOST", realtime.api.realtimeDns);
       realtime.grantPublish(broker);
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
@@ -1593,6 +1600,9 @@ export function packagedFunction(
   /** Files copied beside the bundled handler, as [absolute source, name in the bundle]. */
   extraFiles: ReadonlyArray<readonly [string, string]> = [],
   memorySize = 512,
+  /** Directories copied beside the handler, as [absolute source, name in the bundle]. */
+  extraDirectories: ReadonlyArray<readonly [string, string]> = [],
+  tracing = lambda.Tracing.ACTIVE,
 ): lambdaNodejs.NodejsFunction {
   return new lambdaNodejs.NodejsFunction(scope, id, {
     runtime: lambda.Runtime.NODEJS_22_X,
@@ -1600,7 +1610,7 @@ export function packagedFunction(
     handler: "handler",
     timeout,
     memorySize,
-    tracing: lambda.Tracing.ACTIVE,
+    tracing,
     environment,
     logGroup: new logs.LogGroup(scope, `${id}Logs`, {
       retention: logs.RetentionDays.ONE_MONTH,
@@ -1611,11 +1621,14 @@ export function packagedFunction(
       minify: true,
       sourceMap: true,
       target: "node22",
-      ...(extraFiles.length === 0 ? {} : {
+      ...(extraFiles.length === 0 && extraDirectories.length === 0 ? {} : {
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
-          afterBundling: (_inputDir: string, outputDir: string) => extraFiles.map(([source, name]) => `cp "${source}" "${outputDir}/${name}"`),
+          afterBundling: (_inputDir: string, outputDir: string) => {
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+            return [...extraFiles.map(([source, name]) => `cp ${quote(source)} ${quote(`${outputDir}/${name}`)}`), ...extraDirectories.map(([source, name]) => `cp -R ${quote(source)} ${quote(`${outputDir}/${name}`)}`)];
+          },
         },
       }),
     },

@@ -26,7 +26,7 @@ import { EDITS, MERGED, OPENED_PR, PLAN, PUSHED_FIX, actionIds, atPlanReview, ed
 import { loadRollback0212Parser } from "../../support/rollback-0212-parser.js";
 import { handler as productionDispatcher, taskPersonProofLambdaClient } from "../../../packages/broker/src/aws/dispatcher.js";
 import { handler as taskPersonProofRuntime } from "../../../packages/broker/src/aws/task-person-proof-runtime.js";
-import { singleOrgIdForEnv } from "../../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../../packages/contracts/src/org-node.js";
 
 // The production dispatcher reads AGENTX_ENV (stubbed below), so the install these tests build is that named environment.
 const LIVE_ENV = "agentxlivetest123";

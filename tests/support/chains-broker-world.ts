@@ -8,7 +8,7 @@ import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, projectMemberKey
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { call as callHandler } from "./slack-broker.js";
 import { onTaskEnded } from "../../packages/broker/src/agents/task-end.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { createChainScheduler } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerScheduler } from "../../packages/broker/src/triggers/ports.js";

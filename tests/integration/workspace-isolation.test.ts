@@ -79,7 +79,8 @@ describe("per-developer workspace isolation", () => {
     await expect(resolver.getById(alice, ownWorkspace.id)).resolves.toMatchObject({ id: ownWorkspace.id });
     await expect(resolver.getById(alice, foreignOrg.id)).rejects.toThrow(/workspace not found/i);
     await expect(resolver.getById({ ...alice, orgId: OTHER_ORG }, ownWorkspace.id)).rejects.toThrow(/workspace not found/i);
-    const { orgId: _orgId, ...noOrg } = alice;
+    const noOrg = { ...alice };
+    delete noOrg.orgId;
     await expect(resolver.getById(noOrg, ownWorkspace.id)).rejects.toThrow(/workspace not found/i);
   });
 

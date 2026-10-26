@@ -1,8 +1,9 @@
 // Moving a session between a Mac and the cloud (Plan 5 Task 19): the two bodies of `POST /v1/app/sessions/{id}/handoff`, what a move to a Mac answers, and the exact texts of its refusals.
 // One session and one link run across the moves; each stretch on one place is a leg (`SessionLegSchema`).
 import { z } from "zod";
-import { DeviceIdSchema, HANDOFF_SUMMARY_MAX_BYTES } from "./agent-sessions.js";
-import { GitBranchNameSchema } from "./project.js";
+import { DeviceIdSchema } from "./agent-sessions.js";
+import { HANDOFF_SUMMARY_MAX_BYTES } from "./agent-sessions-node.js";
+import { GitBranchNameSchema } from "./project-node.js";
 
 const utf8 = new TextEncoder();
 

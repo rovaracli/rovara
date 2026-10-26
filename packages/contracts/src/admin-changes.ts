@@ -9,7 +9,7 @@ import { z } from "zod";
 import { INDEX_EXPIRY_ATTRIBUTE } from "./admin.js";
 import { looseCopy } from "./loose.js";
 import { OrgIdSchema } from "./org.js";
-import { AgentXNameSchema } from "./project.js";
+import { AgentXNameSchema } from "./project-node.js";
 import { SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
 
 export const ADMIN_CHANGE_TTL_MS = 10 * 60_000;

@@ -1,24 +1,8 @@
 // Plan 4 Task 10: the chain-session contract Plan 5 reads. The keys of what the server writes are pinned here. Removing or renaming a key (or changing a type or a meaning)
 // needs Plans 4 and 5 and a new CHAIN_SESSION_CONTRACT_VERSION; adding an optional field, an event type or a status stays in version 1.
 import { describe, expect, it } from "vitest";
-import {
-  CHAIN_RUN_EVENTS_PAGE_MAX,
-  CHAIN_RUN_EVENT_TEXT_MAX,
-  CHAIN_RUN_LIST_PAGE_MAX,
-  CHAIN_SESSION_CONTRACT_VERSION,
-  ChainRunEventPageReaderSchema,
-  ChainRunEventPageSchema,
-  ChainRunEventReaderSchema,
-  ChainRunEventSchema,
-  ChainRunListReaderSchema,
-  ChainRunListSchema,
-  ChainRunSectionReaderSchema,
-  ChainRunSectionSchema,
-  ChainRunViewReaderSchema,
-  ChainRunViewSchema,
-  ChainStepTaskViewReaderSchema,
-  ChainStepTaskViewSchema,
-} from "../../packages/contracts/src/chain-session.js";
+import { CHAIN_SESSION_CONTRACT_VERSION, ChainRunSectionSchema, ChainRunViewSchema } from "../../packages/contracts/src/chain-session.js";
+import { CHAIN_RUN_EVENTS_PAGE_MAX, CHAIN_RUN_EVENT_TEXT_MAX, CHAIN_RUN_LIST_PAGE_MAX, ChainRunEventPageReaderSchema, ChainRunEventPageSchema, ChainRunEventReaderSchema, ChainRunEventSchema, ChainRunListReaderSchema, ChainRunListSchema, ChainRunSectionReaderSchema, ChainRunViewReaderSchema, ChainStepTaskViewReaderSchema, ChainStepTaskViewSchema } from "../../packages/contracts/src/chain-session.js";
 import { openEnum } from "../../packages/contracts/src/forward-reader.js";
 
 const HEX = "a".repeat(64);

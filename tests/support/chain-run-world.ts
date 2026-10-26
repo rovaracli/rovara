@@ -13,11 +13,11 @@ import { validateChainForPublish } from "../../packages/broker/src/chains/valida
 import { taskAgentRunKey, taskKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
-import type { AgentOwner } from "../../packages/contracts/src/agent.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import { chainRunKey, orgProjectCatalogKey, runRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError, type AgentXError } from "@agentx/contracts";

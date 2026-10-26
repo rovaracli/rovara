@@ -522,4 +522,3 @@ export async function dismissHomeCard(deps: HomeDependencies, caller: HomeCaller
   }
   return answer;
 }
-

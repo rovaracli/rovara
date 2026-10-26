@@ -15,13 +15,13 @@ import {
 import { ChainStore, chainDigest, type ChainRecord } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
-import type { AgentOwner } from "../../packages/contracts/src/agent.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { CHAIN_MAX_STEPS, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import { builtinSettingsKey, chainDirectoryKey, chainKey, chainNameKey, ownerBudgetKey, orgProjectCatalogKey, principalChainSharesKey, principalSharesKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

@@ -2,20 +2,8 @@
 // The ids, limits, tool names and the texts of LOCAL_AGENT_NOT_ALLOWED are in `agent-sessions.ts`; this file holds the shapes of what is stored and sent.
 import { z } from "zod";
 import { AgentPrincipalSchema } from "./agent.js";
-import {
-  DEVICES_PER_MEMBER_MAX,
-  DEVICE_LABEL_MAX,
-  DeviceIdSchema,
-  LOCAL_TOOLS,
-  LOCAL_REGISTER_SHARES_MAX,
-  LOCAL_TURN_MAX_CHARS,
-  LOCAL_UPDATE_TURNS_MAX,
-  LocalToolSchema,
-  SessionIdSchema,
-  SessionLevelSchema,
-  SessionMessageIdSchema,
-  type SESSION_STATUSES,
-} from "./agent-sessions.js";
+import { DEVICE_LABEL_MAX, DeviceIdSchema, LOCAL_TOOLS, LocalToolSchema, SessionIdSchema, SessionMessageIdSchema, type SESSION_STATUSES } from "./agent-sessions.js";
+import { DEVICES_PER_MEMBER_MAX, LOCAL_REGISTER_SHARES_MAX, LOCAL_TURN_MAX_CHARS, LOCAL_UPDATE_TURNS_MAX, SessionLevelSchema } from "./agent-sessions-node.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { OrgIdSchema } from "./org.js";
 

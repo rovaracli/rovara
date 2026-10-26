@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { projectMemberKey, projectRevisionKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";

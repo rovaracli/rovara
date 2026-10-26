@@ -237,4 +237,3 @@ describe("every read of a task's owner is classified, and the ones that carry au
     expect(projections[0]).toContain("slackUserId");
   });
 });
-

@@ -26,7 +26,7 @@ import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-acc
 import { MAYA as DEV_MAYA, OMAR as DEV_OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 import { taskSpendKey } from "../../packages/contracts/src/org-scoped-keys.js";

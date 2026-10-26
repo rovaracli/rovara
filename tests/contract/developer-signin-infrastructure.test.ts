@@ -324,6 +324,11 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /s/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /v1/web/{proxy+}": { ThrottlingBurstLimit: 400, ThrottlingRateLimit: 200 },
+      "GET /app": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /app/": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /app/{proxy+}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /s/{sessionId}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
@@ -338,6 +343,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /s/{proxy+}"));
+    for (const key of ["ANY /v1/web/{proxy+}", "GET /app", "GET /app/", "GET /app/{proxy+}", "GET /s/{sessionId}"]) expect(dependsOn).toContain(routeId(key));
     expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
     expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     expect(dependsOn).toContain(routeId("POST /v1/hooks/{source}/{hookId}"));
@@ -904,4 +910,11 @@ describe("the sign-in function asks the broker whether a member may decide (Plan
       expect(broker.Properties).not.toHaveProperty("FunctionName");
     }
   });
+});
+
+it("browser sign-out adds no broker write on ordinary sign-in sessions", () => {
+ const table = ofType(named, "AWS::DynamoDB::Table").find(([id]) => id.startsWith("DeveloperSignInTable"))![0];
+ expect(grants(named).some(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && allows(statement, "dynamodb:GetItem"))).toBe(true);
+ const brokerWrites = grants(named).filter(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"].some(action => allows(statement, action)));
+ for (const { statement } of brokerWrites) expect(leadingKeysOf(statement).every(key => key.startsWith("DECIDE_"))).toBe(true);
 });

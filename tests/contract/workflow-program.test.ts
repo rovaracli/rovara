@@ -8,12 +8,12 @@ import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_TEAM } from "../support/slack-broker.js";
 import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
-import { EMPTY_RECIPE, codingProgram, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
+import { EMPTY_RECIPE, codingProgram, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
 import {
   WorkflowProgramSchema, WorkflowSnapshotSchema, WorkflowTransitionError, advanceStage, blockWorkflow, completeWorkflowBuild, createCandidateManifest,
   createWorkflowSnapshot, decideWorkflow, nextProgramStep, recordWorkflowVerification, resolveWorkflowReviewFindings, returnWorkflowToImplementation,
   sendBackProblems, submitWorkflowArtifact, submitWorkflowReview, workflowFindingFingerprint, workflowReviewRoles, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/task-workflow.js";
+} from "../../packages/contracts/src/task-workflow-node.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);

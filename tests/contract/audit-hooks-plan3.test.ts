@@ -45,7 +45,7 @@ import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spen
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { RUN_LIMIT_MULTIPLIER, defaultSpendPolicy } from "../../packages/contracts/src/spend.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { capturingAuditDeps, hangingAuditDeps, AUDIT_CAPTURE_TABLE, type AuditCapture } from "../support/audit-capture.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

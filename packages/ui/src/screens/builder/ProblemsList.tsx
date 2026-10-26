@@ -1,0 +1,5 @@
+import { VisibleText } from "../../design/VisibleText.js";
+export type Problem={path:string;message:string};
+export function problemField(path:string){return "builder-"+path.replace(/^sequence\./,"steps.").replaceAll(".","-");}
+export function problemWords(path:string){return path.replace(/^(?:steps|sequence)\.(\d+)\.settings\./,(_,index:string)=>"Step "+(Number(index)+1)+", ").replace(/^(?:steps|sequence)\.(\d+)\./,(_,index:string)=>"Step "+(Number(index)+1)+", ").replaceAll(".",", ");}
+export function ProblemsList({problems,onFocus}:{problems:readonly Problem[];onFocus:(path:string)=>void}){return problems.length===0?null:<section aria-label="Draft problems"><h2>Before this can run</h2><ul>{problems.map((problem,index)=><li key={index}><button type="button" className="rv-button rv-button-quiet" onClick={()=>{onFocus(problem.path);document.getElementById(problemField(problem.path))?.focus();requestAnimationFrame(()=>document.getElementById(problemField(problem.path))?.focus());}}><VisibleText text={problemWords(problem.path)+": "+problem.message}/></button></li>)}</ul></section>;}

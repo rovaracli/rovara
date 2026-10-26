@@ -1,6 +1,10 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
+import { withDecideIsolation } from "../developer/confirm-page.js";
+import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
+import { appCsrfTokenFor } from "../developer/app-csrf.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { posix as posixPath } from "node:path";
 import { cancelCallbackForbidden, verifyCancelCallbackCapability } from "./cancel-callback-capability.js";
@@ -687,7 +691,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -825,9 +829,8 @@ const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i;
 const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
+export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
-/** A session's link (Plan 5, Task 5), served to a browser like the review pages. Its API Gateway route (`ANY /s/{proxy+}`) is in the infrastructure; the web app (Plan 7) adds the page. */
-const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
 function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): string {
@@ -1136,6 +1139,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
+    ...(routing === undefined ? {} : { modelRouting: routing }),
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
@@ -2012,15 +2016,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // the broker through the authorizer-free /v1/dev route (D17), so it must never be resolved.
       if (DOT_SEGMENT.test(event.rawPath ?? "/")) throw agentXError("NOT_FOUND", "route not found");
       const url = new URL(request.path, "https://agentx.invalid");
+      // Shared links belong exclusively to the web shell, including stale broker route events.
+      if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || event.routeKey === SESSION_LINK_ROUTE_KEY || isAuditViewPath(url.pathname)) {
-        if (!(url.pathname.startsWith("/review/") || (event.routeKey === SESSION_LINK_ROUTE_KEY && url.pathname.startsWith("/s/")) || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
@@ -2030,6 +2037,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === WEB_ROUTE_KEY && !url.pathname.startsWith("/v1/web/")) throw agentXError("NOT_FOUND", "route not found");
+      if (url.pathname.startsWith("/v1/web/") && (event.routeKey !== WEB_ROUTE_KEY || !webRouteAllowed(request.method, url.pathname))) throw agentXError("NOT_FOUND", "route not found");
       // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
@@ -2253,10 +2262,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       // Spec 025: the developer API. /v1/dev/* has no API Gateway authorizer (D17): the broker
       // verifies the developer token, then checks the method and session (FR-009).
-      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
+      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/") || url.pathname.startsWith("/v1/web/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         const orgConnections = orgConnectionStoreOf(dependencies);
-        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+        const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
@@ -2265,6 +2274,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
@@ -2284,7 +2294,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
-          ...workflowApplicationRouteDependencies(dependencies) }, request, url);
+          ...workflowApplicationRouteDependencies(dependencies) };
+        let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
+        if (url.pathname.startsWith("/v1/web/")) {
+          const caller = await authenticateWebRequest(routeDependencies, request);
+          authenticated = { caller, csrf: appCsrfTokenFor(caller.sessionId) };
+          url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
+        }
+        const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
 
@@ -2586,11 +2603,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         "AgentX developer workflows run in the project's Slack channel; this endpoint serves administration only",
       );
     } catch (error) {
+      // Confirmation and task pages remain isolated even when their adapter throws before rendering.
+      const errorPath = request.path.split("?", 1)[0]!;
+      const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        return json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        return isolate ? withDecideIsolation(response) : response;
       }
-      return unexpectedErrorAnswer(error, request.requestId);
+      const response = unexpectedErrorAnswer(error, request.requestId);
+      return isolate ? withDecideIsolation(response) : response;
     }
   };
 }

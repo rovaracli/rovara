@@ -3,12 +3,16 @@
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { createHash } from "node:crypto";
 import { canonicalInstant, indexDay } from "./admin.js";
-import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
+import { principalKey, type AgentId } from "./agent.js";
+export { principalKey } from "./agent.js";
+import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
+import type { SessionId } from "./agent-sessions.js";
+import type { DeviceId, SessionBinding } from "./agent-sessions-node.js";
+import { OrgIdSchema, type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 import type { ChainId, ChainRunId } from "./chains.js";
 import type { EventSource } from "./trigger-specs.js";
 import type { TriggerTarget } from "./triggers.js";
-import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions.js";
-import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
 const REVISION_WIDTH = 12;
@@ -217,13 +221,6 @@ export function agentDirectoryKey(orgId: OrgId, agentId: AgentId): OrgKey {
 /** The item that makes an agent's name unique in its org, ignoring case and surrounding spaces. */
 export function agentNameKey(orgId: OrgId, name: string): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_NAME"), sk: name.trim().toLowerCase() };
-}
-
-/** `MEMBER#<developerId>`, `PROJECT#<project>` or `ORG`: the principal's part of a key. */
-export function principalKey(principal: AgentPrincipal): string {
-  if (principal.kind === "member") return `MEMBER#${principal.developerId}`;
-  if (principal.kind === "project") return `PROJECT#${principal.project}`;
-  return "ORG";
 }
 
 /** The index item that lists, per principal, the agents shared with it. */

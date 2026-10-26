@@ -77,7 +77,7 @@ describe("task and lifecycle controls", () => {
     const resume = new ResumeCoordinator({ registry, projects });
     // A caller of another org, even with the owner's key, cannot resume the workspace.
     await expect(
-      resume.begin({ ...developer, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as OrgId }, ready.id),
+      resume.begin({ ...developer, orgId: "org_zzzzzzzzzzzzzzzzzzzz" }, ready.id),
     ).rejects.toThrow(/workspace not found/i);
     const resuming = await resume.begin(developer, ready.id);
     expect(resuming.status).toBe("RESUMING");

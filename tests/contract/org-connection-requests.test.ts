@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgConnection } from "../../packages/contracts/src/connections.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";

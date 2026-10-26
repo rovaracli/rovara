@@ -2,7 +2,7 @@
 // mechanics that depend on a known task budget (how a key's cap counts what the task's keys spent, how a Continue starts a new window) seed the
 // history that gives the budget they were written for.
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { TEST_ORG } from "./orgs.js";
 

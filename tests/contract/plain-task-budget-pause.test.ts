@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { registerTaskEndHandler, registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent } from "../../packages/broker/src/agents/task-end.js";
 import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import type { BudgetScope, SpendRequestRecord } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

@@ -9,7 +9,7 @@ import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { agentXError, orgMemberKey, orgRemovedKey } from "@agentx/contracts";
 import { createSpendRequest } from "../../packages/broker/src/spend/requests.js";
-import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run.js";
+import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run-node.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";

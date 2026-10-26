@@ -4,7 +4,7 @@
 // project's Slack channel gives them access (`channel`), else none. A person who reaches a project only through its channel is not in `list`.
 // A project that is archived is left out of `projectsOf`. The real one is wired into the broker; this one is for unit tests that want no table.
 import type { ProjectMembers } from "../../packages/broker/src/agents/access.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 
 type Caller = { developerId: string; orgRole: OrgRole };

@@ -38,6 +38,7 @@ function ecsFailureRuleArn(scope: Pick<PolicyScope, "env" | "partition" | "regio
 export const SERVICE_ROLE_SERVICES: readonly string[] = [
   "apigateway",
   "cloudformation",
+  "cloudfront",
   "cloudwatch",
   "cognito-idp",
   "dynamodb",

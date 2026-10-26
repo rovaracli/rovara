@@ -1,6 +1,6 @@
-// The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, and `/s/<sessionId>` for a person's browser. Each maps to a function
+// The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, only. Shared `/s/` links belong to the web shell. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
-import { LIVE_PAGE_MAX, SessionIdSchema, STATUS_WORDS, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
+import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
 import { mayDecideSpendRequest } from "../spend/requests.js";
@@ -8,9 +8,8 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
-import { randomBytes } from "node:crypto";
 import { recordLocalUpdate, registerLocalSession } from "../devices/local-sessions.js";
+import { sessionDiff, type SessionDiffDependencies } from "./diff.js";
 import { readSessionEvents } from "./events.js";
 import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
@@ -18,7 +17,7 @@ import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage,
 import { dismissHomeCard, homeCards, type HomeDependencies } from "./home.js";
 import { liveSessions, type LiveQuery } from "./live.js";
 import { projectOverview, type ProjectPageReader } from "./project-overview.js";
-import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
+import { listSessions, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { handoffSession, type HandoffRuntime } from "./handoff.js";
@@ -30,7 +29,7 @@ import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
 
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
-export interface SessionRouteDependencies extends SessionReadDependencies {
+export interface SessionRouteDependencies extends SessionReadDependencies, Pick<SessionDiffDependencies, "diff"> {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
   /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   realtime?: RealtimeTokenDependencies;
@@ -58,16 +57,10 @@ const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
 const HOME_PATH = "/v1/app/home";
 const HOME_DISMISS_PATH = /^\/v1\/app\/home\/cards\/([^/]*)\/dismiss$/;
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
-const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
 
 /** The paths this module owns under `/v1/app/`: the sessions, the Live wall (Task 14), the changes feed and the realtime token (Task 8). */
 export function isAgentSessionRoute(pathname: string): boolean {
   return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH || pathname === LIVE_PATH || /^\/v1\/app\/home(\/|$)/.test(pathname) || PROJECT_OVERVIEW_PATH.test(pathname);
-}
-
-/** `/s/<anything>`: a session's link, served to a browser. */
-export function isSessionLinkPath(pathname: string): boolean {
-  return /^\/s\/[^/]*$/.test(pathname);
 }
 
 const notFound = () => agentXError("NOT_FOUND", "route not found");
@@ -154,6 +147,13 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (request.method !== "POST") throw notFound();
     if (deps.realtime === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Live updates aren't available right now.");
     return realtimeTokenFor(deps.realtime, caller);
+  }
+  const diffMatch = /^\/v1\/app\/sessions\/([^/]+)\/diff$/.exec(url.pathname);
+  if (diffMatch !== null) {
+    if (request.method !== "GET" || !SessionIdSchema.safeParse(diffMatch[1]).success) throw notFound();
+    const number = url.searchParams.get("number") ?? "", page = url.searchParams.get("page") ?? "1";
+    if (!/^[1-9][0-9]{0,9}$/.test(number) || !/^[1-9][0-9]{0,4}$/.test(page)) throw notFound();
+    return sessionDiff(deps, caller, diffMatch[1]!, { repository: url.searchParams.get("repository") ?? "", number: Number(number), page: Number(page) });
   }
   const approvals = deps.approvals;
   const read: SessionReadDependencies = {
@@ -294,58 +294,6 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     throw agentXError("CONFIG_INVALID", "principal: is not a person, a project or the company");
   }
   return deleteSessionShare(read, caller, sessionId, key);
-}
-
-// ---- the link in a browser
-
-export interface SessionLinkDependencies {
-  /** The signed-in browser's person, re-read with their membership on every request; undefined when the cookie is missing or no longer good. */
-  authenticateSession(sessionId: string): Promise<SessionRouteCaller | undefined>;
-  /** The read dependencies for one person. */
-  read(caller: SessionRouteCaller): SessionReadDependencies;
-  /** Builds the address of a task's page. */
-  taskPageUrl(origin: string, taskId: string): string;
-  origin: string;
-}
-
-function page(statusCode: number, heading: string, lines: string[]): WebResponse {
-  const nonce = randomBytes(18).toString("base64url");
-  return safeResponse(statusCode, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rovara</title>`
-    + `<style nonce="${nonce}">:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:40rem;margin:0 auto;padding:2rem 1rem}</style></head>`
-    + `<body><main><h1>${escapeHtml(heading)}</h1>${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</main></body></html>`, nonce);
-}
-
-/**
- * `GET /s/{sessionId}` for a signed-in browser. A task session the person can view goes (302) to the task's page, which admits them to read it; a
- * chain or local session answers a small page with its title, status and owner (the web app replaces it); no access reads exactly like no session
- * (404); no sign-in goes to sign in and comes back here.
- */
-export async function sessionRedirect(deps: SessionLinkDependencies, request: AdaptedHttpRequest, url: URL): Promise<WebResponse> {
-  const matched = LINK_PATH.exec(url.pathname);
-  if (matched === null) return page(404, "Not found", ["This page doesn't exist."]);
-  if (request.method !== "GET") {
-    const refused = page(405, "Not allowed", ["This page is read only."]);
-    refused.headers["allow"] = "GET";
-    return refused;
-  }
-  const sessionId = matched[1]!;
-  const cookie = parseCookie(request.headers, SESSION_COOKIE);
-  const caller = cookie === undefined ? undefined : await deps.authenticateSession(cookie);
-  if (caller === undefined) {
-    const redirect = safeResponse(302, "");
-    return { ...redirect, headers: { ...redirect.headers, location: signInLocation(`/s/${sessionId}`) } };
-  }
-  try {
-    const target = await sessionLinkTarget(deps.read(caller), caller, sessionId);
-    if (target.kind === "task") {
-      const redirect = safeResponse(302, "");
-      return { ...redirect, headers: { ...redirect.headers, location: deps.taskPageUrl(deps.origin, target.taskId) } };
-    }
-    return page(200, target.title, [`Status: ${STATUS_WORDS[target.status as keyof typeof STATUS_WORDS] ?? target.status}`, `Owner: ${target.owner}`]);
-  } catch (error) {
-    if (error instanceof Error && error.name === "AgentXError" && (error as { code?: string }).code === "NOT_FOUND") return page(404, "Not found", ["This page doesn't exist."]);
-    return page(503, "Try again shortly", ["Rovara couldn't open this session right now."]);
-  }
 }
 
 // Loading this module registers the company-wide share's approver rule and handler, as the agent routes register theirs.

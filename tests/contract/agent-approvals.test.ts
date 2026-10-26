@@ -15,7 +15,7 @@ import {
   type ChangeSubject,
 } from "../../packages/broker/src/agents/approvals.js";
 import { listedFor } from "../../packages/broker/src/agents/approvals-store.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { approvalKey, approverIndexKey, openApprovalKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { CHANGE_APPROVAL_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

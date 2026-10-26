@@ -106,7 +106,7 @@ describe("agentx_run_agent when the version asked for waits for the agent's owne
     expect(refused!.message).toContain(CONFIRM);
     expect(refused!.message).toContain("Nothing started");
     expect(refused!.nextStep).toMatch(/owner/);
-    const mcp = await connect({ runAgent: client.runAgent });
+    const mcp = await connect({ runAgent: client.runAgent.bind(client) });
     const result = await mcp.callTool({ name: "agentx_run_agent", arguments: { agent_id: AGT, project: "payments", input: "go", version: 1 } });
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(text(result)).toContain(CONFIRM);

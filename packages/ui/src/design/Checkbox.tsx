@@ -1,0 +1,3 @@
+import { useId } from "react";
+import { Checkbox as R } from "radix-ui";
+export function Checkbox({ label, checked, onCheckedChange, disabled = false }: { label: string; checked: boolean | "indeterminate"; onCheckedChange: (checked: boolean | "indeterminate") => void; disabled?: boolean }) { const id = useId();return <div className="rv-check-row"><R.Root id={id} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} className="rv-checkbox"><R.Indicator aria-hidden="true">{checked === "indeterminate" ? "−" : "✓"}</R.Indicator></R.Root><label htmlFor={id}>{label}</label></div>; }
