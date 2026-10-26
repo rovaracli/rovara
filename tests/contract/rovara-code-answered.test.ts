@@ -10,6 +10,7 @@ import { taskPageStage, taskPageStep, workflowEndOutcome, workflowTaskFinished }
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { CHANGE_ANYWAY_RULE, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
 import { answeredMilestoneItems } from "../../packages/broker/src/rovara-code/answered.js";
+import { NOT_ANSWERED_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
@@ -207,6 +208,9 @@ describe("how an Answered task reads everywhere else", () => {
     expect(JSON.stringify(items)).not.toContain("payment worker");
     expect(String(put.sk)).toMatch(/answered/u);
     expect(items.length).toBe(2);
+    // The same task gives the same milestone key every time, so a repeat of the end can't write a second one.
+    const key = (list: typeof items) => JSON.stringify(list.map((item) => [item.Put?.Item?.pk, item.Put?.Item?.sk]));
+    expect(key(answeredMilestoneItems({ tableName: "state" }, task, answered(), LATER))).toBe(key(items));
     expect(answeredMilestoneItems({ tableName: "state" }, task, running(), LATER)).toEqual([]);
     expect(ANSWERED_MILESTONE_TEXT).not.toMatch(/[<>]/u);
   });
@@ -556,11 +560,18 @@ describe("a plan that says no change is needed, through the broker", () => {
     expect(t.invocationOf(String(planning.id)).payload.prompt).toContain("Make the change anyway.");
   });
 
-  it("the planning prompt offers noChangeNeeded to a version 2 task only", async () => {
+  it("the planning prompt offers noChangeNeeded to a version 2 task only: a version 1 task's prompt is as it was", async () => {
     const t = await world();
     const run = await t.understanding();
     await t.finishUnderstand(run, ready());
     expect(t.invocationOf(String(t.operationOf(run.workspaceId, "PLAN")!.id)).payload.prompt).toContain("noChangeNeeded");
+    // An org still on version 1 starts a 1.0.0 task at the plan step.
+    t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 1, updatedBy: "test", updatedAt: NOW });
+    const old = await t.start({ path: "QUICK" });
+    await t.finish(old.workspaceId, String(t.operations(old.workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    expect(t.meta(old.taskId).workflow).toMatchObject({ definitionVersion: "1.0.0", stage: "PLAN" });
+    const planning = t.operationOf(old.workspaceId, "PLAN")!;
+    expect(t.invocationOf(String(planning.id)).payload.prompt).not.toContain("noChangeNeeded");
   });
 });
 
@@ -656,7 +667,7 @@ describe("Make a change anyway after an answer", () => {
     const open = await t.understanding();
     const notAnswered = await t.changeAnyway(MAYA, open.sessionId);
     expect(notAnswered.status).toBe(400);
-    expect(errorOf(notAnswered).code).toBe("CONFIG_INVALID");
+    expect(errorOf(notAnswered)).toMatchObject({ code: "CONFIG_INVALID", message: NOT_ANSWERED_MESSAGE });
     const run = await t.answeredTask();
     const forged = await t.changeAnyway(MAYA, run.sessionId, { payer: { kind: "project", project: "payments" }, retryOf: randomUUID(), path: "FULL" });
     expect(forged.status).toBe(400);
