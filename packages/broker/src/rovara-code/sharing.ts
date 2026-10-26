@@ -84,7 +84,7 @@ export async function undoCodeShare(deps: SessionShareDependencies, caller: Sess
     } },
     { Delete: { TableName: deps.tableName, Key: agentSessionKey(caller.orgId, sessionId, `SHARE#${key}`) } },
     ...[taskIndexKey(task.developerId, task.createdAt, task.taskId), ...(owner.developerId === task.developerId ? [] : [taskIndexKey(owner.developerId, task.createdAt, task.taskId)])].map((index) => ({ Update: {
-      TableName: deps.tableName, Key: index, UpdateExpression: "SET #shared = :shared", ExpressionAttributeNames: { "#shared": "shared" }, ExpressionAttributeValues: { ":shared": restore !== undefined },
+      TableName: deps.tableName, Key: index, ConditionExpression: "attribute_exists(pk)", UpdateExpression: "SET #shared = :shared", ExpressionAttributeNames: { "#shared": "shared" }, ExpressionAttributeValues: { ":shared": restore !== undefined },
     } })),
   ];
   if (task.share?.threadTs !== undefined) items.push(restore === undefined
