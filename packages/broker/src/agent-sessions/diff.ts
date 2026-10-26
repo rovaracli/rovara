@@ -30,7 +30,9 @@ export async function sessionDiff(deps: SessionDiffDependencies, caller: Session
   if (!run.success || run.data.sessionId !== session.subject.chainRunId || run.data.project !== session.project || run.data.sections.length > CHAIN_MAX_STEP_RUNS) throw missing();
   for (const section of run.data.sections) {
    if (section.detail === undefined) continue;
-   const shown = await deps.chain.stepTask({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId, section.seq);
+   let shown: DeveloperTaskView;
+   try { shown = await deps.chain.stepTask({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId, section.seq); }
+   catch (error) { if (typeof error === "object" && error !== null && "code" in error && (error.code === "NOT_FOUND" || error.code === "FORBIDDEN")) continue; throw error; }
    if (shown.taskId !== section.detail.taskId || shown.project !== session.project) throw missing();
    const candidate = shown.pullRequests?.find(item => item.repository === query.repository && item.number === query.number);
    if (candidate === undefined) continue;
