@@ -260,7 +260,7 @@ async function copyInto(directory: HeldDirectory, source: string, name: string):
 }
 
 /** Copies the loose objects and packs in `source` (an object directory the worker owns) that the candidate's object directory does not have yet. Packs go in with their index last. */
-async function copyObjectsOut(source: string, layout: CandidateLayout): Promise<void> {
+export async function copyObjectsOut(source: string, layout: CandidateLayout): Promise<void> {
   const target = await openDirectory(layout.objects);
   try {
     for (const entry of await readdir(source, { withFileTypes: true })) {
