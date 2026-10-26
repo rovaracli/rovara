@@ -196,6 +196,8 @@ export const PullRequestLifecycleResultSchema = z
     commit: z.string().regex(/^[a-f0-9]{40,64}$/),
     /** The pushed commit's tree: set by a workflow task's pull request update. An older worker omits it. */
     treeSha: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+    /** A workflow task's merge of the base branch that conflicted (Plan 6 Task 17): the conflicting files (at most 100). Nothing was pushed; `commit` is the head the pull request has. */
+    conflicts: z.array(z.string().min(1).max(1024)).min(1).max(100).optional(),
     checks: z.array(PublicationCheckResultSchema).max(64),
     codeBuildChecks: z.array(CodeBuildCheckResultSchema).max(8).default([]),
     reconciled: z.boolean(),
