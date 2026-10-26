@@ -744,6 +744,21 @@ describe("Slack native workflow review controls", () => {
       await expect(handlers.handleAction(press("agentx_workflow_retry_plan", { taskId, revision: 6 }))).rejects.toThrow(/out of date/);
     });
 
+    it("retries a blocked plan check (Plan 6 Task 8) for the owner at the exact revision, through the planning retry's hand-off with its own step", async () => {
+      const blocked = { ...task, workflow: { ...workflow, definitionVersion: "1.1.0", revision: 4, stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "Rovara couldn't start the plan check." } };
+      const plans: Array<Record<string, unknown>> = [];
+      const handlers = workflowSlackHandlers({ loadTask: async () => blocked, openView: async () => undefined, submit: async () => undefined, retryPlan: async (input) => { plans.push(input); } });
+      await handlers.handleAction(press("agentx_workflow_retry_plan_check", { taskId, revision: 4 }));
+      expect(plans).toEqual([expect.objectContaining({ taskId, userId: requester, thread, expectedRevision: 4, step: "plan_check" })]);
+      await expect(handlers.handleAction(press("agentx_workflow_retry_plan_check", { taskId, revision: 3 }))).rejects.toThrow(/out of date/);
+      await expect(handlers.handleAction(press("agentx_workflow_retry_plan_check", { taskId, revision: 4 }, other))).rejects.toThrow(/Only/);
+      // Only a blocked plan check: a blocked plan is retried by its own button.
+      const planning = { ...task, workflow: { ...workflow, revision: 4, stage: "PLAN", state: "BLOCKED", blockReason: "planning operation ended failed" } };
+      await expect(workflowSlackHandlers({ loadTask: async () => planning, openView: async () => undefined, submit: async () => undefined, retryPlan: async () => undefined })
+        .handleAction(press("agentx_workflow_retry_plan_check", { taskId, revision: 4 }))).rejects.toThrow(/out of date/);
+      expect(plans).toHaveLength(1);
+    });
+
     it("offers Run checks again on a ready change whose code changed, through the same check choice", async () => {
       const ready = WorkflowSnapshotSchema.parse({ ...reviewBlocked, stage: "PULL_REQUEST", state: "READY", blockReason: undefined, reviews: [review("CRITIC", "PASS", []), review("SECURITY", "PASS", [])] });
       let opened: Record<string, unknown> | undefined;
@@ -782,7 +797,7 @@ describe("Slack native workflow review controls", () => {
     });
 
     it("routes every new exit button to the workflow handlers and names them all in WORKFLOW_ACTION_IDS", () => {
-      for (const id of ["agentx_workflow_send_back", "agentx_workflow_retry_plan", "agentx_workflow_retry_implementation", "agentx_workflow_retry_publish", "agentx_workflow_close"]) {
+      for (const id of ["agentx_workflow_send_back", "agentx_workflow_retry_plan", "agentx_workflow_retry_plan_check", "agentx_workflow_retry_implementation", "agentx_workflow_retry_publish", "agentx_workflow_close"]) {
         expect(WORKFLOW_ACTION_IDS.has(id), id).toBe(true);
       }
     });

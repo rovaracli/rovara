@@ -4115,6 +4115,12 @@ export async function startTaskWorkflowImplementationFromSystem(
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
+/** A conversation id for one plan check, the same whenever the same check is started again (a repeat of its dispatch finds the conversation, not a second one). */
+function planCheckConversationId(taskId: string, revision: number): string {
+  const hex = createHash("sha256").update(`agentx-plan-check-conversation:${taskId}:${String(revision)}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 /** The most of the person's words (the request) a plan check is given beside the plan. */
 const PLAN_CHECK_REQUEST_MAX_CHARS = 4_000;
 
@@ -4144,10 +4150,17 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
   if (loaded === undefined) throw agentXError("WORKSPACE_NOT_READY", "the coding plan to check failed its digest check");
   const receivedAt = iso(deps);
   const requestId = workflowRequestId("agentx-plan-critique", taskId, workflow.revision);
+  // The critic works in a conversation of its own, one for each check: it never sees the planner's session, and the planner and the builder never hold its turn. They are told what it found
+  // only through the bounded, redacted, labelled points (planCriticBlock).
+  const conversationId = planCheckConversationId(taskId, workflow.revision);
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)",
+    Item: { pk: `WORKSPACE#${task.workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId: task.workspaceId, createdAt: receivedAt, updatedAt: receivedAt },
+  })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   const request = task.requestText === undefined ? undefined : Array.from(redactText(task.requestText)).slice(0, PLAN_CHECK_REQUEST_MAX_CHARS).join("");
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
-    requestId, conversationId: task.conversationId, prompt: planCritiquePrompt({ plan: loaded.markdown, request }),
+    requestId, conversationId, prompt: planCritiquePrompt({ plan: loaded.markdown, request }),
   }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
@@ -4210,7 +4223,7 @@ export async function startTaskWorkflowPlanRevisionFromSystem(
       request: "Revise the plan after its check", response: `The plan revision started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
-  ], { sharedTask: task.shared === true, workflowMode: "PLAN", ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) });
+  ], { sharedTask: task.shared === true, workflowMode: "PLAN", planRevision: true, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 

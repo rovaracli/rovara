@@ -1,5 +1,5 @@
 import { GetCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique } from "@agentx/contracts";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
@@ -109,13 +109,26 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
     const parsed = WorkflowSnapshotSchema.safeParse(task?.workflow);
     if (task === undefined || task.closedAt !== undefined || !parsed.success || parsed.data.state !== "RUNNING") return;
     const workflow = parsed.data;
+    // Plan 6 Task 8: a plan check whose run is lost is advice that never came: the plan goes to the person, shown as not checked.
+    if (mode === "PLAN_CRITIQUE") {
+      if (workflow.stage !== "PLAN_CRITIQUE") return;
+      const now = new Date().toISOString();
+      await documentClient.send(new UpdateCommand({
+        TableName: tableName, Key: taskKey(pointer.taskId),
+        UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+        ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now }), ":now": now, ":revision": workflow.revision, ":stage": "PLAN_CRITIQUE", ":running": "RUNNING" },
+      }));
+      return;
+    }
     let reason: string;
     if (mode === "FEEDBACK_REVIEW") {
       const binding = operation?.workflowFeedbackReview;
       if (binding === undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.revision !== binding.workflowRevision || workflow.taskId !== binding.taskId
         || workflow.candidate?.digest !== binding.candidateDigest || workflow.feedbackReview?.status !== "COLLECTING") return;
       reason = WORKFLOW_BLOCK_REASONS.feedbackReviewFailed;
-    } else if (mode === "IMPLEMENT" || mode === "CHECKS" || mode === "REVIEW" || (mode === "PLAN" && workflow.stage === "PLAN") || (mode === "PLAN_CRITIQUE" && workflow.stage === "PLAN_CRITIQUE")) {
+    } else if (mode === "IMPLEMENT" || mode === "CHECKS" || mode === "REVIEW" || (mode === "PLAN" && workflow.stage === "PLAN")) {
       reason = workflowRunEndedReason(mode, "FAILED");
     } else {
       return;

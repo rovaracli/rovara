@@ -20,10 +20,14 @@ export function planCritiqueRetryPrompt(problem: string): string {
 export async function settlePlanCritique(answer: string | undefined, ask: (prompt: string) => Promise<string | undefined>, onRetry: () => Promise<void>): Promise<string | undefined> {
   const first = answer?.trim();
   const read = readPlanCritique(first ?? "");
-  if (first !== undefined && first !== "" && read.ok) return first;
+  if (first !== undefined && first !== "" && read.ok) return bounded(first);
   await onRetry();
   const second = (await ask(planCritiqueRetryPrompt(read.ok ? "The answer was empty." : read.error)))?.trim();
   const last = second === undefined || second === "" ? first : second;
-  if (last === undefined || last === "") return undefined;
-  return Buffer.byteLength(last, "utf8") > PLAN_CRITIQUE_ANSWER_MAX_BYTES ? Buffer.from(last, "utf8").subarray(-PLAN_CRITIQUE_ANSWER_MAX_BYTES).toString("utf8") : last;
+  return last === undefined || last === "" ? undefined : bounded(last);
+}
+
+/** An over-long answer keeps its end, where the block is; the cut can land inside a character, whose broken start is dropped. */
+function bounded(answer: string): string {
+  return Buffer.byteLength(answer, "utf8") > PLAN_CRITIQUE_ANSWER_MAX_BYTES ? Buffer.from(answer, "utf8").subarray(-PLAN_CRITIQUE_ANSWER_MAX_BYTES).toString("utf8").replace(/^\uFFFD+/u, "") : answer;
 }

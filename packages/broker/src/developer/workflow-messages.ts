@@ -121,20 +121,21 @@ export function isFeedbackReviewFailure(blockReason: string | undefined): boolea
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
-const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { planning: "Planning", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
+const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { planning: "Planning", "plan check": "The plan check", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
 
 /** The broker's own reason a step stopped, in words the owner can act on; any other reason is internal. */
-export function plainBlockReason(blockReason: string | undefined): string {
-  if (blockReason === undefined) return GENERIC_REASON;
+export function plainBlockReason(blockReason: string | undefined, as: "AgentX" | "Rovara" = "AgentX"): string {
+  const generic = as === "Rovara" ? GENERIC_REASON.replace("AgentX", "Rovara") : GENERIC_REASON;
+  if (blockReason === undefined) return generic;
   if (isE2EPlanCorrectionBlockReason(blockReason)) return slackText(blockReason);
   const reworded = REWORDED_REASONS.get(blockReason);
   if (reworded !== undefined) return slackText(reworded);
   // PLANINC-2: a stop the owner asked for (cancelled, or interrupted when the stop could not be delivered) says so and what to do; only a failed run is unexpected.
-  const stopped = /^(planning|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
+  const stopped = /^(planning|plan check|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
   if (stopped !== null) return `${STOPPED_STEP_NAME[stopped[1]!]!} was stopped before it finished. Choose Retry to run it again.`;
   if (/operation ended (failed|interrupted|cancelled)$/.test(blockReason)) return "The run stopped unexpectedly.";
   if (/ was invalid, incomplete, or stale$/.test(blockReason)) return "The result couldn't be trusted, so nothing moved forward.";
-  return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : GENERIC_REASON;
+  return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : generic;
 }
 
 /** A review-only task's blocked verification, without advice to rerun checks it does not have. */
@@ -746,7 +747,13 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
     // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
-    case "PLAN_CRITIQUE/BLOCKED": return { text: `The plan check stopped before it finished. ${workflow.blockReason !== undefined && MODEL_REFUSAL.test(workflow.blockReason) ? slackText(workflow.blockReason) : plainBlockReason(workflow.blockReason)}`, buttons: [exits.close] };
+    // Only a model the company chose for the check, and that it may not use, blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
+    case "PLAN_CRITIQUE/BLOCKED": {
+      const reason = workflow.blockReason;
+      const said = reason !== undefined && MODEL_REFUSAL.test(reason) ? slackText(reason) : plainBlockReason(reason, "Rovara");
+      const stopped = reason !== undefined && /^plan check operation ended (cancelled|interrupted)$/u.test(reason);
+      return { text: stopped ? said : `The plan check stopped before it finished. ${said}`, buttons: [exits.button("agentx_workflow_retry_plan_check", "Retry plan check"), exits.close] };
+    }
     case "PLAN_REVIEW/WAITING": return planReview(context, exits);
     // Only a task view shows this (never stored): the saved document failed its digest check, so it can't be approved.
     case "PLAN_REVIEW/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.documentUnverified

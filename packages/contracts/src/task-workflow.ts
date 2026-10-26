@@ -2113,10 +2113,10 @@ function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "p
   return workflow.definitionVersion === "1.1.0" && type === "plan" && workflow.program?.steps.some((step) => step.kind === "plan_critic") === true;
 }
 
-function runningPlanCheck(currentInput: unknown, expectedRevision: number): WorkflowSnapshot {
+function runningPlanCheck(currentInput: unknown, expectedRevision: number, states: readonly WorkflowState[] = ["RUNNING"]): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   if (current.revision !== expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
-  if (current.stage !== "PLAN_CRITIQUE" || current.state !== "RUNNING") throw new WorkflowTransitionError("the workflow is not running the plan check");
+  if (current.stage !== "PLAN_CRITIQUE" || !states.includes(current.state)) throw new WorkflowTransitionError("the workflow is not running the plan check");
   return current;
 }
 
@@ -2147,20 +2147,38 @@ export function submitPlanCritique(
 }
 
 /**
- * The plan check ended with no critique to add: it stopped at the planning limit (`stopped_at_limit`), or it could not run or give an answer (`done`, so the plan is shown
- * as it was checked so far, which may be not at all). The plan goes to the person; whatever was critiqued before is kept. A check is advice, so it never holds a plan back.
+ * The plan check ended with no critique to add: it stopped at a spending limit (`stopped_at_limit`, `limit` says which), or it could not run or give an answer (`done`, so the plan is shown
+ * as it was checked so far, which may be not at all). The plan goes to the person; whatever was critiqued before is kept. A check is advice, so it never holds a plan back. It may be closed
+ * before it started (`READY`: its start was given up) as well as while it runs.
  */
 export function closePlanCritique(
   currentInput: unknown,
-  input: { expectedRevision: number; status: WorkflowCritique["status"]; sameModelAsPlanner?: true; now: string },
+  input: { expectedRevision: number; status: WorkflowCritique["status"]; limit?: "planning" | "other"; sameModelAsPlanner?: true; now: string },
 ): WorkflowSnapshot {
-  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  const current = runningPlanCheck(currentInput, input.expectedRevision, ["RUNNING", "READY"]);
   const earlier = current.critique;
   const kept: WorkflowCritique = {
     status: input.status, critiques: earlier?.critiques ?? [], revisions: earlier?.revisions ?? 0,
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
     ...(input.sameModelAsPlanner === true || earlier?.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
   };
   return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: kept, updatedAt: input.now });
+}
+
+/**
+ * The one revision a blocking point asked for could not be paid for (the planning budget ran out as it ran): the plan goes to the person as it was, with the critic's points and the
+ * word that it was not revised. Nothing is paused and no money is asked for, because no person asked for the revision.
+ */
+export function skipPlanRevision(currentInput: unknown, input: { expectedRevision: number; limit: "planning" | "other"; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  const critique = current.critique;
+  if (current.stage !== "PLAN" || current.state !== "RUNNING" || critique === undefined || critique.revisions < 1 || critique.critiques.length === 0) {
+    throw new WorkflowTransitionError("the workflow is not revising a plan after its check");
+  }
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: { ...critique, notRevised: true, limit: input.limit }, updatedAt: input.now,
+  });
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */

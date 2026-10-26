@@ -4,15 +4,17 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, WorkflowSnapshotSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow,
+  PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, WorkflowSnapshotSchema, ModelSourceSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow, skipPlanRevision,
   readPlanCritique, submitPlanCritique, submitWorkflowArtifact, type PlanCritique, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
+import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
+import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packages/worker/src/plan-critic.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
-import { criticModelFor, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { criticCapabilityTier, criticModelFor, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
@@ -21,6 +23,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 
 beforeAll(async () => {
@@ -221,6 +224,12 @@ describe("closePlanCritique", () => {
     expect(next.critique).toMatchObject({ status: "stopped_at_limit", revisions: 1, critiques: [{ verdict: "revise" }] });
   });
 
+  it("goes on before the check ever started (its start was given up), and records which limit stopped it", () => {
+    const ready = submitted(planning());
+    expect(closePlanCritique(ready, { expectedRevision: ready.revision, status: "done", now: LATER })).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [] } });
+    expect(closePlanCritique(running(), { expectedRevision: running().revision, status: "stopped_at_limit", limit: "planning", now: LATER }).critique).toMatchObject({ limit: "planning" });
+  });
+
   it("goes on without a critique when the check could not run, so the plan is shown as unchecked", () => {
     const current = running();
     expect(closePlanCritique(current, { expectedRevision: current.revision, status: "done", now: LATER })).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [] } });
@@ -229,7 +238,8 @@ describe("closePlanCritique", () => {
   it("refuses at the wrong stage or revision", () => {
     const current = running();
     expect(() => closePlanCritique(current, { expectedRevision: current.revision + 1, status: "done", now: LATER })).toThrow(/stale/);
-    expect(() => closePlanCritique({ ...current, state: "READY" }, { expectedRevision: current.revision, status: "done", now: LATER })).toThrow(/not running the plan check/);
+    expect(() => closePlanCritique({ ...current, stage: "PLAN_REVIEW" }, { expectedRevision: current.revision, status: "done", now: LATER })).toThrow(/not running the plan check/);
+    expect(() => closePlanCritique({ ...current, state: "BLOCKED" }, { expectedRevision: current.revision, status: "done", now: LATER })).toThrow(/not running the plan check/);
   });
 });
 
@@ -307,6 +317,46 @@ describe("criticModelFor: the company's choice", () => {
   });
 });
 
+describe("the capability order", () => {
+  const model = (modelId: string, provider = "amazon-bedrock"): ModelIdentifier => ({ provider, modelId });
+  const CATALOG = [
+    "us.anthropic.claude-fable-5", "us.anthropic.claude-fable-5-1", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "us.anthropic.claude-opus-4-5-20251101-v1:0", "us.anthropic.claude-opus-4-6-v1", "us.anthropic.claude-opus-4-7", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-5",
+    "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-5-5",
+  ].map((id) => model(id));
+  const ids = (models: readonly ModelIdentifier[]) => models.map((entry) => entry.modelId);
+
+  it("ranks the Rovara catalog by tier, newest first within a tier, and not alphabetically", () => {
+    expect(ids(rankCriticModels(CATALOG))).toEqual([
+      "us.anthropic.claude-fable-5-1", "us.anthropic.claude-fable-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-7",
+      "us.anthropic.claude-opus-4-6-v1", "us.anthropic.claude-opus-4-5-20251101-v1:0", "us.anthropic.claude-opus-4-1-20250805-v1:0",
+      "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ]);
+  });
+
+  it("does not depend on the order the models come in", () => {
+    expect(ids(rankCriticModels([...CATALOG].reverse()))).toEqual(ids(rankCriticModels(CATALOG)));
+  });
+
+  it("puts a model no tier names last, and keeps the order of models that rank alike", () => {
+    const strange = [model("zeta-1", "acme"), model("alpha-1", "acme"), SONNET];
+    expect(ids(rankCriticModels(strange))).toEqual(["claude-sonnet-4-6", "zeta-1", "alpha-1"]);
+    expect(criticCapabilityTier(model("gpt-5.5", "openai"))).toBeLessThan(criticCapabilityTier(model("gpt-5.4-mini", "openai")));
+  });
+
+  it("recommends the strongest catalog model other than the planner's: Sonnet 4.6 gets Fable 5.1, Fable 5.1 gets Fable 5", () => {
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-fable-5-1"), sources: CATALOG }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+    expect(chosenModel(choose({ planModel: model("us.anthropic.claude-sonnet-4-6"), sources: CATALOG, guardrails: { ...GUARDRAILS, forbiddenModels: CATALOG.filter((entry) => /fable/u.test(entry.modelId)) } })))
+      .toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+  });
+
+  it("falls back to the same model with the note when the planner's is the only one allowed", () => {
+    expect(choose({ planModel: model("us.anthropic.claude-haiku-5-5"), sources: [model("us.anthropic.claude-haiku-5-5")] })).toMatchObject({ sameModelAsPlanner: true });
+  });
+});
+
 describe("criticModelFor: Rovara's recommendation", () => {
   it("recommends a different model, from the same company, for a Claude-only project: Sonnet's plan gets Opus", () => {
     const result = choose({ sources: [SONNET, OPUS], project: { name: "payments", approved: [SONNET, OPUS] } });
@@ -314,10 +364,12 @@ describe("criticModelFor: Rovara's recommendation", () => {
     expect(result).toMatchObject({ chosenBy: "rovara", sameModelAsPlanner: false });
   });
 
-  it("takes the first different model in the sources' order when the project allows several companies", () => {
-    expect(chosenModel(choose({ sources: [SONNET, GPT, OPUS] }))).toBe("openai/gpt-5.5");
-    expect(chosenModel(choose({ sources: [SONNET, OPUS, GPT] }))).toBe("anthropic/claude-opus-4-6");
-    expect(chosenModel(choose({ planModel: OPUS, sources: [SONNET, OPUS, GPT] }))).toBe("anthropic/claude-sonnet-4-6");
+  it("takes the strongest allowed model that is not the planner's, whatever order the sources list them in", () => {
+    for (const sources of [[SONNET, GPT, OPUS], [OPUS, GPT, SONNET], [GPT, SONNET, OPUS]]) {
+      expect(chosenModel(choose({ sources })), JSON.stringify(sources)).toBe("anthropic/claude-opus-4-6");
+      // The planner was the strongest one: the next strongest.
+      expect(chosenModel(choose({ planModel: OPUS, sources })), JSON.stringify(sources)).toBe("openai/gpt-5.5");
+    }
   });
 
   it("counts the planner's model by its canonical name, whichever route it ran on", () => {
@@ -591,19 +643,54 @@ describe("the plan check's result", () => {
     expect(JSON.stringify(t.h.db.find(() => true))).not.toContain(secret);
   });
 
-  it("an answer with no readable block blocks the plan check with its reason, and writes no critique", async () => {
+  // The check is advice: when it can't give any, the plan goes to the person as unchecked, with the line that says so (never a dead end, and not a pass).
+  const passesUnchecked = (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [], revisions: 0 } });
+    expect(record.workflow.blockReason).toBeUndefined();
+    expect(record.workflow.decisions).toEqual([]);
+    expect(record.budgetPause).toBeUndefined();
+    const text = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!.text;
+    expect(text).toContain("This plan was not checked by a second model.");
+  };
+
+  it("an answer with no readable block passes the plan to the person, unchecked, with no critique", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.planned();
     await t.finishCritique(workspaceId, "Looks good to me. Approved.");
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "Rovara couldn't read the plan check's answer." });
-    expect(t.meta(taskId).workflow.critique).toBeUndefined();
+    passesUnchecked(t, taskId);
   });
 
-  it("a plan check that fails blocks the same way, and says it ended", async () => {
+  it("a plan check that fails, is stopped or is interrupted passes the plan to the person, unchecked", async () => {
+    for (const status of ["FAILED", "CANCELLED", "INTERRUPTED"] as const) {
+      const t = await world();
+      const { taskId, workspaceId } = await t.planned();
+      await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), status, { error: "the model did not answer" });
+      passesUnchecked(t, taskId);
+    }
+  });
+
+  it("a plan check whose run is lost (the worker never answered) passes the plan on too", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.planned();
-    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: "the model did not answer" });
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "plan check operation ended failed" });
+    await failOutboxOperation(t.h.db, "state", t.h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id)[0] as never, "worker unreachable");
+    passesUnchecked(t, taskId);
+  });
+
+  it("a check that can't be started, however often it is tried, passes the plan on instead of blocking it", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    // Starting the check fails every time: its agent snapshot no longer matches the task's.
+    t.h.db.set({ ...t.meta(taskId), agent: { ...(t.meta(taskId).agent as object), digest: "0".repeat(64) } });
+    await t.finishPlanning(workspaceId);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY" });
+    const [row] = t.dispatchRows(taskId);
+    expect(row).toMatchObject({ kind: "CRITIQUE", attempts: 1 });
+    t.h.db.set({ ...row!, attempts: 9, nextAttemptAt: "2000-01-01T00:00:00.000Z", dispatchDueSk: `2000-01-01T00:00:00.000Z#${String(row!.sk)}` });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    passesUnchecked(t, taskId);
+    expect(t.dispatchRows(taskId)).toEqual([]);
   });
 });
 
@@ -661,14 +748,237 @@ describe("a result for a check the task no longer waits for", () => {
   });
 });
 
+describe("the Slack hand-off of Retry plan check", () => {
+  const event = (step: unknown) => ({ source: "agentx.slack-ingress", action: "workflow-retry", taskId: TASK_ID, userId: "U1", requestId: randomUUID(), expectedRevision: 4, selectedOptionalCheckIds: [], thread: { teamId: "T", channelId: "C", threadTs: "1.1" }, step });
+  it("the broker takes the plan_check step and no other new one", async () => {
+    const { isSlackWorkflowRetryEvent } = await import("../../packages/broker/src/aws/broker.js");
+    expect(isSlackWorkflowRetryEvent(event("plan_check"))).toBe(true);
+    expect(isSlackWorkflowRetryEvent(event("plan"))).toBe(true);
+    expect(isSlackWorkflowRetryEvent(event("understand"))).toBe(false);
+  });
+});
+
+describe("the plan check keeps to its own conversation (the planner sees only the labelled points)", () => {
+  it("runs in a conversation of its own, never the task's, and each check in its own", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const task = t.meta(taskId);
+    const first = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(first.conversationId).toBeDefined();
+    expect(first.conversationId).not.toBe(task.conversationId);
+    expect(t.h.db.get(`WORKSPACE#${workspaceId}`, `CONVERSATION#${String(first.conversationId)}`)).toMatchObject({ entityType: "CONVERSATION" });
+    expect(t.invocationOf(first.id)).toBeDefined();
+    await t.finishCritique(workspaceId, critiqueAnswer("revise", [{ id: "p1", severity: "blocking", text: "No limit on retries." }]));
+    await t.finishPlanning(workspaceId, REVISED_PLAN);
+    const second = t.byMode(workspaceId, "PLAN_CRITIQUE")[1]!;
+    expect(second.conversationId).not.toBe(first.conversationId);
+    expect(second.conversationId).not.toBe(task.conversationId);
+  });
+
+  it("starts the planner's revision in the task's own conversation, whose history holds no turn of the critic's", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const task = t.meta(taskId);
+    await t.finishCritique(workspaceId, critiqueAnswer("revise", [{ id: "p1", severity: "blocking", text: "No limit on retries." }]));
+    const revision = t.byMode(workspaceId, "PLAN")[1]!;
+    const critic = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(revision.conversationId).toBe(task.conversationId);
+    expect(critic.conversationId).not.toBe(revision.conversationId);
+    // Only the labelled, bounded points reach the planner; the critic's raw answer is stored beside its own operation and goes nowhere else.
+    const prompt = t.invocationOf(revision.id)!.payload.prompt;
+    expect(prompt).toContain(PLAN_CRITIC_BLOCK_HEADER);
+    expect(prompt).not.toContain(PLAN_CRITIQUE_INFO_STRING);
+  });
+});
+
+describe("the automatic revision never asks for money", () => {
+  it("when it runs out of planning budget, the original plan goes to the person with the critic's points, saying it wasn't revised, and nothing is paused", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.finishCritique(workspaceId, critiqueAnswer("revise", [{ id: "p1", severity: "blocking", text: "No limit on retries." }, { id: "p2", severity: "note", text: "Name the test file." }]));
+    const revision = t.byMode(workspaceId, "PLAN")[1]!;
+    expect(revision.planRevision).toBe(true);
+    // The planning limit is used up when the revision stops.
+    t.h.db.set({ ...t.meta(taskId), budgetUsd: 1, budgetBaselineUsd: 0, modelKeyIds: ["k1"] });
+    t.access!.keySpend.mockResolvedValue(5);
+    await t.h.finish(workspaceId, String(revision.id), "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { revisions: 1, notRevised: true, limit: "planning" } });
+    expect(record.workflow.critique!.critiques[0]!.points.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+    expect(record.workflow.blockReason).toBeUndefined();
+    expect(record.budgetPause).toBeUndefined();
+    expect(t.h.db.find((item) => item.entityType === "SPEND_REQUEST")).toEqual([]);
+    // The plan the person sees is the one the planner wrote first.
+    expect(record.workflow.artifacts).toHaveLength(1);
+    const text = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!.text;
+    expect(text).toContain("I couldn't revise this plan for the second model's points, because the planning limit was reached first. It is shown as it was.");
+    expect(text).toContain("Problem: No limit on retries.");
+    // The person's approval then goes to coding as ever.
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  });
+
+  it("a planning run that a person asked for still pauses and asks, as it always did (positive control)", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    t.h.db.set({ ...t.meta(taskId), budgetUsd: 1, budgetBaselineUsd: 0, modelKeyIds: ["k1"] });
+    t.access!.keySpend.mockResolvedValue(5);
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN")[0]!.id), "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.meta(taskId).budgetPause).toBeDefined();
+  });
+
+  it("the revision's key is minted without a pause to write: running out is refused, and the task is not paused", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.finishCritique(workspaceId, critiqueAnswer("revise", [{ id: "p1", severity: "blocking", text: "No limit on retries." }]));
+    t.h.db.set({ ...t.meta(taskId), budgetUsd: 1, budgetBaselineUsd: 0 });
+    t.access!.keySpend.mockResolvedValue(5);
+    const reply = await t.askForKey(workspaceId, t.byMode(workspaceId, "PLAN")[1]!.id);
+    expect(reply.status).toBe(402);
+    expect(t.meta(taskId).budgetPause).toBeUndefined();
+  });
+
+  it("skipPlanRevision refuses a plan that is not being revised after a check", () => {
+    const running: WorkflowSnapshot = { ...planning(), state: "RUNNING" };
+    expect(() => skipPlanRevision(running, { expectedRevision: running.revision, limit: "planning", now: LATER })).toThrow(/not revising/);
+  });
+});
+
+describe("when the company's chosen model for the check is refused", () => {
+  const forbidChosen = async (t: Awaited<ReturnType<typeof world>>, taskId: string, workspaceId: string) => {
+    await t.finishPrepare(workspaceId);
+    const forbidden = { provider: "openai", modelId: "gpt-5.5" };
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [forbidden] } });
+    t.settingPlanCheck(taskId, { model: forbidden });
+    await t.finishPlanning(workspaceId);
+  };
+
+  it("blocks the check with the refusal, and the owner's Retry plan check runs it again once the model is allowed", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.start();
+    await forbidChosen(t, taskId, workspaceId);
+    const blocked = t.meta(taskId).workflow;
+    expect(blocked).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
+    const card = workflowMessage({ taskId, workflow: blocked as never, project: "payments" })!;
+    expect(buttonsOf(card.blocks).map((button) => button.action_id)).toEqual(["agentx_workflow_retry_plan_check", "agentx_workflow_close"]);
+    // The company chooses a model it may use for the check; the retry starts it.
+    t.settingPlanCheck(taskId, { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } });
+    const retry = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry the plan check.", expectedRevision: blocked.revision });
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
+  });
+
+  it("runs the check on the planner's own model, with the note, when the company forbids the project's only other model", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const { workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    // The company forbids the project's other model after planning started; the one model left is the planner's, so the check runs on it with the note (nothing to refuse)...
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [OTHER_CLAUDE] } });
+    await t.finishPlanning(workspaceId);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.criticSameModel).toBe(true);
+  });
+
+  it("passes the plan on, unchecked, when no model at all is left for a check Rovara chose (nothing was refused that the company chose)", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT] } });
+    const { taskId, workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [CLAUDE_DEFAULT] } });
+    await t.finishPlanning(workspaceId);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [] } });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
+  });
+});
+
+describe("the plan check's choice of model on an install", () => {
+  it("with no list of models, recommends the strongest Rovara catalog model other than the planner's, not the first alphabetically", async () => {
+    const t = await world();
+    const { workspaceId } = await t.planned();
+    const sent = t.invocationOf(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id)!.payload.model!;
+    expect(sent.modelId).toBe("us.anthropic.claude-fable-5-1");
+  });
+
+  it("takes the planner's model to be the install's default when nothing recorded it and the project names none: the one model left is the same one", async () => {
+    const t = await world();
+    const { workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    // Every other Claude model of the catalog is forbidden: only the install's default remains.
+    const forbidden = bedrockClaudeModelIds().filter((id) => id !== CLAUDE_DEFAULT.modelId).map((modelId) => ({ provider: "amazon-bedrock", modelId }));
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: forbidden } });
+    await t.finishPlanning(workspaceId);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.criticSameModel).toBe(true);
+  });
+
+  it("reads the planner's model from the task's own planning runs only, not from any other run in the workspace", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const { workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    const planOperation = t.byMode(workspaceId, "PLAN")[0]!;
+    // Another conversation's later planning run, on the other model: it is not this task's planner.
+    t.h.db.set({ ...planOperation, sk: `OPERATION#${randomUUID()}`, id: randomUUID(), conversationId: randomUUID(), createdAt: "2999-01-01T00:00:00.000Z", model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId } });
+    t.h.db.set({ ...planOperation, model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } });
+    await t.h.artifact(workspaceId, String(planOperation.id), "plan.md", planAnswer(TESTED_PLAN));
+    await t.h.finish(workspaceId, String(planOperation.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ modelId: OTHER_CLAUDE.modelId });
+  });
+
+  it("offers only the sources the project walks: a source the project leaves out is not recommended from", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, { provider: "openai", modelId: "gpt-5.4" }] } });
+    const store = new ModelSourceStore({ documentClient: t.h.db, tableName: "state", now: Date.now, chatgptSwitch: async () => false });
+    await store.save({ orgId: TEST_ORG, source: ModelSourceSchema.parse({ kind: "openai", sourceId: "src_oooooooooooooooooooo", label: "OpenAI", models: [{ catalog: { provider: "openai", modelId: "gpt-5.4" } }] }), mode: "create", by: "dev-owner" });
+    await store.setOrder({ orgId: TEST_ORG, order: ["rovara", "src_oooooooooooooooooooo"], by: "dev-owner" });
+    t.h.db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#payments`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, sourceOrder: ["rovara"], revision: 1 });
+    const { workspaceId } = await t.start();
+    await t.finishPrepare(workspaceId);
+    await t.finishPlanning(workspaceId);
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    // Only the planner's own model is left for this project, so the check runs on it with the note; the OpenAI model of the left-out source is never chosen.
+    expect(check.criticSameModel).toBe(true);
+    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
+  });
+
+  it("does not tell the critic that a different model wrote the plan: it may be the same one", async () => {
+    const t = await world({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT] } });
+    const { workspaceId } = await t.planned();
+    const prompt = t.invocationOf(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id)!.payload.prompt;
+    expect(prompt).not.toMatch(/different model/iu);
+    expect(prompt).not.toMatch(/another model wrote/iu);
+  });
+});
+
+describe("the worker's cut of a long answer", () => {
+  it("keeps the block at the end and never leaves half a character at the start", async () => {
+    const block = `\n\`\`\`${PLAN_CRITIQUE_INFO_STRING}\n{"verdict":"ok","points":[]}\n\`\`\`\n`;
+    const answer = `${"\u20ac".repeat(40_000)}${block}`;
+    const kept = await settlePlanCritique(answer, async () => undefined, async () => undefined);
+    expect(kept).toBeDefined();
+    expect(kept!.includes("\uFFFD")).toBe(false);
+    expect(readPlanCritique(kept!)).toMatchObject({ ok: true, verdict: "ok" });
+    expect(Buffer.byteLength(kept!, "utf8")).toBeLessThanOrEqual(PLAN_CRITIQUE_ANSWER_MAX_BYTES);
+  });
+});
+
+/** A task whose plan check is blocked: the model the company chose for it is forbidden, and nothing is left to fall back on. */
+async function blockedByCompanyChoice(t: Awaited<ReturnType<typeof world>>) {
+  const { taskId, workspaceId } = await t.start();
+  await t.finishPrepare(workspaceId);
+  const forbidden = { provider: "openai", modelId: "gpt-5.5" };
+  t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [forbidden] } });
+  t.settingPlanCheck(taskId, { model: forbidden });
+  await t.finishPlanning(workspaceId);
+  t.settingPlanCheck(taskId, { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } });
+  expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
+  return { taskId, workspaceId };
+}
+
 describe("retrying a blocked plan check", () => {
   const retry = (t: Awaited<ReturnType<typeof world>>, taskId: string, expectedRevision: number, requestId: string = randomUUID(), who = MAYA) =>
     t.h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, instructions: "Try the plan check again", expectedRevision });
 
   it("the owner's retry runs the check again on the same plan, once, whatever blocked it", async () => {
     const t = await world();
-    const { taskId, workspaceId } = await t.planned();
-    await t.finishCritique(workspaceId, "Looks good to me. Approved.");
+    const { taskId, workspaceId } = await blockedByCompanyChoice(t);
     const blocked = t.meta(taskId).workflow;
     expect(blocked).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
     const requestId = randomUUID();
@@ -677,11 +987,11 @@ describe("retrying a blocked plan check", () => {
     const record = t.meta(taskId).workflow;
     expect(record).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
     expect(record.blockReason).toBeUndefined();
-    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
     expect(t.dispatchRows(taskId)).toEqual([]);
     // The same request again starts nothing more.
     expect((await retry(t, taskId, blocked.revision, requestId)).status).toBe(200);
-    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
     // And the new answer puts the plan in front of the person.
     await t.finishCritique(workspaceId, critiqueAnswer("ok"));
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
@@ -689,13 +999,12 @@ describe("retrying a blocked plan check", () => {
 
   it("is refused at the wrong revision, and for someone who is not the task's owner", async () => {
     const t = await world();
-    const { taskId, workspaceId } = await t.planned();
-    await t.finishCritique(workspaceId, "no block");
+    const { taskId, workspaceId } = await blockedByCompanyChoice(t);
     const blocked = t.meta(taskId).workflow;
     expect((await retry(t, taskId, blocked.revision + 1)).status).toBe(409);
     expect((await retry(t, taskId, blocked.revision, randomUUID(), OMAR)).status).toBeGreaterThanOrEqual(400);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
-    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
   });
 });
 
@@ -713,14 +1022,29 @@ describe("the plan check and its budget", () => {
     expect(t.meta(taskId).modelKeyIds).toHaveLength(1);
   });
 
-  it("stops at the planning limit: the plan goes to the person saying so, and the task is not paused or asked for money", async () => {
+  it("stops at the planning limit when that is what ran out: the plan goes to the person saying so, and the task is not paused or asked for money", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.planned();
+    t.h.db.set({ ...t.meta(taskId), budgetUsd: 1, budgetBaselineUsd: 0, modelKeyIds: ["k1"] });
+    t.access!.keySpend.mockResolvedValue(1);
     await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
     const record = t.meta(taskId);
-    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "stopped_at_limit", critiques: [] } });
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "stopped_at_limit", limit: "planning", critiques: [] } });
     expect(record.budgetPause).toBeUndefined();
     expect(t.h.db.find((item) => item.entityType === "SPEND_REQUEST")).toEqual([]);
+    expect(workflowMessage({ taskId, workflow: record.workflow as never })!.text).toContain("The plan check stopped at the planning limit.");
+  });
+
+  it("says a spending limit, not the planning limit, when the step's, the month's or the org's budget ran out", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    t.access!.keySpend.mockResolvedValue(0.01);
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "stopped_at_limit", limit: "other" } });
+    const text = workflowMessage({ taskId, workflow: record.workflow as never })!.text;
+    expect(text).toContain("The plan check stopped at a spending limit.");
+    expect(text).not.toContain("planning limit");
   });
 
   it("asks for no money even when the task's spend is at its limit when the check stops: only a planning run would", async () => {
@@ -791,19 +1115,24 @@ describe("what people read about the plan check", () => {
     expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("RUNNING") })).toBeUndefined();
   });
 
-  it("a blocked check says so and offers Close task (the hand-off from the version 2 flip)", () => {
-    for (const blockReason of ["plan check operation ended failed", "Rovara couldn't read the plan check's answer.", "Rovara couldn't start the plan check."]) {
+  it("a blocked check says so and offers Retry plan check and Close task (the hand-off from the version 2 flip)", () => {
+    for (const blockReason of ["plan check operation ended failed", "Rovara couldn't start the plan check."]) {
       const message = workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason }) });
       expect(message, blockReason).toBeDefined();
       expect(message!.text).toContain("The plan check stopped before it finished.");
-      expect(buttonsOf(message!.blocks).map((button) => button.action_id)).toEqual(["agentx_workflow_close"]);
+      expect(buttonsOf(message!.blocks).map((button) => [button.action_id, button.text.text])).toEqual([["agentx_workflow_retry_plan_check", "Retry plan check"], ["agentx_workflow_close", "Close task"]]);
     }
+  });
+
+  it("says a plan check the owner stopped was stopped, and says Rovara in the copy it can't place", () => {
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: "plan check operation ended cancelled" }) })!.text).toContain("The plan check was stopped before it finished.");
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: "something else" }) })!.text).toContain("Something went wrong on Rovara's side.");
   });
 
   it("a blocked check shows the model refusal's own words, escaped, and nothing else a model could have written", () => {
     const refusal = "Rovara Code's Plan check step uses openai/gpt-5.5, which isn't allowed on payments. Ask the agent's owner to pick another model.";
     expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: refusal }) })!.text).toContain(refusal);
-    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: "<!channel> something a model wrote" }) })!.text).toContain("Something went wrong on AgentX's side.");
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: "<!channel> something a model wrote" }) })!.text).toContain("Something went wrong on Rovara's side.");
   });
 
   it("the progress strip names the plan check's step as the coding plan, as it names planning", () => {

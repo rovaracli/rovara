@@ -59,6 +59,8 @@ export interface OperationRecord extends Operation {
   modelRoute?: { sourceId: string; alias: string; model: ModelIdentifier } | null;
   /** Plan 6 Task 8: a plan check run on the same model that wrote the plan, because the project allows only one (absent: it ran on a different model). */
   criticSameModel?: true;
+  /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */
+  planRevision?: true;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */
   startRefused?: true;
   /** #341: the developer whose ChatGPT plan this task runs on; its chatgpt-token callback answers only their token. */

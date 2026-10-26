@@ -8,7 +8,7 @@
 // - the owner's Retry planning on a row an earlier release already stranded (`strandedPlanningRun`, `recoverStrandedPlanning`).
 // Nothing here adds an approval, queues a dispatch row, or starts an operation: the only change is RUNNING to BLOCKED.
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, closePlanCritique, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 
@@ -96,7 +96,9 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
         UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
         ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
         ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-        ExpressionAttributeValues: { ":workflow": blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
+        ExpressionAttributeValues: { ":workflow": mode === "PLAN_CRITIQUE"
+          // Plan 6 Task 8: the plan check is advice, so a check that was stopped lets the plan go on to the person, shown as not checked.
+          ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now }) : blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
           ":revision": workflow.revision, ":stage": workflow.stage, ":running": "RUNNING" },
       } },
       { ConditionCheck: {
