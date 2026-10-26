@@ -2758,6 +2758,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Optional Secrets Manager ARN containing the raw Anthropic API key",
       "Type": "String",
     },
+    "AutofixEnabled": {
+      "AllowedValues": [
+        "true",
+        "false",
+      ],
+      "Default": "true",
+      "Description": "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)",
+      "Type": "String",
+    },
     "BootstrapVersion": {
       "Default": "/cdk-bootstrap/hnb659fds/version",
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
@@ -2897,6 +2906,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "AllowedPattern": "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$",
       "Default": "",
       "Description": "Optional IAM boundary ARN; empty uses AgentX's default",
+      "Type": "String",
+    },
+    "PlanSelfCheckEnabled": {
+      "AllowedValues": [
+        "true",
+        "false",
+      ],
+      "Default": "true",
+      "Description": "Whether every coding plan is checked before the owner sees it, and the planner asked again once when the check finds a fixable problem (agentx config set planSelfCheck.enabled false turns it off; it also turns off checking the plan against the current app)",
       "Type": "String",
     },
     "PrivateSubnetIds": {
@@ -3347,7 +3365,11 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "mc=",
+                  "fx=",
+                  {
+                    "Ref": "AutofixEnabled",
+                  },
+                  ",mc=",
                   {
                     "Ref": "McpConfirmElicitation",
                   },
@@ -3362,6 +3384,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",os=",
                   {
                     "Ref": "DeveloperOidcSince",
+                  },
+                  ",pc=",
+                  {
+                    "Ref": "PlanSelfCheckEnabled",
                   },
                   ",rv=",
                   {

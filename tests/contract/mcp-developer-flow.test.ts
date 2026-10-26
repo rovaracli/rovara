@@ -6,7 +6,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan, type WorkflowSnapshot } from "@agentx/contracts";
-import { MAYA, OMAR, createDeveloperTaskBroker, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { URL_BASE, signedInClient } from "../support/mcp-broker-client.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -227,7 +227,7 @@ describe("what an AI tool reads of a Rovara Code v2 plan (staging 0.4.10, bug D)
   ] });
   const v2PlanAtReview = async () => {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
@@ -265,7 +265,7 @@ describe("what an AI tool reads of a Rovara Code v2 plan (staging 0.4.10, bug D)
   });
 
   it("reads nothing about a plan check or an estimate on a task that has neither", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const started = await tool("agentx_start_task", { project: "payments", instructions: "Fix it" });
     expect(started.value).not.toHaveProperty("plan_check");

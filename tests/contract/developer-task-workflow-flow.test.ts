@@ -21,7 +21,7 @@ import { recordThreadNoteThroughBroker } from "../../packages/broker/src/aws/sla
 import { finishPlanningWithMarkdown, planAnswer, planDocument, type RawChecksInput } from "../support/plan-documents.js";
 import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
-import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
@@ -5381,7 +5381,7 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
 
   async function install() {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY }, cloud: true } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     /** Asks for a model key as the worker of an operation. */
