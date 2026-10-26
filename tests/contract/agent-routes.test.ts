@@ -1289,3 +1289,11 @@ for (const issue of ["archived base", "missing version", "missing skill", "layer
  const answer=await f.call(MAYA,"GET",`/v1/app/agents/${child}/draft`);expect(answer.status).toBe(200);expect(answer.body.draft).toMatchObject({revision:stored.revision});expect(answer.body.resolved).toBeUndefined();expect(answer.body.base).toBeUndefined();expect(answer.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({path:issue==="missing skill"?"skills":"extends",message:expect.any(String)})]));
  const repaired=await f.call(MAYA,"PUT",`/v1/app/agents/${child}/draft`,{expectedRevision:stored.revision,overlay:SAFE,extends:"rovara-code"});expect(repaired.status).toBe(200);
 });
+it("preserves the store's budget error and the original finite-only body bounds",async()=>{
+ const {AgentBudgetBodySchema}=await import("@agentx/contracts"),requestId=randomUUID();
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:1_000_001}).success).toBe(true);
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:-1}).success).toBe(true);
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:Infinity}).success).toBe(false);
+ const f=await setup(),id=await f.create(MAYA),answer=await f.call(MAYA,"PUT",`/v1/app/agents/${id}/budget`,{monthlyUsd:-1});
+ expect(answer.status).toBe(400);expect((answer.body.error as {message:string}).message).toContain("monthlyUsd: must be a number of dollars, zero or more");
+});
