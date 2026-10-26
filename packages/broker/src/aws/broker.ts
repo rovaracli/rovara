@@ -516,7 +516,7 @@ import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, asses
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
 import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
-import { feedbackReplyItems, installFeedbackDecider, isBotLogin, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
+import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -11046,7 +11046,7 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   // A decision Rovara made itself (Plan 6 Task 16) is not the owner's, so the owner rule does not apply to it. It holds only while the task's autonomy still allows it (read now, from the frozen recipe the
   // decision was bound to) and every person whose comment is in the round still has write access on GitHub (read now).
   const authorizedActor = decision.actorRole === "ROVARA_AUTONOMY"
-    ? (access === undefined || access.status === "ALLOWED") && await autonomyStillHolds(dependencies, task, input)
+    ? (access === undefined || access.status === "ALLOWED") && await autonomyStillHoldsFor(dependencies, task, input)
     : access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
       : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
   if (!authorizedActor) throw agentXError("STALE_FENCE", "the owner-approved PR feedback is no longer current");
@@ -11094,39 +11094,19 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }
 }
 
-/**
- * Whether Rovara's own decision on review comments still stands when the worker starts: the task's autonomy (read now from its frozen recipe) is still `prepare` or `run` and the recipe is the
- * one the decision was bound to, and every person who wrote a comment of the round still has write access on GitHub and is a person, not a bot (read now). Anything it cannot read fails closed.
- */
-async function autonomyStillHolds(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
-  const bound = binding.autonomy;
+/** What the worker-start check reads, wired to the broker's live stores (Plan 6 Task 16). */
+function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
   const orgId = task.orgId;
-  const review = task.workflow?.feedbackReview;
-  if (bound === undefined || orgId === undefined || review === undefined) return false;
-  if (task.agent?.digest !== bound.recipeDigest) return false;
-  const live = await taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, orgId));
-  if (live !== "prepare" && live !== "run") return false;
   const github = dependencies.githubPullRequests;
-  const lookup = github.getRepositoryStanding !== undefined
-    ? (url: string, login: string, scope: ReturnType<typeof githubScope>) => github.getRepositoryStanding!(url, login, scope)
-    : github.getRepositoryPermission !== undefined
-      ? async (url: string, login: string, scope: ReturnType<typeof githubScope>) => ({ permission: await github.getRepositoryPermission!(url, login, scope) })
-      : undefined;
-  if (lookup === undefined) return false;
-  try {
-    for (const bundle of review.bundleRefs) {
-      const url = await webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, bundle.repositoryId, orgId);
-      if (url === undefined) return false;
-      for (const login of new Set(bundle.comments.map((comment) => comment.author))) {
-        if (isBotLogin(login)) return false;
-        const standing = await lookup(url, login, githubScope(dependencies, orgId));
-        if ((standing.permission !== "write" && standing.permission !== "admin") || ("userType" in standing && standing.userType !== undefined && standing.userType !== "User")) return false;
-      }
-    }
-  } catch {
-    return false;
-  }
-  return true;
+  return autonomyStillHolds({
+    autonomy: () => orgId === undefined ? Promise.resolve("suggest" as const) : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, orgId)),
+    repositoryUrl: (repositoryId) => orgId === undefined ? Promise.resolve(undefined) : webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId),
+    standing: github.getRepositoryStanding !== undefined && orgId !== undefined
+      ? (url, login) => github.getRepositoryStanding!(url, login, githubScope(dependencies, orgId))
+      : github.getRepositoryPermission !== undefined && orgId !== undefined
+        ? async (url, login) => ({ permission: await github.getRepositoryPermission!(url, login, githubScope(dependencies, orgId)) })
+        : undefined,
+  }, task, binding);
 }
 
 function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, operation: OperationRecord | undefined,
@@ -11150,9 +11130,7 @@ function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, 
       && pr.headSha === ref.headSha && pr.candidateDigest === ref.candidateDigest
       && workflow.candidate?.repositories.some(repo => repo.repositoryId === ref.repositoryId && repo.treeSha === ref.headTreeSha)))
     || decision?.decision !== "APPROVE"
-    // The role and the binding go together: a decision Rovara made carries, and is bound to, the autonomy it was made under; a person's carries none.
-    || (decision.actorRole === "TASK_OWNER" ? input.autonomy !== undefined : (input.autonomy === undefined || JSON.stringify(decision.autonomy) !== JSON.stringify(input.autonomy)))
-    || decision.ciFailures?.digest !== input.ciFailuresDigest
+    || !feedbackApprovalMatchesDecision(decision, input)
     || decision.workflowRevision !== input.decisionWorkflowRevision || decision.reviewDigest !== input.reviewDigest
     || decision.proposalDigest !== input.proposalDigest || JSON.stringify(decision.bundleDigests) !== JSON.stringify(input.bundleDigests)
     || JSON.stringify(decision.selectedFindingIds) !== JSON.stringify(input.selectedFindingIds)

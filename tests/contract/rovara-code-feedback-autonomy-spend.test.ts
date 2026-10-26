@@ -92,6 +92,21 @@ describe("the coding run of a round Rovara decided", () => {
   });
 });
 
+describe("a round whose stored comments can no longer be read as they were", () => {
+  it("is not run: nothing is accepted or paid for, and the row stays to be tried again", async () => {
+    const t = await world();
+    const { taskId, workspaceId, seeded } = await t.inRound();
+    const reportKey = [...t.h.s3.objects.keys()].find((key) => key.includes("/feedback-reviews/"))!;
+    t.h.s3.objects.set(reportKey, `${String(t.h.s3.objects.get(reportKey))} `);
+    expect(seeded.taskId).toBe(taskId);
+    await t.sweep();
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    expect(t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)).toHaveLength(1);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
+  });
+});
+
 describe("a person's push before the round's run starts", () => {
   it("stops the round before anything is paid for: no run, no key, and the person's commits are never touched", async () => {
     const t = await world();

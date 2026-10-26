@@ -28,6 +28,12 @@ describe("what a change does to the tests it touches", () => {
     expect(files.find((file) => file.path === "src/d.ts")?.testsRemoved).toBeUndefined();
   });
 
+  it("a test file deleted with nothing in it to count is still a test removed", () => {
+    const text = section(["diff --git a/tests/empty.test.ts b/tests/empty.test.ts", "deleted file mode 100644", "index e69de29..0000000"]);
+    expect(parseChangedFiles(text).files[0]).toMatchObject({ path: "tests/empty.test.ts", testsRemoved: true });
+    expect(parseChangedFiles(section(["diff --git a/src/empty.ts b/src/empty.ts", "deleted file mode 100644", "index e69de29..0000000"])).files[0]?.testsRemoved).toBeUndefined();
+  });
+
   it("a line added to a test that switches a test off is a test skipped, in the common frameworks", () => {
     for (const line of ["+it.skip('x', () => {})", "+  test.todo('x')", "+xit('x', () => {})", "+describe.skip('x', () => {})", "+  @Disabled", "+  t.Skip(\"later\")", "+@pytest.mark.skip(reason='flaky')", "+    self.skipTest('no')"]) {
       const files = parseChangedFiles(section(hunk("tests/a.test.ts", [line, " keep"]))).files;

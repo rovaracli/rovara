@@ -274,3 +274,57 @@ export async function sendFeedbackReplies(deps: FeedbackReplyDependencies, task:
   }
   return sent;
 }
+
+// ---- what still has to hold when the worker starts
+
+/**
+ * Whether a stored decision and the approval the worker presents agree about who decided: the role and the binding go together (a decision Rovara made carries, and is bound to, the autonomy it was
+ * made under; a person's carries none), and both name the same failing checks (or none).
+ */
+export function feedbackApprovalMatchesDecision(
+  decision: { actorRole: "TASK_OWNER" | "ROVARA_AUTONOMY"; autonomy?: unknown; ciFailures?: { digest: string } | undefined },
+  approval: { autonomy?: unknown; ciFailuresDigest?: string | undefined },
+): boolean {
+  const sameAutonomy = decision.actorRole === "TASK_OWNER" ? approval.autonomy === undefined
+    : approval.autonomy !== undefined && decision.autonomy !== undefined && JSON.stringify(decision.autonomy) === JSON.stringify(approval.autonomy);
+  return sameAutonomy && decision.ciFailures?.digest === approval.ciFailuresDigest;
+}
+
+export interface AutonomyHoldDependencies {
+  /** The task's autonomy, read now from its frozen recipe (`suggest` when it cannot be read). */
+  autonomy(): Promise<Autonomy>;
+  repositoryUrl(repositoryId: string): Promise<string | undefined>;
+  /** A person's standing on a repository, read now; undefined where this provider cannot ask. */
+  standing: ((repositoryUrl: string, login: string) => Promise<RepositoryStanding>) | undefined;
+}
+
+/**
+ * Whether Rovara's own decision on review comments still stands when the worker starts: the task's autonomy (read now) is still `prepare` or `run` and the recipe is the one the decision was bound to,
+ * and every person who wrote a comment of the round still has write access on GitHub and is a person, not a bot (read now). Anything it cannot read fails closed.
+ */
+export async function autonomyStillHolds(
+  deps: AutonomyHoldDependencies,
+  task: { agent?: { digest?: string | undefined } | undefined; workflow?: Pick<WorkflowSnapshot, "feedbackReview"> | undefined },
+  binding: { autonomy?: { level: string; recipeDigest?: string | undefined } | undefined },
+): Promise<boolean> {
+  const bound = binding.autonomy;
+  const review = task.workflow?.feedbackReview;
+  if (bound === undefined || review === undefined || deps.standing === undefined) return false;
+  if (task.agent?.digest !== bound.recipeDigest) return false;
+  const live = await deps.autonomy();
+  if (live !== "prepare" && live !== "run") return false;
+  try {
+    for (const bundle of review.bundleRefs) {
+      const url = await deps.repositoryUrl(bundle.repositoryId);
+      if (url === undefined) return false;
+      for (const login of new Set(bundle.comments.map((comment) => comment.author))) {
+        if (isBotLogin(login)) return false;
+        const standing = await deps.standing(url, login);
+        if ((standing.permission !== "write" && standing.permission !== "admin") || (standing.userType !== undefined && standing.userType !== "User")) return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}

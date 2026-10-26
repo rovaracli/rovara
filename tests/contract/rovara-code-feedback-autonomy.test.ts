@@ -12,7 +12,7 @@ import {
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { readCiEvidence, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
-import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { FakeGithub, SESSION_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
@@ -680,5 +680,82 @@ describe("what was stored before this change still reads and still works", () =>
     const binding = { taskId: TASK_ID, requestId: REQUEST, ownerId: OWNER, decisionWorkflowRevision: 9, activeWorkflowRevision: 11, reviewDigest: hash("b"), proposalDigest: hash("d"),
       bundleDigests: [hash("e")], candidateDigest: hash("f"), selectedFindingIds: ["f1"], selectedCommentIds: ["c1"] };
     expect(JSON.stringify(WorkflowFeedbackApprovalBindingSchema.parse(binding))).toBe(JSON.stringify(binding));
+  });
+});
+
+describe("what still has to hold when the worker starts", () => {
+  const task = (digest?: string) => ({ ...(digest === undefined ? {} : { agent: { digest } }), workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "maya", threadId: "t1" }, { id: "review_comment:2", author: "omar", threadId: "t2" }, { id: "review_comment:3", author: "maya", threadId: "t3" }] }).workflow });
+  const holds = (overrides: Partial<Parameters<typeof autonomyStillHolds>[0]> = {}, people: Record<string, { permission: "admin" | "write" | "read" | "none"; userType?: string }> = { maya: { permission: "write" }, omar: { permission: "admin", userType: "User" } }) => {
+    const asked: string[] = [];
+    const deps = {
+      autonomy: async () => "prepare" as const, repositoryUrl: async () => "https://github.com/acme/payments",
+      standing: async (_url: string, login: string) => { asked.push(login); const found = people[login]; if (found === undefined) throw new Error("GitHub is down"); return found; }, ...overrides,
+    };
+    return { deps, asked };
+  };
+  const binding = (digest?: string) => ({ autonomy: { level: "prepare", ...(digest === undefined ? {} : { recipeDigest: digest }) } });
+
+  it("holds while the autonomy is prepare or run, the recipe is the one it was bound to, and every writer of the round is still a person who can write", async () => {
+    const w = holds();
+    expect(await autonomyStillHolds(w.deps, task(hash("9")), binding(hash("9")))).toBe(true);
+    expect(w.asked).toEqual(["maya", "omar"]);
+    expect(await autonomyStillHolds(holds({ autonomy: async () => "run" }).deps, task(), binding())).toBe(true);
+  });
+
+  it("does not hold for a decision with no autonomy bound, or when nothing can be asked", async () => {
+    expect(await autonomyStillHolds(holds().deps, task(), {})).toBe(false);
+    expect(await autonomyStillHolds(holds({ standing: undefined }).deps, task(), binding())).toBe(false);
+    expect(await autonomyStillHolds(holds().deps, { agent: {} }, binding())).toBe(false);
+  });
+
+  it("does not hold when the recipe is not the one the decision was bound to (either way round)", async () => {
+    expect(await autonomyStillHolds(holds().deps, task(hash("8")), binding(hash("9")))).toBe(false);
+    expect(await autonomyStillHolds(holds().deps, task(hash("9")), binding())).toBe(false);
+    expect(await autonomyStillHolds(holds().deps, task(), binding(hash("9")))).toBe(false);
+  });
+
+  it("does not hold once the task asks about everything (suggest) or its autonomy cannot be read", async () => {
+    expect(await autonomyStillHolds(holds({ autonomy: async () => "suggest" }).deps, task(), binding())).toBe(false);
+  });
+
+  it("does not hold once a writer lost write access, is not a person, is a bot, or cannot be looked up; and asks nobody once it is known not to hold", async () => {
+    expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" }, omar: { permission: "read" } }).deps, task(), binding())).toBe(false);
+    expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" }, omar: { permission: "write", userType: "Bot" } }).deps, task(), binding())).toBe(false);
+    expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" } }).deps, task(), binding())).toBe(false);
+    const gone = holds({ repositoryUrl: async () => undefined });
+    expect(await autonomyStillHolds(gone.deps, task(), binding())).toBe(false);
+    expect(gone.asked).toEqual([]);
+    const bot = { ...task(), workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "renovate[bot]", threadId: "t1" }] }).workflow };
+    const botWorld = holds();
+    expect(await autonomyStillHolds(botWorld.deps, bot, binding())).toBe(false);
+    expect(botWorld.asked).toEqual([]);
+  });
+});
+
+describe("feedbackApprovalMatchesDecision", () => {
+  it("a person's decision is presented with no autonomy and a Rovara decision with exactly its own", () => {
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER" }, {})).toBe(true);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER" }, { autonomy: { level: "prepare" } })).toBe(false);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" } }, { autonomy: { level: "prepare" } })).toBe(true);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" } }, {})).toBe(false);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY", autonomy: { level: "prepare" } }, { autonomy: { level: "run" } })).toBe(false);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "ROVARA_AUTONOMY" }, { autonomy: { level: "run" } })).toBe(false);
+  });
+
+  it("both name the same failing checks, or none", () => {
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER", ciFailures: { digest: hash("1") } }, { ciFailuresDigest: hash("1") })).toBe(true);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER", ciFailures: { digest: hash("1") } }, { ciFailuresDigest: hash("2") })).toBe(false);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER", ciFailures: { digest: hash("1") } }, {})).toBe(false);
+    expect(feedbackApprovalMatchesDecision({ actorRole: "TASK_OWNER" }, { ciFailuresDigest: hash("1") })).toBe(false);
+  });
+});
+
+describe("failing checks join a card only while it waits", () => {
+  it("a review that was decided, though the task waits again, takes none", () => {
+    const card = pendingCard();
+    const decided = decideWorkflowFeedbackFindings(card.workflow, requestFor(card), owner, at);
+    const waitingAgain = WorkflowSnapshotSchema.parse({ ...decided, stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(waitingAgain.feedbackReview?.status).toBe("APPROVED");
+    expect(() => recordWorkflowFeedbackCiFailures(waitingAgain, { checks: ["test"], now: at })).toThrow(WorkflowTransitionError);
   });
 });
