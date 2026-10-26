@@ -221,6 +221,26 @@ describe("mergedMilestoneItems", () => {
     expect(await mergedMilestoneItems(reader, { taskId: h.taskId }, waiting, merged, NOW)).toEqual([]);
     expect((await mergedMilestoneItems(reader, task, waiting, merged, NOW)).length).toBeGreaterThan(0);
   });
+
+  it("lists only the pull requests that merged, and cuts a long list at a line with a count of the rest", async () => {
+    const h = harness({ count: 2 });
+    h.merge(1, 2);
+    await h.reconcile("api");
+    const merged = h.workflow();
+    const waiting = WorkflowSnapshotSchema.parse({ ...merged, stage: "WAIT_FOR_MERGE", state: "WAITING", outcome: undefined });
+    const reader = { documentClient: h.w.db, tableName: "state" };
+    const task = { taskId: h.taskId, orgId: ORG_A, sessionId: h.sessionId };
+    const extra = (number: number, state: "CLOSED" | "MERGED") => ({ repositoryId: "docs", number, url: `https://github.com/acme/${"x".repeat(60)}/pull/${String(number)}`, candidateDigest: merged.candidate!.digest, required: false, state });
+    const withClosed = WorkflowSnapshotSchema.parse({ ...merged, pullRequests: [...merged.pullRequests!, extra(9, "CLOSED")] });
+    const [put] = await mergedMilestoneItems(reader, task, waiting, withClosed, NOW);
+    expect((put?.Put?.Item as { pullRequests: unknown[] }).pullRequests).toHaveLength(2);
+    const many = WorkflowSnapshotSchema.parse({ ...merged, pullRequests: [...merged.pullRequests!, ...Array.from({ length: 10 }, (_, index) => extra(10 + index, "MERGED"))] });
+    const [long] = await mergedMilestoneItems(reader, task, waiting, many, NOW);
+    const text = (long?.Put?.Item as { text: string }).text;
+    expect(text.length).toBeLessThanOrEqual(500);
+    expect(text.split("\n").at(-1)).toMatch(/^and \d+ more$/u);
+    expect(text.split("\n")[0]).toBe(`Merged: ${h.urlOf("api", 1)}`);
+  });
 });
 
 describe("mergedLines", () => {

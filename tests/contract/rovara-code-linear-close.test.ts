@@ -52,6 +52,14 @@ describe("linearIssueKeyOfTask", () => {
     expect(await linearIssueKeyOfTask(table, { orgId: ORG_A, sessionId })).toBe("ENG-142");
   });
 
+  it("reads nothing at all without a session or an org", async () => {
+    const reads: string[] = [];
+    const table = { documentClient: { send: async () => { reads.push("read"); return {}; } }, tableName: "state" };
+    expect(await linearIssueKeyOfTask(table, { orgId: ORG_A })).toBeUndefined();
+    expect(await linearIssueKeyOfTask(table, { sessionId: "ses_00000000000000000001" })).toBeUndefined();
+    expect(reads).toEqual([]);
+  });
+
   it("is nothing without a session, an org, a Linear binding, or when the binding belongs to another org", async () => {
     const { table, sessionId, put } = world();
     expect(await linearIssueKeyOfTask(table, { orgId: ORG_A, sessionId })).toBeUndefined();
@@ -86,6 +94,10 @@ describe("a model-written line cannot say Fixes <KEY>", () => {
     expect(closers(broken), broken).toEqual([]);
     expect(broken.replaceAll("‍", "")).toBe(line);
     expect(closers(inertLine(line, 200))).toEqual([]);
+  });
+
+  it.each(["Fixes ENG-1, ENG-2", "closes ENG-1 and OPS-2", "resolves ENG-1 & OPS-2"])("breaks every key in a list: %j", (line) => {
+    expect(breakLinearCloseWords(line)).not.toMatch(/[A-Za-z]-\d/u);
   });
 
   it("leaves other text alone", () => {

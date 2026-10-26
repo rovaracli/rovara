@@ -570,9 +570,9 @@ const pullRequestGateway = () => ({
 const DIFF = (files: string[]) => ["## demo", "", "### status", "### diff", ...files.flatMap((path) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1,3 @@", "-old", "+new", "+more", "+most"])].join("\n");
 
 /** A task through its build: version 2 (its stored definition version set to 1.1.0, as the app will start it) or version 1. */
-async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string) {
+async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string, instructions = "Fix the retry bug") {
   const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
-  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions, client: "test-client", workflow: true, workflowPath: "QUICK" });
   const id = String((started.body.task as { taskId: string }).taskId);
   const record = () => harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };
   const workspaceId = record().workspaceId;
@@ -906,6 +906,16 @@ describe("a version 2 task bound to a Linear issue, through the broker", () => {
       await t.passReviews();
       expect(closers(String(t.publication()!.publication.body)), name).toEqual([]);
     }
+  });
+
+  it("does not let a task's title close another issue", async () => {
+    const t = await builtTask("1.1.0", ["src/retry.ts"], undefined, "Fixes OTHER-9 by adding a retry flag");
+    bind(t, LINEAR_ISSUE);
+    await t.passReviews();
+    const publication = t.publication()!.publication;
+    expect(closers(String(publication.title))).toEqual([]);
+    expect(String(publication.title).replaceAll("\u200D", "")).toContain("Fixes OTHER-9");
+    expect(closers(String(publication.body))).toEqual(["Fixes ENG-142"]);
   });
 
   it("does not add it to a version 1 task's pull request", async () => {
