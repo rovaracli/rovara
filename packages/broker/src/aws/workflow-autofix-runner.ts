@@ -18,7 +18,7 @@ import { isConditional } from "./broker-shared.js";
  * `autoRetryChecksFromSystem` and `autoRetryReviewsFromSystem`, and each holds the policy's limits and the spending cap again itself.
  */
 
-/** Rovara's installation switch and numbers for automatic fixing. Absent from the broker's dependencies: off (the harnesses). The deployed Lambda reads it from its environment: on unless `AUTOFIX_ENABLED=false`. */
+/** Rovara's installation switch and numbers for automatic fixing. Absent from the broker's dependencies: off (the harnesses). The deployed Lambda reads it from its packed settings (the AutofixEnabled stack parameter, hydrated as `AUTOFIX_ENABLED`; no Lambda variable of its own): on unless it is `false`. `AUTOFIX_CAP_USD` and `AUTOFIX_SINCE` are read the same way but no stack sets them, so the cap is the policy's default. */
 export interface AutofixConfig {
   enabled: boolean;
   /** The deploy time: blocks older than this are never handled (an old blocked task is not sent back by surprise). Absent: no cut-off (rows exist only for blocks committed since the feature shipped). */

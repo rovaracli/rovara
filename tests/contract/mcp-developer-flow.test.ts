@@ -6,7 +6,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan, type WorkflowSnapshot } from "@agentx/contracts";
-import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { URL_BASE, signedInClient } from "../support/mcp-broker-client.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

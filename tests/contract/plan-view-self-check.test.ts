@@ -12,6 +12,7 @@ import { readTaskPlanDocument } from "../../packages/broker/src/aws/task-plan-do
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createTaskWeb, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { PRIYA, pageTask } from "../support/page-tasks.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { planDocument } from "../support/plan-documents.js";
 
 const SHA = "a".repeat(64);
@@ -207,7 +208,7 @@ describe("what the self-check found, on the task page", () => {
       documents: [{ kind: "coding plan", version: 1, approved: false, current: true, format: "structured", plan: backwardsPlan(), selfCheck: readPlanSelfCheck(json({ findings: [uncovered] }), SHA) }],
       checks: [], findings: [], pullRequests: [], history: [], revision: 7,
     } as unknown as TaskDocumentView;
-    const web = createTaskWeb({ authenticateSession: async () => ({ developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" }), getTaskDocumentView: async () => view });
+    const web = createTaskWeb({ authenticateSession: async () => ({ developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya", orgId: TEST_ORG, orgRole: "member" }), getTaskDocumentView: async () => view });
     const answer = await web({ method: "GET", path: `/review/${view.taskId}/task`, headers: { cookie: "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111" }, requestId: "r" },
       new URL(`https://agentx.example.test/review/${view.taskId}/task`));
     expect(answer.statusCode).toBe(200);

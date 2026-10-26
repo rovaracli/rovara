@@ -358,7 +358,7 @@ async function groundingOperation(options: { looksCurrent?: boolean; signedAs?: 
   const outbox = round.harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === round.operationId)[0]!;
   const outboxId = randomUUID();
   const fence = Number(checks.fence) + 1;
-  const callbackCapability = issueCapability(round.harness.brokerInput as { callbackSigningKey: string }, round.workspaceId, operationId, fence, false, false, false, false, false, true, false);
+  const callbackCapability = issueCapability(round.harness.brokerInput as { callbackSigningKey: string }, round.workspaceId, operationId, fence, { workflowE2E: true });
   round.harness.db.set({ ...outbox, pk: `OUTBOX#${outboxId}`, id: outboxId, operationId, invocation: { ...(outbox.invocation as object), operationId, fence, callbackCapability } });
   round.harness.db.set({ pk: recordKey(round).pk, sk: recordKey(round).sk, entityType: "WORKFLOW_E2E_GROUNDING", schemaVersion: 1, taskId: round.taskId, planArtifactSha256: PLAN_SHA, planArtifactId: "plan-1",
     purpose: "grounding", attempt: 1, state: "STARTED", requestedAt: new Date().toISOString(), scenarioIds: ["orders-health-0"], baseCommitSha: "b".repeat(40), operationId, roundId,

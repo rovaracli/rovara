@@ -866,13 +866,13 @@ interface AwsBrokerDependencies {
   adminChanges?: { confirm?: { elicitation: boolean; slack: boolean }; now?: () => number; metric?: (outcome: AdminChangeOutcome) => void };
   /** Spec 061: asks the PlanEvidence job to work a plan's evidence row (an async Lambda invoke); absent when the deployment has none. */
   startPlanEvidenceJob?: (event: PlanEvidenceEvent) => Promise<void>;
-  /** Plan self-check (checks every coding plan, asks the planner again once when it finds a fixable problem): on unless this is false, the installation's kill switch (PLAN_SELF_CHECK_ENABLED=false). */
+  /** Plan self-check (checks every coding plan, asks the planner again once when it finds a fixable problem): on unless this is false, the installation's kill switch (the PlanSelfCheckEnabled stack parameter, a packed setting the broker reads as PLAN_SELF_CHECK_ENABLED; never a Lambda variable of its own). */
   planSelfCheck?: boolean;
   /** T7c: false turns the hold for the current-app check off (a plan is shown at once); the default is on. */
   planGrounding?: boolean;
   /** T7c: starts the held plan's check on the current app; tests replace it (the real one builds an admission from an exported source). */
   startPlanGrounding?: typeof startPlanGroundingRound;
-  /** AUTOFIX: automatic fixing of blocked checks and reviews. Absent: off (the harnesses); the deployed Lambda sets it from its environment (on unless AUTOFIX_ENABLED=false). */
+  /** AUTOFIX: automatic fixing of blocked checks and reviews. Absent: off (the harnesses); the deployed Lambda sets it from its packed settings (the AutofixEnabled stack parameter, read as AUTOFIX_ENABLED; on unless it is false; never a Lambda variable of its own). */
   autofix?: AutofixConfig;
   /** Spec 043: SWE-bench runs; absent in a harness that does not exercise them. */
   swebench?: Pick<EvalBatchDependencies, "deployment" | "startExecution" | "stopBatchForThread" | "onRunEnded" | "now" | "estimateRunCostUsd">;
@@ -14235,7 +14235,7 @@ async function autofixDayBudgetHasRoom(dependencies: AwsBrokerDependencies, task
   try {
     const derived = deriveE2EAgentRoute(await dependencies.e2eAgentInstallation());
     const budgets = derived.status === "available" ? derived.definition.budgets : E2E_MODEL_ROUTE_DEFAULT_BUDGETS;
-    return await e2eDayBudgetRoom({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, projectName: task.project, now: Date.now() }, autofixDayBudgetNeed(budgets),
+    return await e2eDayBudgetRoom({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, orgId: requireOrgId(task.orgId), projectName: task.project, now: Date.now() }, autofixDayBudgetNeed(budgets),
       { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay });
   } catch { return undefined; }
 }
@@ -14251,7 +14251,8 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
   try {
     task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     if (config?.enabled !== true || task === undefined || dependencies.developer === undefined) { await remove(); return "STALE"; }
-    const caller = { developerId: task.developerId, sessionId: "workflow-autofix", amr: task.provider, name: task.developerName };
+    // MONEY (mainline #408 sync; owner ruling pending): Rovara's own moves run as the task's effective owner in the task's own org with the plain member role, nothing elevated.
+    const caller = await ownerCallerOf(dependencies, task, "workflow-autofix");
     const tasks = developerTaskActions(dependencies);
     const route = developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
@@ -14710,13 +14711,13 @@ export async function startPlanGroundingRound(
     const exported = StoredBaselineSourceSchema.safeParse(planOperation.baselineSource);
     if (!exported.success || exported.data.status === "REFUSED") return await unavailable("not-exported");
     const stored: ReadyBaselineSource = exported.data;
-    const project = await requireProject(dependencies, task.project, task.startingRevision);
+    const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = project.definition.repositories.length === 1 ? project.definition.repositories[0] : undefined;
     const pinned = repository === undefined ? undefined : (workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === repository.name);
     if (repository === undefined || pinned === undefined || stored.repositoryId !== pinned.repositoryId || stored.baseCommitSha !== pinned.baseCommitSha || stored.buildSource.commitSha !== stored.baseCommitSha
       || stored.buildSource.treeSha !== stored.baseTreeSha) return await unavailable("refused");
     // The exported tree is held to GitHub's tree for the pinned base, so a worker cannot label other code as the unchanged code (as the baseline round does).
-    if (dependencies.githubPullRequests.getCommitTree !== undefined && await dependencies.githubPullRequests.getCommitTree(repository.url, stored.baseCommitSha) !== stored.baseTreeSha) return await unavailable("refused");
+    if (dependencies.githubPullRequests.getCommitTree !== undefined && await dependencies.githubPullRequests.getCommitTree(repository.url, stored.baseCommitSha, await githubScopeOf(dependencies, task)) !== stored.baseTreeSha) return await unavailable("refused");
     const sourceBytes = await readStoredBytes(dependencies, stored.sourceRef.key, MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES);
     if (sourceBytes === undefined || sourceBytes.byteLength !== stored.sourceRef.byteLength || createHash("sha256").update(sourceBytes).digest("hex") !== stored.sourceRef.sha256) return await unavailable("refused");
     const exportedSource = parseBaselineExport(sourceBytes);

@@ -3269,7 +3269,7 @@ export async function startTaskWorkflowPlanRevisionFromSystem(
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, updatedAt: receivedAt };
   const retired = await retiredClaimIdList(deps, workflow);
   const requestId = workflowRequestId("agentx-auto-plan-revision", taskId, expected.workflowRevision, expected.promptDigest);
-  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
@@ -5189,8 +5189,7 @@ export async function startTaskWorkflowE2EGroundingFromSystem(
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
   const receivedAt = iso(deps);
   const requestId = workflowRequestId("agentx-grounding-e2e-checks", taskId, workflow.revision, admission.baseCommitSha, admission.attempt, expected.planArtifactSha256);
-  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, {
-    requestId, conversationId: task.conversationId,
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {    requestId, conversationId: task.conversationId,
     prompt: "Run the broker-admitted grounding E2E verification groups on the unchanged code. Do not edit files or expand the admitted scenarios.",
   }, (operation) => [
     { ConditionCheck: {
@@ -8301,7 +8300,7 @@ async function closeTask(deps: DeveloperTaskRouteDependencies, caller: Developer
           if (!isConditional(error)) throw error;
         }
         if (workspace.activeOperationId) {
-          await deps.actions.cancelRunning(developerTaskIdentity(task), workspace, () => []).catch(() => undefined);
+          await deps.actions.cancelRunning(developerTaskIdentity(task, deps.orgId), workspace, () => []).catch(() => undefined);
           // The stopped round frees the workspace within seconds; the close waits for it (bounded) instead of answering busy.
           for (let waited = 0; waited < GROUNDING_STOP_WAIT_MS; waited += GROUNDING_STOP_POLL_MS) {
             if ((await deps.actions.workspace(task.workspaceId)).activeOperationId === undefined) break;

@@ -57,7 +57,7 @@ function harness() {
   const putOperation = (patch: Record<string, unknown> = {}) => broker.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}`, entityType: "OPERATION", id: operationId, workspaceId,
     kind: "task", workflowMode: "PLAN", groundingSourceAsked: true, status: "RUNNING", fence: 1, eventSequence: 0, requestId: randomUUID(), payloadHash: "a".repeat(64), createdAt: new Date().toISOString(), ...patch });
   putOperation();
-  const issue = (allowCandidateExport: boolean, allowGroundingSource = false) => issueCapability({ callbackSigningKey: "c".repeat(64) }, workspaceId, operationId, 1, false, false, false, false, allowCandidateExport, false, false, allowGroundingSource);
+  const issue = (allowCandidateExport: boolean, allowGroundingSource = false) => issueCapability({ callbackSigningKey: "c".repeat(64) }, workspaceId, operationId, 1, { candidateExport: allowCandidateExport, groundingSource: allowGroundingSource });
   let capability = issue(false, true);
   const requests: Array<{ path: string; status: number; body: Record<string, unknown> }> = [];
   const send = async (path: string, body: unknown, token = capability) => {

@@ -420,7 +420,7 @@ describe("fix round 1 (review of T7c)", () => {
     await finishPlanning(harness, workspaceId, groundedAnswer());
     const { operationId } = plantRunningRound(harness, taskId, workspaceId);
     harness.db.set({ pk: `OUTBOX#${operationId}`, sk: "OUTBOX", entityType: "OUTBOX", id: operationId, status: "DISPATCHED", workspaceId, operationId,
-      invocation: { kind: "task", fence: 9, callbackCapability: issueCapability(harness.brokerInput, workspaceId, operationId, 9, false) } });
+      invocation: { kind: "task", fence: 9, callbackCapability: issueCapability(harness.brokerInput, workspaceId, operationId, 9) } });
     await harness.finish(workspaceId, operationId, "CANCELLED");
     expect(workflowOf(harness, taskId)).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     expect(quality(harness, taskId)!.notes.at(-1)!.ownerSentence).toBe("Not checked against the current app: it was stopped.");

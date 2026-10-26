@@ -21,7 +21,7 @@ import { recordThreadNoteThroughBroker } from "../../packages/broker/src/aws/sla
 import { finishPlanningWithMarkdown, planAnswer, planDocument, type RawChecksInput } from "../support/plan-documents.js";
 import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
-import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";

@@ -12,6 +12,7 @@ import { autofixConfigFromEnvironment, postponeAutofixRow, recordAutofixGiveUpAs
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { getTaskDocumentView, publicWorkflowDecision } from "../../packages/broker/src/aws/developer-tasks.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 
 type Harness = Awaited<ReturnType<typeof broker>>;
@@ -259,9 +260,9 @@ describe("automatic fixing of blocked checks and reviews (AUTOFIX)", () => {
     const harness = await broker();
     const ctx = await startCoding(harness);
     await blockOnFindings(harness, ctx, 1, 0.1, 7);
-    const view = await getTaskDocumentView({ documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
-      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
-    { developerId: MAYA.developerId } as never, ctx.taskId);
+    const view = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
+    { orgId: TEST_ORG, developerId: MAYA.developerId } as never, ctx.taskId);
     expect(view.autofix?.lines.join("\n")).toContain("Why I'm asking you: Another automatic round would go over the $15 per-task cap on automatic fixing.");
     const web = createTaskWeb({ authenticateSession: async () => ({ developerId: MAYA.developerId } as never), getTaskDocumentView: async () => view });
     const answer = await web({ method: "GET", path: `/review/${ctx.taskId}/task`, headers: { cookie: "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111" }, body: "" } as never, new URL(`https://agentx.example.test/review/${ctx.taskId}/task`));
@@ -271,9 +272,9 @@ describe("automatic fixing of blocked checks and reviews (AUTOFIX)", () => {
     const quiet = await broker({ ...ON, enabled: false });
     const other = await startCoding(quiet);
     await blockOnFindings(quiet, other, 1);
-    const quietView = await getTaskDocumentView({ documentClient: quiet.db, tableName: "state", actions: quiet.actions, log: () => undefined,
-      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
-    { developerId: MAYA.developerId } as never, other.taskId);
+    const quietView = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: quiet.db, tableName: "state", actions: quiet.actions, log: () => undefined,
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
+    { orgId: TEST_ORG, developerId: MAYA.developerId } as never, other.taskId);
     expect(quietView.autofix).toBeUndefined();
   });
 
