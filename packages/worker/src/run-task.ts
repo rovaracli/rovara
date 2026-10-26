@@ -4,6 +4,7 @@ import { AGENTX_PREAMBLE_VERSION, AGENT_WORKER_OUTDATED, PLAN_DOCUMENT_INFO_STRI
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
+import { PLAN_CRITIQUE_ARTIFACT, settlePlanCritique } from "./plan-critic.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
 import { UNDERSTAND_DEADLINE_MS, settleUnderstanding } from "./understand.js";
 import {
@@ -68,7 +69,7 @@ export interface TaskInvocationResult {
   reopened: boolean;
   /** Spec 051 FR-007: AgentX's check of the agent's work, with outputs cut to fit (compactCheckReport). */
   checks?: CheckReport;
-  workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND";
+  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND";
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -173,11 +174,7 @@ async function runTask(
   if (workflowDependencies !== undefined && invocation.payload.workflowMode !== "IMPLEMENT") {
     throw agentXError("CONFIG_INVALID", "ordered work requires implementation mode");
   }
-  // Rovara Code v2's plan-critic run comes with the worker feature that carries it ("task.workflowPlanCritique"); this build does not list it, so a run asking for one is
-  // refused, never run as another mode. (Understand is "task.workflowUnderstand", which this build lists.)
-  if (invocation.payload.workflowMode === "PLAN_CRITIQUE") {
-    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
-  }
+  // Rovara Code v2's Understand and plan-critic runs ("task.workflowUnderstand", "task.workflowPlanCritique") are both run by this build, so neither is refused here.
   const approval = invocation.payload.workflowFeedbackApproval;
   if (approval !== undefined) {
     if (dependencies.authorizeFeedbackApproval === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot verify its PR feedback approval");
@@ -508,7 +505,10 @@ async function runTask(
   // loop guard's stop, so a running check ends with the task rather than at its own timeout (Review Focus 1).
   const verificationStop = new AbortController();
   const readiness = invocation.payload.readiness;
-  const planning = invocation.payload.workflowMode === "PLAN";
+  // The plan check (Rovara Code version 2) is a read-only model run like planning: no checks of the code, the planning deadline and stall limit, and a planning session's read-only tools.
+  const critiquing = invocation.payload.workflowMode === "PLAN_CRITIQUE";
+  const planning = invocation.payload.workflowMode === "PLAN" || critiquing;
+  const piMode = invocation.payload.workflowMode === "PLAN_CRITIQUE" ? "PLAN" as const : invocation.payload.workflowMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const reviewing = invocation.payload.workflowMode === "REVIEW";
@@ -577,7 +577,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath,
         model: dependencies.model,
-        workflowMode: invocation.payload.workflowMode ?? "IMPLEMENT",
+        workflowMode: piMode,
         conversationId,
         sessionFile: registered.sessionFile,
         onDiagnostic,
@@ -592,7 +592,7 @@ async function runTask(
   } else {
     session = await createWorkspacePiSession(
       {
-        rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: invocation.payload.workflowMode ?? "IMPLEMENT", conversationId, onDiagnostic,
+        rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
@@ -955,7 +955,17 @@ async function runTask(
           await runCompletedPrefixProjectChecks(repositoryInputs, execution.finalTreeSha);
         }
       }
-      if (planning) {
+      if (critiquing) {
+        const critique = await settlePlanCritique(finalText,
+          async (retry) => { await promptAndSettle(retry); return finalText; },
+          async () => { await emit("progress", { message: "The plan check could not be read; the agent is asked to answer again." }); });
+        monitor.stop();
+        if (critique === undefined) throw agentXError("OPERATION_INTERRUPTED", "the plan check produced no answer");
+        await dependencies.artifactSink({ name: PLAN_CRITIQUE_ARTIFACT, mediaType: "text/markdown; charset=utf-8", content: critique });
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
+      } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets
         // one more try, in the same session, with what is wrong with it (both problems when both apply); whichever

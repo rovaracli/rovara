@@ -539,8 +539,17 @@ describe("a plan that says no change is needed, through the broker", () => {
     const run = await t.understanding();
     await t.finishUnderstand(run, ready());
     const plan = t.operationOf(run.workspaceId, "PLAN")!;
-    await t.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument(), { checks: { checks: [], none_reason: "Nothing runs." } }));
+    await t.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument({ claims: [
+      { id: "1", text: "Payments that fail with a timeout are retried.", evidence: [{ kind: "code", path: "payments/src/charge.ts", startLine: 10, endLine: 24, note: "Today a timeout throws." }] },
+      { id: "2", text: "A test proves a timed-out payment is retried once and never charged twice." },
+    ] }), { checks: { checks: [], none_reason: "Nothing runs." } }));
     await t.finish(run.workspaceId, String(plan.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    // An ordinary coding plan is checked by a second model before its owner sees it (Task 8); a plan that says no change is needed is not (Task 4).
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE" });
+    const check = t.operationOf(run.workspaceId, "PLAN_CRITIQUE")!;
+    await t.artifact(run.workspaceId, String(check.id), "plan-critique.md", `I read the plan.\n\n\`\`\`rovara-plan-critique\n{"verdict":"ok","points":[]}\n\`\`\`\n`);
+    await t.finish(run.workspaceId, String(check.id), "SUCCEEDED", { result: { workflowMode: "PLAN_CRITIQUE" } });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     const digest = t.meta(run.taskId).workflow.artifacts.at(-1)!.sha256;
     const refused = await t.decide(MAYA, run.taskId, { decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: digest, closeAsAnswered: true });
     expect(refused.status).toBe(400);

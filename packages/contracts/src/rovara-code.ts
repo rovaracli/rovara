@@ -250,6 +250,10 @@ export const WorkflowCritiqueSchema = z
   .object({
     status: z.enum(["done", "stopped_at_limit"]),
     sameModelAsPlanner: z.literal(true).optional(),
+    /** Which spending limit a check or revision stopped at: the task's planning limit, or another (the step's, the month's, the org's). */
+    limit: z.enum(["planning", "other"]).optional(),
+    /** The plan went to the person as it was, because the automatic revision could not be paid for. */
+    notRevised: z.literal(true).optional(),
     critiques: z.array(PlanCritiqueSchema).max(PLAN_CRITIC_REVISIONS_MAX + 1),
     revisions: z.number().int().min(0).max(PLAN_CRITIC_REVISIONS_MAX),
   })

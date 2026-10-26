@@ -879,7 +879,7 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: tryEffectiveTaskOwner(task)?.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
     ...(page === undefined ? {} : { findingsUrl: `${page}#findings`, taskPageUrl: page }), ...(reopened ? { pullRequestReopened: reopenedPullRequests } : {}),
     // Plan 3, Task 34: what the coding plan is expected to cost, kept on the task when the plan reached review.
-    ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate, agentName: task.agent?.name ?? "Rovara Code" }) };
+    ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate, agentName: task.agent?.name ?? "Rovara Code" }), project: task.project };
   let approval: WorkflowArtifact | undefined;
   if (workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
     const document = await prepareDocumentLink(deps, task, workflow);

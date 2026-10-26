@@ -4,7 +4,7 @@ import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
   UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
-  intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent,
+  intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
@@ -165,6 +165,11 @@ export const WORKFLOW_BLOCK_REASONS = {
   planNotSaved: "The planning run finished without saving a document. Retry planning.",
   /** The saved plan is a structured document that could not be read back. */
   planUnreadable: "the plan couldn't be read",
+  /** Plan 6 Task 8: the plan check's answer had no block Rovara could read. */
+  planCheckUnreadable: "Rovara couldn't read the plan check's answer.",
+  /** Plan 6 Task 8: the plan check or the revision after it could not be started, however often it was tried. */
+  planCheckNotStarted: "Rovara couldn't start the plan check.",
+  planRevisionNotStarted: "Rovara couldn't start revising the plan after its check.",
   pullRequestChanged: "The pull request on GitHub no longer holds the checked code, so I won't finish this task from it. Close the task.",
   /** A required pull request was closed on GitHub without merging; reopened, it is followed again. */
   pullRequestClosed: "The pull request was closed on GitHub without merging. Reopen it there, or close this task.",
@@ -2277,7 +2282,7 @@ export function endStuckUnderstand(currentInput: unknown, now: string): Workflow
 
 export function submitWorkflowArtifact(
   currentInput: unknown,
-  input: { expectedRevision: number; artifact: WorkflowArtifact; now: string; proposal?: WorkflowCheckProposal },
+  input: { expectedRevision: number; artifact: WorkflowArtifact; now: string; proposal?: WorkflowCheckProposal; noChangeNeeded?: boolean },
 ): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   const artifact = WorkflowArtifactSchema.safeParse(input.artifact);
@@ -2302,16 +2307,92 @@ export function submitWorkflowArtifact(
   void _oldDependencyApproval;
   void _oldDependencyOperationId;
   void _oldDependencyProgress;
+  // Plan 6 Task 8: a Rovara Code version 2 coding plan is checked by a second model before a person sees it (a Full task's requirements and design are not).
+  // MERGE-DECISION: a plan that says the request needs no code change (Task 4) has no change to check, so it goes straight to the person.
+  const checked = input.noChangeNeeded !== true && planCritiqued(current, artifact.data.type);
   const next = WorkflowSnapshotSchema.parse({
     ...withoutOldDependencyApproval,
     revision: current.revision + 1,
-    stage: "PLAN_REVIEW",
-    state: "WAITING",
+    stage: checked ? "PLAN_CRITIQUE" : "PLAN_REVIEW",
+    state: checked ? "READY" : "WAITING",
     artifacts: [...current.artifacts, artifact.data],
     ...(policy === undefined ? {} : { checkPolicy: policy }),
     updatedAt: input.now,
   });
   return next;
+}
+
+/** Whether a plan of this type, made by this workflow, goes through the plan check: a version 2 coding plan of a sequence that has a plan check step. */
+function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "program">, type: WorkflowArtifact["type"]): boolean {
+  return workflow.definitionVersion === "1.1.0" && type === "plan" && workflow.program?.steps.some((step) => step.kind === "plan_critic") === true;
+}
+
+function runningPlanCheck(currentInput: unknown, expectedRevision: number, states: readonly WorkflowState[] = ["RUNNING"]): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.stage !== "PLAN_CRITIQUE" || !states.includes(current.state)) throw new WorkflowTransitionError("the workflow is not running the plan check");
+  return current;
+}
+
+/**
+ * The plan check's result (Rovara Code version 2). The critic's points are advice: they are kept for the person and can neither approve the plan nor move it past
+ * PLAN_REVIEW. A `revise` verdict with a blocking point sends the plan back to the planner once (`PLAN_CRITIC_REVISIONS_MAX`), with the points kept; the revised plan is checked
+ * again. Every other result, and the second check whatever it says, goes to the person at PLAN_REVIEW with the critiques. `sameModelAsPlanner` notes that the project allows only one model.
+ */
+export function submitPlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; critique: PlanCritique; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  const critique = PlanCritiqueSchema.safeParse(input.critique);
+  if (!critique.success) throw new WorkflowTransitionError("the plan critique is invalid");
+  const earlier = current.critique;
+  const revisions = earlier?.revisions ?? 0;
+  const critiques = [...(earlier?.critiques ?? []), critique.data];
+  if (critiques.length > PLAN_CRITIC_REVISIONS_MAX + 1) throw new WorkflowTransitionError("the plan critique is invalid");
+  const sendBack = critique.data.verdict === "revise" && critique.data.points.some((point) => point.severity === "blocking") && revisions < PLAN_CRITIC_REVISIONS_MAX;
+  const kept: WorkflowCritique = {
+    status: "done", critiques, revisions: sendBack ? revisions + 1 : revisions,
+    ...(input.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: sendBack ? "PLAN" : "PLAN_REVIEW", state: sendBack ? "READY" : "WAITING", critique: kept, updatedAt: input.now,
+  });
+}
+
+/**
+ * The plan check ended with no critique to add: it stopped at a spending limit (`stopped_at_limit`, `limit` says which), or it could not run or give an answer (`done`, so the plan is shown
+ * as it was checked so far, which may be not at all). The plan goes to the person; whatever was critiqued before is kept. A check is advice, so it never holds a plan back. It may be closed
+ * before it started (`READY`: its start was given up) as well as while it runs.
+ */
+export function closePlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; status: WorkflowCritique["status"]; limit?: "planning" | "other"; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision, ["RUNNING", "READY"]);
+  const earlier = current.critique;
+  const kept: WorkflowCritique = {
+    status: input.status, critiques: earlier?.critiques ?? [], revisions: earlier?.revisions ?? 0,
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.sameModelAsPlanner === true || earlier?.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: kept, updatedAt: input.now });
+}
+
+/**
+ * The one revision a blocking point asked for could not be paid for (the planning budget ran out as it ran): the plan goes to the person as it was, with the critic's points and the
+ * word that it was not revised. Nothing is paused and no money is asked for, because no person asked for the revision.
+ */
+export function skipPlanRevision(currentInput: unknown, input: { expectedRevision: number; limit: "planning" | "other"; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  const critique = current.critique;
+  if (current.stage !== "PLAN" || current.state !== "RUNNING" || critique === undefined || critique.revisions < 1 || critique.critiques.length === 0) {
+    throw new WorkflowTransitionError("the workflow is not revising a plan after its check");
+  }
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: { ...critique, notRevised: true, limit: input.limit }, updatedAt: input.now,
+  });
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */
@@ -2863,8 +2944,11 @@ export function decideWorkflow(
     : request.data.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
       : request.data.decision === "REJECT" ? "REJECTED"
         : request.data.decision === "SKIP" ? "SKIPPED" : undefined;
+  // Changes the person asks for make a new plan, which is checked afresh: the critique of the plan they sent back is dropped (the approved plan's stays for the record).
+  const { critique: _sentBackCritique, ...withoutCritique } = current;
+  void _sentBackCritique;
   return WorkflowSnapshotSchema.parse({
-    ...current,
+    ...(request.data.decision === "REQUEST_CHANGES" ? withoutCritique : current),
     revision: current.revision + 1,
     stage: nextStage,
     state: request.data.decision === "REJECT" ? "COMPLETE" : "READY",

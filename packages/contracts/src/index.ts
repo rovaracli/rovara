@@ -20,6 +20,7 @@ export * from "./rovara-code.js";
 export * from "./rovara-code-node.js";
 export * from "./rovara-code-intent.js";
 export * from "./rovara-code-understand.js";
+export * from "./plan-critique-block.js";
 export * from "./workflow-proposed-checks.js";
 export * from "./canonical-json.js";
 export * from "./workflow-plan-document.js";

@@ -57,6 +57,10 @@ export interface OperationRecord extends Operation {
    * plan's backup), so no company AI key is issued. Absent: the operation was built before routing, or on an install that does not route; its key is unscoped.
    */
   modelRoute?: { sourceId: string; alias: string; model: ModelIdentifier } | null;
+  /** Plan 6 Task 8: a plan check run on the same model that wrote the plan, because the project allows only one (absent: it ran on a different model). */
+  criticSameModel?: true;
+  /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */
+  planRevision?: true;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */
   startRefused?: true;
   /** #341: the developer whose ChatGPT plan this task runs on; its chatgpt-token callback answers only their token. */
@@ -65,7 +69,7 @@ export interface OperationRecord extends Operation {
   chatgptFallback?: "limit" | "revoked" | "model";
   /** #342: the Slack thread a ChatGPT task was asked from, where a fallback is told; absent for a developer task (its own thread). */
   chatgptThread?: { teamId: string; channelId: string; threadTs: string };
-  workflowMode?: "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | undefined;
+  workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | undefined;
   candidateSourceRef?: { key: string; sha256: string; byteLength: number; candidateDigest: string };
   /** The build source manifest the worker exported for that candidate, or why there is none (see StoredCandidateBuildSourceSchema); absent when the worker sent nothing. */
   candidateBuildSource?: StoredCandidateBuildSource;

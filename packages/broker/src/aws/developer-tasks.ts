@@ -200,6 +200,7 @@ import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
 import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
+import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../rovara-code/critic.js";
 import { noteFinishedTaskDuration } from "../rovara-code/duration.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
@@ -3051,6 +3052,12 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used for a different recovery request");
     }
   }
+  // Plan 6 Task 8: a repeat of a plan check retry that already took finds the check under way and starts nothing more (another person's request ID is not it).
+  const priorCheckRetry = await get<{ actorId: string }>(deps, planCheckRetryKey(taskId, request.requestId));
+  if (priorCheckRetry !== undefined) {
+    if (priorCheckRetry.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used by someone else");
+    return { task: await taskView(deps, task, { events: 0, details: false }) };
+  }
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   if (priorRecovery !== undefined) {
@@ -3276,6 +3283,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   }
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
+  if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
   if (task.workflow === undefined || task.workflow.state !== "BLOCKED" || task.workflow.stage !== "PLAN") {
     throw agentXError("CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish");
   }
@@ -3632,6 +3640,53 @@ export async function resumeAfterRunLimitApproval(
 }
 
 /** Task 16: the owner retries coding that stopped (IMPLEMENT/BLOCKED) on the same approved plan. */
+/** The record that a plan check retry took, under its request ID, so a repeat of it is the same retry. */
+const planCheckRetryKey = (taskId: string, requestId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_PLAN_CHECK_RETRY#${requestId}` });
+
+/**
+ * Plan 6 Task 8: the owner's retry of a plan check that stopped (its model was refused, its answer couldn't be read, its run failed): the same plan is checked again. PLAN_CRITIQUE/BLOCKED becomes
+ * READY with its dispatch row in one transaction, conditional on the revision the owner saw, and the check then starts as the dispatch would start it. A repeat of the request finds the check
+ * under way (its request ID is derived from the revision) and starts nothing more.
+ */
+async function retryPlanCritique(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
+): Promise<{ task: DeveloperTaskView }> {
+  const { task } = access;
+  const workflow = task.workflow!;
+  if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
+    throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+  }
+  await requireMayGoOn(deps, caller, task);
+  await actionableWorkspace(deps, task);
+  const { blockReason: _blockReason, ...unblocked } = workflow;
+  void _blockReason;
+  const receivedAt = iso(deps);
+  const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "READY", updatedAt: receivedAt };
+  try {
+    await deps.actions.transact([{ Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :critique AND workflow.#state = :blocked AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":blocked": "BLOCKED" },
+    } }, workflowDispatchItem(deps.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt),
+    putNew(deps.tableName, { ...planCheckRetryKey(task.taskId, request.requestId), entityType: "WORKFLOW_PLAN_CHECK_RETRY", actorId: access.actorId, at: receivedAt }), accessFence(deps, access)]);
+  } catch (error) {
+    if (isConditional(error)) {
+      const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+      // A repeat of the same retry: the check is already under way (or done).
+      if (fresh.workflow !== undefined && fresh.workflow.revision > workflow.revision) return { task: await taskView(deps, fresh, { events: 0, details: false }) };
+      throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+    }
+    return busyOrClosing(deps, task, error);
+  }
+  await startAcceptedStep(deps, task.taskId, next, "CRITIQUE");
+  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+  const view = await taskView(deps, fresh, { events: 0, details: false });
+  await syncIndex(deps, fresh, view.status, view.updatedAt);
+  return { task: view };
+}
+
 async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
 ): Promise<{ task: DeveloperTaskView }> {
@@ -3809,6 +3864,7 @@ async function startAcceptedStep(deps: DeveloperTaskRouteDependencies, taskId: s
   const candidateDigest = ready.candidate?.digest;
   try {
     if (kind === "IMPLEMENT") await startTaskWorkflowImplementationFromSystem(deps, taskId, { workflowRevision: ready.revision });
+    else if (kind === "CRITIQUE") await startTaskWorkflowPlanCritiqueFromSystem(deps, taskId, { workflowRevision: ready.revision });
     else if (candidateDigest === undefined) return;
     else if (kind === "REVIEW") await startTaskWorkflowReviewFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest });
     else {
@@ -4230,6 +4286,118 @@ export async function startTaskWorkflowPlanFromSystem(
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
+/** A conversation id for one plan check, the same whenever the same check is started again (a repeat of its dispatch finds the conversation, not a second one). */
+function planCheckConversationId(taskId: string, revision: number): string {
+  const hex = createHash("sha256").update(`agentx-plan-check-conversation:${taskId}:${String(revision)}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** The most of the person's words (the request) a plan check is given beside the plan. */
+const PLAN_CHECK_REQUEST_MAX_CHARS = 4_000;
+
+/**
+ * Plan 6 Task 8: the plan check of a version 2 coding plan, started with no one asking. Answers STALE (nothing to do) unless the task is open and still waiting for exactly this check at the expected
+ * revision. PLAN_CRITIQUE/READY becomes RUNNING and the check's operation is accepted in one transaction; the request ID comes from the task and the revision, so a recovered or repeated dispatch is the
+ * broker's duplicate of the first. The critic is given the plan the planner wrote as data, and the person's request, redacted and cut: Rovara's own words come first, and nothing in either can approve the plan.
+ */
+export async function startTaskWorkflowPlanCritiqueFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  const step = workflow?.program?.steps.find((candidate) => candidate.kind === "plan_critic");
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || step === undefined
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN_CRITIQUE" || workflow.state !== "READY") return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const artifact = workflow.artifacts.filter((entry) => entry.type === "plan").at(-1);
+  if (artifact === undefined) throw agentXError("WORKSPACE_NOT_READY", "the coding plan to check is missing");
+  const loaded = await loadWorkflowDocument((objectKey, maxBytes) => deps.actions.readArtifact(objectKey, maxBytes), artifact, {});
+  if (loaded === undefined) throw agentXError("WORKSPACE_NOT_READY", "the coding plan to check failed its digest check");
+  const receivedAt = iso(deps);
+  const requestId = workflowRequestId("agentx-plan-critique", taskId, workflow.revision);
+  // The critic works in a conversation of its own, one for each check: it never sees the planner's session, and the planner and the builder never hold its turn. They are told what it found
+  // only through the bounded, redacted, labelled points (planCriticBlock).
+  const conversationId = planCheckConversationId(taskId, workflow.revision);
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)",
+    Item: { pk: `WORKSPACE#${task.workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId: task.workspaceId, createdAt: receivedAt, updatedAt: receivedAt },
+  })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
+  const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  const request = task.requestText === undefined ? undefined : Array.from(redactText(task.requestText)).slice(0, PLAN_CHECK_REQUEST_MAX_CHARS).join("");
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
+    requestId, conversationId, prompt: planCritiquePrompt({ plan: loaded.markdown, request }),
+  }, (operation) => [
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :critique AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":ready": "READY" },
+    } },
+    putNew(turnTable(deps), aiToolTurn({
+      party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+      request: "Check the plan with a second model", response: `The plan check started as operation ${operation.id}.`, operationId: operation.id,
+    })),
+    ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+  ], { sharedTask: task.shared === true, workflowMode: "PLAN_CRITIQUE", programStepId: step.id });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
+/**
+ * Plan 6 Task 8: the one revision a blocking point of the plan check asks for, started with no one asking. PLAN/READY (the check sent the plan back) becomes RUNNING and a planning operation is accepted in
+ * one transaction. The planner is given the plan it wrote as data, to write back whole, and the critic's points in the labelled block after Rovara's own words; it decides what to change. Answers STALE
+ * unless the task is open, at that revision, and the check did send the plan back.
+ */
+export async function startTaskWorkflowPlanRevisionFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  const points = workflow?.critique?.critiques.at(-1)?.points;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || points === undefined || !points.some((point) => point.severity === "blocking")
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN" || workflow.state !== "READY") return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const artifact = workflow.artifacts.filter((entry) => entry.type === "plan").at(-1);
+  if (artifact === undefined) throw agentXError("WORKSPACE_NOT_READY", "the coding plan to revise is missing");
+  const loaded = await loadWorkflowDocument((objectKey, maxBytes) => deps.actions.readArtifact(objectKey, maxBytes), artifact, {});
+  if (loaded === undefined) throw agentXError("WORKSPACE_NOT_READY", "the coding plan to revise failed its digest check");
+  const receivedAt = iso(deps);
+  const requestId = workflowRequestId("agentx-plan-revision", taskId, workflow.revision);
+  const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  const retired = await retiredClaimIdList(deps, workflow);
+  const critic = `\n\n${planCriticBlock(points)}`;
+  const prompt = loaded.format === "structured"
+    ? structuredWorkflowPrompt(loaded, { decision: "REQUEST_CHANGES", reason: PLAN_REVISION_REQUEST }, "PLAN", workflow.reviewPhase, "plan", { chosen: [], changed: false, comments: critic })
+    : `Revise the current coding plan. Requested changes: ${PLAN_REVISION_REQUEST}\n\nReturn the complete revised document. Do not edit files.\n\n${previousMarkdownBlock(loaded.markdown)}${critic}`;
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :plan AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":plan": "PLAN", ":ready": "READY" },
+    } },
+    putNew(turnTable(deps), aiToolTurn({
+      party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+      request: "Revise the plan after its check", response: `The plan revision started as operation ${operation.id}.`, operationId: operation.id,
+    })),
+    ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+  ], { sharedTask: task.shared === true, workflowMode: "PLAN", planRevision: true, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
 /** Starts a separate server-admitted native CHECKS operation from VERIFY/WAITING. */
 export async function startTaskWorkflowE2EChecksFromSystem(
   deps: DeveloperTaskRouteDependencies,
@@ -4507,8 +4675,8 @@ export function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boo
   if (workflow?.outcome === "ANSWERED") return "Answered";
   if (closed || workflow === undefined) return "";
   switch (workflow.stage) {
-    // Understand has no step of its own on the page's strip: it reads as the plan's, as older clients read the stage (the document is the Requirements on the Full path).
-    case "UNDERSTAND": case "PLAN": case "PLAN_REVIEW": {
+    // Understand has no step of its own on the page's strip: it reads as the plan's, as older clients read the stage (the document is the Requirements on the Full path). The plan check is the plan's too.
+    case "UNDERSTAND": case "PLAN": case "PLAN_CRITIQUE": case "PLAN_REVIEW": {
       const name = workflowDocumentName(workflow);
       return name === "coding plan" ? "Coding plan" : name === "design" ? "Design" : "Requirements";
     }

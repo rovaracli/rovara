@@ -510,7 +510,7 @@ export function createSlackInteractivityHandler(dependencies: SlackInteractivity
             : action.actionId === "agentx_workflow_retry_publish" ? "I couldn't retry opening the pull request. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_send_back" ? "I couldn't send the task back to coding. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_resolve_findings" ? "I couldn't open the findings form. Use the latest AgentX task update and try again."
-            : action.actionId === "agentx_workflow_retry_plan" || action.actionId === "agentx_workflow_retry_implementation" ? "I couldn't start the retry. Use the latest AgentX task update and try again."
+            : action.actionId === "agentx_workflow_retry_plan" || action.actionId === "agentx_workflow_retry_implementation" || action.actionId === "agentx_workflow_retry_plan_check" ? "I couldn't start the retry. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_close" ? "I couldn't open the close confirmation. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_keep_pull_requests" ? "I couldn't keep the pull request as it is. Use the latest message in this thread and try again."
             : workflowButton ? "I couldn't open those plan controls. Use the latest plan message and try again."
@@ -1461,16 +1461,18 @@ export function workflowSlackHandlers(deps: {
           requestId: slackActionRequestId(action), thread: action.thread, responseUrl: action.responseUrl }));
         return;
       }
-      if (action.actionId === "agentx_workflow_retry_plan" || action.actionId === "agentx_workflow_retry_implementation") {
+      if (action.actionId === "agentx_workflow_retry_plan" || action.actionId === "agentx_workflow_retry_implementation" || action.actionId === "agentx_workflow_retry_plan_check") {
         const { taskId, revision } = exitButton(action);
         const plan = action.actionId === "agentx_workflow_retry_plan";
-        const workflow = await currentOwnedWorkflow({ ...action, taskId, revision }, plan ? "retry the planning" : "retry the coding",
-          // A blocked Understand (Rovara Code version 2) is retried with the same button: the broker's retry restarts the step the task is blocked at.
-          (current) => (plan ? current.stage === "PLAN" || current.stage === "UNDERSTAND" : current.stage === "IMPLEMENT") && current.state === "BLOCKED");
+        // Plan 6 Task 8: the plan check of a version 2 plan, stopped because the model the company chose for it isn't allowed; it goes through the planning retry's hand-off, with its own step.
+        const check = action.actionId === "agentx_workflow_retry_plan_check";
+        const workflow = await currentOwnedWorkflow({ ...action, taskId, revision }, plan ? "retry the planning" : check ? "retry the plan check" : "retry the coding",
+          // A blocked Understand (Rovara Code version 2) is retried with the same button as the planning: the broker's retry restarts the step the task is blocked at.
+          (current) => (plan ? current.stage === "PLAN" || current.stage === "UNDERSTAND" : check ? current.stage === "PLAN_CRITIQUE" : current.stage === "IMPLEMENT") && current.state === "BLOCKED");
         const input = { taskId, userId: action.userId, thread: action.thread, expectedRevision: workflow.revision, requestId: slackActionRequestId(action),
-          selectedOptionalCheckIds: [], step: plan ? "plan" : "coding" };
-        if (plan ? deps.retryPlan === undefined : deps.retryImplementation === undefined) throw new Error("retrying this step is not configured");
-        await (plan ? deps.retryPlan?.(input) : deps.retryImplementation?.(input));
+          selectedOptionalCheckIds: [], step: plan ? "plan" : check ? "plan_check" : "coding" };
+        if (plan || check ? deps.retryPlan === undefined : deps.retryImplementation === undefined) throw new Error("retrying this step is not configured");
+        await (plan || check ? deps.retryPlan?.(input) : deps.retryImplementation?.(input));
         await acknowledged(action, "Retrying.");
         return;
       }
