@@ -4,8 +4,8 @@
 // - GitHub says it is behind a base that requires up-to-date branches, and a person's approval counts (the sync slot): a clean merge keeps that approval under the conditions of owner decision 4
 //   (the merge was clean, Rovara's checks passed on the merged head, the repository's CI passes on it, and GitHub still shows the approval; the last two are Task 19's to check at the press);
 // - just before a person presses Merge (Task 19 asks for it).
-// A merge is pushed only to the task's own branch, on the head Rovara recorded (a person's push wins), by the existing maintain path. This file holds the decisions, the plan of what a finished
-// merge is, and the slots' deciders; the broker does the reads and the writes.
+// A merge is pushed only to the task's own branch, on the head Rovara recorded (a person's push wins), by the existing maintain path. With the agent set to `suggest` Rovara changes nothing on its own, a merge
+// of the base included. This file holds the decisions, the plan of what a finished merge is, and the slots' deciders; the broker does the reads and the writes.
 import {
   BRANCH_SYNCS_PER_DAY_MAX,
   BRANCH_WORKFLOW_FILES_MESSAGE,
@@ -226,7 +226,8 @@ function begin(input: MergeActionInput, reason: BranchSyncReason): MergeActionRe
 export function conflictDecider(input: MergeActionInput): MergeActionRequest | undefined {
   const decision = decideConflict({ item: input.item, workflow: input.workflow, now: input.now });
   if (decision === "none") return undefined;
-  if (decision === "sync") return begin(input, "conflict");
+  // A merge changes the branch, and a conflict round is paid work: with the agent set to suggest, Rovara does neither on its own (the person updates the branch).
+  if (decision === "sync") return input.autonomy === "suggest" ? undefined : begin(input, "conflict");
   const { context } = input;
   if (context === undefined) return undefined;
   const at = iso(input.now);
@@ -237,7 +238,7 @@ export function conflictDecider(input: MergeActionInput): MergeActionRequest | u
 /** The sync slot: a merge of the base into a branch that is behind it, where a base that requires it and a counted approval make it needed. */
 export function syncDecider(input: MergeActionInput): MergeActionRequest | undefined {
   const decision = decideBranchSync({ item: input.item, behindRequired: input.context?.behindRequired === true, now: input.now });
-  return decision === "sync" ? begin(input, "behind") : undefined;
+  return decision === "sync" && input.autonomy !== "suggest" ? begin(input, "behind") : undefined;
 }
 
 let installed: Array<() => void> | undefined;

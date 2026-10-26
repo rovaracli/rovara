@@ -403,6 +403,30 @@ describe("the sync slot of merge tracking", () => {
   });
 });
 
+describe("the agent's autonomy", () => {
+  it("with suggest, Rovara merges nothing on its own: not a behind branch, not a conflicted one; it still stops when the conflict rounds are used up", async () => {
+    installBranchSyncDeciders();
+    for (const overrides of [{}, { mergeable: false, mergeableState: "dirty" as const, behindBy: undefined }]) {
+      const w = syncWorld({ overrides });
+      (w.deps as { autonomy?: unknown }).autonomy = () => "suggest";
+      await trackPullRequest(w.deps, TASK_ID);
+      expect(workflowOf(w)).toMatchObject({ revision: 9, state: "WAITING" });
+      expect(dispatchRows(w)).toEqual([]);
+      expect(trackingOf(w).syncs.count).toBe(0);
+    }
+    const used = syncWorld({ workflow: waiting({ fixRounds: { ci: 0, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: 0 } }), overrides: { mergeable: false, mergeableState: "dirty", behindBy: undefined } });
+    (used.deps as { autonomy?: unknown }).autonomy = () => "suggest";
+    await trackPullRequest(used.deps, TASK_ID);
+    expect(workflowOf(used)).toMatchObject({ state: "BLOCKED", blockReason: branchConflictStopMessage("main") });
+    for (const autonomy of ["prepare", "run"] as const) {
+      const w = syncWorld();
+      (w.deps as { autonomy?: unknown }).autonomy = () => autonomy;
+      await trackPullRequest(w.deps, TASK_ID);
+      expect(workflowOf(w)).toMatchObject({ state: "READY" });
+    }
+  });
+});
+
 describe("the conflict slot of merge tracking", () => {
   const conflictedStatus = { mergeable: false, mergeableState: "dirty" as const, behindBy: undefined };
 
