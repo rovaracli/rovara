@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DeveloperShareModeSchema } from "./project.js";
-import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
+import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, AgentStepToolsSchema } from "./agent-run.js";
 import { StepIdSchema } from "./agent-recipe.js";
 import { ApprovalIdSchema, AgentIdSchema, SpendRequestIdSchema } from "./agent.js";
 import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, type WorkflowSnapshotReader } from "./task-workflow.js";
@@ -74,12 +74,19 @@ export const PullRequestSummarySchema = z.object({
 /**
  * Plan 3, Task 22: where an agent-step run is. `currentStep` is the step the run is at (the one that runs or waits); a step's `report` is its
  * latest one; `pendingApprovals` are the actions and approval steps waiting for a person, each with the page where it is decided; `finalReport` is
- * the last step's report once the run is COMPLETE, `branch` the result the worker chose, `endReason` why a FAILED or CANCELLED run ended.
+ * the last step's report once the run is COMPLETE, `branch` the result the worker chose, `endReason` why a FAILED or CANCELLED run ended ("Unverified, needs a person: ..." when the report was not backed by the agent's tool calls; the report is then the `finalReport`).
  */
 export const DeveloperTaskRunViewSchema = z.object({
   state: z.enum(AGENT_RUN_STATES),
   currentStep: z.object({ id: StepIdSchema, name: z.string() }).strict().optional(),
-  steps: z.array(z.object({ id: StepIdSchema, name: z.string(), status: z.enum(AGENT_RUN_STEP_STATUSES), report: z.string().optional() }).strict()),
+  // A step is read tolerantly (an unknown field is dropped, not refused): the broker may show a client more about a step than this build knows, and `tools` and `unverified` are optional.
+  steps: z.array(z.object({
+    id: StepIdSchema, name: z.string(), status: z.enum(AGENT_RUN_STEP_STATUSES), report: z.string().optional(),
+    /** The tool calls the step made and the ones that failed (shown when one failed or the report was unverified). */
+    tools: AgentStepToolsSchema.optional(),
+    /** Why the step's report was not backed by what the agent did: the run ended FAILED with these words, "Unverified, needs a person". */
+    unverified: z.array(z.string().max(300)).max(10).optional(),
+  })),
   pendingApprovals: z.array(z.object({ approvalId: ApprovalIdSchema, kind: z.enum(["write", "step"]), text: z.string(), confirmUrl: z.string().optional() }).strict()),
   finalReport: z.string().optional(),
   branch: z.string().optional(),

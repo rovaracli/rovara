@@ -992,6 +992,18 @@ describe("onStepTaskEnded", () => {
     expect(lastText.includes("\u202e") || lastText.includes("\u0007")).toBe(false);
   });
 
+  it("ends a chain run failed, never succeeded, when its agent step's report was unverified, and says so with a reason of its own (staging 0.4.6)", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.db.set({ ...w.db.get({ pk: "DEVTASK#task-1", sk: "AGENT_RUN" })!, endReason: "Unverified, needs a person: The report cites pull request #5, which no tool returned and the request did not contain." });
+    await endTask(w, "task-1", { outcome: "failed", finalReport: "Found it: PR #5. healthy" });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "failed", failure: { reason: "step_unverified" } });
+    expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { reason: "step_unverified" } });
+    expect(w.run(run.runId)!.failure!.message).toContain("Unverified, needs a person: The report cites pull request #5");
+    expect(w.starts).toHaveLength(1);
+  });
+
   it("says why a coding task failed in its own words when the task has none", async () => {
     const w = setupWorld();
     const chain = await w.publish(INVESTIGATE_THEN_FIX);

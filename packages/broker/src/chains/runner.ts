@@ -14,7 +14,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import {
   AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
   StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
-  GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, openChainRunKey, projectAllows, shortenToBytes, stepSk,
+  GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, UNVERIFIED_END_PREFIX, openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
   type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin, type WorkflowSnapshot,
   workflowAnswer,
@@ -932,7 +932,8 @@ async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRec
   const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
   const said = [isAgentRun ? agentRun["endReason"] : undefined, task?.["outcomeReason"]].find((candidate): candidate is string => typeof candidate === "string" && candidate !== "");
   const reason = neutralText(redactSecrets(said ?? NO_REASON), REASON_MAX);
-  if (event.outcome === "failed") return { status: "failed", failure: { reason: "step_failed", message: reason } };
+  // A report nothing backed (Plan 3 grounding): the run failed, and the chain says it is a person's to look at, not a step that broke.
+  if (event.outcome === "failed") return { status: "failed", failure: { reason: isAgentRun && typeof said === "string" && said.startsWith(UNVERIFIED_END_PREFIX) ? "step_unverified" : "step_failed", message: reason } };
   return { status: "cancelled", failure: { reason: event.outcome === "cancelled" ? "step_cancelled" : event.outcome, message: reason } };
 }
 
