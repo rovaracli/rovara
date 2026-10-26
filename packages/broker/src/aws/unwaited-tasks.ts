@@ -1,3 +1,6 @@
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { OrgIdSchema } from "@agentx/contracts";
+import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 173: the reconciler backstop. Issue 167 cancels a Slack worker task when its turn gives up
 // for good, but a task can still run with nobody waiting on it when the Slack service crashes
 // first, or when a message goes to the dead-letter queue with no final attempt.
@@ -109,8 +112,9 @@ async function candidate(
   if (idle <= UNWAITED_TASK_IDLE_LIMIT_MS) return undefined;
   const pointer = taskPointerKey(workspaceId);
   if (await state(pointer.pk, pointer.sk) !== undefined) return undefined;
-  if (typeof workspace.ownerKey !== "string") return undefined;
-  const record = await state(`SLACK_THREAD#${workspace.ownerKey}`, "META");
+  if (typeof workspace.ownerKey !== "string" || !OrgIdSchema.safeParse(workspace.orgId ?? installOrgIdFromEnvironment()).success) return undefined;
+  const threadKey = await resolveSlackThreadKey({ documentClient: dependencies.client, tableName: dependencies.tableName }, OrgIdSchema.parse(workspace.orgId ?? installOrgIdFromEnvironment()), workspace.ownerKey);
+  const record = await state(threadKey.pk, threadKey.sk);
   // An API or CLI workspace has no thread record: left alone quietly, as on every run. A record that
   // is unreadable or names another workspace is logged, so a mis-wired thread is visible.
   if (record === undefined) return undefined;

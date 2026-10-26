@@ -2651,7 +2651,7 @@ async function runLimitViewOf(deps: DeveloperTaskRouteDependencies, task: Develo
  * not decide, and anyone who may not see the task at all, gets the answer a missing task gets, as before.
  */
 async function decidableTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, historicalRequestId?: string): Promise<AuthorizedTask> {
-  const notYours = () => agentXError("TASK_NOT_FOUND", TASK_ID.test(taskId) ? `no task ${taskId} of yours` : "that is not a task ID of yours");
+  const notYours = () => agentXError("TASK_NOT_FOUND", "no task here that you can see");
   let access: Awaited<ReturnType<typeof resolveTaskAccess>>;
   try {
     access = await authorizeTaskAction(deps, caller, taskId, "decide");
