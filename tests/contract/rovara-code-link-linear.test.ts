@@ -408,6 +408,26 @@ describe("replacing is one transaction", () => {
     expect(h.timeline(first.sessionId)).toEqual(["Priya linked this session to Linear issue ENG-142."]);
   });
 
+  it("says so, and changes nothing, when the old link is gone by the time the replacement is made", async () => {
+    const h = world();
+    const { sessionId } = h.seedSession();
+    await h.link(PRIYA, sessionId, "ENG-142");
+    const original = h.db.send.bind(h.db);
+    let reads = 0;
+    h.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && String(command.input?.Key?.sk) === "BINDING#linear_issue") {
+        reads += 1;
+        // The first read is the route's; the second is the replacement's own.
+        if (reads === 2) h.db.delete(sessionBindingKey(ORG_A, sessionId, "linear_issue"));
+      }
+      return original(command as never);
+    }) as typeof h.db.send;
+    expect(await code(h.link(PRIYA, sessionId, "ENG-143", { replace: true }))).toEqual({ code: "CONFIG_INVALID", message: "This session's link changed just now. Check it and try again." });
+    h.db.send = original as typeof h.db.send;
+    expect(h.surface("ENG-143")).toBeUndefined();
+    expect(h.audit.recorded().map((event) => event.action)).toEqual(["session.linked"]);
+  });
+
   it("changes nothing, and records nothing, when the old link was removed or replaced by another call in between", async () => {
     for (const change of ["removed", "replaced"] as const) {
       const h = world();

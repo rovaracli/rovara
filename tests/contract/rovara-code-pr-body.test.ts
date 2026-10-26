@@ -789,6 +789,10 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body.split(START)).toHaveLength(2);
     expect(await rewrite(undefined)).toEqual({ updated: 0, failed: 0 });
     // GitHub refusing the write, or a description whose block a person removed, is a failure to report, not an exception.
+    // A merged or closed pull request of the task is left alone.
+    const withMerged = t.record() as unknown as { workflow: { pullRequests: Array<Record<string, unknown>> } };
+    t.harness.db.set({ ...t.record(), workflow: { ...withMerged.workflow, pullRequests: [...withMerged.workflow.pullRequests, { repositoryId: "demo", number: 43, url: "https://github.com/example/demo/pull/43", state: "MERGED" }] } });
+    expect(await (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(t.record() as never, undefined)).toEqual({ updated: 0, failed: 0 });
     t.gateway.updatePullRequest.mockRejectedValueOnce(new Error("GitHub down"));
     expect(await rewrite("ENG-144")).toEqual({ updated: 0, failed: 1 });
     t.state.body = "A description with no Rovara block.";
@@ -1069,7 +1073,7 @@ describe("the open pull request's Fixes line follows the binding at once", () =>
   it("withLinearCloseLine takes Rovara's line out, puts a new one in, and touches nothing outside the block", () => {
     const withOld = `A note from Priya. Fixes ENG-1 by hand.\n\n${BLOCK("", "Fixes ENG-142")}`;
     const removed = withLinearCloseLine(withOld, undefined);
-    expect(removed).toMatchObject({ kind: "changed" });
+    expect(removed).toEqual({ kind: "changed", body: `A note from Priya. Fixes ENG-1 by hand.\n\n${BLOCK()}` });
     const body = (removed as { body: string }).body;
     expect(body).not.toContain("Fixes ENG-142");
     expect(body).toContain("A note from Priya. Fixes ENG-1 by hand.");
@@ -1078,6 +1082,15 @@ describe("the open pull request's Fixes line follows the binding at once", () =>
     expect(withLinearCloseLine(BLOCK(), "ENG-143")).toEqual({ kind: "changed", body: BLOCK("", "Fixes ENG-143") });
     expect(withLinearCloseLine(withOld, "ENG-142")).toEqual({ kind: "same" });
     expect(withLinearCloseLine(BLOCK(), undefined)).toEqual({ kind: "same" });
+  });
+
+  it("takes out only a line that is exactly Rovara's own, not words of a person's inside the block", () => {
+    const noted = BLOCK("", "A person wrote: Fixes ENG-9 here", "Fixes ENG-142 too", "Fixes ENG-142");
+    const removed = withLinearCloseLine(noted, undefined) as { kind: string; body: string };
+    expect(removed.body).toContain("A person wrote: Fixes ENG-9 here");
+    expect(removed.body).toContain("Fixes ENG-142 too");
+    expect(removed.body.split("\n").filter((line) => line === "Fixes ENG-142")).toEqual([]);
+    expect(withLinearCloseLine(BLOCK("", "Fixes ENG-142 too"), undefined)).toEqual({ kind: "same" });
   });
 
   it("keeps a CRLF description's endings, and refuses a description whose block is not as Rovara wrote it", () => {
