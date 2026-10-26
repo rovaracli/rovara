@@ -59,6 +59,8 @@ export interface PullRequestStatus {
   headHasWorkflowFiles: boolean;
   /** How many reviewers (people and teams) are asked for a review now. */
   requestedReviewers: number;
+  /** The GitHub user ids of the people (not teams or bots) asked for a review now, at most `REQUESTED_REVIEWER_IDS_MAX`. Absent when none is listed. */
+  requestedReviewerIds?: string[];
   reviews: PullRequestReview[];
 }
 
@@ -175,6 +177,24 @@ export function parseRepositoryPermission(value: unknown): "admin" | "write" | "
 export function requestedReviewerCount(pull: Record<string, unknown>): number {
   const count = (value: unknown): number => Array.isArray(value) ? value.length : 0;
   return count(pull.requested_reviewers) + count(pull.requested_teams);
+}
+
+/** How many requested reviewers are kept: more than this are not reminded. */
+export const REQUESTED_REVIEWER_IDS_MAX = 25;
+
+/** The GitHub user ids of the people `requested_reviewers` lists (a bot or an entry that does not read is left out; teams are another list). */
+export function requestedReviewerIds(pull: Record<string, unknown>): string[] {
+  const listed = pull.requested_reviewers;
+  if (!Array.isArray(listed)) return [];
+  const ids: string[] = [];
+  for (const entry of listed) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { id, type } = entry as Record<string, unknown>;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1 || (type !== undefined && type !== "User")) continue;
+    if (!ids.includes(String(id))) ids.push(String(id));
+    if (ids.length >= REQUESTED_REVIEWER_IDS_MAX) break;
+  }
+  return ids;
 }
 
 function requiredEntry(context: unknown, app: unknown): RequiredCheck | undefined {

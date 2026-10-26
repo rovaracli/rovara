@@ -2,6 +2,7 @@
 // dismissed, ranks the rest and answers the first `HOME_CARDS_MAX` with the total. A card is built for the caller alone and from what is read now: an approval only for a person who may
 // decide it (its confirm link too), a session only for a person who may view it, plan, pull request and failure cards only for sessions the caller owns now. A link is present only for
 // an action the caller may take, and never carries a ticket. Every read is bounded; a source that throws or is slow is skipped and logged with fixed words, never with what it said.
+import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   HOME_CARDS_MAX, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_FAILURE_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardIdSchema, HomeCardSchema, INDEX_EXPIRY_ATTRIBUTE,
@@ -15,6 +16,8 @@ import type { AnyApprovalRecord } from "../agents/approvals.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { getSpendRequest, mayDecideSpendRequest } from "../spend/requests.js";
 import { taskKey } from "../developer/task-records.js";
+import { githubUserOfMember } from "../rovara-code/github-members.js";
+import { reviewWaitsOf, trackingItemFor } from "../rovara-code/nudges.js";
 import { newSessionRoleMemo, sessionAccessFor, sessionActionsFor, type SessionAccess, type SessionRoleMemo } from "./access.js";
 import { batchGetItems, keyText } from "./live.js";
 import { approveLink, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
@@ -331,20 +334,84 @@ const planSource: HomeCardSource = {
   },
 };
 
+/** The pull requests of a task that are still open as the workflow records them (an unknown state counts as open). */
+const openPullRequests = (workflow: { pullRequests?: unknown } | undefined): Array<{ repositoryId: string; number: number; url?: unknown }> =>
+  (Array.isArray(workflow?.pullRequests) ? workflow.pullRequests as Array<{ repositoryId?: unknown; number?: unknown; url?: unknown; state?: unknown }> : [])
+    .flatMap((request) => (typeof request.repositoryId === "string" && typeof request.number === "number" && (request.state === "OPEN" || request.state === "UNKNOWN")
+      ? [{ repositoryId: request.repositoryId, number: request.number, url: request.url }] : []));
+
+/**
+ * Whether a Rovara Code task's pull request is waiting for someone to review it, from what tracking last read (Plan 6 Task 18, N7): open, out of draft, asked of someone, not yet decided.
+ * A task without tracking items (version 1, or none read yet) is not.
+ */
+async function waitsForReview(deps: HomeDependencies, own: OwnSession, workflow: { pullRequests?: unknown } | undefined): Promise<boolean> {
+  const { session, task } = own;
+  if (session.subject.kind !== "task" || (task?.["workflow"] as { definitionVersion?: unknown } | undefined)?.definitionVersion !== "1.1.0") return false;
+  const { taskId } = session.subject;
+  const found = await Promise.all(openPullRequests(workflow).map((request) => trackingItemFor(deps, session.orgId, taskId, request.repositoryId, request.number)));
+  return found.some((item) => item !== undefined && item.state === "open" && !item.draft && item.review === "requested");
+}
+
 const pullRequestSource: HomeCardSource = {
   kind: "pull_request",
   async list(deps, _caller, context) {
-    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+    const cards = await Promise.all((await context.ownSessions()).map(async (own): Promise<HomeSourceCard[]> => {
       const workflow = workflowOf(own);
       if (own.session.endedAt !== undefined || own.session.summary.status !== "waiting" || workflow?.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return [];
       const { session } = own;
       const requests = Array.isArray(workflow.pullRequests) ? workflow.pullRequests as Array<{ url?: unknown; state?: unknown }> : [];
       const url = requests.filter((request) => request.state === "OPEN" || request.state === "UNKNOWN").map((request) => githubUrl(request.url)).find((address) => address !== undefined);
+      const waiting = await waitsForReview(deps, own, workflow);
       return [{
-        cardId: `pull_request:${session.sessionId}`, kind: "pull_request", title: session.title, reason: fit(`Your pull request for ${quoted(session.title)} is ready for review`, ""), sessionId: session.sessionId, at: session.updatedAt,
+        cardId: `pull_request:${session.sessionId}`, kind: "pull_request", title: session.title, reason: fit(`Your pull request for ${quoted(session.title)} ${waiting ? "is waiting for review" : "is ready for review"}`, ""), sessionId: session.sessionId, at: session.updatedAt,
         buttons: [url === undefined ? openSession(deps, session.sessionId) : { label: "Open pull request", action: "open" as const, href: url, method: "GET" as const }],
       }];
-    });
+    }));
+    return cards.flat();
+  },
+};
+
+/**
+ * The pull requests that wait for the caller's review (Plan 6 Task 18): the ones Rovara reminded them of, each judged now. It is shown only while the caller's linked GitHub account is the one
+ * that was asked, the task has not ended, the pull request is open and out of draft and its review is still undecided; the session's title and a link to it only when the caller may view the
+ * session, else the repository and the number.
+ */
+const reviewerSource: HomeCardSource = {
+  kind: "pull_request",
+  async list(deps, caller, context) {
+    const waits = await reviewWaitsOf(deps, caller.orgId, caller.developerId);
+    if (waits.length === 0) return [];
+    const linked = await githubUserOfMember({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, caller.developerId);
+    const mine = waits.filter((wait) => linked !== undefined && wait.githubUserId === linked);
+    const tasks = await context.tasksById(mine.map((wait) => wait.taskId));
+    const live = (await Promise.all(mine.map(async (wait) => {
+      const task = tasks.get(wait.taskId);
+      if (task === undefined || task["closedAt"] !== undefined || task["releasedAt"] !== undefined) return [];
+      const workflow = task["workflow"] as { pullRequests?: unknown } | undefined;
+      const request = openPullRequests(workflow).find((entry) => entry.repositoryId === wait.repositoryId && entry.number === wait.number);
+      if (request === undefined) return [];
+      const tracked = await trackingItemFor(deps, caller.orgId, wait.taskId, wait.repositoryId, wait.number);
+      if (tracked === undefined || tracked.state !== "open" || tracked.draft || tracked.review !== "requested") return [];
+      return [{ wait, task, request }];
+    }))).flat();
+    const sessions = await context.sessionsById(live.flatMap(({ task }) => { const id = text(task["sessionId"]); return id === undefined ? [] : [id]; }));
+    const nowMs = deps.now();
+    const cards: HomeSourceCard[] = [];
+    for (const { wait, task, request } of live) {
+      const sessionId = text(task["sessionId"]);
+      const session = sessionId === undefined ? undefined : sessions.get(sessionId);
+      const viewable = session !== undefined && await context.accessOf(session) !== undefined;
+      const label = viewable ? session.title : `${wait.repositoryId} #${String(wait.number)}`;
+      const days = Math.max(1, Math.floor((nowMs - Date.parse(wait.since)) / DAY_MS));
+      const address = githubUrl(request.url);
+      const digest = createHash("sha256").update(`${wait.taskId}\n${wait.repositoryId}\n${String(wait.number)}`, "utf8").digest("hex").slice(0, 24);
+      cards.push({
+        cardId: `pull_request:rv_${digest}`, kind: "pull_request", title: cut(shownText(label, 300), 300) || "Pull request", reason: fit(`${quoted(label)} has been waiting for your review for ${String(days)} ${days === 1 ? "day" : "days"}`, ""),
+        ...(viewable ? { sessionId: session.sessionId } : {}), at: wait.at,
+        buttons: [...(address === undefined ? [] : [{ label: "Open pull request", action: "open" as const, href: address, method: "GET" as const }]), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
+      });
+    }
+    return cards;
   },
 };
 
@@ -381,7 +448,7 @@ const failureSource: HomeCardSource = {
   },
 };
 
-for (const source of [approvalSource, spendSource, planSource, pullRequestSource, failureSource]) registerHomeCardSource(source);
+for (const source of [approvalSource, spendSource, planSource, pullRequestSource, reviewerSource, failureSource]) registerHomeCardSource(source);
 
 // ---- reading the cards
 

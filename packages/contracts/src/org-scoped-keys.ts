@@ -846,6 +846,21 @@ export function mergeTrackingKey(taskId: string, repositoryId: string, number: n
   return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `MERGE_TRACKING#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
 }
 
+/**
+ * A reminder one reviewer was sent about one pull request (Plan 6 Task 18), in the reviewer's own partition of the org: Home reads it to show the reviewer the pull request
+ * that waits for them. One item per reviewer and pull request.
+ */
+export function reviewWaitKey(orgId: OrgId, developerId: string, taskId: string, repositoryId: string, number: number): OrgKey {
+  if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
+  return { pk: orgScoped(orgId, `REVIEW_WAIT#${keyPart(developerId, "a developer id")}`), sk: `${keyPart(taskId, "a task id")}#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
+}
+
+/** Who one pull request's reminders went to, in the task's own partition (it carries `orgId`, and a reader re-checks it): so a reminder can be taken away when it no longer applies. */
+export function reviewNudgeLedgerKey(taskId: string, repositoryId: string, number: number): { pk: string; sk: string } {
+  if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
+  return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `REVIEW_NUDGE#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
+}
+
 /** One milestone of a task: the `n`th of its kind (`n` from 0; six digits keep them in order). */
 export function codeMilestoneKey(taskId: string, kind: string, n: number): { pk: string; sk: string } {
   return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `CODE_MILESTONE#${keyPart(kind, "a milestone kind")}#${paddedCounter(n, "a milestone number")}` };
