@@ -48,7 +48,8 @@ export async function parallelPartsForTask(
     };
     const freeForPerson = limits.member - await count(charge.member);
     const freeForOrg = limits.organization - await count(charge.organization);
-    return { max: parallelPartsFor(1 + Math.max(0, Math.min(freeForPerson, freeForOrg))) };
+    // A count above a limit (a limit lowered after tasks started) is negative room: `parallelPartsFor` leaves one part for it.
+    return { max: parallelPartsFor(1 + Math.min(freeForPerson, freeForOrg)) };
   } catch {
     return { max: 1 };
   }
