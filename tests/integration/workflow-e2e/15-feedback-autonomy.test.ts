@@ -7,7 +7,8 @@ import { AGENT_WORKER_OUTDATED, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_A
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
-import { feedbackCriticReply } from "../../support/faux-scripts.js";
+import { feedbackCriticReply, reviewerReply } from "../../support/faux-scripts.js";
+import { reviewerFindings } from "../../support/model-fixtures.js";
 import { visibleSlackText } from "../../support/strict-slack.js";
 import { OWN_LOGIN } from "../../support/workflow-e2e-github.js";
 import { IMPLEMENT_TEST_RULE } from "../../../packages/broker/src/rovara-code/verification-report.js";
@@ -57,7 +58,7 @@ function trackingGithub(e2e: () => WorkflowE2E, people: Record<string, { permiss
 }
 
 /** A version 2 task through its first pull request (waiting for the merge), with its program in place, CI green, and the reviewer of PR feedback scripted. */
-async function waitingForMerge(options: { github?: { wire?: boolean }; people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
+async function waitingForMerge(options: { reviews?: Parameters<typeof createWorkflowE2E>[0] extends infer O ? (O extends { model?: { reviews?: infer R } } ? R : never) : never; github?: { wire?: boolean }; people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
   const holder: { e2e?: WorkflowE2E } = {};
   const github = trackingGithub(() => holder.e2e!, options.people ?? { maya: { permission: "write", type: "User" } });
   const prompts: string[] = [];
@@ -66,11 +67,12 @@ async function waitingForMerge(options: { github?: { wire?: boolean }; people?: 
     model: {
       plan: PLAN, edits: (latest) => {
         prompts.push(latest);
-        if (!latest.includes(AUTO_FIX) && !latest.includes("owner-approved PR feedback")) return EDITS;
+        if (!latest.includes(AUTO_FIX) && !latest.includes("owner-approved PR feedback") && !latest.includes("Address the problems below")) return EDITS;
         // Each round changes the code a little differently, so a round that fixed nothing is never mistaken for one that did.
         rounds += 1;
         return [{ path: FIXED[0]!.path, content: `${FIXED[0]!.content}// round ${String(rounds)}\n` }];
       },
+      ...(options.reviews === undefined ? {} : { reviews: options.reviews }),
       feedback: (prompt) => options.critic?.(prompt) ?? feedbackCriticReply(prompt, { repositoryId: "demo", path: "greeting.ts", testPath: "greeting.test.ts" }),
     },
     trackingGithub: github.methods,
@@ -332,6 +334,18 @@ describe("Suite 15: fixing review comments under autonomy", () => {
       expect(decision.actorId).not.toBe("rovara");
       expect(decision.autonomy).toBeUndefined();
     }
+  }, 480_000);
+
+  it("15.14 a review inside the round that sends the work back: the coder is told what the review found, the round runs again and ends with the push; nothing hangs", async () => {
+    const found = reviewerFindings(1, { role: "CODE" }).CODE![0]!;
+    const { e2e, prompts, pullRequest } = await waitingForMerge({ reviews: { CODE: [reviewerReply.pass(), found, reviewerReply.pass()], SECURITY: [reviewerReply.pass()] } });
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    await trackAndFix(e2e);
+    expect(prompts.some((prompt) => prompt.includes("Address the problems below") && prompt.includes("Finding 1: the greeting is not trimmed."))).toBe(true);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });
+    expect(e2e.workflow().fixSource).toBeUndefined();
+    expect(dispatchRows(e2e)).toEqual([]);
+    expect(said(e2e).at(-1)).toBe(PUSHED_FIX(pullRequest.number));
   }, 480_000);
 
   it("15.10 a writer who loses write access before the run starts: the run is refused at the worker's start and nothing is pushed", async () => {
