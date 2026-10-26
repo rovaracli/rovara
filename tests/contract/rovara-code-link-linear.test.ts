@@ -56,6 +56,8 @@ describe("linking a session to a Linear issue", () => {
     const audited = h.audit.recordedBy("session.linked");
     expect(audited).toHaveLength(1);
     expect(audited[0]).toMatchObject({ orgId: ORG_A, actor: { kind: "member", id: PRIYA }, target: { kind: "session", id: sessionId }, related: [taskId], facts: { surface: "linear_issue" } });
+    // And it was handed to the audit queue straight after the commit, not left for the sweep.
+    expect(h.audit.flushed().map((event) => event.action)).toEqual(["session.linked"]);
     expect(JSON.stringify(audited[0]?.facts)).not.toContain("ENG-142");
     expect(audited[0]?.details).toEqual([{ subject: "org", fields: { issueKey: "ENG-142" } }]);
   });
@@ -110,6 +112,7 @@ describe("linking a session to a Linear issue", () => {
     expect(h.timeline(sessionId)).toEqual(expect.arrayContaining(["Priya linked this session to Linear issue ENG-142.", "Priya unlinked Linear issue ENG-142 from this session.", "Priya linked this session to Linear issue ENG-143."]));
     expect(h.audit.recordedBy("session.unlinked")).toHaveLength(1);
     expect(h.audit.recordedBy("session.linked")).toHaveLength(2);
+    expect(h.audit.flushed().map((event) => event.action).sort()).toEqual(["session.linked", "session.linked", "session.unlinked"]);
   });
 
   it("keeps the old issue when the new one already follows another session", async () => {
@@ -285,7 +288,17 @@ describe("unlinking", () => {
     expect(h.timeline(sessionId)).toContain("Priya unlinked Linear issue ENG-142 from this session.");
     expect(h.db.transactions().slice(before)).toHaveLength(1);
     expect(h.audit.recordedBy("session.unlinked")).toHaveLength(1);
+    expect(h.audit.flushed().map((event) => event.action)).toContain("session.unlinked");
     expect(h.audit.recordedBy("session.unlinked")[0]).toMatchObject({ target: { kind: "session", id: sessionId }, facts: { surface: "linear_issue" }, details: [{ subject: "org", fields: { issueKey: "ENG-142" } }] });
+  });
+
+  it("does not act on a binding item that says it belongs to another company", async () => {
+    const h = world();
+    const { sessionId } = h.seedSession();
+    h.db.set({ ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_B, sessionId, binding: { kind: "linear_issue", issueId: "ENG-142", url: KEY_URL }, at: "2026-10-22T09:00:00.000Z" });
+    await h.unlink(PRIYA, sessionId);
+    expect(h.db.transactions()).toHaveLength(0);
+    expect(h.db.get(sessionBindingKey(ORG_A, sessionId, "linear_issue"))).toBeDefined();
   });
 
   it("frees the issue for another session", async () => {
