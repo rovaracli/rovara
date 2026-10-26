@@ -13,6 +13,7 @@ export interface RealtimeSocket {
  close(): void;
 }
 export interface AppHost {
+ viewport?: { width(): number; subscribe(listener: () => void): () => void };
  kind: "web" | "desktop";origin: string;transport: ApiTransport;
  realtimeToken(): Promise<RealtimeTokenResponse>;
  // RULING Q14: routing and socket construction stay in the platform bridge, including desktop hosts.

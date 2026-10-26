@@ -11,7 +11,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
-import userEvent from "@testing-library/user-event";
+import { userEvent } from "@testing-library/user-event";
 import { expectNoAxeViolations } from "./support/axe.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -92,4 +92,13 @@ it("strips email and unknown metadata before caching the admin directory", async
 it("supports one self member, empty identity methods, long wrapping names and keyboard controls", async () => {
  const f = mount();await screen.findByText("Maya");const longName = "Long display name ".repeat(30);f.request.mockImplementation(async () => ({ status: 200, body: { members: [{ ...member, developerId: f.me.developer.id, name: longName.trim(), identities: [] }] } }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(await screen.findByText("None returned")).toBeTruthy();expect(screen.getByText("(you)")).toBeTruthy();expect(screen.getByRole("status").textContent).toBe("1 of 1 members");
  const user = userEvent.setup();screen.getByRole("heading", { name: "People" }).focus();await user.tab();expect(document.activeElement).toBe(screen.getByRole("link", { name: "Roles explained" }));await user.tab();expect(document.activeElement).toBe(screen.getByRole("searchbox"));expect(screen.getByRole("table").textContent).toContain(longName.trim());f.close();
+});
+
+it("uses sign-in recovery after a members 401 and hides cached rows", async () => { const f = mount();f.host.currentPath = () => "/app/admin/people";await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 401, body: { error: { code: "AUTH_REQUIRED", message: "Sign in" } } }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(f.host.signIn).toHaveBeenCalledWith("/app/admin/people", { automatic: true });await waitFor(() => expect(screen.queryByText("Maya")).toBeNull());f.close(); });
+
+it("cancels and evicts an old-org background read before its late response", async () => {
+ const f = mount();await screen.findByText("Maya");const oldKey = ["admin", "members", f.me.org.orgId, f.me.developer.id], delayed = pendingResponse();let calls = 0;const next = structuredClone(f.me);next.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";
+ f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: next } : ++calls === 1 ? delayed.promise : { status: 200, body: { members: [{ ...member, name: "New scope" }] } });
+ try { await act(async () => { void f.query.invalidateQueries({ queryKey: ["admin", "members"] });await new Promise(resolve => setTimeout(resolve, 25)); });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByText("New scope");expect(f.query.getQueryData(oldKey)).toBeUndefined();await act(async () => delayed.resolve({ status: 200, body: { members: [member] } }));expect(screen.queryByText("Maya")).toBeNull(); }
+ finally { delayed.resolve({ status: 200, body: { members: [member] } });f.close(); }
 });

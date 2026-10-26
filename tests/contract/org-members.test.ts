@@ -54,7 +54,7 @@ function person(harness: Harness, name: string, role: OrgRole, email = `${name.t
 const roleOf = (harness: Harness, who: Developer) => (harness.db.get(orgMemberKey(TEST_ORG, who.developerId)) as { role?: string } | undefined)?.role;
 
 describe("GET /v1/app/org/members", () => {
-  it("lists every member for any member, with names, emails, roles and sign-in methods (a linked person lists cloud and github)", async () => {
+  it("lists full details for an owner, with names, emails, roles and sign-in methods (a linked person lists cloud and github)", async () => {
     const harness = await org();
     const { dev, db } = harness;
     const bea = person(harness, "Bea", "admin", "bea@example.com");
@@ -64,7 +64,7 @@ describe("GET /v1/app/org/members", () => {
     link("cloud", "k1", "2026-10-01T00:00:00.000Z");
     link("github", "k2", "2026-10-02T00:00:00.000Z");
 
-    const listed = await dev(MAYA, "GET", "/v1/app/org/members");
+    const listed = await dev(OMAR, "GET", "/v1/app/org/members");
     expect(listed.status).toBe(200);
     const members = listed.body.members as Array<Record<string, unknown>>;
     expect(members.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);

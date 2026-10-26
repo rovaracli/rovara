@@ -10,5 +10,4 @@
 .rv-admin-roles dt{font-weight:600}.rv-admin-roles dd{margin:0}
 .rv-admin-role{padding-block:var(--rv-space-4);border-top:1px solid var(--rv-border)}
 .rv-admin-role ul{margin-bottom:0;padding-left:var(--rv-space-6)}
-.rv-admin-surface td{overflow-wrap:anywhere}.rv-admin-small-screen{display:none}
-@media(max-width:1023px){.rv-admin-content{display:none}.rv-admin-small-screen{display:block}}
+.rv-admin-surface td{overflow-wrap:anywhere}

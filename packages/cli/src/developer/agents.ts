@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
 import { ReportedFailure, exitCodeForError } from "../output.js";
 import { jsonSafe, terminalSafe } from "./audit.js";
-import { findMember, orgMembers } from "./org.js";
+import { resolveOrgMember } from "./org.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
 
 /**
@@ -127,7 +127,7 @@ export async function agentsShow(deps: DeveloperSessionDeps, env: string | undef
 
 /** The org member an email or developer ID names, as the `{ developerId }` the routes take. */
 export async function developerRef(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ developerId: string; name: string }> {
-  const member = findMember((await orgMembers(deps, env)).members, who);
+  const { member } = await resolveOrgMember(deps, env, who);
   return { developerId: member.developerId, name: member.name };
 }
 

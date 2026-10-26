@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
 import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
@@ -166,4 +166,13 @@ describe("browser sign-in returns and sign-out", () => {
   const response = await api({ method: "POST", path, requestId: "fixture", headers: { cookie: COOKIE, origin: CELL, "content-type": "application/json", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body: JSON.stringify(body) }, new URL(path, CELL));
   expect(response.statusCode).toBe(201);expect(createComment).toHaveBeenCalledTimes(1);
  });
+});
+
+it("serves exact-email lookup through the real cookie/CSRF boundary and broker envelope", async () => {
+ const h = await broker(), email = "web-fixture@example.test";
+ h.db.set({ ...h.db.get({ pk: `DEVELOPER#${WHO}`, sk: "META" }), email });h.db.set({ ...orgEmailKey(email), orgId: TEST_ORG, developerId: WHO });
+ const path = "/v1/web/org/members/lookup", body = { email };
+ expect((await h.call("POST", path, { cookie: COOKIE, origin: CELL }, body)).status).toBe(403);
+ const result = await h.call("POST", path, { cookie: COOKIE, origin: CELL, "x-rovara-csrf": appCsrfTokenFor(SID) }, body);
+ expect(result.status).toBe(200);expect(result.body).toEqual({ match: { developerId: WHO, name: "Web member" }, requestId: "web-auth-fixture" });
 });

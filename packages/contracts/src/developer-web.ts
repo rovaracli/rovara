@@ -34,6 +34,12 @@ export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
 export const AppMeResponseReaderSchema = forwardReader(AppMeResponseSchema);
 
-/** Exact existing GET /v1/app/org/members response from listOrganizationMembers. No provider subjects or issuer metadata. */
-export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: OrgRoleSchema, joinedAt: z.string(), identities: z.array(DeveloperSignInMethodSchema) }).strict()) }).strict();
+/** Org directory: active members see id/name/role; live owners/admins additionally receive private details. */
+export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: z.enum(["owner", "admin", "member", "unknown"]), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional() }).strict()) }).strict();
 export const AppOrgMembersResponseReaderSchema = forwardReader(AppOrgMembersResponseSchema);
+
+/** Lookup is exact and org scoped. Input is a body, never a URL query or a list filter. */
+export const OrgMemberLookupBodySchema = z.object({ email: z.string().trim().max(254).email().refine(value => !value.includes("*"), "Enter a complete email address.") }).strict();
+export const OrgMemberLookupResponseSchema = z.object({ match: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string() }).strict().nullable() }).strict();
+
+export const OrgMemberLookupResponseReaderSchema = forwardReader(OrgMemberLookupResponseSchema);

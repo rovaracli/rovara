@@ -125,7 +125,7 @@ export * from "./realtime-readers.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema } from "./developer-web.js";
 
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 

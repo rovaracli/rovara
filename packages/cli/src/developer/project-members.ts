@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { ProjectMemberChangeResponseSchema, ProjectMemberRemoveResponseSchema, ProjectMembersResponseSchema, type ProjectMember, type ProjectRole } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
-import { findMember, orgMembers, type OrgMember } from "./org.js";
+import { resolveOrgMember, type OrgMember } from "./org.js";
 import type { DeveloperSessionDeps } from "./session.js";
 
 const clean = sanitizeServerText;
@@ -30,16 +30,10 @@ export function projectMembersText(result: { env: string; url: string; project: 
   return `${lines.join("\n")}\n`;
 }
 
-/** The org member an email or developer ID names. Only the org's people can be given a role. */
-async function findOrgMember(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ env: string; url: string; member: OrgMember }> {
-  const listed = await orgMembers(deps, env);
-  return { env: listed.env, url: listed.url, member: findMember(listed.members, who) };
-}
-
 export async function projectAddMember(
   deps: DeveloperSessionDeps, env: string | undefined, project: string, who: string, role: ProjectRole,
 ): Promise<{ env: string; url: string; project: string; member: OrgMember; role: ProjectRole }> {
-  const found = await findOrgMember(deps, env, who);
+  const found = await resolveOrgMember(deps, env, who);
   const { body } = await developerRequest(deps, env, `${membersPath(project)}/${found.member.developerId}`, ProjectMemberChangeResponseSchema, {
     method: "PUT", body: { requestId: randomUUID(), role }, explain: true,
   });
@@ -53,7 +47,7 @@ export const projectAddMemberText = (result: { project: string; member: OrgMembe
 export async function projectRemoveMember(
   deps: DeveloperSessionDeps, env: string | undefined, project: string, who: string,
 ): Promise<{ env: string; url: string; project: string; member: OrgMember; removed: boolean }> {
-  const found = await findOrgMember(deps, env, who);
+  const found = await resolveOrgMember(deps, env, who);
   const { body } = await developerRequest(deps, env, `${membersPath(project)}/${found.member.developerId}`, ProjectMemberRemoveResponseSchema, {
     method: "DELETE", body: { requestId: randomUUID() }, explain: true,
   });
