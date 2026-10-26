@@ -468,10 +468,9 @@ export const asksForPlanParts = (prompt: string): boolean => prompt.includes(PLA
 const FILE_EXTENSIONS = "[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|swift|json|ya?ml|toml|md|sql|css|scss|html|sh|tf|proto|graphql|xml|ini|lock|gradle|cpp|hpp";
 /**
  * A file named in words: a name with a known extension, alone or at the end of a path (`charge.ts`, `src/charge.ts`, `./run.sh`), or a well-known extensionless name. A word pair with a
- * slash (`and/or`, `client/server`), a fraction and a link are not files; links are taken out before this is tried.
+ * slash (`and/or`, `client/server`), a fraction and a link are not files: a name must start a word, so the middle of `https://example.com/a.json` is not one.
  */
 const FILE_NAMED = new RegExp(`(?:^|[\\s("'\`])(?:\\.{0,2}/)?(?:[\\w@.-]+/)*[\\w@-][\\w@.-]*\\.(?:${FILE_EXTENSIONS})(?![\\w-])|\\b(?:Dockerfile|Makefile|Procfile|Jenkinsfile)\\b`, "u");
-const LINK = /\b[a-z][a-z0-9+.-]*:\/\/\S+/giu;
 /** A word that names a test. */
 const TEST_WORD = "tests?|tested|testing|coverage|asserts?|asserted|assertions?";
 /** A file that is a test: `charge.test.ts`, `charge.spec.ts`, `charge_test.go`. */
@@ -483,7 +482,7 @@ const TEST_NAMED = new RegExp(`\\b(?:${TEST_WORD})\\b`, "iu");
 
 /** Product names that end in .js and are not files. */
 const NOT_FILES = /\b(?:Node|Next|Nuxt|Vue|React|Express|Three|D3)\.js\b/giu;
-const namesFile = (text: string): boolean => FILE_NAMED.test(text.replace(LINK, " ").replace(NOT_FILES, " "));
+const namesFile = (text: string): boolean => FILE_NAMED.test(text.replace(NOT_FILES, " "));
 /** A sentence of a claim that names a test and doesn't say there is none. */
 const namesTest = (text: string): boolean =>
   TEST_FILE.test(text) || text.split(/(?<=[.!?;])\s+|\n/u).some((sentence) => TEST_NAMED.test(sentence) && !NEGATED_TEST.test(sentence.trim()));

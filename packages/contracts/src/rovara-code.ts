@@ -287,7 +287,7 @@ export function formatMinutes(low: number, high: number): string {
   const hi = Math.round(high);
   if (hi < 90) return lo === hi ? `about ${String(lo)} minutes` : `about ${String(lo)}–${String(hi)} minutes`;
   const hours = (minutes: number): number => Math.max(1, Math.round(minutes / 60));
-  const unit = (count: number): string => (count === 1 ? "hour" : "hours");
-  if (lo < 60) return `about ${String(lo)} minutes to ${String(hours(hi))} ${unit(hours(hi))}`;
-  return hours(lo) === hours(hi) ? `about ${String(hours(hi))} ${unit(hours(hi))}` : `about ${String(hours(lo))}–${String(hours(hi))} hours`;
+  // From here the high end is 90 minutes or more, so it is always two hours or more.
+  if (lo < 60) return `about ${String(lo)} minutes to ${String(hours(hi))} hours`;
+  return hours(lo) === hours(hi) ? `about ${String(hours(hi))} hours` : `about ${String(hours(lo))}–${String(hours(hi))} hours`;
 }
