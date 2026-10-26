@@ -280,6 +280,9 @@ describe("the review round being fixed", () => {
     // Only the build the findings go back to: not the steps before it, nor the review itself.
     expect(workflowReviewRound(rounded(1, { programStepId: "plan_critic" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(1, { programStepId: "review" }))).toBeUndefined();
+    // Findings on other code, or none held, are not findings being fixed.
+    expect(workflowReviewRound(rounded(1, { reviews: [reviewReport("CRITIC", "FINDINGS", candidate("2").digest, [finding])] }))).toBeUndefined();
+    expect(workflowReviewRound(rounded(1, { reviews: [reviewReport("CRITIC", "PASS", code.digest)] }))).toBeUndefined();
   });
 
   it("a version 1 task has no round counter, whatever its snapshot holds", () => {
@@ -542,7 +545,7 @@ describe("a version 2 task through the broker", () => {
     const v1 = await approvedBuild();
     await v1.harness.finish(v1.workspaceId, String(v1.builds()[0]!.id), "FAILED", { error: "stopped" });
     // The same task as a version 1 task: no program, the old definition version.
-    blockOnRunLimit(v1, ({ program: _program, programStepId: _programStepId, ...workflow }) => ({ ...workflow, definitionVersion: "1.0.0" }));
+    blockOnRunLimit(v1, ({ program: _program, programStepId: _programStepId, ...workflow }) => ({ ...workflow, definitionVersion: "1.0.0" })); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
     await expect(resumeAfterRunLimitApproval(deps(v1.harness) as never, v1.id, { requestId: randomUUID(), runLimitUsd: 5 })).resolves.toBe("STARTED");
     const older = v1.promptOf(v1.builds()[1]!);
     expect(older).toContain("Implement the human-approved plan below");
