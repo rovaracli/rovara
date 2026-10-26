@@ -43,3 +43,5 @@ export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessi
 export * from "./onboarding.js";
 
 export { ChainRunViewReaderSchema } from "./chain-session.js";
+
+export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";

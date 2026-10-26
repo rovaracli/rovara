@@ -1,3 +1,5 @@
+import { changeReviewedMemberRole } from "../org/role-changes.js";
+import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { navigationReadCache } from "../app-nav/read-cache.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../app-nav/nav.js";
@@ -2146,14 +2148,15 @@ const bodyError = (error: z.ZodError) => {
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
-const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();
+const ChangeRoleBodySchema = OrgMemberRoleChangeBodySchema;
 
 /** `PUT /v1/app/org/members/{developerId}/role`: owners only. Demoting the last owner is LAST_OWNER (409). */
 async function changeMemberRole(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string, body: unknown): Promise<{ developerId: string; role: OrgRole }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   const parsed = ChangeRoleBodySchema.safeParse(body);
-  if (!parsed.success) throw bodyError(parsed.error);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.");
+  if (parsed.data.expectedRole !== undefined) return changeReviewedMemberRole(deps, caller, developerId, { ...parsed.data, expectedRole: parsed.data.expectedRole });
+  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });
   logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
   return { developerId, role: parsed.data.role };

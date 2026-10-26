@@ -58,5 +58,5 @@ it("does not deduplicate a reviewed change against a previous legacy CLI change"
 });
 it("uses a fixed validation refusal without echoing untrusted field names", async () => {
  const f = fixture(), path = `/v1/app/org/members/${target}/role`;
- await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, expectedRole: "member", role: "admin", "untrusted-private-field": "fixture" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "Review a valid company role change before submitting." });
+ await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, expectedRole: "member", role: "admin", "untrusted-private-field": "fixture" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: Review a valid company role change before submitting." });
 });

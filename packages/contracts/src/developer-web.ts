@@ -43,3 +43,8 @@ export const OrgMemberLookupBodySchema = z.object({ email: z.string().trim().max
 export const OrgMemberLookupResponseSchema = z.object({ match: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string() }).strict().nullable() }).strict();
 
 export const OrgMemberLookupResponseReaderSchema = forwardReader(OrgMemberLookupResponseSchema);
+
+/** Optional expectedRole selects the reviewed console path; omitted preserves released CLI requests. */
+export const OrgMemberRoleChangeBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema, expectedRole: OrgRoleSchema.optional() }).strict();
+export const OrgMemberRoleChangeResponseSchema = z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), role: OrgRoleSchema }).strict();
+export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRoleChangeResponseSchema);
