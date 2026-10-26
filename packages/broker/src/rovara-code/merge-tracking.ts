@@ -424,24 +424,43 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
   }
   const orgId = first.orgId;
   const settings = await readCodeSettings(deps, orgId, first.project);
-  const pullRequests = [...(first.workflow.pullRequests ?? [])].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId) || left.number - right.number);
+  const listed = [...(first.workflow.pullRequests ?? [])].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId) || left.number - right.number);
+  // A pass that ran out of requests part-way starts the next one at the pull request it stopped at, so the rest is reached, not read again from the first.
+  const rowKey = { pk: "WORKFLOW_MERGE_RECOVERY", sk: `TASK#${taskId}` };
+  const row = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: rowKey, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  const cursor = typeof row?.["trackingCursor"] === "number" && Number.isInteger(row["trackingCursor"]) && row["trackingCursor"] >= 0 && row["trackingCursor"] < listed.length ? row["trackingCursor"] : 0;
+  // The pass that resumes reads only from the pull request it stopped at to the end: the ones before it were read by the pass that stopped.
+  const pullRequests = listed.slice(cursor);
   const budget = deps.budget === undefined ? undefined : rowBudget(deps.budget, trackingRequestCap(pullRequests.length));
   const permissions = new Map<string, Promise<"admin" | "write" | "read" | "none">>();
+  const setCursor = async (value: number): Promise<void> => {
+    if (row === undefined || (row["trackingCursor"] ?? 0) === value) return;
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: rowKey, UpdateExpression: "SET trackingCursor = :cursor", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":cursor": value },
+    })).catch(() => undefined);
+  };
   let changed = false;
   let anyNotOpen = false;
   let recheckAt: number | undefined;
-  for (const listed of pullRequests) {
+  for (const [position, listedPullRequest] of pullRequests.entries()) {
     const task = await deps.loadTask(taskId);
     if (task === undefined || task.closedAt !== undefined || task.releasedAt !== undefined || task.orgId !== orgId || !tracksMerge(task.workflow)) return { result: changed ? "changed" : "gone", anyNotOpen };
-    const pullRequest = task.workflow.pullRequests?.find((entry) => entry.repositoryId === listed.repositoryId && entry.number === listed.number);
+    const pullRequest = task.workflow.pullRequests?.find((entry) => entry.repositoryId === listedPullRequest.repositoryId && entry.number === listedPullRequest.number);
     if (pullRequest === undefined) continue;
-    const one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, permissions);
+    let one: Awaited<ReturnType<typeof trackOne>>;
+    try {
+      one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, permissions);
+    } catch (error) {
+      if (error instanceof TrackingRequestCapError) await setCursor(cursor + position);
+      throw error;
+    }
     changed ||= one.changed;
     anyNotOpen ||= one.notOpen;
     if (one.recheckAt !== undefined) recheckAt = recheckAt === undefined ? one.recheckAt : Math.min(recheckAt, one.recheckAt);
     // An action changed the workflow: the other pull requests are decided on the next pass, from the workflow as it now is.
     if (one.acted) break;
   }
+  await setCursor(0);
   return { result: changed ? "changed" : "unchanged", anyNotOpen, ...(recheckAt === undefined ? {} : { recheckAt }) };
 }
 
@@ -487,10 +506,14 @@ async function trackOne(
   let readyNow = false;
   let asked = false;
   if (wantsReady) {
-    if (status.draft) await deps.github.markPullRequestReady(url, pullRequest.number, scope, budget);
+    if (status.draft) {
+      await deps.github.markPullRequestReady(url, pullRequest.number, scope, budget);
+      fields.draft = false;
+    }
     if (settings.codeReviewers.length > 0 && status.requestedReviewers === 0 && fields.reviewersRequestedAt === undefined) {
       asked = true;
       await deps.github.requestReviewers(url, pullRequest.number, settings.codeReviewers, scope, budget);
+      if (fields.review === "not_requested") fields.review = "requested";
     }
     readyNow = true;
   }
