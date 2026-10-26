@@ -350,5 +350,7 @@ it("M1 refuses inside-org subscriptions to private task and unshared local sessi
       const reply = await authorizeRealtime({ authorizationToken: token, requestContext: { operation: "EVENT_SUBSCRIBE", channel: sessionChannel(ORG_A, sessionId) } }, { ...w.table, publicKey: async () => jwk, log: () => undefined });
       expect(reply).toEqual({ isAuthorized: false, ttlOverride: 0 });
     }
+    const token = (await w.call(MIA, ORG_A, "POST", "/v1/app/realtime/token") as { token: string }).token;
+    expect(await authorizeRealtime({ authorizationToken: token, requestContext: { operation: "EVENT_SUBSCRIBE", channel: sessionChannel(ORG_A, w.s4.sessionId) } }, { ...w.table, publicKey: async () => jwk, log: () => undefined })).toEqual({ isAuthorized: true, ttlOverride: 0 });
   });
 });
