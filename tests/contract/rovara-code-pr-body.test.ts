@@ -770,6 +770,32 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body.split(START)).toHaveLength(2);
   });
 
+  it("rewrites the open pull request's Fixes line at once when the binding changes (Plan 6 Task 20 review)", async () => {
+    const t = await fixPassed();
+    const record = t.record() as unknown as { orgId: string };
+    t.harness.db.set({ ...t.record(), sessionId: "ses_00000000000000000001" });
+    const task = t.record() as never;
+    const rewrite = (key: string | undefined) => (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(task, key);
+    expect(record.orgId).toBeDefined();
+    expect(await rewrite("ENG-142")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(await rewrite("ENG-142")).toEqual({ updated: 0, failed: 0 });
+    expect(await rewrite("ENG-143")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-143"]);
+    expect(await rewrite(undefined)).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual([]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(t.state.body.split(START)).toHaveLength(2);
+    expect(await rewrite(undefined)).toEqual({ updated: 0, failed: 0 });
+    // GitHub refusing the write, or a description whose block a person removed, is a failure to report, not an exception.
+    t.gateway.updatePullRequest.mockRejectedValueOnce(new Error("GitHub down"));
+    expect(await rewrite("ENG-144")).toEqual({ updated: 0, failed: 1 });
+    t.state.body = "A description with no Rovara block.";
+    expect(await rewrite("ENG-144")).toEqual({ updated: 0, failed: 1 });
+    expect(t.state.body).toBe("A description with no Rovara block.");
+  });
+
   it("judges the risk again for the new code in the write that starts the push, and the description's block follows the push", async () => {
     const t = await fixPassed();
     await t.finishReviews();
