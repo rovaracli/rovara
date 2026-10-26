@@ -73,7 +73,8 @@ describe("named web hosting and isolated throttle budgets", () => {
  });
  it("gives each page and the cookie API its exact public route and independent throttle budget", () => {
   const routes = ofType(hosted, "AWS::ApiGatewayV2::Route"), stage = ofType(hosted, "AWS::ApiGatewayV2::Stage")[0]![1], settings = record(stage.Properties.RouteSettings);
-  const pages = ["GET /app", "GET /app/", "GET /app/{proxy+}", "GET /s/{sessionId}"];
+  const pages = ["GET /app", "GET /app/{proxy+}", "GET /s/{sessionId}"];
+  expect(routes.map(([, resource]) => resource.Properties.RouteKey)).not.toContain("GET /app/");
   for (const key of [...pages, "ANY /v1/web/{proxy+}"]) {
    const [id, route] = routes.find(([, resource]) => resource.Properties.RouteKey === key)!;expect(route.Properties.AuthorizationType).toBe("NONE");expect(route.Properties.AuthorizerId).toBeUndefined();expect([stage.DependsOn].flat()).toContain(id);
    expect(settings[key]).toEqual({ ThrottlingBurstLimit: key.startsWith("ANY") ? 400 : 200, ThrottlingRateLimit: key.startsWith("ANY") ? 200 : 100 });

@@ -5332,7 +5332,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "GithubInstallConfirmRoute",
         "WebAppAppPathRouteC44AC6EE",
         "WebAppAppRoute46037100",
-        "WebAppAppSlashRoute627ECA8E",
         "WebAppSessionRouteA44E7FCE",
       ],
       "Properties": {
@@ -5366,10 +5365,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ThrottlingRateLimit": 200,
           },
           "GET /app": {
-            "ThrottlingBurstLimit": 200,
-            "ThrottlingRateLimit": 100,
-          },
-          "GET /app/": {
             "ThrottlingBurstLimit": 200,
             "ThrottlingRateLimit": 100,
           },
@@ -13767,27 +13762,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::ApiGatewayV2::Route",
     },
-    "WebAppAppSlashRoute627ECA8E": {
-      "Properties": {
-        "ApiId": {
-          "Ref": "HttpApi",
-        },
-        "AuthorizationType": "NONE",
-        "RouteKey": "GET /app/",
-        "Target": {
-          "Fn::Join": [
-            "",
-            [
-              "integrations/",
-              {
-                "Ref": "WebAppIntegration5E3F10BA",
-              },
-            ],
-          ],
-        },
-      },
-      "Type": "AWS::ApiGatewayV2::Route",
-    },
     "WebAppAssetAccess44D7FD6A": {
       "Properties": {
         "OriginAccessControlConfig": {
@@ -14185,47 +14159,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "Ref": "HttpApi",
               },
               "/*/GET/app/*",
-            ],
-          ],
-        },
-      },
-      "Type": "AWS::Lambda::Permission",
-    },
-    "WebAppFunctionAppSlashInvokeD2F573B1": {
-      "DependsOn": [
-        "WebAppUploadAwsCliLayer2F180912",
-        "WebAppUploadCustomResourceC5294313",
-      ],
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "WebAppFunction611CC907",
-            "Arn",
-          ],
-        },
-        "Principal": "apigateway.amazonaws.com",
-        "SourceArn": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition",
-              },
-              ":execute-api:",
-              {
-                "Ref": "AWS::Region",
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId",
-              },
-              ":",
-              {
-                "Ref": "HttpApi",
-              },
-              "/*/GET/app/",
             ],
           ],
         },

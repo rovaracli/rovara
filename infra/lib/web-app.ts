@@ -28,7 +28,8 @@ export class WebApp extends Construct {
   (fn.node.defaultChild as lambda.CfnFunction).functionName = `${props.naming.resourcePrefix}-web`;
   if (upload !== undefined) fn.node.addDependency(upload);
   const integration = new apigwv2.CfnIntegration(this, "Integration", { apiId: props.api.ref, integrationType: "AWS_PROXY", integrationUri: fn.functionArn, payloadFormatVersion: "2.0" });
-  for (const [name, path] of [["App", "/app"], ["AppSlash", "/app/"], ["AppPath", "/app/{proxy+}"], ["Session", "/s/{sessionId}"]] as const) {
+  // No `GET /app/` route: an HTTP API refuses a route key with an empty path segment (the 0.4.8 staging deploy rolled back on it). A request to `/app/` has no matching web route (`/app/{proxy+}` needs at least one character after the slash), so the app's own links always use `/app`.
+  for (const [name, path] of [["App", "/app"], ["AppPath", "/app/{proxy+}"], ["Session", "/s/{sessionId}"]] as const) {
    const route = new apigwv2.CfnRoute(this, name + "Route", { apiId: props.api.ref, routeKey: "GET " + path, target: `integrations/${integration.ref}`, authorizationType: "NONE" });
    this.routes.push({ route, burst: 200, rate: 100 });
    fn.addPermission(name + "Invoke", { principal: new iam.ServicePrincipal("apigateway.amazonaws.com"), sourceArn: `arn:${stack.partition}:execute-api:${stack.region}:${stack.account}:${props.api.ref}/*/GET${path.replace(/\{[^}]+\}/g, "*")}` });

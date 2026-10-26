@@ -280,18 +280,19 @@ describe("the named TEST proof-only installation gate", () => {
     // M3: regenerated named/foreign pins from the merged template; web routes and chain hook throttles coexist. Legacy unchanged.
     // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
     // Round 8 release-path fixes: the web app's ResponseHeadersPolicy and OriginAccessControl got explicit prefixed names, so the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Staging v0.4.9: the invalid `GET /app/` web route (an empty path segment, refused by API Gateway) was removed with its Lambda permission, so the named and foreign digests were retaken from the test's output; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "cb046268fc069e1fb825e3328198769bcb521c1fe7346f6ffb1e5d87978a1791",
-        withoutRoute: "8134eadbe8d8f1f63201204ed687b87b6b68688e2c87e9881a2631faf2274932",
+        withRoute: "f077aa59651ad246c33b474f9c9144f3e746a257312a363999a234367f652fc5",
+        withoutRoute: "e5b39d57a7e00923907c876036171bc6ca3cc2a396d1c7eff0240ce2ae4c9bf8",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e14d31affaddd573ba1ffc35916812b022c2a052ba36a43b1119790e5be2831b",
-        withoutRoute: "92b3433d1a8eac3a225590b228daf5bb1b549502df08afa5557a16d4f21fc72b",
+        withRoute: "bd635f276ba294accfddf7216d598e51adf5377faf297c55105b5e05162da9a7",
+        withoutRoute: "cf6eb4815361f98ee9cda36712d3bf7d27ac0753cf6f6a3704d3c35abf2697e4",
       },
       {
         label: "legacy",
