@@ -3,7 +3,7 @@
 // everything else waits for the owner as before: a reader's comment, a stranger's beside a writer's, autonomy suggest, a fourth round. What a comment says changes nothing.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AGENT_WORKER_OUTDATED, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { agentGuardrailsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
@@ -362,6 +362,9 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(e2e.github.pushLog.length).toBe(pushes);
     expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
     expect(e2e.workflow().stage === "WAIT_FOR_MERGE" && e2e.workflow().state === "WAITING").toBe(false);
+    // The owner is told why it was refused, so that a Retry (their own go-ahead) is an informed one.
+    expect(e2e.workflow().blockReason).toBe(FEEDBACK_NOT_RUN_REASON);
+    expect(said(e2e).at(-1)).toContain("who wrote the review comments or how far Rovara may go on its own changed");
   }, 480_000);
 
   /** The company lowers how far agents may act on their own (the guardrails' limit), as its admin's tightening does: the stored document, at once. */
