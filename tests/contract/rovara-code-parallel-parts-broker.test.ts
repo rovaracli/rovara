@@ -56,6 +56,20 @@ describe("the number of parts that may run together", () => {
     expect(await parallelPartsForTask({ ...deps(table({ memberCount: 1, orgCount: 1 })), limitDefaults: { member: 2, organization: 2 } }, { ...task, workflow: { definitionVersion: "1.1.0" } })).toEqual({ max: 2 });
   });
 
+  it("counts the room against the charge the task actually holds (task.charge), not the creator's keys", async () => {
+    // The creator's own keys are free, but the slot was charged to a payer whose person and org are full: the payer's counters decide.
+    const payer = developerCharge({ orgId: ORG, developerId: "payer-9" });
+    const items = new Map<string, Record<string, unknown>>();
+    const keyOf = (key: { pk: string; sk: string }) => `${key.pk}|${key.sk}`;
+    items.set(keyOf(workspaceLimitsKey(ORG)), { perPerson: 3, perOrganization: 20 });
+    items.set(keyOf(payer.member), { count: 3 });
+    items.set(keyOf(payer.organization), { count: 5 });
+    const client = { send: async (command: unknown) => ({ Item: items.get(keyOf((command as { input: { Key: { pk: string; sk: string } } }).input.Key)) }) };
+    expect(await parallelPartsForTask(deps(client), { ...task, charge: payer, workflow: { definitionVersion: "1.1.0" } })).toEqual({ max: 1 });
+    // Without a stored charge the creator's keys are the fallback, as everywhere else.
+    expect(await parallelPartsForTask(deps(client), { ...task, workflow: { definitionVersion: "1.1.0" } })).toEqual({ max: PARALLEL_PARTS_MAX });
+  });
+
   it("fails closed to one part when the limits or counts cannot be read", async () => {
     expect(await parallelPartsForTask(deps(table({ fail: true })), { ...task, workflow: { definitionVersion: "1.1.0" } })).toEqual({ max: 1 });
   });

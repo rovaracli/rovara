@@ -7,6 +7,7 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { parallelPartsFor, taskGraphOrder, type OrgId, type TaskGraphV1, type WorkItemProgressV1, type WorkflowParallel } from "@agentx/contracts";
 import { developerCharge, readWorkspaceLimits } from "../developer/limits.js";
+import type { WorkspaceCharge } from "../developer/task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 
@@ -36,12 +37,12 @@ export function workflowDependenciesAllowed(deps: { workflowDependenciesEnabled?
  */
 export async function parallelPartsForTask(
   deps: ParallelPartsDependencies,
-  task: { developerId: string; slackUserId?: string | undefined; workflow?: { definitionVersion?: string } | undefined },
+  task: { developerId: string; slackUserId?: string | undefined; /** What the task's slot was really charged to; the creator's keys only when none is stored (as the start's retry does). */ charge?: WorkspaceCharge | undefined; workflow?: { definitionVersion?: string } | undefined },
 ): Promise<WorkflowParallel | undefined> {
   if (!isParallelPartsWorkflow(task.workflow)) return undefined;
   try {
     const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.limitDefaults, () => undefined);
-    const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
+    const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
     const count = async (key: { pk: string; sk: string }): Promise<number> => {
       const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: { count?: unknown } };
       return typeof response.Item?.count === "number" ? response.Item.count : 0;

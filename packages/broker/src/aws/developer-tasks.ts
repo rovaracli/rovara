@@ -3593,9 +3593,9 @@ async function approvedWorkflowDependencies(deps: DeveloperTaskRouteDependencies
 }
 
 /** How many parts of the task's approved plan may be built at once (Rovara Code v2 only; see rovara-code/parallel-parts.ts). */
-function partsSettingOf(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "developerId" | "slackUserId">, workflow: WorkflowSnapshot | undefined) {
+function partsSettingOf(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "developerId" | "slackUserId" | "charge">, workflow: WorkflowSnapshot | undefined) {
   return parallelPartsForTask({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: deps.orgId, slackTeamId: deps.slackTeamId, limitDefaults: deps.actions.limitDefaults },
-    { developerId: task.developerId, slackUserId: task.slackUserId, workflow });
+    { developerId: task.developerId, slackUserId: task.slackUserId, ...(task.charge === undefined ? {} : { charge: task.charge }), workflow });
 }
 
 /** Keep the accepted graph attempt pointer in the task update committed with its operation and outbox. */
