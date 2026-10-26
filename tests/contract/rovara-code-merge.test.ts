@@ -868,7 +868,7 @@ describe("what a merge leaves in the Audit Ledger", () => {
     expect(event).toMatchObject({ action: "pull_request.merge_requested", actor: { kind: "member", id: PRIYA }, facts: { number: 7, method: "squash" }, related: [approvalId] });
     const claimTransaction = w.db.transactions().find((items) => items.some((entry) => JSON.stringify(entry).includes("mergeClaim")))!;
     expect(JSON.stringify(claimTransaction)).toContain("AUDIT_PENDING");
-    expect(JSON.stringify(event)).not.toContain("payments");
+    expect(JSON.stringify(event!.target)).not.toContain("payments");
   });
 
   it("records nothing for a claim that was lost", async () => {

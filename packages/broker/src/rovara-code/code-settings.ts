@@ -5,13 +5,16 @@
 // except turning self-approval ON, which answers `202 NEEDS_CONFIRMATION`: an organization owner or admin decides it on the confirmation page (R66), never the maintainer who asked
 // unless they are an admin themselves. The other settings in the same request still apply at once, and the change is bound to the revision they leave.
 import { createHash } from "node:crypto";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  CHANGES_FEED_DAYS,
   CODE_SETTINGS_STALE_MESSAGE,
   CodeSettingsBodySchema,
   CodeSettingsSchema,
   DEFAULT_CODE_SETTINGS,
+  INDEX_EXPIRY_ATTRIBUTE,
   agentXError,
+  changesKey,
   codeSettingsKey,
   projectAllows,
   type CodeSettings,
@@ -26,6 +29,10 @@ import type { AnyApprovalRecord } from "../agents/approvals-store.js";
 import { orgAdminApprovers } from "../agents/changes.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { auditCodeSettingsChanged, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditDeps } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
 
 export interface CodeSettingsReader {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -86,6 +93,15 @@ const digestOf = (body: CodeSettingsBody): string => {
   return createHash("sha256").update(JSON.stringify([rest.allowSelfApproval ?? null, rest.mergeMethod ?? null, rest.codeReviewers ?? null]), "utf8").digest("hex");
 };
 
+/** The fixed names of what differs between two settings, in a fixed order. */
+function changedNames(before: CodeSettings, after: CodeSettings): string {
+  return [
+    ...(before.allowSelfApproval === after.allowSelfApproval ? [] : ["selfApproval"]),
+    ...(before.mergeMethod === after.mergeMethod ? [] : ["mergeMethod"]),
+    ...(sameList(before.codeReviewers, after.codeReviewers) ? [] : ["codeReviewers"]),
+  ].join(",");
+}
+
 const sameList = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
 
 /**
@@ -120,18 +136,28 @@ export async function putCodeSettings(
   let applied = current;
   if (changes) {
     applied = { ...next, revision: current.revision + 1 };
+    const events = await tryAuditEvents(approvals ?? {}, () => [auditCodeSettingsChanged({
+      orgId: caller.orgId, actor: auditActorOf(caller.developerId), occurredAt: new Date(deps.now()).toISOString(), occurrence: auditOccurrence(project, String(applied.revision)),
+      projectName: project, revision: applied.revision, changed: changedNames(current, applied), selfApproval: applied.allowSelfApproval, mergeMethod: applied.mergeMethod, reviewers: applied.codeReviewers.length,
+    })]);
     try {
-      await deps.documentClient.send(new PutCommand({
-        TableName: deps.tableName,
-        Item: {
-          ...codeSettingsKey(caller.orgId, project), entityType: "CODE_SETTINGS", orgId: caller.orgId, ...applied, lastRequestId: body.requestId, lastRequestDigest: digest,
-          updatedAt: new Date(deps.now()).toISOString(), updatedBy: caller.developerId,
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        {
+          Put: {
+            TableName: deps.tableName,
+            Item: {
+              ...codeSettingsKey(caller.orgId, project), entityType: "CODE_SETTINGS", orgId: caller.orgId, ...applied, lastRequestId: body.requestId, lastRequestDigest: digest,
+              updatedAt: new Date(deps.now()).toISOString(), updatedBy: caller.developerId,
+            },
+            ConditionExpression: current.revision === 0 && item === undefined ? "attribute_not_exists(pk)" : "#revision = :expected",
+            ...(current.revision === 0 && item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
+          },
         },
-        ConditionExpression: current.revision === 0 && item === undefined ? "attribute_not_exists(pk)" : "#revision = :expected",
-        ...(current.revision === 0 && item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
-      }));
+        ...(approvals === undefined ? [] : events.flatMap((event) => auditPending(approvals as AuditDeps, event))),
+      ] }));
+      if (approvals !== undefined) await flushAuditEvents(approvals, events);
     } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("CONFIG_INVALID", CODE_SETTINGS_STALE_MESSAGE);
+      if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) throw agentXError("CONFIG_INVALID", CODE_SETTINGS_STALE_MESSAGE);
       throw error;
     }
   }
@@ -152,11 +178,15 @@ export async function putCodeSettings(
 
 // ---- what confirming it does
 
+/** The most maintainers one confirmation tells (a transaction holds 100 items). */
+const NOTICES_MAX = 80;
+const noticeNumber = (seed: string): number => Number.parseInt(createHash("sha256").update(seed).digest("hex").slice(0, 6), 16) % 1_000_000;
+
 const isChange = (record: AnyApprovalRecord): record is Extract<AnyApprovalRecord, { kind: "change" }> => record.kind === "change";
 
 /** Registers what confirming a `code_settings` change does. The approver rule is the `org_admin` rule (changes.ts), read when the decision is made. Safe to call more than once. */
 export function registerCodeSettingsApprovals(): void {
-  registerApprovalSubjectHandler("code_settings", async (deps, record) => {
+  registerApprovalSubjectHandler("code_settings", async (deps, record, decision) => {
     if (!isChange(record) || record.subject.kind !== "code_settings") return;
     // A record nobody has decided is never applied: self-approval would be credited to a request, not to an administrator.
     if (record.decidedBy === undefined) throw agentXError("CONFIG_INVALID", "this change has not been decided by anyone, so it can't be applied");
@@ -166,19 +196,41 @@ export function registerCodeSettingsApprovals(): void {
     if (current.revision !== subject.settingsRevision) throw agentXError("CONFIG_INVALID", CODE_SETTINGS_STALE_MESSAGE);
     if (current.allowSelfApproval) return;
     const applied: CodeSettings = { ...current, allowSelfApproval: true, revision: current.revision + 1 };
+    const at = new Date(deps.now()).toISOString();
+    const events = await tryAuditEvents(deps, () => [auditCodeSettingsChanged({
+      orgId: record.orgId, actor: auditActorOf(record.decidedBy!), occurredAt: at, occurrence: auditOccurrence(subject.project, String(applied.revision)), related: [record.approvalId],
+      ...(decision?.proof === undefined ? {} : { proof: decision.proof }),
+      projectName: subject.project, revision: applied.revision, changed: changedNames(current, applied), selfApproval: true, mergeMethod: applied.mergeMethod, reviewers: applied.codeReviewers.length,
+    })]);
+    // The project's other maintainers are told once it applies (not the administrator who decided it): a notice of ids and a revision, kept in each one's feed.
+    const told = [...new Set([
+      ...(await deps.projectMembers.list(record.orgId, subject.project)).filter((member) => projectAllows(member.role, "edit_settings")).map((member) => member.developerId),
+      record.requestedBy,
+    ])].filter((developerId) => developerId !== record.decidedBy).sort().slice(0, NOTICES_MAX);
+    const expires = Math.floor(deps.now() / 1000) + CHANGES_FEED_DAYS * 86_400;
     try {
-      await deps.documentClient.send(new PutCommand({
-        TableName: deps.tableName,
-        Item: {
-          ...codeSettingsKey(record.orgId, subject.project), entityType: "CODE_SETTINGS", orgId: record.orgId, ...applied,
-          updatedAt: new Date(deps.now()).toISOString(), updatedBy: record.decidedBy, selfApprovalConfirmedBy: record.decidedBy,
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        {
+          Put: {
+            TableName: deps.tableName,
+            Item: {
+              ...codeSettingsKey(record.orgId, subject.project), entityType: "CODE_SETTINGS", orgId: record.orgId, ...applied,
+              updatedAt: at, updatedBy: record.decidedBy, selfApprovalConfirmedBy: record.decidedBy,
+            },
+            ConditionExpression: item === undefined ? "attribute_not_exists(pk)" : "#revision = :expected",
+            ...(item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
+          },
         },
-        ConditionExpression: item === undefined ? "attribute_not_exists(pk)" : "#revision = :expected",
-        ...(item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
-      }));
+        ...events.flatMap((event) => auditPending(deps, event)),
+        ...told.map((developerId) => ({ Put: { TableName: deps.tableName, Item: {
+          ...changesKey(record.orgId, developerId, at, noticeNumber(`${record.approvalId}|${developerId}`)), entityType: "CHANGE_NOTICE", orgId: record.orgId, type: "code_settings.changed",
+          project: subject.project, revision: applied.revision, by: record.decidedBy, at, [INDEX_EXPIRY_ATTRIBUTE]: expires,
+        } } })),
+      ] }));
     } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("CONFIG_INVALID", CODE_SETTINGS_STALE_MESSAGE);
+      if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) throw agentXError("CONFIG_INVALID", CODE_SETTINGS_STALE_MESSAGE);
       throw error;
     }
+    await flushAuditEvents(deps, events);
   });
 }

@@ -1,6 +1,7 @@
 // Rovara Code (Plan 6 Task 19): whose approval on GitHub counts toward a merge (Finding 1), and who the requesters of a task are. Rovara's rules govern only its own Merge button: merging
 // on GitHub is governed by the repository's own branch protection. Pure except for the lookups of who is a member, which the callers pass in already read.
-import type { OrgId } from "@agentx/contracts";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgRoleSchema, orgMemberKey, type OrgId } from "@agentx/contracts";
 import type { PullRequestReview } from "../github-pull-status.js";
 import { githubUserOfMember, memberForGithubUser, type GithubMemberDependencies } from "./github-members.js";
 
@@ -96,9 +97,14 @@ export async function requesterGithubIds(deps: GithubMemberDependencies, orgId: 
   return ids.length === 0 ? "unlinked" : ids;
 }
 
-/** Which of these GitHub accounts are linked to a member of the org. */
+/** Which of these GitHub accounts are linked to a member of the org, who is a member now: a link outlives a removal, so the member record is read live. */
 export async function linkedAmong(deps: GithubMemberDependencies, orgId: OrgId, githubUserIds: readonly string[]): Promise<Set<string>> {
   const linked = new Set<string>();
-  for (const id of new Set(githubUserIds)) if (await memberForGithubUser(deps, orgId, id) !== undefined) linked.add(id);
+  for (const id of new Set(githubUserIds)) {
+    const developerId = await memberForGithubUser(deps, orgId, id);
+    if (developerId === undefined) continue;
+    const member = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    if (member.Item !== undefined && OrgRoleSchema.safeParse(member.Item["role"]).success) linked.add(id);
+  }
   return linked;
 }

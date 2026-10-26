@@ -7,15 +7,17 @@
 // - The change's handler is the single merge path: it re-reads every pull request and every reviewer from GitHub (never the stored items), re-checks readiness for the exact heads,
 //   and only then claims each pull request on its tracking item and merges it, in repository order, with the checked head as `sha`.
 import { createHash } from "node:crypto";
-import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MERGE_CLAIM_SECONDS,
   MERGE_NOT_READY_MESSAGES as M,
   agentXError,
+  auditPullRequestId,
   isBranchSyncBlockReason,
   isCiFixBlockReason,
   mergeTrackingKey,
   sessionEventId,
+  type AuditProof,
   type CodeSettings,
   type MergeTrackingItem,
   type MergeView,
@@ -23,6 +25,10 @@ import {
   type OrgId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { auditOccurrence, auditPullRequestMergeRequested } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
 import { findLinkedGithubWorkflowPullRequest } from "../aws/github-webhooks.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
 import { confirmationReply, type SessionShareDependencies, type ShareCaller } from "../agent-sessions/shares.js";
@@ -114,7 +120,7 @@ function workflowRefusal(workflow: ReadinessWorkflow): string | undefined {
 /**
  * Ready needs, for every required pull request that is not merged yet: it is open, on the base it was opened against, not a draft, with CI passing (or none to wait for), a branch
  * that does not conflict and is not behind a base that requires it up to date, and a counted approval; and the task is waiting for the merge with nothing being changed. With
- * self-approval off, the presser must have a linked GitHub account and must not be the only approver of any pull request. With several pull requests a refusal names the repository.
+  * the presser must have a linked GitHub account and, with self-approval off, must not be the only approver of any pull request. With several pull requests a refusal names the repository.
  */
 export function mergeReadiness(input: ReadinessInput): Readiness {
   const refusal = workflowRefusal(input.workflow);
@@ -136,8 +142,9 @@ export function mergeReadiness(input: ReadinessInput): Readiness {
       : undefined;
     if (reason !== undefined) return notReady(several ? M.repository(pr.repositoryId, reason) : reason);
   }
+  // Whoever presses Merge must have a linked GitHub account, whether the org allows self-approval or not (controller ruling 2026-10-26).
+  if (input.presser.githubUserId === undefined) return notReady(M.linkGithub);
   if (!input.allowSelfApproval) {
-    if (input.presser.githubUserId === undefined) return notReady(M.linkGithub);
     for (const pr of open) {
       const approval = input.approvals.get(pullRequestKey(pr));
       if (approval?.approved === true && approval.approvers.length === 1 && approval.approvers[0]!.githubUserId === input.presser.githubUserId) return notReady(M.presserApproved);
@@ -215,7 +222,7 @@ async function readinessFromItems(
   options: { behindRequired?: ReadonlyMap<string, boolean> } = {},
 ): Promise<StoredReadiness> {
   const settings = await readCodeSettings(deps, task.orgId, task.project);
-  const entries = requiredPullRequests(task.workflow);
+  const entries = requiredPullRequests(task.workflow).filter((entry) => entry.state !== "MERGED");
   const itemOf = new Map(items.map((item) => [pullRequestKey(item), item]));
   const requesters = await requesterGithubIds(deps, task.orgId, task);
   const presser = { githubUserId: await githubUserOfMember(deps, task.orgId, presserDeveloperId) };
@@ -318,7 +325,10 @@ const REFUSAL_REASONS = {
 async function mergeableNow(
   deps: ApprovalDependencies, host: CodeMergeHost, task: DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, subject: PullRequestMergeSubject, presserDeveloperId: string,
 ): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[] }> {
-  const entries = requiredPullRequests(task.workflow);
+  // The change lists the pull requests that were unmerged when it was pressed. Those that merged since (a half merge being finished) are not in the way; one that is new is.
+  const required = requiredPullRequests(task.workflow);
+  const entries = required.filter((entry) => entry.state !== "MERGED");
+  const mergedByWorkflow = required.filter((entry) => entry.state === "MERGED").map((entry) => entry.repositoryId);
   const wanted = byRepository(subject.pullRequests);
   if (entries.length !== wanted.length || entries.some((entry, index) => entry.repositoryId !== wanted[index]!.repositoryId || entry.number !== wanted[index]!.number)) {
     throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
@@ -354,8 +364,8 @@ async function mergeableNow(
     if (base !== undefined) bases.set(key, base);
     plan.push({ entry, url, headSha: status.headSha });
   }
-  const mergedBefore = facts.filter((fact) => fact.state === "merged").map((fact) => fact.repositoryId);
-  if (mergedBefore.length === facts.length) return { plan: [], settings, alreadyMerged: true, mergedBefore };
+  const mergedBefore = [...mergedByWorkflow, ...facts.filter((fact) => fact.state === "merged").map((fact) => fact.repositoryId)];
+  if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true, mergedBefore };
   const presser = { githubUserId: await githubUserOfMember(deps, task.orgId, presserDeveloperId) };
   const readiness = mergeReadiness({
     pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task),
@@ -399,16 +409,33 @@ export interface PullRequestMergeSubject {
 }
 
 /** Claims the merge of one pull request on its tracking item: only when nobody holds it, or the holder's claim is older than `MERGE_CLAIM_SECONDS`. The claim bumps the item's version. */
-async function claimMerge(deps: StoreDeps, task: { taskId: string; orgId: OrgId }, pr: { repositoryId: string; number: number }, headSha: string, by: string): Promise<boolean> {
+async function claimMerge(
+  deps: ApprovalDependencies, task: { taskId: string; orgId: OrgId }, pr: { repositoryId: string; number: number; url: string }, headSha: string, by: string,
+  audit: { approvalId: string; method: string; proof?: AuditProof | undefined },
+): Promise<boolean> {
   const now = deps.now();
+  const at = new Date(now).toISOString();
+  // The audit fact commits with the claim, so a claim that was lost leaves none and a claim that was made always leaves one (the appender drops a repeat of the same occurrence).
+  const repository = parseGitHubRepository(pr.url);
+  const fullName = `${repository.owner}/${repository.name}`;
+  const events = await tryAuditEvents(deps, () => [auditPullRequestMergeRequested({
+    orgId: task.orgId, actor: auditActorOf(by), occurredAt: at, occurrence: auditOccurrence(audit.approvalId, pr.repositoryId, String(pr.number)), related: [audit.approvalId],
+    ...(audit.proof === undefined ? {} : { proof: audit.proof }),
+    pullRequestId: auditPullRequestId(fullName, pr.number), number: pr.number, method: audit.method,
+    details: [{ subject: "org", fields: { repository: fullName } }],
+  })]);
   try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: mergeTrackingKey(task.taskId, pr.repositoryId, pr.number),
-      UpdateExpression: "SET mergeClaim = :claim, #version = #version + :one",
-      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND taskId = :task AND (attribute_not_exists(mergeClaim) OR mergeClaim.#at <= :cutoff)",
-      ExpressionAttributeNames: { "#at": "at", "#version": "version" },
-      ExpressionAttributeValues: { ":claim": { headSha, by, at: new Date(now).toISOString() }, ":one": 1, ":org": task.orgId, ":task": task.taskId, ":cutoff": new Date(now - MERGE_CLAIM_SECONDS * 1000).toISOString() },
-    }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Update: {
+        TableName: deps.tableName, Key: mergeTrackingKey(task.taskId, pr.repositoryId, pr.number),
+        UpdateExpression: "SET mergeClaim = :claim, #version = #version + :one",
+        ConditionExpression: "attribute_exists(pk) AND orgId = :org AND taskId = :task AND (attribute_not_exists(mergeClaim) OR mergeClaim.#at <= :cutoff)",
+        ExpressionAttributeNames: { "#at": "at", "#version": "version" },
+        ExpressionAttributeValues: { ":claim": { headSha, by, at }, ":one": 1, ":org": task.orgId, ":task": task.taskId, ":cutoff": new Date(now - MERGE_CLAIM_SECONDS * 1000).toISOString() },
+      } },
+      ...events.flatMap((event) => auditPending(deps, event)),
+    ] }));
+    await flushAuditEvents(deps, events);
     return true;
   } catch (error) {
     if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) return false;
@@ -422,11 +449,13 @@ async function writeAll(deps: StoreDeps, items: ReturnType<typeof codeMilestoneI
   if (items.length > 0) await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
 }
 
-async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHost, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<void> {
+async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHost, record: Extract<AnyApprovalRecord, { kind: "change" }>, decision?: { proof?: AuditProof }): Promise<void> {
   if (record.decidedBy === undefined) throw agentXError("CONFIG_INVALID", "this change has not been decided by anyone, so it can't be applied");
   const subject = record.subject as unknown as PullRequestMergeSubject;
   const task = await host.loadTask(subject.taskId);
-  if (task === undefined || task.orgId !== record.orgId || task.closedAt !== undefined || task.orgId === undefined || !tracksMerge(task.workflow)) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+  if (task === undefined || task.orgId !== record.orgId || task.closedAt !== undefined || task.releasedAt !== undefined || task.orgId === undefined || !tracksMerge(task.workflow)) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+  // A rerun (the sweep tries a handler again) re-checks who pressed: someone who lost the right to merge this task since is not merging it now.
+  if (!await mayStillPress(deps, { orgId: record.orgId, developerId: record.decidedBy }, subject.taskId)) throw agentXError("MERGE_NOT_READY", M.presserLostRight);
   const tracked = task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot };
   const { plan, settings, alreadyMerged, mergedBefore } = await mergeableNow(deps, host, tracked, subject, record.decidedBy);
   if (alreadyMerged) return;
@@ -435,7 +464,7 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
   const merged: string[] = [...mergedBefore];
   for (const step of plan) {
     const { entry, url, headSha } = step;
-    const claimed = await claimMerge(deps, tracked, entry, headSha, record.decidedBy);
+    const claimed = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, record.decidedBy, { approvalId: record.approvalId, method: settings.mergeMethod, proof: decision?.proof });
     // Another handler holds the claim, or tracking has no item for the pull request yet: whichever it is, a later run finds out (the pull request merged, the claim gone stale).
     if (!claimed) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara is already merging this pull request.");
     const result = await host.github.mergePullRequest(url, entry.number, { sha: headSha, method: settings.mergeMethod }, scope);
@@ -488,11 +517,11 @@ export function registerMergeApprovals(): void {
     if (!isChange(record) || record.subject.kind !== MERGE_RULE || caller.orgId !== record.orgId || caller.developerId !== record.requestedBy) return false;
     return mayStillPress(deps, caller, (record.subject).taskId);
   });
-  registerApprovalSubjectHandler(MERGE_RULE, async (deps, record) => {
+  registerApprovalSubjectHandler(MERGE_RULE, async (deps, record, decision) => {
     if (!isChange(record)) return;
     const host = deps.codeMerge;
     if (host === undefined) throw agentXError("RUNTIME_UNAVAILABLE", UNAVAILABLE);
-    await mergeApprovedChange(deps, host, record);
+    await mergeApprovedChange(deps, host, record, decision);
   });
 }
 

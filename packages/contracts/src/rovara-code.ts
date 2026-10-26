@@ -402,7 +402,7 @@ export const CodeSettingsBodySchema = z
     expectedRevision: CountSchema,
     allowSelfApproval: z.boolean().optional(),
     mergeMethod: z.enum(["squash", "merge"]).optional(),
-    codeReviewers: z.array(ReviewerNameSchema).max(CODE_REVIEWERS_MAX).optional(),
+    codeReviewers: z.array(ReviewerNameSchema).max(CODE_REVIEWERS_MAX).refine((names) => new Set(names.map((name) => name.toLowerCase())).size === names.length, "names the same reviewer twice").optional(),
   })
   .strict();
 export type CodeSettingsBody = z.infer<typeof CodeSettingsBodySchema>;
@@ -438,6 +438,7 @@ export const MERGE_NOT_READY_MESSAGES = {
   staleApproval: "The approval was for earlier code. This pull request needs a new approval.",
   behind: (base: string): string => `The branch is behind ${base}, and GitHub needs it up to date. I'm bringing it up to date; press Merge again when that is done.`,
   taskClosed: "This task is closed.",
+  presserLostRight: "You can no longer merge this task, so nothing was merged.",
   notTrackedYet: "I haven't finished reading this pull request from GitHub yet. Try again in a minute.",
   notMerged: (repository: string, reason: string): string => `${repository} didn't merge: ${reason}. Check it on GitHub, then press Merge again.`,
   changedAfterConfirm: "The pull request changed after you confirmed. Check it and press Merge again.",

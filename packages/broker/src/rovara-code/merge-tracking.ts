@@ -6,12 +6,14 @@
 // on changes (`decisionDigest`), so a pass that saw nothing new writes nothing, and the workflow snapshot changes only when a decision changes the workflow.
 //
 // Merge tracking never presses merge: a person always does (owner decision 1). It marks a draft ready and asks for reviewers; fixes and syncs are other tasks' deciders.
+import { createHash } from "node:crypto";
 import { TransactWriteCommand, GetCommand, QueryCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MergeTrackingItemSchema,
   TRACKING_REQUESTS_BASE,
   TRACKING_REQUESTS_PER_EXTRA_PR,
   agentXError,
+  codeMilestoneKey,
   mergeTrackingDecisionDigest,
   mergeTrackingKey,
   sessionEventId,
@@ -631,10 +633,10 @@ async function trackOne(
   if (markedReady) fields.draft = false;
 
   // Plan 6 Task 19: an approval that counts (a person with write access who is a member and not a requester, unless the org allows self-approval, on the head) is announced once,
-  // when the approval is new. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
-  let announce: { login: string } | undefined;
-  const approvalIsNew = fields.approval !== undefined && (prior?.approval === undefined || prior.approval.githubUserId !== fields.approval.githubUserId || prior.approval.commitId !== fields.approval.commitId);
-  if (approvalIsNew && !capped) {
+  // once for each approval of each head. It is judged on every pass, because an approval that did not count can start to (the org allows self-approval, the reviewer is linked to a member), and
+  // the milestone's own key says whether it was said already. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
+  let announce: { login: string; n: number } | undefined;
+  if (fields.approval !== undefined && !capped) {
     const reviewers = latestReviewers(status.reviews);
     const known = new Map<string, RepositoryPermission>();
     for (const reviewer of reviewers) known.set(reviewer.login, await permission(reviewer.login));
@@ -644,8 +646,20 @@ async function trackOne(
       requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       allowSelfApproval: settings.allowSelfApproval,
     });
-    if (counted.approved) announce = { login: counted.by.login };
+    if (counted.approved) {
+      const n = Number.parseInt(createHash("sha256").update(`${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${counted.commitId}\n${counted.by.githubUserId}`).digest("hex").slice(0, 6), 16) % 1_000_000;
+      const said = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: codeMilestoneKey(task.taskId, "approved", n), ConsistentRead: true })) as { Item?: unknown };
+      if (said.Item === undefined) announce = { login: counted.by.login, n };
+    }
   }
+  const approvedItems = (stamp: string): TransactItem[] => {
+    if (announce === undefined) return [];
+    const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId)}` : ".";
+    return codeMilestoneItems({ tableName: deps.tableName }, {
+      kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: stamp,
+      text: `Approved by ${inertLine(announce.login)}. Ready to merge${where}`, pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
+    }, announce.n, { definitionVersion: task.workflow.definitionVersion });
+  };
 
   for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
     const current = attempt === 0 ? prior : trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
@@ -673,6 +687,15 @@ async function trackOne(
     });
     if (decision.slot !== "none") action = decision;
     if (unchanged && action === undefined) {
+      // Nothing GitHub said changed, but an approval that stood unannounced now counts: the milestone is all there is to write.
+      if (announce !== undefined) {
+        try {
+          await deps.documentClient.send(new TransactWriteCommand({ TransactItems: approvedItems(stamp) }));
+          await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
+        } catch (error) {
+          if (!isCancelled(error)) throw error;
+        }
+      }
       if (capped) throw new TrackingRequestCapError();
       return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
     }
@@ -698,14 +721,7 @@ async function trackOne(
         pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
       }, index, { definitionVersion: task.workflow.definitionVersion }));
     }
-    if (announce !== undefined) {
-      const index = Math.max(0, (task.workflow.pullRequests ?? []).findIndex((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number));
-      const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId)}` : ".";
-      items.push(...codeMilestoneItems({ tableName: deps.tableName }, {
-        kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: stamp,
-        text: `Approved by ${inertLine(announce.login)}. Ready to merge${where}`, pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
-      }, index * 100_000 + nextItem.version, { definitionVersion: task.workflow.definitionVersion }));
-    }
+    items.push(...approvedItems(stamp));
     if (flipped && task.sessionId !== undefined) {
       items.push(sessionEventItem({ tableName: deps.tableName }, { orgId: task.orgId, sessionId: task.sessionId }, {
         eventId: sessionEventId("merge_tracking", `${task.taskId}\n${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${String(nextItem.version)}`),

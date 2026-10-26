@@ -151,6 +151,14 @@ export function auditPullRequestMerged(input: AuditBuilderBase & { pullRequestId
   return build("pull_request.merged", input, { kind: "pull_request", id: input.pullRequestId }, { number: input.number });
 }
 
+/**
+ * `occurrence`: `auditOccurrence(approvalId, repositoryId, number)`. Written in the transaction that claims a pull request's merge, so a claim that was lost leaves nothing. The actor is the person who
+ * pressed Merge and confirmed it; `related` names the approval. The repository goes in `details`.
+ */
+export function auditPullRequestMergeRequested(input: AuditBuilderBase & { pullRequestId: string; number: number; method: string }): AuditEventInput {
+  return build("pull_request.merge_requested", input, { kind: "pull_request", id: input.pullRequestId }, { number: input.number, method: input.method });
+}
+
 // Members ----------------------------------------------------------------------------------------------------------------
 
 /** `occurrence`: the invite's token hash, or `auditOccurrence(developerId, joinedAt)` for a join that is not an invite (an org made with its owner, a single-org install's sign-in). */
@@ -265,6 +273,14 @@ export function auditRolledBack(input: AuditBuilderBase & { scope: "agent" | "ch
 /** `occurrence`: the store's `EVENT#` sort key. */
 export function auditBuiltinAdopted(input: AuditBuilderBase & { agentId: string; version: number }): AuditEventInput {
   return build("builtin.adopted", input, { kind: "agent", id: input.agentId }, { version: input.version });
+}
+
+/**
+ * `occurrence`: `auditOccurrence(project, new revision)`. A project's code settings are one document that commits once per revision, whether a maintainer's request or an administrator's
+ * confirmation wrote it. `changed` is the comma-joined fixed names of what changed, the rest the settings as they now are (the reviewers as a count). The project is a name-keyed target, pseudonymized by the appender.
+ */
+export function auditCodeSettingsChanged(input: AuditBuilderBase & { projectName: string; revision: number; changed: string; selfApproval: boolean; mergeMethod: string; reviewers: number }): AuditEventInput {
+  return build("code_settings.changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, changed: input.changed, selfApproval: input.selfApproval, mergeMethod: input.mergeMethod, reviewers: input.reviewers });
 }
 
 // Connections, connectors, guardrails ------------------------------------------------------------------------------------
