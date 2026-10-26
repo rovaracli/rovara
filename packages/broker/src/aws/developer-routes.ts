@@ -1491,8 +1491,13 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
       const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: DeveloperTaskRecord };
       const task = item.Item;
       if (task === undefined || task.orgId !== who.orgId || task.sessionId === undefined || task.workflow === undefined || workflowAnswer(task.workflow) === undefined) return false;
-      await requireSessionLevel(sessions, who, task.sessionId, "view", "follow it up");
-      return true;
+      // Seen by the caller now (a person who cannot see the session reads it as missing): any refusal is a plain "no".
+      try {
+        await requireSessionLevel(sessions, who, task.sessionId, "view", "follow it up");
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
 }

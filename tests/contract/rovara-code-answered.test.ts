@@ -777,6 +777,20 @@ describe("retryOf is checked, not trusted", () => {
     expect(await refused(start(ORG_B, OMAR.developerId, intent(run.taskId)))).toEqual({ code: "CONFIG_INVALID", message: FOLLOW_UP_UNAVAILABLE_MESSAGE });
   });
 
+  it("the check itself: true for the owner of an answered task, false for a person who cannot see its session or is not in its org, false for one that is not answered", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const open = await t.understanding();
+    const { createCodeIntentDependencies } = await import("../../packages/broker/src/aws/broker.js");
+    const callerOf = (who: Developer, orgId: string) => ({ developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, orgId: orgId as never, orgRole: "member" as const });
+    const mine = createCodeIntentDependencies(t.brokerInput as never, callerOf(MAYA, TEST_ORG))!;
+    expect(await mine.retryable!(callerOf(MAYA, TEST_ORG), run.taskId)).toBe(true);
+    expect(await mine.retryable!(callerOf(MAYA, TEST_ORG), open.taskId)).toBe(false);
+    // Signed in but not a member of the org, so the session reads as missing to them.
+    expect(await mine.retryable!(callerOf(MIA, TEST_ORG), run.taskId)).toBe(false);
+    expect(await mine.retryable!(callerOf(MAYA, ORG_B), run.taskId)).toBe(false);
+  });
+
   it("only an app intent can follow a task: the schema refuses retryOf from any other source", () => {
     const base = { requestId: randomUUID(), project: "payments", input: { text: "x" }, retryOf: randomUUID() };
     expect(CodeIntentRequestSchema.safeParse({ ...base, source: "app" }).success).toBe(true);

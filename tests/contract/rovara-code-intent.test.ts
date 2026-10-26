@@ -444,6 +444,10 @@ describe("a deployment where agents are not set up", () => {
     expect(h.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
     const refused = await refusal(createCodeIntentStarter(h.brokerInput as never)(TEST_ORG, MAYA.developerId, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", path: "QUICK" }));
     expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+    // Without sessions behind it the check itself says no.
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const dependencies = createCodeIntentDependencies(h.brokerInput as never, caller);
+    expect(await dependencies?.retryable?.(caller, TASK_ID_A)).toBe(false);
   });
 
   /** The dependencies of a deployment with no agents, with a plain start that records what it was asked. */
