@@ -466,6 +466,24 @@ describe("a deployment where agents are not set up", () => {
     expect(bodies).toEqual([expect.objectContaining({ project: "payments", instructions: "Fix it", workflow: true, workflowPath: "FULL", client: "app" })]);
   });
 
+  it("a follow-up to an answered task needs agents: without them it says so plainly, and starts nothing", async () => {
+    const { bodies, dependencies, caller } = plain();
+    const refused = await refusal(startCodeIntent(dependencies, caller, request({ retryOf: TASK_ID_A })));
+    expect(refused).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "Starting the change isn't available right now." });
+    expect(bodies).toEqual([]);
+  });
+
+  it("a follow-up is started only when the deployment confirms the task it names: a missing check, a refusal and a failing check all stop it", async () => {
+    const started: unknown[] = [];
+    const base = { starter: {} as never, origin: "https://cell.example.com", startPlainTask: async () => { throw new Error("not used"); }, ownedTask: async () => { throw new Error("not read"); } };
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    for (const retryable of [undefined, async () => false, async () => { throw new Error("down"); }]) {
+      const refused = await refusal(startCodeIntent({ ...base, ...(retryable === undefined ? {} : { retryable }) }, caller, request({ retryOf: TASK_ID_A })));
+      expect(refused, String(retryable)).toMatchObject({ code: "CONFIG_INVALID", message: "That task can't be followed up." });
+    }
+    expect(started).toEqual([]);
+  });
+
   it("refuses what needs the payer rules or sessions, and context it would drop, without starting anything", async () => {
     const { bodies, dependencies, caller } = plain();
     const linear = await refusal(startCodeIntent(dependencies, caller, request({ source: "linear", binding: ISSUE, assignedBy: { bot: true } })));

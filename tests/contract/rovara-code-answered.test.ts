@@ -10,7 +10,8 @@ import { taskPageStage, taskPageStep, workflowEndOutcome, workflowTaskFinished }
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { CHANGE_ANYWAY_RULE, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
 import { answeredMilestoneItems } from "../../packages/broker/src/rovara-code/answered.js";
-import { NOT_ANSWERED_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
+import { CodeIntentRequestSchema } from "../../packages/contracts/src/rovara-code-intent.js";
+import { FOLLOW_UP_UNAVAILABLE_MESSAGE, NOT_ANSWERED_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
@@ -355,8 +356,8 @@ async function world(options: { live?: boolean; orgs?: boolean } = {}) {
     return h.finish(run.workspaceId, run.operationId, "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
   };
   /** A task whose Understand answered. */
-  const answeredTask = async (assessment: unknown = answerAssessment(), body: Record<string, unknown> = {}, text?: string) => {
-    const run = await understanding(body, text);
+  const answeredTask = async (assessment: unknown = answerAssessment(), body: Record<string, unknown> = {}, text?: string, who: Developer = MAYA) => {
+    const run = await understanding(body, text, who);
     await finishUnderstand(run, assessment);
     return run;
   };
@@ -627,22 +628,11 @@ describe("Make a change anyway after an answer", () => {
     expect(understandPrompt({ requestText: "x", intent: undefined, notes: "", changeAnyway: true, forPlan: true })).not.toContain(CHANGE_ANYWAY_RULE);
   });
 
-  it("a person with \"can use\" on the session can ask, and pays; a viewer of the session or of the project cannot, and starts nothing", async () => {
+  it("a person with \"can use\" on the session can ask, and pays", async () => {
     const t = await world();
     await t.member(ARJUN, "developer");
-    await t.member(MAX, "viewer");
-    await t.member(MIA, "developer");
     const run = await t.answeredTask();
     await t.share(run.sessionId, ARJUN, "use");
-    await t.share(run.sessionId, MAX, "use");
-    await t.share(run.sessionId, MIA, "view");
-    const before = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
-    for (const who of [MAX, MIA]) {
-      const refused = await t.changeAnyway(who, run.sessionId);
-      expect(refused.status, who.name).toBeGreaterThanOrEqual(400);
-      expect(["SESSION_LEVEL_REQUIRED", "PROJECT_ACCESS_DENIED"]).toContain(errorOf(refused).code);
-    }
-    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK").length).toBe(before);
     const allowed = await t.changeAnyway(ARJUN, run.sessionId);
     expect(allowed.status, JSON.stringify(allowed.body)).toBe(202);
     const task = t.meta((allowed.body.task as { taskId: string }).taskId);
@@ -650,16 +640,69 @@ describe("Make a change anyway after an answer", () => {
     expect(task.payer).toMatchObject({ kind: "member", developerId: ARJUN.developerId });
   });
 
-  it("a person who lost their project role is refused by the start itself with PROJECT_ACCESS_DENIED", async () => {
+  it("the session's own level gate refuses a viewer of the project and a person who may only view, each with SESSION_LEVEL_REQUIRED, and starts nothing", async () => {
+    const t = await world();
+    await t.member(MAX, "viewer");
+    await t.member(MIA, "developer");
+    const run = await t.answeredTask();
+    await t.share(run.sessionId, MAX, "use");
+    await t.share(run.sessionId, MIA, "view");
+    const before = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    for (const who of [MAX, MIA]) {
+      const refused = await t.changeAnyway(who, run.sessionId);
+      expect(refused.status, who.name).toBe(403);
+      expect(errorOf(refused).code, who.name).toBe("SESSION_LEVEL_REQUIRED");
+    }
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK").length).toBe(before);
+  });
+
+  it("startTask's own check shows on its own: the session's owner passes the level gate, and one who is now only a viewer of the project is refused PROJECT_ACCESS_DENIED, with nothing written", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    await t.member(MAYA, "viewer");
+    const before = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    const refused = await t.changeAnyway(MAYA, run.sessionId);
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused).code).toBe("PROJECT_ACCESS_DENIED");
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK").length).toBe(before);
+  });
+
+  it("the same for an owner whose project role was removed: PROJECT_ACCESS_DENIED from the start, nothing written", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    await t.member(MAYA, undefined);
+    t.db.delete(projectMemberKey(TEST_ORG, MAYA.developerId, "payments").pk, projectMemberKey(TEST_ORG, MAYA.developerId, "payments").sk);
+    const refused = await t.changeAnyway(MAYA, run.sessionId);
+    expect(errorOf(refused).code).toBe("PROJECT_ACCESS_DENIED");
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.retryOfTaskId === run.taskId)).toEqual([]);
+  });
+
+  it("a person with \"can use\" who lost their project role is refused too, with nothing written", async () => {
     const t = await world();
     await t.member(ARJUN, "developer");
     const run = await t.answeredTask();
     await t.share(run.sessionId, ARJUN, "use");
     t.db.delete(projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").pk, projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").sk);
     const refused = await t.changeAnyway(ARJUN, run.sessionId);
-    expect(refused.status).toBeGreaterThanOrEqual(400);
-    expect(["PROJECT_ACCESS_DENIED", "NOT_FOUND", "SESSION_LEVEL_REQUIRED"]).toContain(errorOf(refused).code);
+    expect(errorOf(refused).code).toBe("SESSION_LEVEL_REQUIRED");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.retryOfTaskId === run.taskId)).toEqual([]);
+  });
+
+  it("does not force the old task's default path: when the request named none, Understand chooses again (and may choose Full); when the request named one, it is kept", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    expect(t.meta(run.taskId).workflow.intent).toMatchObject({ pathFrom: "understand" });
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", intent: { pathFrom: "understand" } });
+    const workspaceId = t.meta(taskId).workspaceId;
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await t.finishUnderstand({ workspaceId, operationId: String(t.operationOf(workspaceId, "UNDERSTAND")!.id) }, { ...ready(), path: "FULL" });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", path: "FULL", reviewPhase: "REQUIREMENTS" });
+    // A path the person named for the first request is the one they asked for, and it stays.
+    const named = await t.answeredTask(answerAssessment(), { path: "QUICK" });
+    const again = await t.changeAnyway(MAYA, named.sessionId);
+    expect(t.meta((again.body.task as { taskId: string }).taskId).workflow).toMatchObject({ path: "QUICK", intent: { pathFrom: "request" } });
   });
 
   it("is refused for a session that did not end Answered, for another org's or a missing session, and carries nothing from the body but the request id", async () => {
@@ -690,6 +733,54 @@ describe("a build that changes nothing after approval still blocks", () => {
     await t.finish(run.workspaceId, String(build.id), "FAILED", { error: WORKFLOW_NO_CODE_CHANGE_MESSAGE });
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
     expect(t.meta(run.taskId).workflow.outcome).not.toBe("ANSWERED");
+  });
+});
+
+describe("retryOf is checked, not trusted", () => {
+  const starter = async (t: Awaited<ReturnType<typeof world>>) => {
+    const { createCodeIntentStarter } = await import("../../packages/broker/src/aws/broker.js");
+    return createCodeIntentStarter(t.brokerInput as never);
+  };
+  const intent = (retryOf: string) => ({ requestId: randomUUID(), project: "payments", input: { text: "Make it so" }, source: "app", retryOf });
+  const refused = async (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message }));
+
+  it("accepts the task an answered, visible session of the caller's org belongs to", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const start = await starter(t);
+    const result = await start(TEST_ORG, MAYA.developerId, intent(run.taskId)) as { task: { taskId: string } };
+    expect(t.meta(result.task.taskId).retryOfTaskId).toBe(run.taskId);
+  });
+
+  it("refuses, with the one plain message, a task that does not exist, one that has not ended Answered, one that ended another way, and another org's answered task; nothing is started", async () => {
+    const t = await world({ orgs: true });
+    const open = await t.understanding();
+    const rejected = await t.noChangePlan();
+    await t.decide(MAYA, rejected.taskId, { decision: "REJECT", reason: "No.", artifactDigest: rejected.digest });
+    expect(t.meta(rejected.taskId).workflow).toMatchObject({ outcome: "REJECTED" });
+    // An answered task of another org: a copy of one, filed under org B.
+    const mine = await t.answeredTask();
+    const theirs = { taskId: randomUUID() };
+    t.db.set({ ...(t.db.get(`DEVTASK#${mine.taskId}`, "META") as Record<string, unknown>), pk: `DEVTASK#${theirs.taskId}`, taskId: theirs.taskId, orgId: ORG_B });
+    const start = await starter(t);
+    const before = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    for (const id of [randomUUID(), open.taskId, rejected.taskId, theirs.taskId]) {
+      expect(await refused(start(TEST_ORG, MAYA.developerId, intent(id))), id).toEqual({ code: "CONFIG_INVALID", message: FOLLOW_UP_UNAVAILABLE_MESSAGE });
+    }
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK").length).toBe(before);
+  });
+
+  it("refuses a task of another org for a caller in this one's neighbour org", async () => {
+    const t = await world({ orgs: true });
+    const run = await t.answeredTask();
+    const start = await starter(t);
+    expect(await refused(start(ORG_B, OMAR.developerId, intent(run.taskId)))).toEqual({ code: "CONFIG_INVALID", message: FOLLOW_UP_UNAVAILABLE_MESSAGE });
+  });
+
+  it("only an app intent can follow a task: the schema refuses retryOf from any other source", () => {
+    const base = { requestId: randomUUID(), project: "payments", input: { text: "x" }, retryOf: randomUUID() };
+    expect(CodeIntentRequestSchema.safeParse({ ...base, source: "app" }).success).toBe(true);
+    for (const source of ["cli", "mcp", "offer"]) expect(CodeIntentRequestSchema.safeParse({ ...base, source }).success, source).toBe(false);
   });
 });
 
