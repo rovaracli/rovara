@@ -738,7 +738,7 @@ export async function createWorkflowE2E(options: {
     const remoteHead = github.pushes.get(payload.headBranch)?.commit;
     if (remoteHead !== payload.expectedHeadCommit) throw new Error(`STALE_FENCE: pull request head changed outside AgentX`);
     await git(["merge-base", "--is-ancestor", remoteHead, "HEAD"]);
-    await git(["merge-base", "--is-ancestor", payload.workflowBaseCommit!, "HEAD"]);
+    await git(["merge-base", "--is-ancestor", payload.workflowBaseCommit, "HEAD"]);
     // A conflict round's fix is a merge commit of the base commit its merge was tried with (Plan 6 Task 17): the head first, that commit second.
     const mergedBase = payload.workflowMergeBase;
     const commit = await git(["commit-tree", tree, "-p", remoteHead, ...(mergedBase === undefined ? [] : ["-p", mergedBase]), "-m", mergedBase === undefined ? "AgentX: address PR feedback" : "Rovara: resolve conflict with the base branch"]);

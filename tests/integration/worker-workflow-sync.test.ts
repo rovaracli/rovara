@@ -197,7 +197,7 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
     ...fixture.invocation,
     payload: { ...fixture.invocation.payload, action: "append", workflowCandidateTreeSha: tree, workflowBaseCommit: fixture.baseCommit, workflowFix: { source: "conflict" },
       ...(mergeBase === undefined ? {} : { workflowMergeBase: mergeBase }) },
-  }) as Maintain;
+  });
 
   it("is a commit of exactly the reviewed tree with the old head first and the base commit second, a fast-forward of the branch", async () => {
     const { fixture, base, tree } = await resolved();
@@ -283,7 +283,7 @@ interface Fixture {
 
 /** The merge of `baseCommit`, as the broker would ask for it. */
 function syncOf(fixture: Fixture, baseCommit: string): Maintain {
-  return { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync", workflowSync: { baseCommit, expectedHeadCommit: fixture.pullRequestHead } } } as Maintain;
+  return { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync", workflowSync: { baseCommit, expectedHeadCommit: fixture.pullRequestHead } } };
 }
 
 /** One more commit on the base branch (a new file), pushed; its sha. */

@@ -416,7 +416,7 @@ describe("the sync slot of merge tracking", () => {
 describe("the agent's autonomy", () => {
   it("with suggest, Rovara merges nothing on its own: not a behind branch, not a conflicted one; it still stops when the conflict rounds are used up", async () => {
     installBranchSyncDeciders();
-    for (const overrides of [{}, { mergeable: false, mergeableState: "dirty" as const, behindBy: undefined }]) {
+    for (const overrides of [{}, { mergeable: false, mergeableState: "dirty" as const }]) {
       const w = syncWorld({ overrides });
       (w.deps as { autonomy?: unknown }).autonomy = () => "suggest";
       await trackPullRequest(w.deps, TASK_ID);
@@ -424,7 +424,7 @@ describe("the agent's autonomy", () => {
       expect(dispatchRows(w)).toEqual([]);
       expect(trackingOf(w).syncs.count).toBe(0);
     }
-    const used = syncWorld({ workflow: waiting({ fixRounds: { ci: 0, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: 0 } }), overrides: { mergeable: false, mergeableState: "dirty", behindBy: undefined } });
+    const used = syncWorld({ workflow: waiting({ fixRounds: { ci: 0, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: 0 } }), overrides: { mergeable: false, mergeableState: "dirty" } });
     (used.deps as { autonomy?: unknown }).autonomy = () => "suggest";
     await trackPullRequest(used.deps, TASK_ID);
     expect(workflowOf(used)).toMatchObject({ state: "BLOCKED", blockReason: branchConflictStopMessage("main") });
@@ -438,7 +438,7 @@ describe("the agent's autonomy", () => {
 });
 
 describe("the conflict slot of merge tracking", () => {
-  const conflictedStatus = { mergeable: false, mergeableState: "dirty" as const, behindBy: undefined };
+  const conflictedStatus = { mergeable: false, mergeableState: "dirty" as const };
 
   it("tries the merge on a conflicted branch whether or not it is approved: the workflow queues it for a conflict", async () => {
     installBranchSyncDeciders();
@@ -480,7 +480,7 @@ describe("the conflict slot of merge tracking", () => {
   it("a conflict comes before failing CI, and CI before a sync", async () => {
     installCiFixDecider();
     installBranchSyncDeciders();
-    const both = syncWorld({ overrides: { mergeable: false, mergeableState: "dirty", behindBy: undefined, checks: [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }] } });
+    const both = syncWorld({ overrides: { mergeable: false, mergeableState: "dirty", checks: [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }] } });
     await trackPullRequest(both.deps, TASK_ID);
     expect(workflowOf(both)).toMatchObject({ state: "READY", branchSync: { reason: "conflict" } });
     const ciAndBehind = syncWorld({ overrides: { checks: [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }] } });
@@ -495,15 +495,15 @@ describe("the deciders are the slots'", () => {
     installBranchSyncDeciders();
     installBranchSyncDeciders();
     const w = syncWorld();
-    expect(await conflictDecider({ item: { ...trackingBase(), branch: "behind" }, workflow: waiting(), settings: { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: [], revision: 0 }, autonomy: "prepare", now: NOW })).toBeUndefined();
-    expect(await syncDecider({ item: { ...trackingBase(), branch: "behind" }, workflow: waiting(), settings: { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: [], revision: 0 }, autonomy: "prepare", now: NOW })).toBeUndefined();
+    expect(conflictDecider({ item: { ...trackingBase(), branch: "behind" }, workflow: waiting(), settings: { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: [], revision: 0 }, autonomy: "prepare", now: NOW })).toBeUndefined();
+    expect(syncDecider({ item: { ...trackingBase(), branch: "behind" }, workflow: waiting(), settings: { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: [], revision: 0 }, autonomy: "prepare", now: NOW })).toBeUndefined();
     expect(w).toBeDefined();
   });
 });
 
 function trackingBase(): MergeTrackingItem {
   return {
-    orgId: "org_aaaaaaaaaaaaaaaaaaaa" as never, taskId: TASK_ID, repositoryId: "payments", number: 7, version: 1, headSha: HEAD_A, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "all_checks",
+    orgId: "org_aaaaaaaaaaaaaaaaaaaa", taskId: TASK_ID, repositoryId: "payments", number: 7, version: 1, headSha: HEAD_A, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "all_checks",
     checksEverSeen: true, failingChecks: [], review: "approved", approval: { githubUserId: "1", login: "maint", commitId: HEAD_A }, branch: "behind", headByRovara: true, nudges: { count: 0 },
     syncs: { day: "2026-10-25", count: 0 }, decisionDigest: "d".repeat(64), observedAt: at,
   };
@@ -521,7 +521,7 @@ describe("what a finished merge of the base is", () => {
   const plan = (input: { workflow?: WorkflowSnapshot; status?: "SUCCEEDED" | "FAILED"; error?: string; result?: Record<string, unknown> | undefined; github?: ReturnType<typeof github> | undefined; baseBranch?: string }) =>
     planBranchSyncOutcome({
       workflow: input.workflow ?? syncing(), binding, terminalStatus: input.status ?? "SUCCEEDED", ...(input.error === undefined ? {} : { terminalError: input.error }),
-      result: "result" in input ? input.result as never : result() as never, github: "github" in input ? input.github : github(), baseBranch: input.baseBranch ?? "main",
+      result: "result" in input ? input.result as never : result(), github: "github" in input ? input.github : github(), baseBranch: input.baseBranch ?? "main",
       recordedBranch: "agentx/00000000-0000-4000-8000-000000000001", now: at,
     });
 
