@@ -3,13 +3,14 @@
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
 import {
-  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError, type PullRequestReview,
+  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError,
 } from "../../packages/contracts/src/index.js";
+import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { humanApprovalOf, mergeReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
-import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { ARJUN, MAX, OLA, ORG_A, PRIYA, ZED } from "../support/agent-session-world.js";
+import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { ARJUN, MAX, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent-session-world.js";
 import { GH, HEAD_A, HEAD_B, HEAD_C, LOGIN, OLD_HEAD, mergeWorld, pullStatus, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
 // ---- whose approval counts
@@ -171,7 +172,7 @@ describe("mergeReadiness", () => {
       { stage: "WAIT_FOR_MERGE", state: "WAITING", fixSource: "ci" },
       { stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "PENDING" } },
     ] as const) {
-      expect(readiness({ workflow: workflow as never })).toEqual(notReady(M.changing));
+      expect(readiness({ workflow: workflow })).toEqual(notReady(M.changing));
     }
   });
 
@@ -183,8 +184,8 @@ describe("mergeReadiness", () => {
   });
 
   it("is not ready for a closed or merged task", () => {
-    expect(readiness({ workflow: { stage: "CLOSED", state: "SUCCEEDED" } as never })).toEqual(notReady(M.taskClosed));
-    expect(readiness({ workflow: { stage: "MERGED", state: "SUCCEEDED" } as never })).toEqual(notReady(M.taskClosed));
+    expect(readiness({ workflow: { stage: "CLOSED", state: "SUCCEEDED" } })).toEqual(notReady(M.taskClosed));
+    expect(readiness({ workflow: { stage: "MERGED", state: "SUCCEEDED" } })).toEqual(notReady(M.taskClosed));
   });
 
   it("skips a pull request that is already merged, and is not ready when none is left to merge", () => {
@@ -321,6 +322,16 @@ describe("pressing Merge", () => {
     expect((await press(calm)).status).toBe(202);
   });
 
+  it("answers APPROVAL_CLOSED to a press repeated after its change was decided, and creates nothing more", async () => {
+    const w = await ready();
+    const requestId = w.requestId();
+    const first = NeedsConfirmationSchema.parse((await press(w, PRIYA, requestId)).body);
+    const approvalId = w.approvalIdOf(first.confirmUrl);
+    await w.decide(approvalId, await w.browser(PRIYA, approvalId));
+    expect(await codeOf(press(w, PRIYA, requestId))).toMatchObject({ code: "APPROVAL_CLOSED" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(1);
+  });
+
   it("shows the page of the pending change only to its presser, in words", async () => {
     const w = await ready();
     const body = NeedsConfirmationSchema.parse((await press(w)).body);
@@ -379,6 +390,39 @@ describe("confirming a merge", () => {
     await expect(w.kind.decide({ orgId: ORG_A, developerId: PRIYA, approvalId }, "approve", { kind: "none" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(w.github.mergeCalls).toEqual([]);
     expect((await w.approvalOf(url)).status).toBe("PENDING");
+  });
+
+  it("does not let the presser decide once they can no longer press Merge on the task (read now, not when they pressed)", async () => {
+    const w = await ready();
+    const { approvalId } = await pressed(w);
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: PRIYA, approvalId })).toMatchObject({ status: "open" });
+    // Someone else took the task over: Priya is a contributor with no hold on it now.
+    const task = w.db.get(taskKey(w.taskId))!;
+    w.db.set({ ...task, currentOwner: { developerId: ARJUN, name: "Arjun", provider: "oidc", since: "2026-10-22T08:30:00.000Z" } });
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: PRIYA, approvalId })).toMatchObject({ status: "forbidden" });
+    const posted = await w.decide(approvalId, await w.browser(PRIYA, approvalId));
+    expect(posted.statusCode).toBe(403);
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("merges only the pull request Rovara linked to this task: a link that names another task stops everything", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    const key = githubWorkflowPullRequestKey("acme/payments", 7);
+    w.db.set({ ...w.db.get(key)!, taskId: "00000000-0000-4000-8000-000000000001" });
+    const { record } = await confirm(w, PRIYA, started);
+    expect(record).toMatchObject({ status: "APPROVED_FAILED", failure: M.changedAfterConfirm });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("refuses a change whose task belongs to another org", async () => {
+    const w = await ready();
+    const { approvalId } = await pressed(w);
+    const record = await getAnyApproval(w.deps, ORG_A, approvalId);
+    const task = w.db.get(taskKey(w.taskId))!;
+    w.db.set({ ...task, orgId: ORG_B });
+    await expect(getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
+    expect(w.github.mergeCalls).toEqual([]);
   });
 
   it("does not let anyone but the presser decide, a maintainer included", async () => {
@@ -483,9 +527,9 @@ describe("confirming a merge", () => {
     const { approvalId } = await pressed(w);
     const record = await getAnyApproval(w.deps, ORG_A, approvalId);
     const handler = getApprovalSubjectHandler("pull_request_merge")!;
-    await handler(w.deps, { ...record!, decidedBy: PRIYA } as never);
+    await handler(w.deps, { ...record!, decidedBy: PRIYA });
     // The claim is still fresh and the pull request merged: the rerun finds it merged and merges nothing again.
-    await handler(w.deps, { ...record!, decidedBy: PRIYA } as never);
+    await handler(w.deps, { ...record!, decidedBy: PRIYA });
     expect(w.github.mergeCalls).toHaveLength(1);
   });
 
@@ -496,10 +540,10 @@ describe("confirming a merge", () => {
     const handler = getApprovalSubjectHandler("pull_request_merge")!;
     const claim = { headSha: HEAD_A, by: ARJUN, at: new Date(w.clock.now - 60_000).toISOString() };
     w.db.set({ ...w.trackingOf({ repositoryId: "payments", number: 7 })!, mergeClaim: claim });
-    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(w.github.mergeCalls).toEqual([]);
     w.clock.now += 61_000;
-    await handler(w.deps, { ...record!, decidedBy: PRIYA } as never);
+    await handler(w.deps, { ...record!, decidedBy: PRIYA });
     expect(w.github.mergeCalls).toHaveLength(1);
     expect(w.trackingOf({ repositoryId: "payments", number: 7 })?.mergeClaim).toMatchObject({ by: PRIYA });
   });
@@ -562,8 +606,8 @@ describe("confirming a merge", () => {
 describe("the task view's merge field", () => {
   it("is not shown to a client that does not ask for the version 2 view", () => {
     const view = { taskId: "t", title: "x", project: "web", status: "RUNNING", merge: { ready: false, message: "x" } } as never;
-    expect("merge" in taskViewForClient(view, {} as never)).toBe(false);
-    expect("merge" in taskViewForClient(view, { "x-agentx-task-view": "2" } as never)).toBe(true);
+    expect("merge" in taskViewForClient(view, {})).toBe(false);
+    expect("merge" in taskViewForClient(view, { "x-agentx-task-view": "2" })).toBe(true);
   });
 
   it("says whether the viewer pressing Merge now would be allowed, with the viewer as the presser", async () => {

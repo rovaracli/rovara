@@ -21,7 +21,6 @@ import {
   type CodeSettings,
   type MergeTrackingItem,
   type OrgId,
-  type SessionId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { type GitHubTokenScope, parseGitHubRepository, GithubMergeRateLimitError } from "../github-app.js";
@@ -701,9 +700,9 @@ async function trackOne(
     }
     if (announce !== undefined) {
       const index = Math.max(0, (task.workflow.pullRequests ?? []).findIndex((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number));
-      const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId as SessionId)}` : ".";
+      const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId)}` : ".";
       items.push(...codeMilestoneItems({ tableName: deps.tableName }, {
-        kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId as SessionId }), at: stamp,
+        kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: stamp,
         text: `Approved by ${inertLine(announce.login)}. Ready to merge${where}`, pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
       }, index * 100_000 + nextItem.version, { definitionVersion: task.workflow.definitionVersion }));
     }

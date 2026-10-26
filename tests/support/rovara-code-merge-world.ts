@@ -4,15 +4,16 @@
 // a person does.
 import { createHash, randomUUID } from "node:crypto";
 import {
-  agentXError, mergeTrackingDecisionDigest, mergeTrackingKey, type CodeSettings, type MergeTrackingItem, type OrgId, type PullRequestStatus,
+  agentXError, mergeTrackingDecisionDigest, mergeTrackingKey, type CodeSettings, type MergeTrackingItem, type OrgId,
 } from "../../packages/contracts/src/index.js";
+import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getAnyApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { registerAgentApprovals } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import type { DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
-import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
+import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import type { SessionShareDependencies } from "../../packages/broker/src/agent-sessions/shares.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
@@ -21,7 +22,7 @@ import { registerMergeApprovals } from "../../packages/broker/src/rovara-code/me
 import { registerCodeSettingsApprovals } from "../../packages/broker/src/rovara-code/code-settings.js";
 import type { MergePullRequestResult } from "../../packages/broker/src/github-app.js";
 import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { ARJUN, CELL, MAX, OLA, ORG_A, PRIYA, ZED, sessionWorld } from "./agent-session-world.js";
+import { ARJUN, CELL, MAX, OLA, ORG_A, PRIYA, sessionWorld } from "./agent-session-world.js";
 
 export const HEAD_A = "a".repeat(40);
 export const HEAD_B = "b".repeat(40);
@@ -86,7 +87,37 @@ export interface MergeWorldOptions {
   linked?: Array<keyof typeof GH>;
 }
 
-export function mergeWorld(options: MergeWorldOptions = {}) {
+type PullRequestRef = { repositoryId: string; number: number };
+/** What `mergeWorld` adds to Plan 5's session world (named, so the world's type does not drag in modules by their package paths). */
+export interface MergeWorldExtras {
+  sessionId: string;
+  taskId: string;
+  orgId: OrgId;
+  github: MergeGithub;
+  host: CodeMergeHost;
+  deps: ApprovalDependencies;
+  kind: ReturnType<typeof approvalDecideKind>;
+  context: (kinds?: DecideKinds) => DecideRequestContext;
+  browser: (developerId: string, approvalId: string, agoSeconds?: number) => Promise<string>;
+  decide: (approvalId: string, cookie: string, decision?: "approve" | "decline") => ReturnType<typeof routeDecidePage>;
+  approvalOf: (url: string) => Promise<Awaited<ReturnType<typeof getAnyApproval>> & object>;
+  approvalIdOf: (url: string) => string;
+  requestId: () => string;
+  prs: PullRequestRef[];
+  seedTracking: (overrides?: Partial<MergeTrackingItem> | ((pr: PullRequestRef) => Partial<MergeTrackingItem>)) => void;
+  trackingOf: (pr: PullRequestRef) => (MergeTrackingItem & Record<string, unknown>) | undefined;
+  trackingItem: (pr: PullRequestRef, overrides?: Partial<MergeTrackingItem>) => MergeTrackingItem;
+  settings: (change?: Partial<CodeSettings>) => void;
+  linkAll: () => Promise<void>;
+  setWorkflow: (change: Record<string, unknown>) => void;
+  setPullRequests: (list: Array<Record<string, unknown>>) => void;
+  store: AgentStore;
+  shareDeps: SessionShareDependencies;
+  decideStore: DecideStore;
+}
+export type MergeWorld = ReturnType<typeof sessionWorld> & MergeWorldExtras;
+
+export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const w = sessionWorld();
   const prs = options.pullRequests ?? [{ repositoryId: "payments", number: 7 }];
   const seeded = w.seedSession();
@@ -116,7 +147,7 @@ export function mergeWorld(options: MergeWorldOptions = {}) {
       number: pr.number, url: `https://github.com/acme/${pr.repositoryId}/pull/${String(pr.number)}`, taskId, workspaceId: "ws-1", candidateDigest: "c".repeat(64), createdAt: stamp,
     });
   }
-  for (const [who, login] of [["priya", LOGIN.priya], ["arjun", LOGIN.arjun], ["max", LOGIN.max], ["ola", LOGIN.ola], ["stranger", LOGIN.stranger]] as const) github.permissions.set(login, "write");
+  for (const login of [LOGIN.priya, LOGIN.arjun, LOGIN.max, LOGIN.ola, LOGIN.stranger]) github.permissions.set(login, "write");
   github.permissions.set(LOGIN.reader, "read");
 
   const linked = options.linked ?? ["priya", "arjun", "max", "ola"];
@@ -132,7 +163,7 @@ export function mergeWorld(options: MergeWorldOptions = {}) {
       approval: { githubUserId: GH.arjun, login: LOGIN.arjun, commitId: HEAD_A }, branch: "up_to_date" as const, headByRovara: true,
       nudges: { count: 0 }, syncs: { day: "2026-10-22", count: 0 }, readyAt: stamp, ...overrides,
     };
-    return { ...fields, version: 1, decisionDigest: mergeTrackingDecisionDigest(fields), observedAt: stamp } as MergeTrackingItem;
+    return { ...fields, version: 1, decisionDigest: mergeTrackingDecisionDigest(fields), observedAt: stamp };
   };
   const seedTracking = (overrides: Partial<MergeTrackingItem> | ((pr: { repositoryId: string; number: number }) => Partial<MergeTrackingItem>) = {}) => {
     for (const pr of prs) {
@@ -191,7 +222,6 @@ export function mergeWorld(options: MergeWorldOptions = {}) {
   const requestId = () => randomUUID();
   return {
     ...w, sessionId, taskId, orgId, github, host, deps, kind, context, browser, decide, approvalOf, approvalIdOf, requestId, prs, seedTracking, trackingOf, trackingItem, settings, linkAll,
-    setWorkflow, setPullRequests, store, shareDeps, decideStore, PRIYA, ARJUN, MAX, OLA, ZED,
+    setWorkflow, setPullRequests, store, shareDeps, decideStore,
   };
 }
-export type MergeWorld = ReturnType<typeof mergeWorld>;

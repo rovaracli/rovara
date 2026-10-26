@@ -895,7 +895,8 @@ export class GitHubAppCredentialProvider {
         // The request may or may not have reached GitHub: the caller's next run reads the pull request and finds out.
         throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge outcome is unknown");
       }
-      const body = await response.json().then((value: unknown) => (value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}), () => ({} as Record<string, unknown>));
+      const parsedBody: unknown = await response.json().catch(() => undefined);
+      const body: Record<string, unknown> = parsedBody !== null && typeof parsedBody === "object" && !Array.isArray(parsedBody) ? parsedBody as Record<string, unknown> : {};
       if (response.status === 200 && body.merged === true) {
         const commit = typeof body.sha === "string" && /^[a-f0-9]{40}$/u.test(body.sha) ? body.sha : undefined;
         return { outcome: "merged", method, fellBack, ...(commit === undefined ? {} : { mergeCommitSha: commit }) };

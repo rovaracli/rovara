@@ -21,7 +21,6 @@ import {
   type MergeView,
   type NeedsConfirmation,
   type OrgId,
-  type SessionId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { findLinkedGithubWorkflowPullRequest } from "../aws/github-webhooks.js";
@@ -31,7 +30,7 @@ import { parseControlBody } from "../agent-sessions/stop.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { createPendingChange, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../agents/approvals.js";
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { GitHubTokenScope, MergePullRequestResult } from "../github-app.js";
 import { parseGitHubRepository } from "../github-app.js";
 import type { PullRequestStatus } from "../github-pull-status.js";
@@ -442,7 +441,7 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
       merged.push(entry.repositoryId);
       if (result.outcome === "merged" && result.fellBack && tracked.sessionId !== undefined) {
         const other = result.method === "merge" ? "squash" : "merge";
-        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [sessionEventItem({ tableName: deps.tableName }, { orgId: tracked.orgId, sessionId: tracked.sessionId as SessionId }, {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [sessionEventItem({ tableName: deps.tableName }, { orgId: tracked.orgId, sessionId: tracked.sessionId }, {
           eventId: sessionEventId("merge_method", `${tracked.taskId}\n${entry.repositoryId}\n${String(entry.number)}`), at: new Date(deps.now()).toISOString(), type: "status", actor: { kind: "system" },
           text: `Merged ${entry.repositoryId} pull request ${String(entry.number)} using ${result.method}, because ${other} isn't allowed in that repository.`,
         })] })).catch(() => undefined);
@@ -456,7 +455,7 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
     const text = M.halfMerged(merged.join(", "), entry.repositoryId, REFUSAL_REASONS[result.reason]);
     const at = new Date(deps.now()).toISOString();
     await writeAll(deps, codeMilestoneItems({ tableName: deps.tableName }, {
-      kind: "stuck", orgId: tracked.orgId, taskId: tracked.taskId, ...(tracked.sessionId === undefined ? {} : { sessionId: tracked.sessionId as SessionId }), at, text,
+      kind: "stuck", orgId: tracked.orgId, taskId: tracked.taskId, ...(tracked.sessionId === undefined ? {} : { sessionId: tracked.sessionId }), at, text,
       pullRequests: plan.map((p) => ({ repository: p.entry.repositoryId, number: p.entry.number, url: p.entry.url })).slice(0, 32),
     }, hashNumber(record.approvalId), { definitionVersion: tracked.workflow.definitionVersion })).catch(() => undefined);
     await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, tracked.taskId).catch(() => undefined);
@@ -485,7 +484,7 @@ export function registerMergeApprovals(): void {
   // The presser and nobody else, while they can still press Merge on the task: read now, never from what they could do when they pressed.
   registerApproverRule(MERGE_RULE, async (deps, record, caller) => {
     if (!isChange(record) || record.subject.kind !== MERGE_RULE || caller.orgId !== record.orgId || caller.developerId !== record.requestedBy) return false;
-    return mayStillPress(deps, caller, (record.subject as unknown as PullRequestMergeSubject).taskId);
+    return mayStillPress(deps, caller, (record.subject).taskId);
   });
   registerApprovalSubjectHandler(MERGE_RULE, async (deps, record) => {
     if (!isChange(record)) return;
