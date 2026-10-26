@@ -238,6 +238,15 @@ export function auditSessionRetried(input: AuditBuilderBase & { sessionId: strin
   return build("session.retried", input, { kind: "session", id: input.sessionId }, { sessionKind: input.sessionKind, branch: input.branch });
 }
 
+/**
+ * `occurrence`: the approval id of the confirmed share (Plan 5 Task 22). A session was shared with everyone in the company, which is the only share the ledger records: the actor is the
+ * person who confirmed it, the target the session, `related` the owner and the task or chain run, and the facts say the level it was shared at. A share with a person or a project, and a
+ * share taken back, are not recorded. Never a name or a title.
+ */
+export function auditSessionSharedOrg(input: AuditBuilderBase & { sessionId: string; level: string }): AuditEventInput {
+  return build("session.shared", input, { kind: "session", id: input.sessionId }, { level: input.level, principalKind: "org" });
+}
+
 /** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.published` or `chain.published`. */
 export function auditPublished(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; version: number; safety: string }): AuditEventInput {
   return build(input.scope === "agent" ? "agent.published" : "chain.published", input, { kind: input.scope, id: input.targetId }, { version: input.version, safety: input.safety });
@@ -294,6 +303,15 @@ export function auditOptOutLapsed(input: AuditBuilderBase & { repositoryName: st
  */
 export function auditEgressDecided(input: AuditBuilderBase & { domain: string; decision: string }): AuditEventInput {
   return build("egress_domain.decided", input, { kind: "domain", name: input.domain }, { decision: input.decision });
+}
+
+/**
+ * `occurrence`: the rule's new revision (Plan 5 Task 22); the field is an id part, because one write can change several fields and each needs its own id. The rule is one document that
+ * commits once per revision. The target is the org. `from` and `to` are the fixed words of the field: a flag for `allowed`, the tools' own names joined by commas (or `none`) for `tools`,
+ * and `all` or the number of projects for `projects`; the project names go in `details`.
+ */
+export function auditLocalAgentsPolicyChanged(input: AuditBuilderBase & { field: string; from: string | number | boolean; to: string | number | boolean }): AuditEventInput {
+  return build("local_agents.policy_changed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to }, [input.field]);
 }
 
 // Triggers ---------------------------------------------------------------------------------------------------------------

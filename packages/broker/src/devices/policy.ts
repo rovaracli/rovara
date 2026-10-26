@@ -17,11 +17,16 @@ import {
   localToolNotAllowedMessage,
   normalizeLocalAgentPolicy,
   orgSettingsKey,
+  type AuditEventInput,
   type LocalAgentPolicy,
   type OrgId,
   type StoredLocalAgentPolicy,
 } from "@agentx/contracts";
 import { commit, readRequest, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
+import { auditLocalAgentsPolicyChanged } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
 import { invalidBody, type DeviceCaller, type DeviceDependencies } from "./store.js";
 
 const UNREADABLE = "Your company's rules for local agents can't be read right now. Try again in a minute, or ask a Rovara admin to look at them.";
@@ -67,10 +72,40 @@ export function checkLocalAgentAllowed(policy: LocalAgentPolicy, tool: string, p
 const isAdmin = (caller: DeviceCaller) => caller.orgRole === "owner" || caller.orgRole === "admin";
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
+/** The most characters a project list takes in an event's details (the ledger's per-field limit); a longer list is cut and says so. */
+const DETAIL_LIST_MAX = 500;
+const detailList = (names: string[]): string => {
+  const joined = names.join(",");
+  return joined.length <= DETAIL_LIST_MAX ? joined : `${joined.slice(0, DETAIL_LIST_MAX - 3)}...`;
+};
+
+/**
+ * One `local_agents.policy_changed` event for each field of the rule that the write changes (Task 22), with the stored revision as the occurrence and the field as an id part.
+ * The facts are fixed words: a flag, the tools' own names or `none`, and `all` or the number of projects; the project names are personal data and go only in the sealed details.
+ */
+function policyChangedEvents(orgId: OrgId, developerId: string, at: string, revision: number, from: LocalAgentPolicy, to: LocalAgentPolicy): AuditEventInput[] {
+  const base = { orgId, actor: auditActorOf(developerId), occurredAt: at, occurrence: String(revision) };
+  const events: AuditEventInput[] = [];
+  if (from.allowed !== to.allowed) events.push(auditLocalAgentsPolicyChanged({ ...base, field: "allowed", from: from.allowed, to: to.allowed }));
+  if (canonicalJson(from.tools) !== canonicalJson(to.tools)) {
+    const words = (tools: readonly string[]) => (tools.length === 0 ? "none" : tools.join(","));
+    events.push(auditLocalAgentsPolicyChanged({ ...base, field: "tools", from: words(from.tools), to: words(to.tools) }));
+  }
+  if (canonicalJson(from.projects) !== canonicalJson(to.projects)) {
+    const count = (projects: LocalAgentPolicy["projects"]) => (projects === "all" ? "all" : projects.length);
+    const names = (projects: LocalAgentPolicy["projects"]) => (projects === "all" ? "all" : detailList(projects));
+    events.push(auditLocalAgentsPolicyChanged({
+      ...base, field: "projects", from: count(from.projects), to: count(to.projects),
+      details: [{ subject: "org", fields: { projectsFrom: names(from.projects), projectsTo: names(to.projects) } }],
+    }));
+  }
+  return events;
+}
+
 /**
  * `PUT /v1/app/org/local-agents`: an owner or admin sets the rule, naming the revision they read (0 while it has never been written). A stale revision is
- * `AGENT_REVISION_CONFLICT`. The document, its revision and the request's item are written in one transaction; the same request again answers the first
- * outcome and writes nothing, and a change that changes nothing writes only the request's item and keeps the revision.
+ * `AGENT_REVISION_CONFLICT`. The document, its revision, the audit items (one per changed field) and the request's item are written in one transaction; the same request
+ * again answers the first outcome and writes nothing, and a change that changes nothing writes only the request's item and keeps the revision.
  */
 export async function putLocalAgentPolicy(deps: DeviceDependencies, caller: DeviceCaller, body: unknown): Promise<StoredLocalAgentPolicy> {
   if (!isAdmin(caller)) throw agentXError("FORBIDDEN", "Only an org owner or admin can change your company's rules for local agents.");
@@ -86,6 +121,7 @@ export async function putLocalAgentPolicy(deps: DeviceDependencies, caller: Devi
   if (current.revision !== input.revision) throw agentXError("AGENT_REVISION_CONFLICT", LOCAL_AGENTS_CONFLICT_MESSAGE);
 
   const key = orgSettingsKey(caller.orgId, "LOCAL_AGENTS");
+  const at = new Date(deps.now()).toISOString();
   const unchanged = canonicalJson(normalizeLocalAgentPolicy(current.policy)) === canonicalJson(next);
   const revisionIs = current.revision === 0
     ? { ConditionExpression: "attribute_not_exists(pk)" }
@@ -96,12 +132,13 @@ export async function putLocalAgentPolicy(deps: DeviceDependencies, caller: Devi
     : {
       Put: {
         TableName: deps.tableName,
-        Item: { ...key, entityType: "ORG_LOCAL_AGENTS", orgId: caller.orgId, ...next, revision: stored.revision, updatedBy: caller.developerId, updatedAt: new Date(deps.now()).toISOString() },
+        Item: { ...key, entityType: "ORG_LOCAL_AGENTS", orgId: caller.orgId, ...next, revision: stored.revision, updatedBy: caller.developerId, updatedAt: at },
         ...revisionIs,
       },
     };
+  const events = unchanged ? [] : await tryAuditEvents(deps, () => policyChangedEvents(caller.orgId, caller.developerId, at, stored.revision, normalizeLocalAgentPolicy(current.policy), next));
   try {
-    await commit(deps, [item], (failed) => (failed.has(0) ? agentXError("AGENT_REVISION_CONFLICT", LOCAL_AGENTS_CONFLICT_MESSAGE) : undefined), mark, stored);
+    await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], (failed) => (failed.has(0) ? agentXError("AGENT_REVISION_CONFLICT", LOCAL_AGENTS_CONFLICT_MESSAGE) : undefined), mark, stored);
   } catch (error) {
     // Lost to the same request running at the same time: its answer is this one's.
     if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
@@ -110,6 +147,7 @@ export async function putLocalAgentPolicy(deps: DeviceDependencies, caller: Devi
     }
     throw error;
   }
+  await flushAuditEvents(deps, events);
   return stored;
 }
 
