@@ -22,7 +22,7 @@ export function personNameForText(displayName: string, githubLogin?: string): st
 }
 
 /** The login of the GitHub account a person linked, or undefined. */
-export async function githubLoginOf(store: { identitiesOf(developerId: string): Promise<ReadonlyArray<{ provider: string; login?: string }>> }, developerId: string): Promise<string | undefined> {
+export async function githubLoginOf(store: { identitiesOf(developerId: string): Promise<ReadonlyArray<{ provider: string; login?: string | undefined }>> }, developerId: string): Promise<string | undefined> {
   try {
     return (await store.identitiesOf(developerId)).find((identity) => identity.provider === "github" && identity.login !== undefined)?.login;
   } catch {
