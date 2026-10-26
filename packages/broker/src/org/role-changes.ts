@@ -13,7 +13,7 @@ async function read(deps: Deps, key: { pk: string; sk: string }) {
 }
 const forbidden = () => agentXError("FORBIDDEN", "Only a current company owner can change roles.");
 const stale = () => agentXError("CHANGE_STALE", "Company roles changed. Reload and review the change again.");
-const unavailable = () => agentXError("AUDIT_UNAVAILABLE", "The role change could not be recorded. Try again.");
+const unavailable = () => agentXError("AUDIT_UNAVAILABLE", "The role change could not be confirmed. Reload before trying again.");
 export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCaller, target: string, change: Change): Promise<{ developerId: string; role: OrgRole }> {
  if (!OrgMemberRoleChangeBodySchema.required({ expectedRole: true }).safeParse(change).success || !OrgIdSchema.safeParse(caller.orgId).success || !/^[a-f0-9]{64}$/.test(caller.developerId) || !/^[a-f0-9]{64}$/.test(target)) throw agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.");
  const { orgId, developerId: actor } = caller, actorKey = orgMemberKey(orgId, actor), targetKey = orgMemberKey(orgId, target);
@@ -57,8 +57,9 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
  try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
  catch (error) {
   const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  // A timeout may hide a successful commit. Recover its receipt before classifying any write error.
+  const already = await replay();if (already !== undefined) return already;
   if (reasons !== undefined) {
-   const already = await replay();if (already !== undefined) return already;
    const failed = labels.filter((_, index) => reasons[index]?.Code === "ConditionalCheckFailed");
    if (failed.includes("actor") || (actor === target && failed.includes("target"))) throw forbidden();
    if (failed.includes("owner")) throw agentXError("LAST_OWNER", "Another owner changed. Reload before changing your own role.");
