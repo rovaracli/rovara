@@ -404,7 +404,7 @@ describe("POST /v1/app/sessions/{id}/answers", () => {
   it("refuses an answer for a session that now runs on a Mac, like the other session controls do, and changes nothing", async () => {
     const t = await world();
     const run = await t.waitingTask();
-    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } } as never);
+    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } });
     const before = JSON.stringify(t.meta(run.taskId).workflow);
     const reply = await t.respond(MAYA, run.sessionId);
     expect(reply.status).toBeGreaterThanOrEqual(400);

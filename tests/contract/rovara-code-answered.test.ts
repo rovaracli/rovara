@@ -597,7 +597,7 @@ describe("Make a change anyway after an answer", () => {
   it("refuses to start a follow-up for a session that now runs on a Mac, like the other session controls do, and starts nothing", async () => {
     const t = await world();
     const run = await t.answeredTask();
-    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } } as never);
+    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } });
     const tasksBefore = t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META").length;
     const reply = await t.changeAnyway(MAYA, run.sessionId);
     expect(reply.status).toBeGreaterThanOrEqual(400);
