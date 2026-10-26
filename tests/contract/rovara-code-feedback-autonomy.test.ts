@@ -29,52 +29,56 @@ const PROGRAM: WorkflowProgram = { steps: [
   { id: "review", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "build", maxRounds: 3 } }, { id: "pull_request", kind: "pull_request" },
 ] };
 
-interface CommentSpec { id: string; author: string; kind?: "REVIEW_COMMENT" | "DISCUSSION" | "REVIEW"; threadId?: string }
+interface CommentSpec { id: string; author: string; kind?: "REVIEW_COMMENT" | "DISCUSSION" | "REVIEW"; threadId?: string; repositoryId?: "payments" | "web" }
 interface FindingSpec { id: string; commentIds: string[]; assessment?: "ACTIONABLE" | "STALE" | "TECHNICALLY_INCORRECT" | "NEEDS_OWNER_DECISION"; recommended?: boolean }
 
-/** A version 2 task waiting for the merge, with a complete feedback review waiting for a decision. */
-export function pendingCard(options: { comments?: CommentSpec[]; findings?: FindingSpec[]; extra?: Record<string, unknown>; version?: "1.0.0" | "1.1.0" } = {}): { workflow: WorkflowSnapshot; reviewDigest: string; proposalDigest: string; bundleDigest: string } {
+const REPOSITORIES = { payments: { number: 7, tree: "b".repeat(40), commit: "d".repeat(40), bundle: hash("e"), set: hash("c") }, web: { number: 8, tree: "9".repeat(40), commit: "8".repeat(40), bundle: hash("f"), set: hash("7") } } as const;
+
+/** A version 2 task waiting for the merge, with a complete feedback review waiting for a decision. Comments are on `payments` (pull request 7) unless a spec says `web` (pull request 8). */
+export function pendingCard(options: { comments?: CommentSpec[]; findings?: FindingSpec[]; extra?: Record<string, unknown>; version?: "1.0.0" | "1.1.0" } = {}): { workflow: WorkflowSnapshot; reviewDigest: string; proposalDigest: string; bundleDigest: string; bundleDigests: string[] } {
   const version = options.version ?? "1.1.0";
   const comments = options.comments ?? [{ id: "review_comment:1", author: "maya", threadId: "thread-1" }];
   const findings = options.findings ?? [{ id: "f1", commentIds: comments.map((comment) => comment.id) }];
-  const candidate = createCandidateManifest([{ repositoryId: "payments", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
-  const bundleDigest = hash("e");
-  const bundleRef = {
-    schemaVersion: 1 as const, taskId: TASK_ID, repositoryId: "payments", number: 7, headSha: HEAD, headTreeSha: "b".repeat(40), candidateDigest: candidate.digest,
-    commentSetDigest: hash("c"), sha256: bundleDigest, objectKey: `tasks/${TASK_ID}/feedback/${bundleDigest}.json`, producer: "agentx-github-reconciler", version: "1", recordedAt: at,
-    comments: comments.map((comment, index) => ({
+  const repositories = (["payments", "web"] as const).filter((name) => comments.some((comment) => (comment.repositoryId ?? "payments") === name));
+  const candidate = createCandidateManifest(repositories.map((name) => ({ repositoryId: name, commitSha: REPOSITORIES[name].commit, treeSha: REPOSITORIES[name].tree, baseCommitSha: "e".repeat(40) })));
+  const headOf = (name: "payments" | "web") => (name === "payments" ? HEAD : "c".repeat(40));
+  const bundleRefs = repositories.map((name) => ({
+    schemaVersion: 1 as const, taskId: TASK_ID, repositoryId: name, number: REPOSITORIES[name].number, headSha: headOf(name), headTreeSha: REPOSITORIES[name].tree, candidateDigest: candidate.digest,
+    commentSetDigest: REPOSITORIES[name].set, sha256: REPOSITORIES[name].bundle, objectKey: `tasks/${TASK_ID}/feedback/${REPOSITORIES[name].bundle}.json`, producer: "agentx-github-reconciler", version: "1", recordedAt: at,
+    comments: comments.filter((comment) => (comment.repositoryId ?? "payments") === name).map((comment, index) => ({
       id: comment.id, ...(comment.threadId === undefined ? {} : { threadId: comment.threadId }), kind: comment.kind ?? "REVIEW_COMMENT" as const,
-      url: `https://github.com/acme/payments/pull/7#discussion_r${String(index + 1)}`, author: comment.author, updatedAt: at, bodyDigest: createHash("sha256").update(comment.id).digest("hex"), bodyBytes: 7,
+      url: `https://github.com/acme/${name}/pull/${String(REPOSITORIES[name].number)}#discussion_r${String(index + 1)}`, author: comment.author, updatedAt: at, bodyDigest: createHash("sha256").update(comment.id).digest("hex"), bodyBytes: 7,
     })),
-  };
+  }));
+  const bundleOfComment = (id: string) => REPOSITORIES[comments.find((comment) => comment.id === id)?.repositoryId ?? "payments"].bundle;
   const findingRefs = findings.map((finding) => ({
-    id: finding.id, bundleDigest, commentIds: finding.commentIds, priority: "SHOULD_FIX" as const, assessment: finding.assessment ?? "ACTIONABLE" as const, recommended: finding.recommended ?? true,
+    id: finding.id, bundleDigest: bundleOfComment(finding.commentIds[0]!), commentIds: finding.commentIds, priority: "SHOULD_FIX" as const, assessment: finding.assessment ?? "ACTIONABLE" as const, recommended: finding.recommended ?? true,
   }));
   const reviewDigest = hash("b");
   const proposalDigest = hash("d");
   const reviewRef = {
     schemaVersion: 1 as const, taskId: TASK_ID, workflowRevision: 4, operationMode: "FEEDBACK_REVIEW" as const, qualification: "AI_GENERATED_ADVISORY" as const, sha256: reviewDigest,
     objectKey: `tasks/${TASK_ID}/reviews/${reviewDigest}.json`, proposalDigest, taskRequirementsDigest: hash("a"),
-    candidateBindings: [{ repositoryId: "payments", number: 7, headSha: HEAD, candidateDigest: candidate.digest, commentSetDigest: hash("c"), bundleDigest }],
-    operationId: REQUEST, provider: "scripted", version: "1", status: "COMPLETE" as const, bundleDigests: [bundleDigest], findingRefs, recordedAt: at,
+    candidateBindings: repositories.map((name) => ({ repositoryId: name, number: REPOSITORIES[name].number, headSha: headOf(name), candidateDigest: candidate.digest, commentSetDigest: REPOSITORIES[name].set, bundleDigest: REPOSITORIES[name].bundle })),
+    operationId: REQUEST, provider: "scripted", version: "1", status: "COMPLETE" as const, bundleDigests: repositories.map((name) => REPOSITORIES[name].bundle), findingRefs, recordedAt: at,
   };
   const base = WorkflowSnapshotSchema.parse({
     ...createWorkflowSnapshot({ taskId: TASK_ID, ownerId: OWNER, now: at, definitionVersion: version, ...(version === "1.1.0" ? { program: PROGRAM } : {}) }),
     revision: 9, stage: "WAIT_FOR_MERGE", state: "WAITING", ...(version === "1.1.0" ? { programStepId: "pull_request" } : {}), candidate,
     verification: { candidateDigest: candidate.digest, producer: "broker", environmentId: "test", recordedAt: at, results: [{ checkId: "unit", status: "PASS" }] },
     reviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: REQUEST, candidateDigest: candidate.digest, role, provider: "scripted", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: at })),
-    pullRequests: [{ repositoryId: "payments", number: 7, headSha: HEAD, candidateDigest: candidate.digest, required: true, state: "OPEN", url: "https://github.com/acme/payments/pull/7" }],
+    pullRequests: repositories.map((name) => ({ repositoryId: name, number: REPOSITORIES[name].number, headSha: headOf(name), candidateDigest: candidate.digest, required: true, state: "OPEN", url: `https://github.com/acme/${name}/pull/${String(REPOSITORIES[name].number)}` })),
     ...options.extra,
   });
-  const workflow = requestWorkflowFeedbackReview(base, { bundleRefs: [bundleRef], reviewRef }, at);
-  return { workflow, reviewDigest, proposalDigest, bundleDigest };
+  const workflow = requestWorkflowFeedbackReview(base, { bundleRefs, reviewRef }, at);
+  return { workflow, reviewDigest, proposalDigest, bundleDigest: REPOSITORIES[repositories[0]!].bundle, bundleDigests: reviewRef.bundleDigests };
 }
 
 const autonomy = { level: "prepare" as const, recipeDigest: hash("9") };
 const rovara: WorkflowFeedbackActor = { actorId: FEEDBACK_AUTONOMY_ACTOR_ID, role: "ROVARA_AUTONOMY", autonomy };
 const owner: WorkflowFeedbackActor = { actorId: OWNER, role: "TASK_OWNER" };
 const requestFor = (card: ReturnType<typeof pendingCard>, extra: Record<string, unknown> = {}) => ({
-  requestId: REQUEST, expectedRevision: card.workflow.revision, reviewDigest: card.reviewDigest, proposalDigest: card.proposalDigest, bundleDigests: [card.bundleDigest],
+  requestId: REQUEST, expectedRevision: card.workflow.revision, reviewDigest: card.reviewDigest, proposalDigest: card.proposalDigest, bundleDigests: card.bundleDigests,
   selectedFindingIds: card.workflow.feedbackReview!.reviewRef!.findingRefs.map((finding) => finding.id), decision: "APPROVE" as const, ...extra,
 });
 
@@ -196,7 +200,7 @@ describe("the failing checks on the owner's card", () => {
 
   it("are carried into the decision that follows (the owner's or Rovara's), so the approval is bound to what the card showed", () => {
     const withCi = recordWorkflowFeedbackCiFailures(pendingCard().workflow, { checks: ["test"], now: at });
-    const card = { workflow: withCi, reviewDigest: hash("b"), proposalDigest: hash("d"), bundleDigest: hash("e") };
+    const card = { workflow: withCi, reviewDigest: hash("b"), proposalDigest: hash("d"), bundleDigest: hash("e"), bundleDigests: [hash("e")] };
     for (const actor of [owner, rovara]) {
       const decided = decideWorkflowFeedbackFindings(withCi, requestFor(card), actor, at);
       expect(decided.feedbackDecisions?.[0]?.ciFailures).toEqual(withCi.feedbackCiFailures);
@@ -298,6 +302,12 @@ class FeedbackGithub extends FakeGithub {
   throwFor: string | undefined;
   override async getRepositoryPermission(url: string, login: string, scope: unknown, budget?: GithubMergeReadBudget) {
     if (login === this.throwFor) { this.calls.push(`permission:${login}`); throw new Error("GitHub is down"); }
+    const own = this.permissions.get(`${url}|${login}`);
+    if (own !== undefined) {
+      this.calls.push(`permission:${login}@${url.split("/").at(-1)!}`);
+      budget?.beforeRequest();
+      return own;
+    }
     return super.getRepositoryPermission(url, login, scope, budget);
   }
   async getRepositoryStanding(url: string, login: string, scope: unknown, budget?: GithubMergeReadBudget) {
@@ -308,12 +318,12 @@ class FeedbackGithub extends FakeGithub {
   async getJobLogTail(_url: string, jobId: string): Promise<string | undefined> { this.calls.push(`log:${jobId}`); return this.logs.get(jobId); }
 }
 
-function feedbackWorld(options: { card?: ReturnType<typeof pendingCard>; autonomy?: "suggest" | "prepare" | "run"; red?: boolean; roundCheck?: boolean | (() => Promise<boolean>) } = {}) {
+function feedbackWorld(options: { pullRequests?: Array<{ repositoryId: string; number: number }>; card?: ReturnType<typeof pendingCard>; autonomy?: "suggest" | "prepare" | "run"; red?: boolean; roundCheck?: boolean | (() => Promise<boolean>) } = {}) {
   const github = new FeedbackGithub();
-  const w = world({ sessionId: SESSION_ID });
+  const w = world({ sessionId: SESSION_ID, ...(options.pullRequests === undefined ? {} : { pullRequests: options.pullRequests.map((pr) => ({ ...pr, headSha: pr.repositoryId === "web" ? "c".repeat(40) : HEAD })) }) });
   const fixture = Object.assign(w, { github });
   (fixture.deps as { github: unknown }).github = github;
-  github.statuses.set(7, status({ draft: false, ...(options.red === true ? { checks: [redCheck()] } : {}) }));
+  for (const pr of options.pullRequests ?? [{ repositoryId: "payments", number: 7 }]) github.statuses.set(pr.number, status({ number: pr.number, headSha: pr.repositoryId === "web" ? "c".repeat(40) : HEAD, draft: false, ...(options.red === true && pr.number === 7 ? { checks: [redCheck()] } : {}) }));
   fixture.setTask({ workflow: (options.card ?? pendingCard()).workflow });
   (fixture.deps as { autonomy?: unknown }).autonomy = () => options.autonomy ?? "prepare";
   (fixture.deps as { recipeDigest?: unknown }).recipeDigest = () => TRACKED_APPROVAL;
@@ -378,6 +388,26 @@ describe("the feedback slot of merge tracking", () => {
     expect(storedWorkflow(w)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
     expect(dispatchRows(w)).toEqual([]);
     expect(lookups(w).sort()).toEqual(["permission:maya", "permission:stranger"]);
+  });
+
+  it("on a task with two repositories each author is looked up on the repository of their own comment: a writer on one and a reader on the other waits for the owner", async () => {
+    const card = pendingCard({
+      comments: [{ id: "review_comment:1", author: "bob", threadId: "t1", repositoryId: "payments" }, { id: "review_comment:2", author: "bob", threadId: "t2", repositoryId: "web" }],
+      findings: [{ id: "f1", commentIds: ["review_comment:1"] }, { id: "f2", commentIds: ["review_comment:2"] }],
+    });
+    const w = feedbackWorld({ card, pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "web", number: 8 }] });
+    w.github.permissions.set("https://github.com/acme/payments|bob", "write");
+    w.github.permissions.set("https://github.com/acme/web|bob", "read");
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(w.github.calls.filter((call) => call.startsWith("permission:")).sort()).toEqual(["permission:bob@payments", "permission:bob@web"]);
+    // Writer on both: decided.
+    const both = feedbackWorld({ card, pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "web", number: 8 }] });
+    both.github.permissions.set("https://github.com/acme/payments|bob", "write");
+    both.github.permissions.set("https://github.com/acme/web|bob", "write");
+    await trackPullRequest(both.deps, TASK_ID);
+    expect(storedWorkflow(both)).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
   });
 
   it("the fourth automatic round waits for the owner, and a person's decision on it still works", async () => {
