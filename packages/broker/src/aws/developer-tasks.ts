@@ -4402,7 +4402,8 @@ export async function startTaskWorkflowImplementationFromSystem(
     }
   }
   // Plan 6 Task 16: a round Rovara decided itself (the review comments of people with write access) is the owner's approval path, run with Rovara's own decision.
-  if (workflow.fixSource === "feedback") return startAutomaticFeedbackRound(deps, task, workflow, dispatchAccess, actor);
+  // Only the round's first run: once it has run, the approval is on the workflow, and a run that follows (the round's own reviews or checks sent the work back) is an ordinary send-back, told what they found.
+  if (workflow.fixSource === "feedback" && workflow.feedbackDispatchApproval === undefined) return startAutomaticFeedbackRound(deps, task, workflow, dispatchAccess, actor);
   const receivedAt = iso(deps);
   const requestId = workflowRequestId("agentx-program-implement", taskId, workflow.revision, workflow.programStepId);
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
@@ -4414,6 +4415,9 @@ export async function startTaskWorkflowImplementationFromSystem(
   if (workflow.fixSource === "ci" && found.length === 0) {
     const block = await readCiEvidence(deps, taskId, task.orgId, workflow.revision);
     prompt = withTestRule(block === undefined ? ciFixPromptWithoutOutput({ names: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE }) : ciFixPrompt({ block, notes: NO_PUBLISH_NOTE }), next);
+  } else if (workflow.fixSource === "feedback" && found.length > 0) {
+    // A send-back inside a round fixing review comments: what the reviews or checks found, and the findings it was given; the plan is not the scope.
+    prompt = withTestRule(`Address the problems below in the code. They were found in your fix for the review comments you were given: keep to those findings and change nothing else. ${NO_PUBLISH_NOTE}\n\n${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}`, next);
   } else {
     const plan = await approvedCodingPlan(deps, workflow);
     const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
