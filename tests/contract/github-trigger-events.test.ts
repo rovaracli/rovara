@@ -10,7 +10,7 @@ import { GithubWebhookRetryableError, handleGithubWebhook } from "../../packages
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { expireApprovals } from "../../packages/broker/src/agents/approvals-decide.js";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
-import { deliverGithubTriggerEvents, githubTriggerEvents, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
+import { deliverGithubTriggerEvents, githubTriggerEvents, type AuthorQuery, type AuthorStanding, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
 import { GITHUB_WEBHOOK_EVENTS, githubAppManifest, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";
 import { githubWebhookChecks } from "../../packages/cli/src/doctor/github.js";
 import { doctorContext, doctorServices } from "../support/doctor-fakes.js";
@@ -41,14 +41,14 @@ const sign = (raw: string) => `sha256=${createHmac("sha256", SECRET).update(raw)
 const headers = (raw: string, event: string, delivery: string = randomUUID()) => ({ "x-hub-signature-256": sign(raw), "x-github-delivery": delivery, "x-github-event": event });
 
 // ---- payloads as GitHub sends them (only the fields Rovara reads)
-const repository = (id = 101, fullName = "acme/web") => ({ id, full_name: fullName, html_url: `https://github.com/${fullName}` });
+const repository = (id = 101, fullName = "acme/web") => ({ id, full_name: fullName, name: fullName.split("/")[1], owner: { login: fullName.split("/")[0], type: "Organization" }, html_url: `https://github.com/${fullName}` });
 const user = (login: string, type = "User") => ({ login, type });
-function pullRequest(over: { action?: string; installation?: number; repo?: number; number?: number; sender?: { login: string; type: string }; association?: string; labels?: string[]; base?: string; updatedAt?: string; title?: string } = {}) {
+function pullRequest(over: { action?: string; installation?: number; repo?: number; number?: number; sender?: { login: string; type: string }; author?: { login: string; type: string }; association?: string; labels?: string[]; base?: string; updatedAt?: string; title?: string } = {}) {
   return {
     action: over.action ?? "opened", installation: { id: over.installation ?? 55 }, repository: repository(over.repo ?? 101), sender: over.sender ?? user("alice"),
     pull_request: {
       number: over.number ?? 42, title: over.title ?? "Fix the login redirect", html_url: `https://github.com/acme/web/pull/${String(over.number ?? 42)}`, updated_at: over.updatedAt ?? fresh(),
-      author_association: over.association ?? "MEMBER", labels: (over.labels ?? ["bug"]).map((name) => ({ name })), base: { ref: over.base ?? "main" }, user: over.sender ?? user("alice"),
+      author_association: over.association ?? "MEMBER", labels: (over.labels ?? ["bug"]).map((name) => ({ name })), base: { ref: over.base ?? "main" }, user: over.author ?? over.sender ?? user("alice"),
     },
   };
 }
@@ -104,14 +104,17 @@ function world() {
   const slug: { value: string | undefined } = { value: SLUG };
   const dispatched: Array<{ orgId: string; event: TriggerEvent }> = [];
   const failures: Error[] = [];
+  // What GitHub's API would say of an author (the installation-token lookup the broker makes): by default nobody belongs.
+  const standing = { calls: [] as AuthorQuery[], answer: (async () => "none") as (query: AuthorQuery) => Promise<AuthorStanding> };
   const github: GithubTriggerDependencies = {
     documentClient: v.db, tableName: "T", now: () => v.clock.now, githubAppSlug: async () => slug.value,
     log: (event, fields) => logs.push({ event, fields }),
-    dispatch: async (orgId, event) => {
+    authorStanding: async (query) => { standing.calls.push(query); return standing.answer(query); }, authorCheckTimeoutMs: 40,
+    dispatch: async (orgId, event, context) => {
       const failure = failures.shift();
       if (failure !== undefined) throw failure;
       dispatched.push({ orgId, event });
-      return dispatchTriggerEvent(v.routeDeps as never, orgId, event);
+      return dispatchTriggerEvent(v.routeDeps as never, orgId, event, context);
     },
   };
   const deliver = (payload: object, eventName: string, delivery?: string, secret = SECRET) => {
@@ -127,7 +130,7 @@ function world() {
     const chain = await v.budgetedChain(ONE_STEP);
     return v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: PR_OPENED, createdBy: DANA, ...over } as never);
   };
-  return { v, logs, github, dispatched, failures, slug, deliver, runs, chainTrigger };
+  return { v, logs, github, dispatched, failures, slug, standing, deliver, runs, chainTrigger };
 }
 
 describe("a pull request event starts the right org's work", () => {
@@ -280,6 +283,135 @@ describe("a pull request event starts the right org's work", () => {
     await expect(w.deliver(pullRequest(), "pull_request", undefined, "another-secret")).rejects.toThrow("GitHub webhook signature is invalid");
     expect(w.runs()).toEqual([]);
     expect(w.dispatched).toEqual([]);
+  });
+});
+
+// The staging 0.4.6 check (4a): a PR author whose org membership is private reaches the webhook as CONTRIBUTOR or NONE, so the built-in `authorAssociation in OWNER/MEMBER/COLLABORATOR`
+// filter skipped a member's pull request and nothing said so. The association in a payload is never enough to upgrade an author: only GitHub's API, asked now with the installation's token,
+// can, and an error, a timeout or a "no" leaves the filter as it was.
+describe("an author whose membership is private still starts the members-only triggers (staging 0.4.6, check 4a)", () => {
+  const MEMBERS = { ...PR_OPENED, filter: { authorAssociation: ["OWNER", "MEMBER", "COLLABORATOR"] } };
+
+  it("starts a members-only trigger for a private member GitHub reports as CONTRIBUTOR, after asking the API about the pull request's author", async () => {
+    const w = world();
+    const trigger = await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "member";
+    const result = await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request");
+    expect(result.status).toBe("ACCEPTED");
+    expect((await w.v.triggers.listActivity(ORG_A, trigger.triggerId)).map((entry) => entry.outcome)).toEqual(["started"]);
+    expect(w.runs()).toHaveLength(1);
+    expect(w.standing.calls).toEqual([{ installationId: 55, owner: "acme", ownerType: "Organization", repo: "web", login: "alice" }]);
+  });
+
+  it("counts an outside collaborator with write access too", async () => {
+    const w = world();
+    await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "collaborator";
+    await w.deliver(pullRequest({ association: "NONE" }), "pull_request");
+    expect(w.runs()).toHaveLength(1);
+  });
+
+  it("starts a members-only issue trigger the same way", async () => {
+    const w = world();
+    const trigger = await w.chainTrigger({ spec: { kind: "event", source: "github", type: "issues.opened", filter: MEMBERS.filter } });
+    w.standing.answer = async () => "member";
+    await w.deliver(issue({ association: "CONTRIBUTOR" }), "issues");
+    expect((await w.v.triggers.listActivity(ORG_A, trigger.triggerId)).map((entry) => entry.outcome)).toEqual(["started"]);
+  });
+
+  it("starts nothing for NONE with no membership, and logs the association, the membership result and the trigger id", async () => {
+    const w = world();
+    const trigger = await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "none";
+    await w.deliver(pullRequest({ association: "NONE" }), "pull_request");
+    expect(w.runs()).toEqual([]);
+    expect(await w.v.triggers.listActivity(ORG_A, trigger.triggerId)).toEqual([]);
+    const miss = w.logs.filter((entry) => entry.event === "trigger_dispatch.filter_miss");
+    expect(miss).toHaveLength(1);
+    expect(miss[0]!.fields).toMatchObject({ orgId: ORG_A, triggerId: trigger.triggerId, type: "pull_request.opened", authorAssociation: ["NONE"], membership: "none", filterKeys: ["authorAssociation"] });
+  });
+
+  it("starts nothing when the API fails, answers or not, and says the membership was an error; the delivery itself is accepted, not retried", async () => {
+    const w = world();
+    const trigger = await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => { throw new Error("GitHub is down"); };
+    expect((await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request")).status).toBe("ACCEPTED");
+    expect(w.runs()).toEqual([]);
+    expect(w.logs.find((entry) => entry.event === "trigger_dispatch.filter_miss")!.fields).toMatchObject({ triggerId: trigger.triggerId, authorAssociation: ["CONTRIBUTOR"], membership: "error" });
+    // A lookup that never answers is cut off and counts the same.
+    w.logs.length = 0;
+    w.standing.answer = () => new Promise<AuthorStanding>(() => undefined);
+    await w.deliver(pullRequest({ number: 43, association: "CONTRIBUTOR" }), "pull_request");
+    expect(w.runs()).toEqual([]);
+    expect(w.logs.find((entry) => entry.event === "trigger_dispatch.filter_miss")!.fields).toMatchObject({ membership: "error" });
+  });
+
+  it("does not take the payload's word: the API is asked about the author, not the sender, and a member who only marked a stranger's pull request ready does not lend it their standing", async () => {
+    const w = world();
+    await w.chainTrigger({ spec: { kind: "event", source: "github", type: "pull_request.ready_for_review", filter: MEMBERS.filter } });
+    w.standing.answer = async (query) => (query.login === "dana-maintainer" ? "member" : "none");
+    await w.deliver(pullRequest({ action: "ready_for_review", association: "NONE", sender: user("dana-maintainer"), author: user("stranger") }), "pull_request");
+    expect(w.standing.calls.map((call) => call.login)).toEqual(["stranger"]);
+    expect(w.runs()).toEqual([]);
+  });
+
+  it("never lets an unsafe login or repository name reach the API", async () => {
+    const w = world();
+    await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "member";
+    await w.deliver(pullRequest({ association: "NONE", author: user("../../orgs/acme") }), "pull_request");
+    expect(w.runs()).toEqual([]);
+    expect(w.standing.calls).toEqual([]);
+  });
+
+  it("asks only when it can matter: not for a trusted association, a trigger without the filter, a miss on another key, or a filter that does not name a member", async () => {
+    const w = world();
+    await w.chainTrigger({ spec: { ...MEMBERS, filter: { ...MEMBERS.filter, label: ["docs"] } } });
+    await w.chainTrigger({ spec: { ...PR_OPENED, filter: { authorAssociation: ["CONTRIBUTOR"] } } });
+    await w.chainTrigger({ spec: { ...PR_OPENED, filter: { baseBranch: ["main"] } } });
+    await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request");
+    expect(w.standing.calls).toEqual([]);
+    const members = await w.chainTrigger({ spec: MEMBERS });
+    await w.deliver(pullRequest({ number: 60, association: "OWNER" }), "pull_request");
+    expect((await w.v.triggers.listActivity(ORG_A, members.triggerId)).map((entry) => entry.outcome)).toEqual(["started"]);
+    expect(w.standing.calls).toEqual([]);
+  });
+
+  it("asks once per delivery however many triggers and projects hold the repository", async () => {
+    const w = world();
+    registerProject(w.v.db, ORG_A, "web2", { installationId: 55, repositoryId: 101 });
+    w.v.projectMembers.grant(ORG_A, "web2", PRIYA, "contributor");
+    const chain = await w.v.budgetedChain(ONE_STEP);
+    for (const project of ["web", "web2"]) for (let n = 0; n < 2; n += 1) await w.v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: MEMBERS, createdBy: DANA, project } as never);
+    w.standing.answer = async () => "member";
+    await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request");
+    expect(w.standing.calls).toHaveLength(1);
+    expect(w.runs()).toHaveLength(4);
+  });
+
+  it("still de-duplicates a replay: the same body under a new delivery id, and the same event dispatched again, start one run", async () => {
+    const w = world();
+    const trigger = await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "member";
+    await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request");
+    expect((await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request")).status).toBe("DUPLICATE");
+    expect(w.runs()).toHaveLength(1);
+    expect(w.standing.calls).toHaveLength(1);
+    // Past the event memory, dispatch's own identity answers: the event is the same start.
+    const again = await dispatchTriggerEvent(w.v.routeDeps as never, ORG_A, w.dispatched[0]!.event, { verifyAuthor: async () => "member" });
+    expect(again).toMatchObject([{ triggerId: trigger.triggerId, outcome: "duplicate" }]);
+    expect(w.runs()).toHaveLength(1);
+  });
+
+  it("logs nothing about a start that matched, and no log line carries a token", async () => {
+    const w = world();
+    await w.chainTrigger({ spec: MEMBERS });
+    w.standing.answer = async () => "member";
+    await w.deliver(pullRequest({ association: "CONTRIBUTOR" }), "pull_request");
+    expect(w.logs.filter((entry) => entry.event === "trigger_dispatch.filter_miss")).toEqual([]);
+    w.standing.answer = async () => { throw new Error("ghs_secrettoken123 rejected"); };
+    await w.deliver(pullRequest({ number: 61, association: "NONE" }), "pull_request");
+    expect(JSON.stringify(w.logs)).not.toMatch(/ghs_|token|Bearer/i);
   });
 });
 

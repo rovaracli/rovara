@@ -1470,3 +1470,67 @@ describe("organizationMembership (Plan 2, Task 14)", () => {
     expect(f.calls).toEqual([]);
   });
 });
+
+describe("authorStanding (staging 0.4.6, check 4a)", () => {
+  type Answers = { token?: Response; membership?: Response; permission?: Response };
+  function provider(answers: Answers) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      calls.push({ url: target, init });
+      if (target.endsWith("/access_tokens")) return answers.token ?? Response.json({ token: "ghs_installation" });
+      if (target.includes("/memberships/")) return answers.membership ?? new Response("nope", { status: 404 });
+      return answers.permission ?? Response.json({ permission: "read", role_name: "read" });
+    });
+    return { calls, github: new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation }) };
+  }
+  const ORG = { owner: "acme", ownerType: "Organization", repo: "web", login: "rhea" };
+
+  it("counts an active org member (private or not) as a member, with one token that asks for members and metadata only", async () => {
+    const f = provider({ membership: Response.json({ state: "active", role: "member" }) });
+    await expect(f.github.authorStanding(601, ORG)).resolves.toBe("member");
+    expect(f.calls[0]!.url).toBe("https://api.github.com/app/installations/601/access_tokens");
+    expect(JSON.parse(f.calls[0]!.init?.body as string)).toEqual({ permissions: { metadata: "read", members: "read" } });
+    expect(f.calls.map((call) => call.url)).toEqual(["https://api.github.com/app/installations/601/access_tokens", "https://api.github.com/orgs/acme/memberships/rhea"]);
+    expect((f.calls[1]!.init?.headers as Record<string, string>).authorization).toBe("Bearer ghs_installation");
+  });
+
+  it("does not count a pending invitation, and then looks at the repository permission", async () => {
+    const f = provider({ membership: Response.json({ state: "pending", role: "member" }) });
+    await expect(f.github.authorStanding(601, ORG)).resolves.toBe("none");
+    expect(f.calls.at(-1)!.url).toBe("https://api.github.com/repos/acme/web/collaborators/rhea/permission");
+  });
+
+  it("counts write, maintain and admin access of a non-member, and not read or triage", async () => {
+    await expect(provider({ permission: Response.json({ permission: "write", role_name: "write" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "write", role_name: "maintain" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "admin", role_name: "admin" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "read", role_name: "triage" }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+    await expect(provider({ permission: Response.json({ permission: "none", role_name: "none" }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+    await expect(provider({ permission: new Response("nope", { status: 404 }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+  });
+
+  it("asks only for the repository permission, with a metadata-only token, on a user's repository", async () => {
+    const f = provider({ permission: Response.json({ permission: "write", role_name: "write" }) });
+    await expect(f.github.authorStanding(601, { ...ORG, ownerType: "User" })).resolves.toBe("collaborator");
+    expect(JSON.parse(f.calls[0]!.init?.body as string)).toEqual({ permissions: { metadata: "read" } });
+    expect(f.calls.map((call) => call.url)).toEqual(["https://api.github.com/app/installations/601/access_tokens", "https://api.github.com/repos/acme/web/collaborators/rhea/permission"]);
+  });
+
+  it("throws for every failure that is not a 404, so an outage is never read as a membership or a refusal", async () => {
+    await expect(provider({ membership: new Response("bad", { status: 502 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ membership: Response.json({ nothing: true }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ permission: new Response("bad", { status: 403 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ permission: Response.json({ nothing: true }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ token: new Response("bad", { status: 403 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("calls GitHub for nothing when a name could not be an account or a repository", async () => {
+    const f = provider({ membership: Response.json({ state: "active", role: "member" }) });
+    for (const bad of [{ login: "../../user" }, { owner: "ac/me" }, { repo: "../x" }, { repo: ".." }, { login: "rhea[bot]" }]) {
+      await expect(f.github.authorStanding(601, { ...ORG, ...bad })).resolves.toBe("none");
+    }
+    expect(f.calls).toEqual([]);
+  });
+});

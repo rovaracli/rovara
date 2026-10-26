@@ -43,6 +43,17 @@ export type TriggerDispatchDependencies = ChainRunnerDependencies & {
   githubAppSlug?: () => Promise<string | undefined>;
 };
 
+/** What GitHub's API says of a pull request's or issue's author, asked now: a member of the repository's org, an outside collaborator with write access, nobody of those, or an error (which counts as nobody). */
+export type AuthorVerdict = "member" | "collaborator" | "none" | "error";
+
+/**
+ * What the source of one event can add to dispatch. GitHub's `authorAssociation` in a webhook shows a private org member as CONTRIBUTOR or NONE, so a trigger limited to members would skip
+ * their pull requests. `verifyAuthor` asks GitHub's API (not the payload) about the author; it is called only when that could change a trigger's match, at most once per event, and never throws.
+ */
+export interface TriggerDispatchContext {
+  verifyAuthor?: () => Promise<AuthorVerdict>;
+}
+
 export interface DispatchOutcome {
   triggerId: string;
   outcome: TriggerOutcome;
@@ -106,11 +117,59 @@ function meetsFilter(filter: Record<string, string[]> | undefined, fields: Trigg
   return true;
 }
 
-/** Whether a stored trigger is one this event is for: the record itself says so, whatever the index it was found under. */
-function isFor(trigger: TriggerRecord, orgId: OrgId, event: TriggerEvent): boolean {
+/** Whether a stored trigger is one this event is for, apart from its filter: the record itself says so, whatever the index it was found under. */
+function isForExceptFilter(trigger: TriggerRecord, orgId: OrgId, event: TriggerEvent): boolean {
   const { spec } = trigger;
   return trigger.orgId === orgId && trigger.enabled === true && trigger.project === event.project && spec.kind === "event" && spec.source === event.source && spec.type === event.type
-    && trigger.hookId === event.hookId && meetsFilter(spec.filter, event.fields);
+    && trigger.hookId === event.hookId;
+}
+
+const AUTHOR_KEY = "authorAssociation";
+/** The associations an author who is verified through the API is counted as, in GitHub's own words. */
+const VERIFIED_AS: Record<"member" | "collaborator", string> = { member: "MEMBER", collaborator: "COLLABORATOR" };
+const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set(["MEMBER", "COLLABORATOR"]);
+
+/** The filter keys the event's fields do not meet, for the log of an event nothing matched. */
+function missedKeys(filter: Record<string, string[]> | undefined, fields: TriggerEvent["fields"]): string[] {
+  return Object.keys(filter ?? {}).filter((key) => !meetsFilter({ [key]: filter![key]! }, fields));
+}
+
+/** Asks (at most once per event) what the API says of the author. Never throws: a failure is the verdict `error`. */
+function verdictOf(work: Work): Promise<AuthorVerdict> {
+  work.verdict ??= (async (): Promise<AuthorVerdict> => {
+    try {
+      const verdict = await work.context.verifyAuthor!();
+      return verdict === "member" || verdict === "collaborator" || verdict === "none" ? verdict : "error";
+    } catch {
+      return "error";
+    }
+  })();
+  return work.verdict;
+}
+
+/**
+ * Whether the event meets the trigger's filter. When the only thing it misses is `authorAssociation` and the trigger would take a member or a collaborator, the author is looked up through
+ * the API (`context.verifyAuthor`): a verified author is counted as MEMBER or COLLABORATOR for this match, besides what the payload said. The payload alone never upgrades anyone,
+ * and a lookup that fails, times out or finds nobody leaves the filter as it was (the trigger does not match).
+ */
+async function meetsTriggerFilter(work: Work, trigger: TriggerRecord): Promise<boolean> {
+  const { spec } = trigger;
+  const filter = spec.kind === "event" ? spec.filter : undefined;
+  const { event } = work;
+  if (meetsFilter(filter, event.fields)) return true;
+  const missed = missedKeys(filter, event.fields);
+  const wanted = filter !== undefined && Object.hasOwn(filter, AUTHOR_KEY) ? filter[AUTHOR_KEY] : undefined;
+  let membership: AuthorVerdict | "not_checked" = "not_checked";
+  if (work.context.verifyAuthor !== undefined && Array.isArray(wanted) && missed.length === 1 && missed[0] === AUTHOR_KEY
+    && wanted.some((value) => TRUSTED_ASSOCIATIONS.has(value.toUpperCase()))) {
+    membership = await verdictOf(work);
+    if (membership === "member" || membership === "collaborator") {
+      const have = Object.hasOwn(event.fields, AUTHOR_KEY) ? event.fields[AUTHOR_KEY] : undefined;
+      if (meetsFilter(filter, { ...event.fields, [AUTHOR_KEY]: [...(Array.isArray(have) ? have : []), VERIFIED_AS[membership]] })) return true;
+    }
+  }
+  work.misses.push({ triggerId: trigger.triggerId, filterKeys: missed, membership });
+  return false;
 }
 
 /** Counts one start against a limit in one conditional update; false when the limit is used up. */
@@ -144,6 +203,11 @@ interface Work {
   event: TriggerEvent;
   log: (event: string, fields: Record<string, unknown>) => void;
   actors: Map<EventSource, Promise<Set<string>>>;
+  context: TriggerDispatchContext;
+  /** The API's word on the author, once asked. */
+  verdict?: Promise<AuthorVerdict>;
+  /** The triggers that are for this event but whose filter it does not meet, for the log of an event nothing matched. */
+  misses: Array<{ triggerId: string; filterKeys: string[]; membership: AuthorVerdict | "not_checked" }>;
 }
 
 /** The record of an outcome: an activity item, and a log line with ids and a code only. */
@@ -339,7 +403,7 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
  * is the event's and whose every filter key has one of its values among the event's. Answers what each did. Throws when a start failed in a way that may pass, after every
  * other trigger has been tried, so that the vendor's retry starts what was not started and (by the event's identity) nothing twice.
  */
-export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, orgId: OrgId, input: TriggerEvent): Promise<DispatchOutcome[]> {
+export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, orgId: OrgId, input: TriggerEvent, context: TriggerDispatchContext = {}): Promise<DispatchOutcome[]> {
   const log = logOf(deps);
   const parsed = TriggerEventSchema.safeParse(input);
   if (!parsed.success) {
@@ -353,7 +417,7 @@ export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, or
     return [];
   }
   if (deps.triggers === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "triggers are not set up in this deployment");
-  const work: Work = { deps, orgId, event, log, actors: new Map() };
+  const work: Work = { deps, orgId, event, log, actors: new Map(), context, misses: [] };
   const outcomes: DispatchOutcome[] = [];
   let transient: { error: unknown } | undefined;
   let unreadable = 0;
@@ -364,7 +428,7 @@ export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, or
   if (unreadable > 0) log("trigger_dispatch.records_skipped", { orgId, count: unreadable });
   for (const trigger of found) {
     try {
-      if (!isFor(trigger, orgId, event)) continue;
+      if (!isForExceptFilter(trigger, orgId, event) || !await meetsTriggerFilter(work, trigger)) continue;
       const done = await dispatchOne(work, trigger);
       if ("outcome" in done) outcomes.push(done.outcome);
       else transient ??= { error: done.transient };
@@ -374,5 +438,12 @@ export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, or
     }
   }
   if (transient !== undefined) throw transient.error;
+  // Nothing started and nothing was recorded: say which triggers were for the event but did not meet their filter, and with what (GitHub's association words and a code, never the sender's text).
+  if (outcomes.length === 0) {
+    const association = (event.fields[AUTHOR_KEY] ?? []).filter((value) => /^[A-Z_]{1,24}$/.test(value)).slice(0, 4);
+    for (const miss of work.misses) {
+      log("trigger_dispatch.filter_miss", { orgId, project: event.project, triggerId: miss.triggerId, type: event.type, filterKeys: miss.filterKeys, authorAssociation: association, membership: miss.membership });
+    }
+  }
   return outcomes;
 }
