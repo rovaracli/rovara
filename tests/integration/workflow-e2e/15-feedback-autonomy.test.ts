@@ -439,6 +439,21 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(world.e2e.workflow().fixSource).toBeUndefined();
   }, 480_000);
 
+  it("15.18 a round the owner approved is the owner's: the company lowering its limit while it runs does not stop it, and it is pushed", async () => {
+    const hold: { e2e?: WorkflowE2E } = {};
+    const { e2e, pullRequest } = await waitingForMerge({ people: { maya: { permission: "read", type: "User" } }, onFix: () => lowerCompanyLimit(hold.e2e!, "suggest") });
+    hold.e2e = e2e;
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    await trackAndFix(e2e);
+    const pushes = e2e.github.pushLog.length;
+    await e2e.click("agentx_feedback_review_recommended");
+    await e2e.settle();
+    expect(e2e.github.pushLog.length).toBe(pushes + 1);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(e2e.workflow().blockReason).toBeUndefined();
+    expect(e2e.workflow().feedbackDecisions).toEqual([expect.objectContaining({ actorRole: "TASK_OWNER" })]);
+  }, 480_000);
+
   it("15.11b a company limit of suggest means Rovara decides nothing on its own, whatever the task's frozen recipe says: the card goes to the owner", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge({ autonomy: "run" });
     lowerCompanyLimit(e2e, "suggest");
