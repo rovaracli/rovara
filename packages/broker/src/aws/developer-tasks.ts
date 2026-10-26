@@ -55,6 +55,7 @@ import {
   StartDeveloperTaskRequestSchema,
   WorkspaceClosePreflightResultSchema,
   agentXError,
+  agentSessionKey,
   cleanClientName,
   developerTaskPolicy,
   diffStat,
@@ -697,6 +698,7 @@ export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller
 }
 
 interface AuthorizedTask extends TaskAccess {
+  shareSession?: { sessionId: string; revision: number };
   actorId: string;
   authority: { actorId: string; ownerIds: readonly string[] };
 }
@@ -7798,7 +7800,7 @@ async function authorizeShare(deps: DeveloperTaskRouteDependencies, caller: Deve
   const people = await loadTaskPeople(deps, taskId);
   const actorId = taskOwnerKey(caller.developerId, taskId);
   const ownerIds = [taskOwnerKey(access.effectiveOwner.developerId, taskId)];
-  return { task, role: "owner", actorId, ownerActorIds: ownerIds, authority: { actorId, ownerIds }, ...(people === undefined ? {} : { peopleRevision: people.revision }) };
+  return { task, role: "owner", actorId, ownerActorIds: ownerIds, authority: { actorId, ownerIds }, shareSession: { sessionId: access.session.sessionId, revision: access.session.revision }, ...(people === undefined ? {} : { peopleRevision: people.revision }) };
 }
 
 const shareIdempotencyKey = (task: DeveloperTaskRecord, requestId: string) => ({ pk: `IDEMPOTENCY#${task.ownerKey}#${task.workspaceId}`, sk: `REQUEST#${requestId}` });
@@ -7836,7 +7838,11 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       idempotencyKey, payloadHash, receivedAt,
       request: `share ${request.shareMode ?? "default mode"}${request.channel === undefined ? "" : ` in ${request.channel}`}`,
       actor: caller,
-    }), accessFence(deps, access)];
+    }), accessFence(deps, access), ...(access.shareSession === undefined ? [] : [{ ConditionCheck: {
+      TableName: deps.tableName, Key: agentSessionKey(caller.orgId, access.shareSession.sessionId, "META"),
+      ConditionExpression: "orgId = :org AND #revision = :revision", ExpressionAttributeNames: { "#revision": "revision" },
+      ExpressionAttributeValues: { ":org": caller.orgId, ":revision": access.shareSession.revision },
+    } }])];
     try {
       await deps.actions.transact(items);
       access = await authorizeShare(deps, caller, taskId);
