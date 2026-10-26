@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import type { FeatureE2EPlanningContextResult } from "../e2e/feature-plan-planning-context.js";
 import { describeFeatureE2EExecutableKinds, offersApplicationE2EPlan } from "../e2e/feature-plan-executable-kinds.js";
-import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, type PlanDocumentKind } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@agentx/contracts";
 import { commentRefInAuthor } from "@agentx/contracts";
 import type { TransactItems } from "./developer-task-actions.js";
 
@@ -221,6 +221,8 @@ export function planDocumentInstructions(input: {
   applicationPlans?: boolean;
   /** Rovara Code version 2: the planner may say that the request needs no code change (`noChangeNeeded`). Absent for version 1, whose prompt stays as it was. */
   noChangeOption?: boolean;
+  /** Rovara Code version 2 (Plan 6 Task 7): ask a coding plan to name what changes, which files and how it is tested. Version 1 plans are asked as before. */
+  requiredParts?: boolean;
 }): string {
   const checks = input.kind === "plan";
   const featureE2E = input.kind === "plan" && input.e2ePlanningContext !== undefined;
@@ -252,6 +254,7 @@ export function planDocumentInstructions(input: {
     "IDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.",
     ...(retiredIds.length === 0 ? [] : [`These claim IDs were removed earlier and must not be used again: ${retiredIds.join(", ")}.`]),
     ...(checks ? ["`checks` goes in the coding plan only. Each check lists in `proves` the IDs of the claims it proves. Checks may prove Not changing items: use `nc1`, `nc2` and so on, counting the `notChanging` entries from 1."] : []),
+    ...(checks && input.requiredParts === true ? [PLAN_PARTS_SENTENCE] : []),
     ...(e2eContext === undefined ? [] : [
       "E2EFeaturePlanIntent has exactly these members: { schemaVersion: 1, requestedTargetIds: string[], portableOperationRefs?: { operationId, applicationId, requestedTargetIds, packageExportSubpath, moduleSpecifier, callableSelector: { kind: \"default\" } | { kind: \"named\", exportName } }[], mockFixtureRefs?: { componentId, requestedTargetId, operationId, sourcePath, sourceSha256 }[], accountContextRefs: { applicationId, profileId, sourcePath, sourceSha256 }[], scenarios: { scenarioId, requirementId, requestedTargetIds, required, accountProfileId, minimumEvidence: \"source\" | \"mock-contract\" | \"runtime\" | \"external-live\", requiredRealComponentIds: string[], steps: E2EStep[], assertions: E2EAssertion[] }[], semanticExportDeltas: { applicationId, operationId, requestedTargetIds, expectedExportNames: string[], reason }[] }. Each scenario needs at least one assertion; `invoke-contract` steps must use a listed operation and a target listed on that operation.",
       e2eContext.status === "available"

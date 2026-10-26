@@ -13,13 +13,22 @@ export function readsTaskViewVersion2(headers: Headers): boolean {
 /** What version 1 clients do not know and must not be sent: the new snapshot fields (all of them, on both versions) and a pull request's `syncedFrom`. */
 const NEW_WORKFLOW_FIELDS = ["intent", "critique", "risk", "fixRounds", "fixSource"] as const;
 
+/** The run estimate without the time range (Plan 6 Task 7), which version 1 clients' strict estimate does not know. A view with no time range is returned as it is. */
+function withoutRunMinutes(view: DeveloperTaskView): DeveloperTaskView {
+  if (view.runEstimate?.minutes === undefined) return view;
+  const { minutes: _minutes, ...estimate } = view.runEstimate; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+  return { ...view, runEstimate: estimate };
+}
+
 /**
  * The task as a client that does not send `x-agentx-task-view: 2` may read it: UNDERSTAND and PLAN_CRITIQUE read as PLAN, the outcome ANSWERED as CLOSED, the
- * definition version as 1.0.0, and the fields version 1 did not have are left out. A view with no workflow is returned as it is.
+ * definition version as 1.0.0, and the fields version 1 did not have are left out. A view with no workflow is returned as it is, less the estimate's time range.
  */
-export function taskViewForClient(view: DeveloperTaskView, headers: Headers): DeveloperTaskView {
+export function taskViewForClient(input: DeveloperTaskView, headers: Headers): DeveloperTaskView {
+  if (readsTaskViewVersion2(headers)) return input;
+  const view = withoutRunMinutes(input);
   const workflow = view.workflow;
-  if (workflow === undefined || readsTaskViewVersion2(headers)) return view;
+  if (workflow === undefined) return view;
   const rest: Record<string, unknown> = { ...workflow };
   for (const field of NEW_WORKFLOW_FIELDS) delete rest[field];
   const pullRequests = workflow.pullRequests?.map(({ syncedFrom: _syncedFrom, ...pullRequest }) => pullRequest); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose

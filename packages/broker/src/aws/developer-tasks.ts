@@ -200,6 +200,7 @@ import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
 import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
+import { noteFinishedTaskDuration } from "../rovara-code/duration.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import type { TransactItem } from "../agents/table-writes.js";
@@ -6933,6 +6934,8 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
   await recordFinishedRunCost(deps, task);
+  // Plan 6 Task 7: a version 2 task's duration, if the pull request's write didn't get there first.
+  await noteFinishedTaskDuration({ documentClient: deps.documentClient, tableName: deps.tableName }, task);
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
   if (!closed && task.agentRunEnd === undefined) {
     const outcome = workflowEndOutcome(task);
