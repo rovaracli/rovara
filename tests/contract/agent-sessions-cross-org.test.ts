@@ -64,11 +64,14 @@ async function world() {
     projectPage: async () => ({ name: "web", status: "active", repositories: [], setup: { status: "ready" }, channels: [] }) as never,
     realtime: { endpoint: "https://example.appsync-api.us-east-1.amazonaws.com/event", projectsOf: async () => ["web"], mint: async (input) => issueRealtimeToken(signer, { ...input, now: w.clock.now }) },
   };
-  const call = (who: string, orgId: OrgId, method: string, path: string, body?: unknown) => routeAgentSessionRequest(deps, w.caller(who, orgId), { method, path, headers: {}, requestId: "isolation", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, CELL));
+  // Merge answers RUNTIME_UNAVAILABLE without a merge host, before any session is looked at; the host given for it must never be asked for a task.
+  const mergeHost = { codeMerge: { loadTask: async () => { throw new Error("the merge host must not be asked for another org's task"); } } } as never;
+  const call = (who: string, orgId: OrgId, method: string, path: string, body?: unknown) => routeAgentSessionRequest(path.endsWith("/merge") ? { ...deps, approvals: mergeHost } : deps, w.caller(who, orgId), { method, path, headers: {}, requestId: "isolation", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, CELL));
   return { ...w, table, deps, call, taskView, s1, s2, s3, s4, own, device, bDevice };
 }
 type World = Awaited<ReturnType<typeof world>>;
-const cases = (s: string, deviceId: string): Array<[string, string, unknown?]> => [
+// `withMerge`: the router-level tests give Merge a host; the test broker has none, and answers 503 to Merge whatever the session.
+const cases = (s: string, deviceId: string, withMerge = true): Array<[string, string, unknown?]> => [
   ["GET", `/v1/app/sessions/${s}`], ["GET", `/v1/app/sessions/${s}/events`], ["GET", `/v1/app/sessions/${s}/messages`], ["GET", `/v1/app/sessions/${s}/shares`], ["GET", `/v1/app/sessions/${s}/sections/1/task`],
   ["GET", `/v1/app/sessions/${s}/diff?repository=demo&number=1`],
   ["POST", `/v1/app/sessions/${s}/follow`], ["DELETE", `/v1/app/sessions/${s}/follow`], ["POST", `/v1/app/sessions/${s}/presence`],
@@ -79,6 +82,7 @@ const cases = (s: string, deviceId: string): Array<[string, string, unknown?]> =
   // Plan 6: Understand's answers, "change it anyway" after an Answered task, and the Linear binding (link and unlink) are session routes like the rest: an id from another org, or a private one, is no session.
   ["POST", `/v1/app/sessions/${s}/answers`, { requestId: randomUUID(), round: 1, answers: [{ questionId: "q1", text: "Cross-org canary" }] }],
   ["POST", `/v1/app/sessions/${s}/change-anyway`, { requestId: randomUUID() }],
+  ...(withMerge ? [["POST", `/v1/app/sessions/${s}/merge`, { requestId: randomUUID() }] as [string, string, unknown]] : []),
   ["POST", `/v1/app/sessions/${s}/bindings`, { linear: "ENG-142" }],
   ["POST", `/v1/app/sessions/${s}/bindings`, { linear: "ENG-142", replace: true }],
   ["DELETE", `/v1/app/sessions/${s}/bindings/linear`],
@@ -229,7 +233,7 @@ async function brokerWorld() {
 describe("the broker and its real CLI/MCP clients", () => {
   it("every session endpoint returns an empty 404 envelope for B, with no write", async () => {
     const { w, h, a, b } = await brokerWorld();
-    for (const subject of [w.s1, w.s2, w.s3, w.s4]) for (const [method, path, body] of cases(subject.sessionId, w.bDevice.deviceId)) {
+    for (const subject of [w.s1, w.s2, w.s3, w.s4]) for (const [method, path, body] of cases(subject.sessionId, w.bDevice.deviceId, false)) {
       const before = h.db.commandNames().length;
       const data = structuredClone(h.db.find(() => true));
       const reply = await h.dev(b, method, path, body);

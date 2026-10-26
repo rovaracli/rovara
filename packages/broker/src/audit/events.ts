@@ -265,12 +265,12 @@ export function auditSessionSharedOrg(input: AuditBuilderBase & { sessionId: str
  * says which kind of outside place it is. The issue key is an outside identifier and goes in `details`, never in the chain.
  */
 export function auditSessionLinked(input: AuditBuilderBase & { sessionId: string; issueKey: string }): AuditEventInput {
-  return build("session.linked", { ...input, details: [{ subject: "org", fields: { issueKey: input.issueKey } }] }, { kind: "session", id: input.sessionId }, { surface: "linear_issue" });
+  return build("session.linked", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { issueKey: input.issueKey } }] }, { kind: "session", id: input.sessionId }, { surface: "linear_issue" });
 }
 
 /** `occurrence`: as `auditSessionLinked`. A person let go of the Linear issue a session followed (alone, or before replacing it). */
 export function auditSessionUnlinked(input: AuditBuilderBase & { sessionId: string; issueKey: string }): AuditEventInput {
-  return build("session.unlinked", { ...input, details: [{ subject: "org", fields: { issueKey: input.issueKey } }] }, { kind: "session", id: input.sessionId }, { surface: "linear_issue" });
+  return build("session.unlinked", { ...input, details: [...(input.details ?? []), { subject: "org", fields: { issueKey: input.issueKey } }] }, { kind: "session", id: input.sessionId }, { surface: "linear_issue" });
 }
 
 /** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.published` or `chain.published`. */
