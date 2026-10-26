@@ -476,7 +476,7 @@ import { sweepChainRuns } from "../chains/lifecycle.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
 import type { ChainRouteDependencies } from "../chains/routes.js";
 import { chainOwnerMoverFor, chainReadAccessFor, chainSessionSource } from "../chains/session-seam.js";
-import type { SessionAccessDependencies } from "../agent-sessions/access.js";
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
@@ -8380,6 +8380,29 @@ export function isSlackThreadNoteEvent(event: unknown): event is SlackThreadNote
  * Every expected answer (saved, already saved, or not saved because the thread or task no longer takes notes)
  * is a 200 with its outcome, so Slack is never asked to retry it.
  */
+/** What a person hears (privately, in the thread) when their reply to Rovara's questions is too long or says nothing. */
+const SLACK_ANSWER_REFUSED = "I couldn't take that as an answer. Keep it under 2,000 characters and reply again.";
+/** A stable id for a Slack message's refusal, so the same message is told once. */
+const refusalIdOf = (taskId: string, messageTs: string): string => {
+  const bytes = createHash("sha256").update(`answer-refusal\n${taskId}\n${messageTs}`, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+/** Whether `caller` has "can use" on the task's session in their org, by the same check the app route runs (level, org, project role). Any failure to tell is a no. */
+export async function mayAnswerFromSlack(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<boolean> {
+  const sessions = agentRouteDependencies(dependencies, tasks)?.agentSessions;
+  if (sessions === undefined || task.sessionId === undefined || task.orgId !== caller.orgId) return false;
+  try {
+    await requireSessionLevel(sessions, caller, task.sessionId, "use", "answer its questions");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackThreadNoteEvent): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
   if (dependencies.developer === undefined) return { outcome: "refused" };
   const thread = SlackThreadSchema.safeParse(event.thread);
@@ -8395,10 +8418,20 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
   catch { return { outcome: "refused" }; }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
+  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor);
+  // Plan 6 Task 5: a reply answers Understand's questions only from a person who has "can use" on the task's session in this org, judged live the way the app route judges it (the project
+  // role included). It is recorded under that person, whoever owns the task.
+  const waiting = access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING";
+  // Who the Slack user is in this org: the task's effective owner when the Slack user is theirs, else the member the Slack user maps to (merges followed).
+  const effectiveOwner = tryEffectiveTaskOwner(access.task);
+  const replier = { developerId: effectiveOwner?.slackUserId === userId.data ? effectiveOwner.developerId : author.developerId, name: author.name };
+  const mayAnswer = waiting && await mayAnswerFromSlack(dependencies, tasks, { ...actor, developerId: replier.developerId }, access.task);
   const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, now: Date.now },
     { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text,
       peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" },
-      actor: await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor) });
+      actor: author, ...(mayAnswer ? { answerBy: replier } : {}) });
+  // A reply that could have answered but could not be taken as one is told to the person who wrote it, privately in the thread.
+  if (result.outcome === "refused" && mayAnswer) await recordSlackWorkflowRefusal(dependencies, { taskId, userId: userId.data, thread: thread.data, requestId: refusalIdOf(taskId, messageTs.data) }, SLACK_ANSWER_REFUSED, "reply");
   // Plan 6 Task 5: an owner's reply that answered Understand's questions made the next Understand run due: it starts now, and the sweep starts it if this is lost.
   if (result.outcome === "captured" && access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING") await dispatchWorkflowContinuation(dependencies, taskId);
   // The PR feedback review page keeps showing the owner's own replies, as before (best effort).
