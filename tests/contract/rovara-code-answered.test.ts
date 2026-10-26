@@ -798,34 +798,4 @@ describe("retryOf is checked, not trusted", () => {
   });
 });
 
-describe("a chain step that ends Answered", () => {
-  it("goes on as a success with the answer as its report", async () => {
-    const w = setupWorld();
-    const chain = await w.publish(INVESTIGATE_THEN_FIX);
-    const { startChainRun, recordGateDecision, onStepTaskEnded } = await import("../../packages/broker/src/chains/runner.js");
-    const { callerOf } = await import("../support/chain-run-world.js");
-    const run = await startChainRun(w.deps, callerOf(PRIYA), { orgId: ORG_A, chainId: chain.chainId, project: "web", origin: "app", startedBy: { kind: "member", developerId: PRIYA }, requestId: randomUUID() } as never);
-    await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "r", branch: "fix" }));
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
-    w.db.set({ pk: "DEVTASK#task-2", sk: "META", orgId: ORG_A, workflow: { outcome: "ANSWERED", intent: { rounds: 0, pathFrom: "request", answers: [], assessment: answerAssessment() } } });
-    await onStepTaskEnded(w.deps, w.endEvent("task-2", { outcome: "answered" }));
-    const attempt = w.attempts(run.runId)[2]!;
-    expect(attempt).toMatchObject({ status: "succeeded" });
-    expect((attempt.result as { report: string }).report.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
-    expect((attempt.result as { report: string }).report).toContain("payment worker");
-    expect(w.run(run.runId)!.status).not.toBe("failed");
-  });
-
-  it("reads an answered task of another org, or one with no readable answer, as a plain success", async () => {
-    const w = setupWorld();
-    const chain = await w.publish(INVESTIGATE_THEN_FIX);
-    const { startChainRun, recordGateDecision, onStepTaskEnded } = await import("../../packages/broker/src/chains/runner.js");
-    const { callerOf } = await import("../support/chain-run-world.js");
-    const run = await startChainRun(w.deps, callerOf(PRIYA), { orgId: ORG_A, chainId: chain.chainId, project: "web", origin: "app", startedBy: { kind: "member", developerId: PRIYA }, requestId: randomUUID() } as never);
-    await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "r", branch: "fix" }));
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
-    w.db.set({ pk: "DEVTASK#task-2", sk: "META", orgId: "org_bbbbbbbbbbbbbbbbbbbb", workflow: { outcome: "ANSWERED", intent: { rounds: 0, pathFrom: "request", answers: [], assessment: answerAssessment() } } });
-    await onStepTaskEnded(w.deps, w.endEvent("task-2", { outcome: "answered" }));
-    expect(w.attempts(run.runId)[2]).toMatchObject({ status: "succeeded", result: { report: "Rovara Code finished: answered." } });
-  });
-});
+// A chain step that ends Answered pauses for a person (owner ruling): see rovara-code-answered-chain.test.ts.
