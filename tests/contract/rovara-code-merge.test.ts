@@ -429,7 +429,7 @@ describe("confirming a merge", () => {
     const record = await getAnyApproval(w.deps, ORG_A, approvalId);
     const task = w.db.get(taskKey(w.taskId))!;
     w.db.set({ ...task, orgId: ORG_B });
-    await expect(getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
+    await expect(getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy: PRIYA })).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
     // It stopped before it read anything from GitHub.
     expect(w.github.calls).toEqual([]);
     expect(w.github.mergeCalls).toEqual([]);
@@ -584,11 +584,11 @@ describe("confirming a merge", () => {
     const record = await getAnyApproval(w.deps, ORG_A, approvalId);
     const handler = getApprovalSubjectHandler("pull_request_merge")!;
     w.github.results.set(7, agentXError("RUNTIME_UNAVAILABLE", "GitHub is down"));
-    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(mergedOf(w)).toEqual(["8:a:squash", "7:a:squash"]);
     w.clock.now += 130_000;
     w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
-    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.halfMerged("billing", "payments", "GitHub would not merge it")) as string });
+    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA })).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.halfMerged("billing", "payments", "GitHub would not merge it")) as string });
     // The rerun asked GitHub to merge the second pull request again and the first not at all.
     expect(mergedOf(w)).toEqual(["8:a:squash", "7:a:squash", "7:a:squash"]);
   });
@@ -632,7 +632,7 @@ describe("confirming a merge", () => {
 
 const handlerOf = async (w: MergeWorld, started: { approvalId: string }, decidedBy: string = PRIYA) => {
   const record = await getAnyApproval(w.deps, ORG_A, started.approvalId);
-  const run = () => getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy } as never);
+  const run = () => getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy });
   return { record: record!, run };
 };
 const reviewOf = (who: keyof typeof GH, commitId = HEAD_A) => ({ githubUserId: GH[who], login: LOGIN[who], userType: "User", state: "APPROVED" as const, commitId, submittedAt: AT });
