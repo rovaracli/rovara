@@ -241,14 +241,17 @@ describe("building a part's repository in a folder the sandbox can already write
 
   it("writes nothing through links planted at the names the repository is built from (objects, refs, HEAD, config)", async () => {
     for (const name of ["objects", "refs", "HEAD", "config"]) {
+      // A folder target for the folders; for the two files a path that does not exist, so a write through the link would create it.
+      const isFile = name === "HEAD" || name === "config";
       const target = join(outside, `target-${name}`);
-      await mkdir(target, { recursive: true });
+      if (!isFile) await mkdir(target, { recursive: true });
       setPartCreationHookForTests(async (_step, directory) => {
         await mkdir(join(directory, ".git"), { recursive: true });
         await symlink(target, join(directory, ".git", name));
       });
       await expect(copyOf()).rejects.toThrow();
-      expect(await listing(target)).toEqual([]);
+      if (isFile) expect(existsSync(target)).toBe(false);
+      else expect(await listing(target)).toEqual([]);
     }
   });
 
@@ -258,6 +261,9 @@ describe("building a part's repository in a folder the sandbox can already write
     expect(execFileSync("git", ["-C", copy.directory, "status", "--porcelain"], { encoding: "utf8" }).trim()).toBe("");
     expect(execFileSync("git", ["-C", copy.directory, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(copy.startCommit);
     expect(await listing(join(copy.directory, ".git"))).not.toContain("hooks");
+    expect(await readFile(join(copy.directory, ".git/config"), "utf8")).toContain("repositoryformatversion = 0");
+    expect(existsSync(join(copy.directory, ".git/objects/pack"))).toBe(true);
+    expect(existsSync(join(copy.directory, ".git/refs/heads"))).toBe(true);
     await copy.remove();
   });
 
