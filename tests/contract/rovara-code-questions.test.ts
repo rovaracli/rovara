@@ -744,11 +744,16 @@ describe("an owner's Slack reply while the task waits", () => {
     expect(await deliver("1695500002.000011")).toEqual({ outcome: "captured" });
     expect(await deliver("1695500002.000011")).toEqual({ outcome: "duplicate" });
     expect(t.meta(run.taskId).workflow.intent?.answers).toHaveLength(1);
-    // A reply whose People proof is out of date writes nothing (the ingress is told to try again).
+    // A reply whose People proof is out of date writes nothing (the ingress is told to try again). Everything else is as it was when the questions were asked, so the People fence is the
+    // only thing that can refuse it.
     t.db.set({ ...t.meta(run.taskId), workflow: frozen.workflow });
+    for (const row of t.rows()) t.db.delete(row.pk as string, row.sk as string);
     t.db.set({ pk: `DEVTASK#${run.taskId}`, sk: "PEOPLE", entityType: "TASK_PEOPLE", schemaVersion: 1, revision: 2, people: [{ developerId: MAYA.developerId, role: "owner" }] });
-    await expect(deliver("1695500002.000012", { peopleRevision: 1, isOwner: true })).rejects.toThrow();
+    await expect(deliver("1695500002.000012", { peopleRevision: 1, isOwner: true })).rejects.toThrow("the answer could not be saved");
     expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && item.sk === "NOTE#1695500002.000012")).toEqual([]);
+    expect(t.rows()).toEqual([]);
+    // With the proof current, the same reply goes through.
+    expect(await deliver("1695500002.000012", { peopleRevision: 2, isOwner: true })).toEqual({ outcome: "captured" });
   });
 
   it("is not an answer from anyone but the owner: a teammate's reply stays a note and the task keeps waiting", async () => {
