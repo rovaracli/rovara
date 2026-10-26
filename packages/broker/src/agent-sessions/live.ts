@@ -98,7 +98,7 @@ export async function batchGetItems(deps: Pick<LiveDependencies, "documentClient
 }
 
 /** The items of one partition (those whose sort key starts with `prefix`, when given), at most `max`; `more` says there were more. */
-async function queryPartition(deps: Pick<LiveDependencies, "documentClient" | "tableName">, pk: string, options: { prefix?: string; max: number }): Promise<{ items: Item[]; more: boolean }> {
+export async function queryPartition(deps: Pick<LiveDependencies, "documentClient" | "tableName">, pk: string, options: { prefix?: string; max: number }): Promise<{ items: Item[]; more: boolean }> {
   const items: Item[] = [];
   let start: Record<string, unknown> | undefined;
   do {

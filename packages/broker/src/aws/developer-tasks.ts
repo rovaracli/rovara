@@ -286,6 +286,8 @@ import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type Ag
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
 import { understandPrompt } from "../rovara-code/understand.js";
+import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
+import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../rovara-code/question-answers.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -5855,6 +5857,67 @@ const noteCountUpdate = (tableName: string, taskId: string, receivedAt: string, 
 } });
 
 /**
+ * Plan 6 Task 5: the owner's reply in the thread of a task that waits for answers IS the answer to every open question (the whole reply is each question's answer; "your call" is an
+ * answer). Written in ONE transaction: the reply's note (marked answered, so no step is also given it as a thread note, and a repeat of the same Slack message is a duplicate), the
+ * workflow moving to UNDERSTAND/READY, the next Understand dispatch row, and the timeline line. `moved_on` says the task stopped waiting (or never was, or the owner cannot be named): the
+ * caller saves the reply as the note it always was. A reply past the answer limit is refused whole, never cut.
+ */
+async function answerIntentFromReply(
+  deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "now">,
+  task: DeveloperTaskRecord,
+  input: { thread: SlackThread; slackUserId: string; messageTs: string; eventId: string; text: string; peopleAccess?: { peopleRevision?: number; isOwner: boolean } | undefined; actor?: { developerId: string; name: string } | undefined },
+): Promise<"captured" | "duplicate" | "refused" | "moved_on"> {
+  const workflow = task.workflow;
+  const questions = openQuestions(workflow);
+  const owner = tryEffectiveTaskOwner(task);
+  if (workflow === undefined || workflow.intent === undefined || questions.length === 0 || owner === undefined || task.orgId === undefined) return "moved_on";
+  const answers = answersFromReply(input.text, questions);
+  if (answers === undefined) return "refused";
+  const at = iso(deps);
+  const name = input.actor?.name ?? owner.name;
+  let next: WorkflowSnapshot;
+  try {
+    next = answerIntentQuestions(workflow, { expectedRevision: workflow.revision, round: workflow.intent.rounds, source: "slack", answers, now: at, by: { actorId: taskOwnerKey(owner.developerId, task.taskId), name } });
+  } catch (error) {
+    if (!(error instanceof IntentAnswerRefusal)) throw error;
+    return error.code === "INTENT_NOT_WAITING" ? "moved_on" : "refused";
+  }
+  const text = truncateText(redactText(input.text.trim()), WORKFLOW_THREAD_NOTE_MAX_CHARS).trim();
+  const note: SlackNote = SlackNoteSchema.parse({
+    schemaVersion: 1, taskId: task.taskId, slackUserId: SlackUserIdSchema.parse(input.slackUserId), isOwner: true,
+    teamId: input.thread.teamId, channelId: input.thread.channelId, threadTs: input.thread.threadTs, messageTs: SlackMessageTimestampSchema.parse(input.messageTs),
+    eventId: input.eventId, text, truncated: false, receivedAt: at, workflowRevision: workflow.revision, answeredAt: at,
+  });
+  const { update, dispatch } = intentAnswerItems(deps, { orgId: task.orgId, taskId: task.taskId, from: workflow, to: next, at, countNote: true });
+  const sessionRef = await sessionRefOfTask({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task);
+  const line = sessionRef === undefined ? undefined : answeredEventItem(deps, sessionRef, { requestId: input.eventId, at, by: { developerId: owner.developerId, name: cleanSessionName(name) ?? "Someone" }, source: "slack" });
+  const items: TransactItems = [
+    // Position 0: the reply's note; position 1: the task. The cancellation reasons are read by position.
+    putNew(deps.tableName, { ...threadNoteKey(task.taskId, note.messageTs), entityType: "WORKFLOW_THREAD_NOTE", ...note }),
+    update, dispatch,
+    ...(input.peopleAccess === undefined ? [] : [taskAccessFence(deps.tableName, task.taskId, input.peopleAccess.peopleRevision)]),
+    ...(line === undefined ? [] : [line]),
+  ];
+  try {
+    await deps.actions.transact(items);
+    return "captured";
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
+    if (line !== undefined && onlyTheEventCancelled(error, items.length - 1)) {
+      await deps.actions.transact(items.slice(0, -1));
+      return "captured";
+    }
+    const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
+    const code = (index: number) => Array.isArray(reasons) ? (reasons[index] as { Code?: unknown } | undefined)?.Code : undefined;
+    // The same Slack message was saved already (its mention and message copies, or a retry).
+    if (code(0) === "ConditionalCheckFailed") return "duplicate";
+    // The task stopped waiting for these answers while this was written (another answer, a close): the reply is a note like any other.
+    if (code(1) === "ConditionalCheckFailed" || code(2) === "ConditionalCheckFailed") return "moved_on";
+    throw new Error("the answer could not be saved: its transaction was cancelled", { cause: error });
+  }
+}
+
+/**
  * Gap 2: saves one reply posted in a Slack-started task's own thread, by anyone, as input for the task's next
  * step. It never decides anything and never touches the task's workflow or updatedAt: only the note and the
  * task's note count are written, together. A reply Slack delivers twice (as a mention and as a message) is
@@ -5867,6 +5930,8 @@ export async function recordWorkflowThreadNote(
     /** The person who wrote it, for the session's timeline (Plan 5 Task 6); without it the line says "Someone". */
     actor?: { developerId: string; name: string };
   },
+  /** `answers: false` once the reply was found not to be an answer (the task stopped waiting), so it is saved as the note it is. */
+  options: { answers?: false } = {},
 ): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
   const thread = SlackThreadSchema.parse(input.thread);
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
@@ -5875,6 +5940,15 @@ export async function recordWorkflowThreadNote(
     return { outcome: "refused" };
   }
   const trimmed = input.text.trim();
+  // Plan 6 Task 5: the owner's reply while the task waits for answers is the answer, not a note.
+  if (options.answers !== false && openQuestions(task.workflow).length > 0 && (input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId)) {
+    const answered = await answerIntentFromReply(deps, task, {
+      thread, slackUserId: input.userId, messageTs: input.messageTs, eventId: input.eventId, text: input.text, peopleAccess: input.peopleAccess, actor: input.actor,
+    });
+    if (answered === "captured" || answered === "duplicate" || answered === "refused") return { outcome: answered };
+    // The task stopped waiting meanwhile: the reply is saved as a note, from a fresh read of the task.
+    return recordWorkflowThreadNote(deps, input, { answers: false });
+  }
   const text = truncateText(trimmed, WORKFLOW_THREAD_NOTE_MAX_CHARS).trim();
   const slackUserId = SlackUserIdSchema.parse(input.userId);
   const messageTs = SlackMessageTimestampSchema.parse(input.messageTs);

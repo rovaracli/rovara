@@ -369,7 +369,8 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
-import { deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -8398,6 +8399,8 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
     { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text,
       peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" },
       actor: await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor) });
+  // Plan 6 Task 5: an owner's reply that answered Understand's questions made the next Understand run due: it starts now, and the sweep starts it if this is lost.
+  if (result.outcome === "captured" && access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING") await dispatchWorkflowContinuation(dependencies, taskId);
   // The PR feedback review page keeps showing the owner's own replies, as before (best effort).
   if (result.outcome === "captured") {
     const task = access.task;
@@ -14816,6 +14819,10 @@ async function completedWorkflowItems(
         && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS" || operation.workflowMode === "REVIEW")
         ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "IMPLEMENT", next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now)]
         : [];
+  // Plan 6 Task 5: Understand's questions are told to the people who can answer (the milestone and its timeline line) in the commit that asks them, never after it.
+  const questionsMilestone = operation.workflowMode === "UNDERSTAND" && next.stage === "UNDERSTAND" && next.state === "WAITING"
+    ? questionsMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now)
+    : [];
   // A saved plan forgets the reasons an earlier answer was unreadable; an unreadable answer keeps its own for Retry planning.
   const forget = planUnreadable === null && task.planUnreadable !== undefined;
   if (operation.kind === "task" && operation.workflowMode === "CHECKS" && task.workflow.e2e?.required === true
@@ -14870,7 +14877,7 @@ async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch, ...understandWatchdog,
+  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }
@@ -15535,6 +15542,13 @@ async function recordTerminalResult(
   if (runStop === "ask" && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Gap 6: start any step this result made due (its dispatch row committed above); a lost start is the sweep's.
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
+  // Plan 6 Task 5: the milestones this result wrote (Understand's questions) are told to the registered handlers now; a handler that was not told is told again by the sweep.
+  if (taskPointer !== undefined && recordedStatus === terminalStatus) {
+    const milestoneTaskId = taskPointer.taskId;
+    await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, milestoneTaskId).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: milestoneTaskId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).

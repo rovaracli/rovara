@@ -42,6 +42,11 @@ export interface SessionControlHost {
   retryWorkflow(task: DeveloperTaskRecord, requestId: string): Promise<void>;
   /** `startAgentRun`, which resolves the payer and applies the roster, budget and version rules; it is idempotent by the request's `requestId`. */
   startAgentRun(request: AgentRunRequest): Promise<AgentRunResult>;
+  /**
+   * Plan 6 Task 5: after people answered Understand's questions, starts Understand again at once, for the workflow revision the answer wrote. A convenience only: the answer's dispatch row is the
+   * guarantee, and the sweep starts it if this does nothing or fails. Never throws.
+   */
+  startUnderstanding?(task: DeveloperTaskRecord, workflowRevision: number): Promise<void>;
 }
 
 /**
@@ -81,11 +86,13 @@ export function parseControlBody(body: unknown): z.infer<typeof BodySchema> {
 
 /** What a stop or a retry answered, kept under its request id on the session so a repeat answers it again and writes nothing. */
 export interface ControlRequest {
-  action: "stop" | "retry";
+  action: "stop" | "retry" | "answer";
   by: string;
   at: string;
   /** The session that answers the request: the same session, or the new one a retry made. */
   sessionId: string;
+  /** An answer's request also keeps a digest of what was answered, so the same id with other answers is told from a repeat. */
+  bodyHash?: string;
 }
 
 export const requestKey = (orgId: OrgId, sessionId: string, requestId: string) => agentSessionKey(orgId, sessionId, `REQUEST#${requestId}`);
@@ -93,9 +100,9 @@ export const requestKey = (orgId: OrgId, sessionId: string, requestId: string) =
 export async function readControlRequest(deps: SessionReadDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string): Promise<ControlRequest | undefined> {
   const item = await getItem(deps, requestKey(session.orgId, session.sessionId, requestId));
   if (item === undefined) return undefined;
-  const { action, by, at, sessionId } = item;
-  if ((action !== "stop" && action !== "retry") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
-  return { action, by, at, sessionId };
+  const { action, by, at, sessionId, bodyHash } = item;
+  if ((action !== "stop" && action !== "retry" && action !== "answer") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
+  return { action, by, at, sessionId, ...(typeof bodyHash === "string" ? { bodyHash } : {}) };
 }
 
 /** The request item for the transaction that records the action. */

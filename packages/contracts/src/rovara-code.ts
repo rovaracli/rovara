@@ -146,6 +146,9 @@ export type IntentAnswer = z.infer<typeof IntentAnswerSchema>;
 /** Where an answer came from. */
 export const INTENT_ANSWER_SOURCES = ["app", "slack", "linear", "cli", "mcp"] as const;
 
+/** The most sets of answers a task keeps: one set answers every question of a round, so two rounds give two sets; a little room beyond that, nothing like the 20 it once allowed. */
+export const INTENT_ANSWER_SETS_MAX = UNDERSTAND_ROUNDS_MAX * 2;
+
 export const WorkflowIntentSchema = z
   .object({
     rounds: z.number().int().min(0).max(UNDERSTAND_ROUNDS_MAX),
@@ -158,13 +161,39 @@ export const WorkflowIntentSchema = z
           by: z.object({ actorId: Sha256Schema, name: z.string().min(1).max(200) }).strict(),
           source: z.enum(INTENT_ANSWER_SOURCES),
           answers: z.array(IntentAnswerSchema).min(1).max(INTENT_QUESTIONS_MAX),
+          /** The questions as they were asked in this round, kept with their answers: the next round replaces `assessment`, and an answer is read against its question (Task 5). */
+          questions: z.array(IntentQuestionSchema).min(1).max(INTENT_QUESTIONS_MAX).optional(),
           at: InstantSchema,
         }).strict(),
       )
-      .max(UNDERSTAND_ROUNDS_MAX * 10),
+      .max(INTENT_ANSWER_SETS_MAX),
   })
   .strict();
 export type WorkflowIntent = z.infer<typeof WorkflowIntentSchema>;
+
+// ---- asking and answering (Task 5)
+
+/** The first line of the message that puts Understand's questions to a person. */
+export const QUESTIONS_MESSAGE_HEADER = "Before I plan this, I need a few answers:";
+/** What a person says to leave a question to Rovara. It is an answer like any other. */
+export const YOUR_CALL_WORDS = "your call";
+/** What a person is told when some question has no answer. */
+export const ANSWER_EVERY_QUESTION_MESSAGE = "Answer every question, or say 'your call' for the ones you don't mind.";
+
+/** A model's words as one plain line: no angle brackets (so no mention, link or tag), no code fence, no control characters, one space between words. */
+const plainLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}<>]/gu, " ").replace(/`{3,}/gu, "'").replace(/\s+/gu, " ").trim();
+
+/**
+ * The message that asks the questions, in plain text: the exact first line, then each question numbered with its options lettered and the recommended one marked, then how to
+ * answer. The questions are a model's words (bounded and redacted when they were read), so they are made single plain lines here as well.
+ */
+export function intentQuestionsMessage(questions: readonly IntentQuestion[]): string {
+  const lines = questions.flatMap((question, index) => [
+    `${String(index + 1)}. ${plainLine(question.text)}`,
+    ...(question.options ?? []).map((option) => `   ${option.id}) ${plainLine(option.label)}${question.recommended === option.id ? " (recommended)" : ""}`),
+  ]);
+  return [QUESTIONS_MESSAGE_HEADER, ...lines, "", `Reply here to answer them all at once, or open the task in Rovara to answer one by one. Say "${YOUR_CALL_WORDS}" for the ones you don't mind.`].join("\n");
+}
 
 // ---- the plan critic
 

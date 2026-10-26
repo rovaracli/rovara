@@ -709,12 +709,13 @@ describe("the owner's ways out of a blocked Understand: Slack and the task page 
     expect(actionIds(message)).toEqual(["agentx_workflow_retry_plan", "agentx_workflow_close"]);
   });
 
-  it("says a budget stop in its own words, and says nothing while Understand waits for answers; while it runs it says it is reading", () => {
+  it("says a budget stop in its own words, and asks its questions while Understand waits for answers (Task 5); while it runs it says it is reading", () => {
     const paused = WorkflowSnapshotSchema.parse({ ...blocked, blockReason: WORKFLOW_BLOCK_REASONS.budgetPaused });
     expect(workflowMessage({ taskId: TASK_ID, workflow: paused })?.text).toContain(WORKFLOW_BLOCK_REASONS.budgetPaused);
     expect(workflowMessage({ taskId: TASK_ID, workflow: WorkflowSnapshotSchema.parse({ ...blocked, blockReason: "understanding operation ended cancelled" }) })?.text).toContain("Understanding was stopped before it finished.");
     expect(workflowMessage({ taskId: TASK_ID, workflow: running() })?.text).toMatch(/reading your request/i);
-    expect(workflowMessage({ taskId: TASK_ID, workflow: record(running(), questions()) })).toBeUndefined();
+    // Deliberate change of Task 5: waiting for answers is said now, with the questions (see rovara-code-questions.test.ts).
+    expect(workflowMessage({ taskId: TASK_ID, workflow: record(running(), questions()) })?.text.split("\n")[0]).toBe("Before I plan this, I need a few answers:");
   });
 
   it("opens the close confirmation for the owner, and hands the retry to the broker at the current revision", async () => {

@@ -22,6 +22,7 @@ import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type Ses
 import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { retrySession } from "./retry.js";
+import { answerIntentOnSession } from "../rovara-code/questions.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { readChanges } from "../realtime/changes.js";
@@ -46,7 +47,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|answers))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
@@ -137,7 +138,7 @@ function liveQueryOf(url: URL): LiveQuery {
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
- * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `POST …/answers` (Rovara Code: people answer Understand's questions, needs "can use"); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`; `GET /v1/app/home` and `POST /v1/app/home/cards/{cardId}/dismiss` (Task 15: Home's ranked cards); `GET /v1/app/live?filter=&project=&cursor=&limit=` (Task 14: the Live wall's tiles). Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -220,6 +221,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (control !== undefined) {
     // Task 13: stop (Plan 3's cancel, or Plan 4's for a chain) and retry (the same workflow, or a new run); each answers the session that carries on.
     if (method !== "POST") throw notFound();
+    if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
     return control === "stop" ? stopSession(read, caller, sessionId, jsonBody(request)) : retrySession(read, caller, sessionId, jsonBody(request));
   }
   if (messages !== undefined) {

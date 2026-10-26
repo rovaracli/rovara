@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
-  FixSourceSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
-  intentAssessmentDuplicateIds, intentAssumptionLine, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAssessment, type WorkflowIntent,
+  ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
+  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
+  intentAssessmentDuplicateIds, intentAssumptionLine, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAnswer, type IntentAssessment, type WorkflowIntent,
 } from "./rovara-code.js";
+import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
+import { redactText } from "./redaction.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -2127,6 +2130,66 @@ export function recordIntentAssessment(currentInput: unknown, input: { expectedR
     ...withoutPhase, revision: current.revision + 1, stage: "PLAN", state: "READY", path,
     ...(path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
     intent: { ...intent, assessment: ready }, updatedAt: input.now,
+  });
+}
+
+/** Answers that cannot be taken, with the error code the broker answers them under: `INTENT_NOT_WAITING` (nothing is waiting for them) or `CONFIG_INVALID` (they are not a full, valid set of answers). */
+export class IntentAnswerRefusal extends WorkflowTransitionError {
+  readonly code: "INTENT_NOT_WAITING" | "CONFIG_INVALID";
+  constructor(code: "INTENT_NOT_WAITING" | "CONFIG_INVALID", message: string) {
+    super(message);
+    this.name = "IntentAnswerRefusal";
+    this.code = code;
+  }
+}
+
+/** A person's words for a prompt and a record: credentials redacted, control characters made spaces (a line break stays), no longer than an answer may be. */
+function cleanAnswerText(text: string): string {
+  const cleaned = redactText(text).replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? "\n" : " ")).trim();
+  return Array.from(cleaned).slice(0, INTENT_ANSWER_MAX_CHARS).join("");
+}
+
+/**
+ * Rovara Code version 2: people answered Understand's questions. Only at UNDERSTAND/WAITING, for the round now asked, at the revision that was read; every open question needs one
+ * answer (an option of that question, words, or both), and nothing else is taken. The answers are cleaned (credentials redacted, control characters made spaces) and kept with who
+ * gave them, where from, and the questions as they were asked, and Understand runs again (UNDERSTAND/READY; the caller writes the dispatch row in the same transaction).
+ * `by` is the person the broker authenticated, never anything from the request's body.
+ */
+export function answerIntentQuestions(
+  currentInput: unknown,
+  input: { expectedRevision: number; round: number; by: { actorId: string; name: string }; source: string; answers: unknown; now: string },
+): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const asked = current.intent?.assessment;
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "WAITING" || current.intent === undefined || asked?.kind !== "questions"
+    || input.round !== current.intent.rounds || input.expectedRevision !== current.revision) {
+    throw new IntentAnswerRefusal("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  }
+  const invalid = (message: string) => new IntentAnswerRefusal("CONFIG_INVALID", message);
+  const source = z.enum(INTENT_ANSWER_SOURCES).safeParse(input.source);
+  if (!ActorIdSchema.safeParse(input.by.actorId).success || !source.success) throw new WorkflowTransitionError("the answers are not from a known person and place");
+  const name = Array.from(redactText(input.by.name).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, 200).join("");
+  if (name === "") throw new WorkflowTransitionError("the answers need the name of the person who gave them");
+  const parsed = z.array(IntentAnswerSchema).min(1).max(INTENT_QUESTIONS_MAX).safeParse(input.answers);
+  if (!parsed.success) {
+    // Field names only: the values are a person's words.
+    throw invalid(`answers: ${parsed.error.issues[0]?.path.map(String).join(".") || "the list"} is not valid`);
+  }
+  const questions = new Map(asked.questions.map((question) => [question.id, question]));
+  if (parsed.data.some((answer) => !questions.has(answer.questionId))) throw invalid("answers: one of them is for a question that wasn't asked");
+  if (new Set(parsed.data.map((answer) => answer.questionId)).size !== parsed.data.length || parsed.data.length !== questions.size) throw invalid(ANSWER_EVERY_QUESTION_MESSAGE);
+  const cleaned: IntentAnswer[] = [];
+  for (const answer of parsed.data) {
+    const options = questions.get(answer.questionId)?.options;
+    if (answer.optionId !== undefined && options?.some((option) => option.id === answer.optionId) !== true) throw invalid("answers: one of them is not one of the question's options");
+    const text = answer.text === undefined ? undefined : cleanAnswerText(answer.text);
+    if (answer.optionId === undefined && (text === undefined || text === "")) throw invalid("answers: each answer picks an option or says something");
+    cleaned.push({ questionId: answer.questionId, ...(answer.optionId === undefined ? {} : { optionId: answer.optionId }), ...(text === undefined || text === "" ? {} : { text }) });
+  }
+  const ordered = asked.questions.map((question) => cleaned.find((answer) => answer.questionId === question.id)!);
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, state: "READY", updatedAt: input.now,
+    intent: { ...current.intent, answers: [...current.intent.answers, { round: current.intent.rounds, by: { actorId: input.by.actorId, name }, source: source.data, answers: ordered, questions: asked.questions, at: input.now }] },
   });
 }
 

@@ -351,7 +351,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     if (workflow.state === "BLOCKED") workflowBlocked = true;
     // Only a stage that waits on a person is not running: a plan under review needs its owner, a blocked task needs someone, a pull request waits to be merged. The checks and
     // reviews also sit in WAITING between runs, but nobody is needed for them.
-    if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
+    // Rovara Code version 2: Understand's questions wait for a person too.
+    if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || (workflow.stage === "UNDERSTAND" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
     else if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING") status = "waiting";
     else status = starting ? "starting" : "running";
   } else if (run !== undefined) {
@@ -378,7 +379,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const waitingOwner = tryEffectiveTaskOwner(task)?.developerId;
   if (waitingOwner !== undefined) {
     if (status === "needs_person" && needsPeople.length === 0) needsPeople.push(waitingOwner);
-    if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
+    if ((workflow?.stage === "PLAN_REVIEW" || workflow?.stage === "UNDERSTAND") && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
   }
   // An event log that can't be read keeps the peek the summary had: a failed read is not a reason to blank it.
   const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch((error: unknown) => {

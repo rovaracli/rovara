@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  intentQuestionsMessage, isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
@@ -726,7 +726,11 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
   const checksAndReviewsPassed = reviewOnly ? "Reviews passed (no automated check applied)." : "Checks and reviews passed.";
   if (context.publishFailure !== undefined && workflow.stage === "PULL_REQUEST") return publishFailed(context, exits, context.publishFailure);
   switch (`${workflow.stage}/${workflow.state}`) {
-    // Rovara Code version 2: Understand reads the request and the code first. Its questions are asked by their own message; while it waits for answers nothing is said here.
+    // Rovara Code version 2: Understand reads the request and the code first, and asks its questions (a model's words, escaped here; the thread's reply answers all of them) when it must.
+    case "UNDERSTAND/WAITING": {
+      const asked = workflow.intent?.assessment;
+      return asked?.kind === "questions" ? plain(slackText(intentQuestionsMessage(asked.questions))) : undefined;
+    }
     case "UNDERSTAND/RUNNING": return plain("Reading your request and the code before I plan. I'll ask a question here if I need one; nothing changes in the code until you approve a plan.");
     case "UNDERSTAND/BLOCKED": return { text: `I couldn't finish understanding this task. ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.button("agentx_workflow_retry_plan", "Retry understanding"), exits.close] };
     case "PLAN/RUNNING": return plain(planRunning(context));
