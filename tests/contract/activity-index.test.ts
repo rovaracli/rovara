@@ -288,3 +288,10 @@ describe("the index's deadline (A4)", () => {
     }
   }, 2_000);
 });
+
+it("K1 retains a realistic pre-org legacy thread link in the install's org", async () => {
+  const legacy = { ...slackWorkspace[1]!, workspaceId: WORKSPACE };
+  const index = store([slackWorkspace[0]!, legacy]);
+  await indexActivity([modified(operation({}), operation({ status: "FAILED", updatedAt: "2026-09-30T08:15:00.000Z" }))], index, vi.fn());
+  expect(index.puts[0]).toMatchObject({ pk: orgFailureDayPk(TEST_ORG, "2026-09-30"), thread: legacy.thread });
+});
