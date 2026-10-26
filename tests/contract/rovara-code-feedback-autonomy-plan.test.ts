@@ -1,0 +1,59 @@
+// Rovara Code (Plan 6 Task 16): what Rovara reads before it decides a round on its own. The stored report and the comments are read as the owner's card reads them (every digest and key checked), and
+// the round must be nothing but fixes to make: a finding that is a question, a skip or less than actionable, comments over the size an automatic round takes, ordered parts the owner approved, a
+// change to the checks Rovara would not make, or a record that fails its integrity check all leave the round to the owner.
+import { describe, expect, it } from "vitest";
+import { planAutomaticFeedbackRound } from "../../packages/broker/src/aws/developer-tasks.js";
+import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { plannedReview } from "../support/rovara-code-feedback.js";
+
+describe("the round Rovara reads before it decides", () => {
+  it("is every finding of a sound, actionable review, in the report's order, with the comments they answer", async () => {
+    const { deps, stored } = await plannedReview();
+    const plan = await planAutomaticFeedbackRound(deps, stored());
+    expect(plan?.selected.map((finding) => finding.id)).toEqual(["finding-1"]);
+    expect(plan?.selected[0]?.comments).toEqual([expect.objectContaining({ id: "review_comment:1", author: "maya", body: "Handle empty input" })]);
+    expect(plan?.checkChanges.problems).toEqual([]);
+  });
+
+  it("a finding that is a question, a skip, not actionable, not recommended or without a fix is the owner's", async () => {
+    for (const finding of [
+      { proposedDisposition: "OWNER_DECISION", assessment: "NEEDS_OWNER_DECISION", recommended: false, confidence: { level: "LOW", reason: "Two readings." } },
+      { proposedDisposition: "SKIP", assessment: "OUT_OF_SCOPE", recommended: false },
+      { assessment: "TECHNICALLY_INCORRECT", recommended: false, proposedDisposition: "SKIP" },
+      { fixProposal: undefined },
+    ]) {
+      const { deps, stored } = await plannedReview({ finding, findingRef: { assessment: finding.assessment ?? "ACTIONABLE", recommended: finding.recommended ?? true } });
+      expect(await planAutomaticFeedbackRound(deps, stored()), JSON.stringify(finding)).toBeUndefined();
+    }
+  });
+
+  it("comments over the size an automatic round takes are the owner's to read first", async () => {
+    const { deps, stored } = await plannedReview({ body: "x".repeat(70_000) });
+    expect(await planAutomaticFeedbackRound(deps, stored())).toBeUndefined();
+    const small = await plannedReview({ body: "x".repeat(60_000) });
+    expect(await planAutomaticFeedbackRound(small.deps, small.stored())).toBeDefined();
+  });
+
+  it("a review that is not complete, or is not waiting or approved, is not a round to decide", async () => {
+    const { deps, stored } = await plannedReview();
+    const record = stored();
+    const failed = { ...record, workflow: { ...record.workflow!, feedbackReview: { ...record.workflow!.feedbackReview!, reviewRef: { ...record.workflow!.feedbackReview!.reviewRef!, status: "FAILED" as const, blockReason: "review timed out" } } } };
+    expect(await planAutomaticFeedbackRound(deps, failed as DeveloperTaskRecord)).toBeUndefined();
+    const dismissed = { ...record, workflow: { ...record.workflow!, feedbackReview: { ...record.workflow!.feedbackReview!, status: "DISMISSED" as const } } };
+    expect(await planAutomaticFeedbackRound(deps, dismissed as DeveloperTaskRecord)).toBeUndefined();
+  });
+
+  it("a record that fails its integrity check throws, and Rovara leaves the round to the owner", async () => {
+    for (const tamper of ["report", "bundle"] as const) {
+      const { deps, stored } = await plannedReview({ tamper });
+      await expect(planAutomaticFeedbackRound(deps, stored()), tamper).rejects.toThrow();
+    }
+  });
+
+  it("a task with an approved work plan of ordered parts is the owner's", async () => {
+    const { deps, stored } = await plannedReview();
+    const record = stored();
+    const withPlan = { ...record, workflow: { ...record.workflow!, workflowDependenciesApproval: { graphDigest: "a".repeat(64) } } };
+    expect(await planAutomaticFeedbackRound(deps, withPlan as unknown as DeveloperTaskRecord)).toBeUndefined();
+  });
+});

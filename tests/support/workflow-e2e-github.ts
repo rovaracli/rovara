@@ -416,6 +416,8 @@ export class FakeGitHub {
     const headers = new Headers(init?.headers);
     if (!/^Bearer \S+$/.test(headers.get("authorization") ?? "")) return answer(401, { message: "Requires authentication" });
     const path = url.pathname;
+    // The App itself (its slug names the login its own comments carry).
+    if (method === "GET" && path === "/app") return answer(200, { slug: OWN_LOGIN.replace("[bot]", "") });
     if (method === "GET" && path === `/repos/${FULL_NAME}/installation`) return answer(200, { id: INSTALLATION_ID, account: { login: OWNER } });
     if (method === "POST" && path === `/app/installations/${INSTALLATION_ID}/access_tokens`) {
       const body = JSON.parse((typeof init?.body === "string" ? init.body : "{}")) as { permissions?: Record<string, string> };

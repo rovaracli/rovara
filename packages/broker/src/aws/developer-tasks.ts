@@ -3917,7 +3917,9 @@ async function retryWorkflowImplementation(
   await actionableWorkspace(deps, task);
   // Plan 6 Task 15: a CI fix that stopped before it finished is told again what CI said, so the run that goes on has it in its own prompt, not only in the conversation (and needs no plan text).
   const ciBlock = workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0 ? await readLatestCiEvidence(deps, task.taskId, task.orgId) : undefined;
-  const plan = ciBlock === undefined ? await approvedCodingPlan(deps, workflow) : undefined;
+  // Plan 6 Task 16: a round of fixes to review comments that stopped goes on from the current code, keeping to the findings it was given; its scope is those findings, not the plan again.
+  const feedbackRound = workflow.fixSource === "feedback" && sendBackProblems(workflow).length === 0;
+  const plan = ciBlock === undefined && !feedbackRound ? await approvedCodingPlan(deps, workflow) : undefined;
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
   if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it");
@@ -3926,6 +3928,9 @@ async function retryWorkflowImplementation(
   void _blockReason;
   const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: iso(deps) };
   const prompt = (notes: string): string => {
+    if (plan === undefined && feedbackRound) {
+      return `The previous coding run stopped before it finished; continue fixing the PR feedback findings you were given, from the current code, and change nothing else. ${NO_PUBLISH_NOTE}\n\nOwner note: ${request.instructions}${notes}`;
+    }
     if (plan === undefined) {
       return `${ciFixPrompt({ block: ciBlock ?? "", notes: NO_PUBLISH_NOTE })}\n\nThe previous coding run stopped before it finished; continue from the current code.\n\nOwner note: ${request.instructions}${notes}`;
     }

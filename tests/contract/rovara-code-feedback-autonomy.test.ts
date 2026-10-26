@@ -12,7 +12,8 @@ import {
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { readCiEvidence, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
-import { autoFixableRound, installFeedbackDecider, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { FakeGithub, SESSION_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -528,5 +529,126 @@ describe("failing CI while the owner's card waits", () => {
     w.github.statuses.set(7, status({ draft: false, checks: [redCheck()] }));
     await trackPullRequest(w.deps, TASK_ID);
     expect(storedWorkflow(w).feedbackCiFailures).toBeUndefined();
+  });
+});
+
+// ---- the one reply on each fixed thread
+
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+/** A round Rovara decided itself and a push that landed: the workflow as the landing's transaction sees it (the review approved, the decision recorded). */
+function decidedRound(options: { comments?: CommentSpec[]; by?: "rovara" | "owner" } = {}): WorkflowSnapshot {
+  const card = pendingCard({ comments: options.comments ?? [{ id: "review_comment:11", author: "maya", threadId: "thread-1" }, { id: "review_comment:12", author: "maya", threadId: "thread-1" }, { id: "review_comment:21", author: "maya", threadId: "thread-2" }, { id: "discussion:31", author: "maya", kind: "DISCUSSION" }] });
+  return decideWorkflowFeedbackFindings(card.workflow, requestFor(card), options.by === "owner" ? owner : rovara, at);
+}
+
+describe("feedbackReplyItems", () => {
+  const items = (workflow: WorkflowSnapshot, number = 7) => feedbackReplyItems({ tableName: "state", orgId: TEST_ORG, workflow, repositoryId: "payments", number, head: SHA, now: at });
+
+  it("leaves one item for the round: the first fixed comment of each review thread, never a discussion or a review body", () => {
+    const [put] = items(decidedRound()) as Array<{ Put: { Item: Record<string, unknown>; ConditionExpression?: string } }>;
+    expect(put?.Put.Item).toMatchObject({
+      pk: `DEVTASK#${TASK_ID}`, entityType: "FEEDBACK_REPLY", orgId: TEST_ORG, taskId: TASK_ID, repositoryId: "payments", number: 7, head: SHA, commentIds: ["11", "21"], repliedIds: [], state: "pending", attempts: 0,
+    });
+    expect(String(put?.Put.Item["sk"])).toMatch(/^FEEDBACK_REPLY#[0-9a-f-]{36}#payments#7$/u);
+    expect(put?.Put.ConditionExpression).toBe("attribute_not_exists(pk)");
+    expect(put?.Put.Item["indexExpiresAt"]).toBeTypeOf("number");
+  });
+
+  it("a round a person decided leaves none, and so does a pull request the round was not for, or a round with no thread", () => {
+    expect(items(decidedRound({ by: "owner" }))).toEqual([]);
+    expect(items(decidedRound(), 8)).toEqual([]);
+    expect(items(decidedRound({ comments: [{ id: "discussion:31", author: "maya", kind: "DISCUSSION" }] }))).toEqual([]);
+    expect(items(pendingCard().workflow)).toEqual([]);
+  });
+});
+
+describe("sendFeedbackReplies", () => {
+  function repliesWorld(options: { fail?: (commentId: string, attempt: number) => Error | undefined } = {}) {
+    const db = new FakeDynamoDb();
+    const sent: Array<{ number: number; commentId: string; body: string }> = [];
+    const calls: string[] = [];
+    let attempts = 0;
+    const deps = {
+      documentClient: db, tableName: "state", now: () => Date.parse(at),
+      github: { replyToReviewThread: async (_url: string, number: number, commentId: string, body: string) => {
+        attempts += 1;
+        calls.push(commentId);
+        const failure = options.fail?.(commentId, attempts);
+        if (failure !== undefined) throw failure;
+        sent.push({ number, commentId, body });
+        return "replied" as const;
+      } },
+      scope: (orgId: string) => ({ orgId }) as never,
+      repositoryUrl: async () => "https://github.com/acme/payments",
+    };
+    const [put] = feedbackReplyItems({ tableName: "state", orgId: TEST_ORG, workflow: decidedRound(), repositoryId: "payments", number: 7, head: SHA, now: at }) as Array<{ Put: { Item: Record<string, unknown> } }>;
+    db.set(put!.Put.Item);
+    const task = { taskId: TASK_ID, orgId: TEST_ORG, project: "payments", startingRevision: 1 };
+    return { db, deps, sent, calls, task, item: () => db.find((entry) => entry.entityType === "FEEDBACK_REPLY")[0]! };
+  }
+
+  it("replies once on each thread, with Rovara's fixed text naming the commit, and writes each down", async () => {
+    const w = repliesWorld();
+    expect(await sendFeedbackReplies(w.deps, w.task)).toBe(2);
+    expect(w.sent).toEqual([{ number: 7, commentId: "11", body: "Fixed in 0123456." }, { number: 7, commentId: "21", body: "Fixed in 0123456." }]);
+    expect(w.item()).toMatchObject({ state: "done", repliedIds: ["11", "21"], attempts: 1 });
+    // Again: nothing is sent twice.
+    expect(await sendFeedbackReplies(w.deps, w.task)).toBe(0);
+    expect(w.sent).toHaveLength(2);
+  });
+
+  it("a failure leaves the rest for the next pass, and a reply that went is never sent again; the item is given up after its attempts", async () => {
+    let failing = true;
+    const w = repliesWorld({ fail: (commentId) => (commentId === "21" && failing ? new Error("GitHub is down") : undefined) });
+    expect(await sendFeedbackReplies(w.deps, w.task)).toBe(1);
+    expect(w.item()).toMatchObject({ state: "pending", repliedIds: ["11"], attempts: 1 });
+    failing = false;
+    expect(await sendFeedbackReplies(w.deps, w.task)).toBe(1);
+    expect(w.sent.map((entry) => entry.commentId)).toEqual(["11", "21"]);
+    expect(w.item()).toMatchObject({ state: "done", repliedIds: ["11", "21"] });
+    // An item that never works is tried FEEDBACK_REPLY_ATTEMPTS_MAX times and then left.
+    const stuck = repliesWorld({ fail: () => new Error("GitHub is down") });
+    for (let pass = 0; pass < FEEDBACK_REPLY_ATTEMPTS_MAX + 2; pass += 1) await sendFeedbackReplies(stuck.deps, stuck.task);
+    expect(stuck.calls).toHaveLength(FEEDBACK_REPLY_ATTEMPTS_MAX);
+    expect(stuck.item()).toMatchObject({ state: "pending", attempts: FEEDBACK_REPLY_ATTEMPTS_MAX });
+  });
+
+  it("GitHub's rate limit goes up to the sweep; a thread that is gone is just done", async () => {
+    const limited = repliesWorld({ fail: () => new GithubMergeRateLimitError(Date.now() + 60_000) });
+    await expect(sendFeedbackReplies(limited.deps, limited.task)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+  });
+
+  it("sends nothing for another task's or another org's item", async () => {
+    const w = repliesWorld();
+    expect(await sendFeedbackReplies(w.deps, { ...w.task, orgId: "org_" + "b".repeat(24) as never })).toBe(0);
+    expect(await sendFeedbackReplies(w.deps, { ...w.task, taskId: "00000000-0000-4000-8000-0000000000b2" })).toBe(0);
+    expect(w.sent).toEqual([]);
+  });
+
+  it("two passes at once send each reply once: the one that lost the claim does nothing", async () => {
+    const w = repliesWorld();
+    const [first, second] = await Promise.all([sendFeedbackReplies(w.deps, w.task), sendFeedbackReplies(w.deps, w.task)]);
+    expect(first + second).toBe(2);
+    expect(w.sent).toHaveLength(2);
+  });
+});
+
+describe("the tracking pass sends the replies a landed push left", () => {
+  beforeEach(() => installFeedbackDecider());
+  afterEach(() => uninstallFeedbackDecider());
+
+  it("at the end of a pass, best effort: a failure there never fails the pass", async () => {
+    const w = feedbackWorld({ autonomy: "suggest" });
+    const calls: string[] = [];
+    (w.deps as { sendFeedbackReplies?: unknown }).sendFeedbackReplies = async () => { calls.push("sent"); };
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(calls).toEqual(["sent"]);
+    (w.deps as { sendFeedbackReplies?: unknown }).sendFeedbackReplies = async () => { throw new Error("the queue is down"); };
+    w.setNow(w.now() + 120_000);
+    await expect(trackPullRequest(w.deps, TASK_ID)).resolves.toBeDefined();
+    (w.deps as { sendFeedbackReplies?: unknown }).sendFeedbackReplies = async () => { throw new GithubMergeRateLimitError(Date.now() + 60_000); };
+    w.setNow(w.now() + 120_000);
+    await expect(trackPullRequest(w.deps, TASK_ID)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
   });
 });

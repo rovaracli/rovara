@@ -1,13 +1,16 @@
 // Rovara Code (Plan 6 Task 16), through the whole broker: a version 2 task's draft pull request gets review comments. A writer's actionable comment is fixed without asking the owner (the tracking
 // pass decides it as Rovara's own, the round is an ordinary coding run that is checked, reviewed and pushed to the same branch at the expected head, and Rovara leaves one reply on the thread);
 // everything else waits for the owner as before: a reader's comment, a stranger's beside a writer's, autonomy suggest, a fourth round. What a comment says changes nothing.
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { feedbackCriticReply } from "../../support/faux-scripts.js";
 import { visibleSlackText } from "../../support/strict-slack.js";
+import { OWN_LOGIN } from "../../support/workflow-e2e-github.js";
+import { IMPLEMENT_TEST_RULE } from "../../../packages/broker/src/rovara-code/verification-report.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, FIXED, PLAN, PUSHED_FIX, actionIds, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
@@ -25,6 +28,7 @@ const milestones = (e2e: WorkflowE2E, kind: string) => e2e.db.find((item) => ite
 /** The fake GitHub as merge tracking reads it: CI green, and who has what permission on the repository. */
 function trackingGithub(e2e: () => WorkflowE2E, people: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>) {
   const calls: string[] = [];
+  const state = { red: false, log: "2026-10-26T11:00:00.0000000Z Error: boom in greet\n" };
   const pullRequest = (number: number) => e2e().github.pullRequests.find((entry) => entry.number === number)!;
   const standing = async (_url: string, login: string) => {
     calls.push(`permission:${login}`);
@@ -32,17 +36,18 @@ function trackingGithub(e2e: () => WorkflowE2E, people: Record<string, { permiss
     return { permission: found?.permission ?? "none" as const, ...(found?.type === undefined ? {} : { userType: found.type }) };
   };
   return {
-    calls, people,
+    calls, people, state,
     methods: {
       getPullRequestStatus: async (_url: string, number: number) => {
         calls.push(`status:${String(number)}`);
         const found = pullRequest(number);
         return {
           number, state: found.state, draft: found.draft === true, headSha: found.commit, baseBranch: found.baseBranch, mergeableState: "clean" as const, mergeable: true, behindBy: 0,
-          checks: [{ name: "test", status: "completed" as const, conclusion: "success" as const, required: false, url: "https://github.com/example/demo/actions/runs/1/job/4242", jobId: "4242", appId: 15_368 }],
+          checks: [{ name: "test", status: "completed" as const, conclusion: state.red ? "failure" as const : "success" as const, required: false, url: "https://github.com/example/demo/actions/runs/1/job/4242", jobId: "4242", appId: 15_368 }],
           requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [],
         };
       },
+      getJobLogTail: async (_url: string, jobId: string) => { calls.push(`log:${jobId}`); return state.log; },
       getRepositoryPermission: async (url: string, login: string) => (await standing(url, login)).permission,
       getRepositoryStanding: standing,
       markPullRequestReady: async (_url: string, number: number) => { pullRequest(number).draft = false; return "ready" as const; },
@@ -52,16 +57,24 @@ function trackingGithub(e2e: () => WorkflowE2E, people: Record<string, { permiss
 }
 
 /** A version 2 task through its first pull request (waiting for the merge), with its program in place, CI green, and the reviewer of PR feedback scripted. */
-async function waitingForMerge(options: { people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
+async function waitingForMerge(options: { github?: { wire?: boolean }; people?: Record<string, { permission: "admin" | "write" | "read" | "none"; type?: string }>; autonomy?: "suggest" | "prepare" | "run"; critic?: (prompt: string) => string } = {}) {
   const holder: { e2e?: WorkflowE2E } = {};
   const github = trackingGithub(() => holder.e2e!, options.people ?? { maya: { permission: "write", type: "User" } });
   const prompts: string[] = [];
+  let rounds = 0;
   const e2e = (holder.e2e = await createWorkflowE2E({
     model: {
-      plan: PLAN, edits: (latest) => { prompts.push(latest); return latest.includes(AUTO_FIX) || latest.includes("owner-approved PR feedback") ? FIXED : EDITS; },
+      plan: PLAN, edits: (latest) => {
+        prompts.push(latest);
+        if (!latest.includes(AUTO_FIX) && !latest.includes("owner-approved PR feedback")) return EDITS;
+        // Each round changes the code a little differently, so a round that fixed nothing is never mistaken for one that did.
+        rounds += 1;
+        return [{ path: FIXED[0]!.path, content: `${FIXED[0]!.content}// round ${String(rounds)}\n` }];
+      },
       feedback: (prompt) => options.critic?.(prompt) ?? feedbackCriticReply(prompt, { repositoryId: "demo", path: "greeting.ts", testPath: "greeting.test.ts" }),
     },
     trackingGithub: github.methods,
+    ...(options.github === undefined ? {} : { github: options.github }),
   }));
   await atPlanReview(e2e);
   const stored = task(e2e);
@@ -202,8 +215,152 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     e2e.worker.features(WORKER_INVOCATION_FEATURES.filter((feature) => feature !== "task.workflowFeedbackAutonomy"));
     await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
     await trackAndFix(e2e);
+    // The run was accepted, and the delivery refused it with the outdated text: it was never run on a worker that cannot take Rovara's binding.
+    const refused = e2e.db.find((item) => item.entityType === "OPERATION" && item.workflowMode === "IMPLEMENT" && typeof item.error === "string");
+    expect(refused.map((operation) => String(operation.error))).toEqual([expect.stringContaining(AGENT_WORKER_OUTDATED)]);
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", fixSource: "feedback", fixRounds: { feedbackAuto: 1 } });
     expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
     expect(e2e.github.pushLog.filter((push) => push.during === "maintain")).toEqual([]);
+  }, 480_000);
+
+  it("15.8 failing CI while the owner's card waits is added to the card (said again), starts no CI round, and the owner's approval takes it into the same round", async () => {
+    const { e2e, github, prompts, pullRequest } = await waitingForMerge({ autonomy: "suggest" });
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    const firstCard = e2e.slack.lastPostWithAction("agentx_feedback_review_recommended");
+    expect(visibleSlackText(firstCard.text)).not.toContain("CI is failing");
+    github.state.red = true;
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    await e2e.settle();
+    const carded = e2e.workflow();
+    expect(carded).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "PENDING" }, feedbackCiFailures: { checks: ["test"] } });
+    expect(carded.fixRounds).toBeUndefined();
+    expect(dispatchRows(e2e)).toEqual([]);
+    // The card is said again, with the failing check on it; the card before it is refused (it was decided against the card as it was).
+    const secondCard = e2e.slack.lastPostWithAction("agentx_feedback_review_recommended");
+    expect(secondCard.ts).not.toBe(firstCard.ts);
+    expect(visibleSlackText(secondCard.text)).toContain("CI is failing on test. Approving fixes it in the same round.");
+    await e2e.click("agentx_feedback_review_recommended", { messageTs: firstCard.ts });
+    await e2e.settle();
+    expect(e2e.workflow().feedbackDecisions).toBeUndefined();
+    // The owner approves the new card: one round, the owner's own, with what CI said in the exact block.
+    await e2e.click("agentx_feedback_review_recommended", { messageTs: secondCard.ts });
+    await e2e.settle();
+    const finished = e2e.workflow();
+    expect(finished).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(finished.fixRounds).toBeUndefined();
+    expect(finished.feedbackDecisions).toEqual([expect.objectContaining({ actorRole: "TASK_OWNER", ciFailures: expect.objectContaining({ checks: ["test"] }) })]);
+    const fixPrompt = prompts.find((prompt) => prompt.includes("owner-approved PR feedback"))!;
+    expect(fixPrompt).toContain(CI_OUTPUT_BLOCK_HEADER);
+    expect(fixPrompt).toContain("Error: boom in greet");
+    expect(fixPrompt.indexOf("Implement only the owner-approved")).toBeLessThan(fixPrompt.indexOf(CI_OUTPUT_BLOCK_HEADER));
+    expect(fixPrompt).toContain(IMPLEMENT_TEST_RULE);
+    expect(milestones(e2e, "fixing")).toEqual([]);
+  }, 480_000);
+
+  it("15.9 comments edited after a round was fixed start another round, counted, and Rovara's own reply does not", async () => {
+    const { e2e, pullRequest } = await waitingForMerge();
+    const comment = await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    await trackAndFix(e2e);
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });
+    expect(e2e.github.replies).toHaveLength(1);
+    // The reply Rovara left is on the thread; hearing of it is not feedback.
+    const reply = e2e.github.pullRequests[0]!.comments.find((entry) => entry.author === OWN_LOGIN)!;
+    expect(reply).toBeDefined();
+    expect(await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: { ...reply } as never })).toMatchObject({ status: 200 });
+    await e2e.settle();
+    expect(e2e.workflow().feedbackReview).toBeUndefined();
+    // The writer edits the comment: a new comment set, a new review, and Rovara decides it again (round two).
+    e2e.github.editComment(comment.id, "Please trim the name and lower-case it.");
+    expect((await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: e2e.github.pullRequests[0]!.comments.find((entry) => entry.id === comment.id) as never })).status).toBe(200);
+    await e2e.settle();
+    await trackAndFix(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 2 } });
+    expect(e2e.workflow().feedbackDecisions).toHaveLength(2);
+  }, 480_000);
+
+  it("15.12 read through the real GitHub client, the App's own reply is left out of the comments and of their thread, so it is never feedback", async () => {
+    const { e2e, pullRequest } = await waitingForMerge({ github: { wire: true } });
+    const comment = await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    await trackAndFix(e2e);
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.github.replies).toHaveLength(1);
+    const reply = e2e.github.pullRequests[0]!.comments.find((entry) => entry.author === OWN_LOGIN)!;
+    expect(reply.threadId).toBe(comment.threadId);
+    expect((await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: { ...reply } as never })).status).toBe(200);
+    await e2e.settle();
+    expect(e2e.workflow().feedbackReview).toBeUndefined();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });
+    // A person answering in that thread is feedback, and the round's comments are theirs.
+    const answer = e2e.github.replyInThread(comment.threadId!, "maya", "Thanks, one more thing: trim the greeting too.");
+    expect((await e2e.webhook({ kind: "pull_request_review_comment", number: pullRequest.number, comment: answer })).status).toBe(200);
+    await e2e.settle();
+    // The thread's two comments are Maya's (her first, still open, and her answer); Rovara's reply between them is in neither the comments nor the thread.
+    expect(e2e.workflow().feedbackReview?.bundleRefs.flatMap((bundle) => bundle.comments.map((entry) => entry.author))).toEqual(["maya", "maya"]);
+  }, 480_000);
+
+  it("15.13 only Rovara decides as Rovara: the routes, the page and the MCP tool all refuse a body that claims its role or its id, and no decision is recorded", async () => {
+    const { e2e, pullRequest } = await waitingForMerge({ autonomy: "suggest" });
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    const card = e2e.workflow();
+    const review = card.feedbackReview!;
+    const valid = {
+      requestId: randomUUID(), expectedRevision: card.revision, reviewDigest: review.reviewRef!.sha256, proposalDigest: review.reviewRef!.proposalDigest,
+      bundleDigests: review.bundleRefs.map((bundle) => bundle.sha256), decision: "DISMISS", selectedFindingIds: [], ownerNote: "Not now.",
+    };
+    const claims = [{ actorRole: "ROVARA_AUTONOMY" }, { actorId: "rovara" }, { actorRole: "ROVARA_AUTONOMY", actorId: "rovara", autonomy: { level: "prepare" } }, { autonomy: { level: "run" } }];
+    // The page: a body with any claim is refused before anything is decided.
+    await e2e.feedbackPage();
+    for (const claim of claims) expect((await e2e.feedbackDecision({ ...valid, requestId: randomUUID(), ...claim })).status, JSON.stringify(claim)).toBe(400);
+    // The same checks the routes make: the request schemas of the feedback decision and of the plan decision have no such field.
+    for (const claim of claims) {
+      expect(WorkflowFeedbackFindingsDecisionRequestSchema.safeParse({ ...valid, ...claim }).success, JSON.stringify(claim)).toBe(false);
+      expect(WorkflowDecisionRequestSchema.safeParse({ requestId: randomUUID(), expectedRevision: 1, decision: "APPROVE", reason: "ok", artifactDigest: "a".repeat(64), ...claim }).success, JSON.stringify(claim)).toBe(false);
+    }
+    expect(e2e.workflow().feedbackDecisions).toBeUndefined();
+    // The MCP tool: whatever it does with extra fields, no decision it records is Rovara's.
+    await e2e.mcp("agentx_decide_pr_feedback", {
+      task_id: e2e.taskId(), request_id: randomUUID(), decision: "DISMISS", review_digest: valid.reviewDigest, expected_revision: valid.expectedRevision, proposal_digest: valid.proposalDigest,
+      bundle_digests: valid.bundleDigests, note: "Not now.", actorRole: "ROVARA_AUTONOMY", actorId: "rovara",
+    });
+    await e2e.settle();
+    for (const decision of e2e.workflow().feedbackDecisions ?? []) {
+      expect(decision.actorRole).toBe("TASK_OWNER");
+      expect(decision.actorId).not.toBe("rovara");
+      expect(decision.autonomy).toBeUndefined();
+    }
+  }, 480_000);
+
+  it("15.10 a writer who loses write access before the run starts: the run is refused at the worker's start and nothing is pushed", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
+    github.people.maya = { permission: "read", type: "User" };
+    const pushes = e2e.github.pushLog.length;
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.github.pushLog.length).toBe(pushes);
+    expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
+    expect(e2e.workflow().stage === "WAIT_FOR_MERGE" && e2e.workflow().state === "WAITING").toBe(false);
+  }, 480_000);
+
+  it("15.11 a task whose autonomy is changed to suggest before the run starts is refused at the worker's start", async () => {
+    const { e2e, pullRequest } = await waitingForMerge();
+    await reviewCommented(e2e, pullRequest.number, "maya", "Please trim the name before greeting.");
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
+    e2e.db.set({ ...taskRecipeKey(e2e.taskId()), entityType: "TASK_RECIPE", orgId: TEST_ORG, recipe: { ...structuredClone(EMPTY_RECIPE), autonomy: "suggest" }, digest: RECIPE_DIGEST });
+    const pushes = e2e.github.pushLog.length;
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.github.pushLog.length).toBe(pushes);
+    expect(e2e.workflow().stage).not.toBe("PULL_REQUEST");
   }, 480_000);
 
   it("15.7 the mark of the task: view and thread say Rovara decided", async () => {
