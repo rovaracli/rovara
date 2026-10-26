@@ -129,3 +129,18 @@ it("blocks self-demotion when the loaded company has only one owner", async () =
  const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };const f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [self] } : f.me }) });await screen.findByText("Priya", { selector: "bdi" }).catch(() => undefined);
  fireEvent.click(await screen.findByRole("button", { name: "Change role for Priya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "member" } });expect(screen.getByText("Add another owner before changing your own role.")).toBeTruthy();expect((screen.getByRole("button", { name: "Review role change" }) as HTMLButtonElement).disabled).toBe(true);f.close();
 });
+
+it("preserves dialog focus while a background identity check blocks a commit", async () => {
+ const f = mount();await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));const confirm = screen.getByRole("button", { name: "Confirm role change" });confirm.focus();
+ let resolve!: (value: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });f.request.mockImplementation(async r => r.path.endsWith("/me") ? pending : { status: 200, body: { members: [member] } });
+ let check!: Promise<void>;act(() => { check = f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(confirm.getAttribute("aria-disabled")).toBe("true"));expect(document.activeElement).toBe(confirm);fireEvent.click(confirm);expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);
+ await act(async () => { resolve({ status: 200, body: f.me });await check; });expect(screen.getByRole("button", { name: "Confirm role change" })).toBe(confirm);expect(document.activeElement).toBe(confirm);f.close();
+});
+it("ignores an old scope's write response after the mounted org changes", async () => {
+ let resolve!: (value: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });
+ const f = mount({ respond: async r => r.method === "PUT" ? pending : { status: 200, body: r.path.endsWith("/members") ? { members: [{ ...member, name: f.me.org.orgId.endsWith("bbbb") ? "New company person" : "Maya", role: f.me.org.orgId.endsWith("bbbb") ? "admin" : "member" }] } : f.me } });
+ await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));
+ f.me.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByText("New company person");
+ await act(async () => { resolve({ status: 200, body: { developerId: member.developerId, role: "admin" } });await new Promise(done => setTimeout(done, 20)); });
+ expect(screen.queryByText(/role verified|role changed and verified/)).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/members"))).toHaveLength(2);f.close();
+});
