@@ -119,8 +119,9 @@ describe("ModelAccessInvoker", () => {
 
   it("round-trips through the real handler and client: a proxy 4xx keeps its code and a proxy 503 stays unavailable", async () => {
     let status = 200;
-    const fetch = routeFetch(async () => new Response(JSON.stringify(status === 200 ? { key: "sk-v" } : { error: { message: "Team not found" } }), { status }));
-    const run = createModelAccessHandler({ access: new ModelProxyClient({ baseUrl: "http://proxy:4000", masterKey: async () => "sk-m", fetch, now: () => 0 }), log: () => undefined });
+    const catalog = ["us.anthropic.claude-sonnet-4-6"];
+    const fetch = routeFetch(async (url) => new Response(JSON.stringify(status !== 200 ? { error: { message: "Team not found" } } : url.pathname === "/team/info" ? { team_info: { models: catalog } } : { key: "sk-v" }), { status }));
+    const run = createModelAccessHandler({ access: new ModelProxyClient({ baseUrl: "http://proxy:4000", masterKey: async () => "sk-m", fetch, now: () => 0, catalog }), log: () => undefined });
     const { invoker } = invokerWith(async (command) => answer(await run(payloadOf(command))));
     const mint = { orgId: ORG, developerId: DEV, purpose: "task" as const, refId: "t", maxBudgetUsd: 1, ttlSeconds: 60 };
     expect(await invoker.mintKey(mint)).toEqual({ key: "sk-v", expiresAt: 60_000 });

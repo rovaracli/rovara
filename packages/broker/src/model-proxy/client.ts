@@ -47,6 +47,8 @@ export interface ModelProxyClientInput {
   roles?: RoleAssumer;
   /** Twenty lowercase base-36 characters; replaceable so a test can name the wrong external id. */
   random?: () => string;
+  /** Where the client says what it refused to rewrite. Never a key or a model name. */
+  log?: (entry: Record<string, unknown>) => void;
 }
 
 /** `served` is false for a Bedrock source that has not passed its probe: its models exist (the probe finds the role through them) but no team may call them. */
@@ -68,6 +70,24 @@ function hostnameOf(value: unknown): string | undefined {
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
 const notScoped = () => agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
+
+/** What a Rovara AI catalog id looks like (`<geography>.anthropic.claude-...`): a stale one is a retired or older id, which a team may be brought back from. */
+const CATALOG_ID_SHAPE = /^[a-z]+\.anthropic\.claude-[a-z0-9.:_-]+$/iu;
+
+/**
+ * Why a non-empty team list is not one Rovara wrote, or undefined when every entry is the org's own alias or has a catalog id's shape (the lists that may be limited again).
+ * Names are never returned: only the kind of entry.
+ */
+function unscopedReason(orgId: string, models: readonly unknown[]): "wildcard" | "foreign_alias" | "unknown_entry" | undefined {
+  const ownPrefix = `${orgId}.`;
+  const names = models.map((model) => (typeof model === "string" ? model : undefined));
+  if (names.some((name) => name === undefined)) return "unknown_entry";
+  const strings = names as string[];
+  if (strings.some((name) => name.includes("*"))) return "wildcard";
+  if (strings.some((name) => /^org_[0-9a-z]+\./u.test(name) && !name.startsWith(ownPrefix))) return "foreign_alias";
+  if (strings.some((name) => !(name.startsWith(ownPrefix) && name.length > ownPrefix.length) && !CATALOG_ID_SHAPE.test(name))) return "unknown_entry";
+  return undefined;
+}
 
 /** The proxy's own words for a refusal, with anything shaped like a key and the exact `secret` removed first, and only then the length capped. */
 function proxyMessage(body: unknown, secret?: string): string {
@@ -144,7 +164,7 @@ export class ModelProxyClient implements ModelAccess {
     // list, so a team left unscoped by an earlier deploy is brought in line by its next upsert (the deploy can call upsertOrg per org).
     const catalog = this.teamCatalog();
     const master = await this.master();
-    const own = (await this.listModels(master)).filter((entry) => entry.org === orgId && entry.served).map((entry) => entry.name);
+    const own = this.servedAliases(await this.listModels(master), orgId, catalog);
     const body = { team_id: orgId, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION, models: [...new Set([...own, ...catalog])] };
     await this.createOrUpdate(master, "/team/new", "/team/update", body);
   }
@@ -197,11 +217,13 @@ export class ModelProxyClient implements ModelAccess {
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
     const requestedAt = this.input.now();
-    const catalog = input.models === undefined ? [] : this.teamCatalog();
+    // Every key, with a model list or without, answers to its org's team: a team with no models means every model of every org, so the team is
+    // always read first and must itself be limited to the org's own models and the catalog (or be limited to them here, see requireScopedTeam).
+    const catalog = this.teamCatalog();
     if (input.models !== undefined) assertKeyModels(input.orgId, input.models, catalog);
     const master = await this.master();
-    // validate_mint: a scoped key is only as narrow as its team lets it be, so the team is read first and must itself be limited to the org's own models.
-    if (input.models !== undefined) await this.requireScopedTeam(master, input.orgId, catalog, input.models);
+    // validate_mint: a scoped key is only as narrow as its team lets it be.
+    await this.requireScopedTeam(master, input.orgId, catalog, input.models ?? []);
     const tags = input.tags === undefined ? {} : Object.fromEntries(Object.entries(input.tags).filter(([, value]) => value !== undefined));
     const reply = await this.request("POST", "/key/generate", master, {
       team_id: input.orgId,
@@ -221,25 +243,36 @@ export class ModelProxyClient implements ModelAccess {
 
   /**
    * The team's `models` must be non-empty (empty means every model) and hold only the org's own aliases and Rovara AI catalog ids.
-   * A team with no models at all is the state an earlier deploy left (the team was created before teams were scoped, and nothing upserts an existing org again): it is
-   * limited here, once, to exactly the org's allowed models, and read back before anything is minted. Any other list that is not the org's own is not Rovara's doing
-   * and stays refused.
+   * Two states are Rovara's own doing and are limited again, here, to exactly the org's allowed models: no models at all (a team created before teams were scoped,
+   * which nothing upserts again), and a list of catalog-shaped ids and own aliases that has gone stale (a retired catalog id, a catalog id added since). Anything else (a wildcard, another org's alias, an access group) is nothing Rovara writes: it is refused, logged, and left
+   * as it is for a person to look at.
    */
   private async requireScopedTeam(master: string, orgId: OrgId, catalog: readonly string[], requested: readonly string[]): Promise<void> {
     const models = await this.readTeamModels(master, orgId);
     if (models !== undefined && models.length > 0) {
-      if (!models.every((model) => typeof model === "string" && ownOrCatalog(orgId, model, catalog))) throw notScoped();
-      return;
+      const refused = unscopedReason(orgId, models);
+      if (refused !== undefined) {
+        this.input.log?.({ event: "model_access.team_refused", orgId, reason: refused });
+        throw notScoped();
+      }
+      const held = models as string[];
+      const current = held.every((model) => ownOrCatalog(orgId, model, catalog)) && catalog.every((model) => held.includes(model));
+      if (current) return;
     }
     // The allowed models are the proxy's own: the org's served aliases (a removed source's are gone, a Bedrock source's before its probe has passed are not served) and the catalog.
     // They are read before anything is written, so a proxy that cannot say leaves the team and the mint as they were.
-    const own = (await this.listModels(master)).filter((entry) => entry.org === orgId && entry.served).map((entry) => entry.name);
+    const own = this.servedAliases(await this.listModels(master), orgId, catalog);
     const allowed = [...new Set([...own, ...catalog])];
     // Only the key's own models are measured against the allowed ones; the team is never widened to fit a request.
     if (!requested.every((model) => allowed.includes(model))) throw agentXError("CONFIG_INVALID", "a key may name only models this organization may use");
     await this.setTeamModels(master, orgId, own, catalog);
     const healed = await this.readTeamModels(master, orgId);
-    if (healed === undefined || !sameModels(healed, allowed)) throw notScoped();
+    if (healed === undefined || !healed.every((model) => typeof model === "string") || !sameModels(healed, allowed)) throw notScoped();
+  }
+
+  /** The org's served aliases among the proxy's models, kept only when they are named as the org's own (an entry that merely claims the org is not written to a team). */
+  private servedAliases(entries: readonly ProxyModelEntry[], orgId: OrgId, catalog: readonly string[]): string[] {
+    return entries.filter((entry) => entry.org === orgId && entry.served && ownOrCatalog(orgId, entry.name, catalog)).map((entry) => entry.name);
   }
 
   /** The team's `models` as the proxy holds them (undefined when it holds none). */

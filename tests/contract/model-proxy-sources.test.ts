@@ -360,6 +360,13 @@ describe("upsertOrg: every org team is scoped", () => {
     expect([...proxy.teams.get(OTHER_ORG)!].sort()).toEqual([sourceAlias(OTHER_ORG, SRC, sonnet), ...CATALOG].sort());
   });
 
+  it("leaves out a proxy model that claims the org but is not named as one of its aliases", async () => {
+    const proxy = litellm();
+    await proxy.fetch(`${BASE}/model/new`, { method: "POST", headers: { authorization: `Bearer ${MASTER}` }, body: JSON.stringify({ model_name: "stray-model", litellm_params: {}, model_info: { rovara_org: ORG } }) });
+    await client(proxy).upsertOrg(ORG, 100);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+  });
+
   it("is idempotent and leaves a Bedrock alias out until its probe has passed", async () => {
     const proxy = litellm();
     await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(false) });

@@ -109,7 +109,6 @@ describe("validate_mint: the team must be scoped before a scoped key is minted f
       ["a provider wildcard", [OWN, "openai/*"]],
       ["an access group", [OWN, "team-shared-models"]],
       ["another org's alias", [OWN, `${OTHER_ORG}.${SRC}.claude-sonnet-4-6`]],
-      ["an id outside the catalog", [OWN, "us.anthropic.claude-opus-9"]],
     ];
     for (const [what, models] of teams) {
       const proxy = litellm({ teams: { [ORG]: models } });
@@ -128,10 +127,19 @@ describe("validate_mint: the team must be scoped before a scoped key is minted f
     expect(down.calls()).toEqual(["GET /team/info"]);
   });
 
-  it("changes nothing for a key minted without models: no read of the team or the key", async () => {
+  it("checks the team for a key minted without models too, and reads no key back: the key answers to the team's models, so the team must be scoped", async () => {
     const proxy = litellm();
     await client(proxy).mintKey(mint([], { models: undefined }));
-    expect(proxy.calls()).toEqual(["POST /key/generate"]);
+    expect(proxy.calls()).toEqual(["GET /team/info", "POST /key/generate"]);
+    expect(proxy.seen[1]!.body!.models).toBeUndefined();
+  });
+
+  it("refuses a key minted without models for a team that is not the org's own, before any key exists", async () => {
+    for (const models of [["*"], [OWN, `${OTHER_ORG}.${SRC}.claude-sonnet-4-6`], ["all-proxy-models"]]) {
+      const proxy = litellm({ teams: { [ORG]: models } });
+      expect((await failure(client(proxy).mintKey(mint([], { models: undefined })))).code).toBe("CONFIG_INVALID");
+      expect(proxy.calls()).toEqual(["GET /team/info"]);
+    }
   });
 });
 
@@ -220,6 +228,88 @@ describe("a team left unscoped by an earlier deploy heals at the mint, to exactl
     const proxy = litellm({ teams: { [ORG]: [] }, modelList });
     expect((await failure(client(proxy, { catalog: [] }).mintKey(mint([SERVED])))).code).toBe("CONFIG_INVALID");
     expect(proxy.calls()).toEqual([]);
+  });
+});
+
+describe("an unscoped mint is never left to an empty or unreadable team (a team with no models means every model of every org)", () => {
+  const UNSCOPED = mint([], { models: undefined });
+  const modelList = [deployment(OWN, ORG), deployment(`${OTHER_ORG}.${SRC}.claude-sonnet-4-6`, OTHER_ORG)];
+
+  it("refuses before the heal and mints after it, and the key still names no other org's alias", async () => {
+    // Before: the proxy cannot say what the org may use, so the empty team stays as it is and no key exists.
+    const before = litellm({ teams: { [ORG]: [] }, modelList, failOn: (seen) => (seen.path === "/model/info" ? json({ error: "down" }, 503) : undefined) });
+    expect((await failure(client(before).mintKey(UNSCOPED))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(before.calls()).toEqual(["GET /team/info", "GET /model/info"]);
+    expect(before.keys).toEqual([]);
+    // After: the team is limited to the org's allowed models, then the key is made, without a model list of its own.
+    const after = litellm({ teams: { [ORG]: [] }, modelList });
+    await client(after).mintKey(UNSCOPED);
+    expect(after.calls()).toEqual(["GET /team/info", "GET /model/info", "POST /team/update", "GET /team/info", "POST /key/generate"]);
+    expect([...after.teams.get(ORG)!].sort()).toEqual([OWN, ...CATALOG].sort());
+    expect(after.teams.get(ORG)).not.toContain(`${OTHER_ORG}.${SRC}.claude-sonnet-4-6`);
+  });
+
+  it("refuses another org's alias asked for by name, with or without an empty team, minting nothing", async () => {
+    for (const teams of [{ [ORG]: [] as string[] }, undefined]) {
+      const proxy = litellm({ ...(teams === undefined ? {} : { teams }), modelList });
+      expect((await failure(client(proxy).mintKey(mint([`${OTHER_ORG}.${SRC}.claude-sonnet-4-6`])))).code).toBe("CONFIG_INVALID");
+      expect(proxy.keys).toEqual([]);
+    }
+  });
+});
+
+describe("a stale team list is limited again to exactly the allowed models, but a list that is not Rovara's is refused and logged", () => {
+  const RETIRED = "us.anthropic.claude-sonnet-4-20250514-v1:0";
+  const modelList = [deployment(OWN, ORG)];
+
+  it("replaces a retired catalog id (and keeps nothing else it did not hold), once", async () => {
+    const proxy = litellm({ teams: { [ORG]: [OWN, RETIRED, ...CATALOG] }, modelList });
+    await client(proxy).mintKey(mint([OWN]));
+    expect(proxy.calls()).toEqual(["GET /team/info", "GET /model/info", "POST /team/update", "GET /team/info", "POST /key/generate", "GET /key/info"]);
+    expect([...proxy.teams.get(ORG)!].sort()).toEqual([OWN, ...CATALOG].sort());
+    expect(Object.keys(proxy.seen.find((entry) => entry.path === "/team/update")!.body!).sort()).toEqual(["models", "team_id"]);
+    // The next mint finds the team in line and does nothing more.
+    const again = proxy.seen.length;
+    await client(proxy).mintKey(mint([OWN]));
+    expect(proxy.seen.slice(again).map((entry) => `${entry.method} ${entry.path}`)).toEqual(["GET /team/info", "POST /key/generate", "GET /key/info"]);
+  });
+
+  it("adds a catalog id the team was written without", async () => {
+    const proxy = litellm({ teams: { [ORG]: [OWN, CATALOG[0]!] }, modelList });
+    await client(proxy).mintKey(mint([OWN]));
+    expect([...proxy.teams.get(ORG)!].sort()).toEqual([OWN, ...CATALOG].sort());
+  });
+
+  it("never widens past the allowed models: a retired alias the key asks for is refused and the team is left as it was", async () => {
+    const retiredAlias = `${ORG}.src_retired00000000000000.claude-sonnet-4-6`;
+    const proxy = litellm({ teams: { [ORG]: [OWN, RETIRED, ...CATALOG] }, modelList });
+    expect((await failure(client(proxy).mintKey(mint([retiredAlias])))).code).toBe("CONFIG_INVALID");
+    expect(proxy.calls()).toEqual(["GET /team/info", "GET /model/info"]);
+    expect(proxy.teams.get(ORG)).toEqual([OWN, RETIRED, ...CATALOG]);
+  });
+
+  it("refuses and logs a list with a wildcard, another org's alias or an access group, and rewrites nothing", async () => {
+    const cases: Array<[string, string[], string]> = [
+      ["a wildcard", [OWN, "*", ...CATALOG], "wildcard"],
+      ["a provider wildcard", [OWN, "openai/*"], "wildcard"],
+      ["another org's alias", [OWN, `${OTHER_ORG}.${SRC}.claude-sonnet-4-6`], "foreign_alias"],
+      ["an access group", [OWN, "team-shared-models"], "unknown_entry"],
+      ["all-proxy-models", ["all-proxy-models"], "unknown_entry"],
+    ];
+    for (const [what, models, reason] of cases) {
+      const log = vi.fn();
+      const proxy = litellm({ teams: { [ORG]: models }, modelList });
+      expect((await failure(client(proxy, { log }).mintKey(mint([OWN])))).code, what).toBe("CONFIG_INVALID");
+      expect(proxy.calls(), what).toEqual(["GET /team/info"]);
+      expect(log, what).toHaveBeenCalledWith({ event: "model_access.team_refused", orgId: ORG, reason });
+    }
+  });
+
+  it("leaves the proxy's master key and the listed names out of the log", async () => {
+    const log = vi.fn();
+    await failure(client(litellm({ teams: { [ORG]: [OWN, "*"] } }), { log }).mintKey(mint([OWN])));
+    expect(JSON.stringify(log.mock.calls)).not.toContain(MASTER);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(OWN);
   });
 });
 

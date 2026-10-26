@@ -102,8 +102,10 @@ function wire() {
     if (value.SecretString === undefined || value.SecretString.trim() === "") throw new Error("master key secret is empty");
     return value.SecretString.trim();
   });
+  const log = (entry: Record<string, unknown>): void => console.log(JSON.stringify({ component: "model-access", ...entry }));
   return createModelAccessHandler({
     access: new ModelProxyClient({
+      log,
       baseUrl: requiredEnvironment("MODEL_PROXY_URL"),
       masterKey,
       fetch,

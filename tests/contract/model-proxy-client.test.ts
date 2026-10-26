@@ -37,14 +37,15 @@ const failure = async (action: Promise<unknown>) => {
 
 describe("ModelProxyClient", () => {
   it("mintKey posts to /key/generate with the master key as bearer and the key's scope, budget, lifetime and metadata", async () => {
-    const { client, seen } = proxy(({ path }) => (path === "/key/generate" ? json({ key: "sk-virtual-1", expires: "2027-01-01T00:00:00Z" }) : undefined));
+    const { client, seen } = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { models: CATALOG } }) : path === "/key/generate" ? json({ key: "sk-virtual-1", expires: "2027-01-01T00:00:00Z" }) : undefined));
     const minted = await client.mintKey({ orgId: ORG, developerId: DEV, purpose: "task", refId: "task-1", maxBudgetUsd: 2.5, ttlSeconds: 3600 });
     expect(minted).toEqual({ key: "sk-virtual-1", expiresAt: NOW + 3_600_000 });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.method).toBe("POST");
-    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
-    expect(seen[0]!.headers.get("content-type")).toBe("application/json");
-    expect(seen[0]!.body).toEqual({
+    // Every key answers to its org's team, so the team is read first.
+    expect(seen.map((entry) => `${entry.method} ${entry.path}`)).toEqual(["GET /team/info", "POST /key/generate"]);
+    expect(seen[1]!.method).toBe("POST");
+    expect(seen[1]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
+    expect(seen[1]!.headers.get("content-type")).toBe("application/json");
+    expect(seen[1]!.body).toEqual({
       // Ruling R48: a task key reaches the model routes only, never LiteLLM's management routes.
       team_id: ORG, user_id: DEV, max_budget: 2.5, allowed_routes: ["llm_api_routes"], duration: "3600s",
       metadata: { orgId: ORG, developerId: DEV, purpose: "task", refId: "task-1" },
@@ -52,9 +53,9 @@ describe("ModelProxyClient", () => {
   });
 
   it("mintKey without a developer mints an org-only key: a team, no user", async () => {
-    const { client, seen } = proxy(({ path }) => (path === "/key/generate" ? json({ key: "sk-virtual-2" }) : undefined));
+    const { client, seen } = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { models: CATALOG } }) : path === "/key/generate" ? json({ key: "sk-virtual-2" }) : undefined));
     await client.mintKey({ orgId: ORG, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 3600 });
-    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 25, allowed_routes: ["llm_api_routes"], duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
+    expect(seen[1]!.body).toEqual({ team_id: ORG, max_budget: 25, allowed_routes: ["llm_api_routes"], duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
   });
 
   it("upsertOrg creates the LiteLLM team with the monthly budget and 1mo reset", async () => {

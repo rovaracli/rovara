@@ -6303,7 +6303,10 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
   catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
   const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
   if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
-  if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot read agent skills");
+  // Like the tool routes: a finished or stopping step reads nothing, and neither does one the workspace has moved on from.
+  if (TERMINAL.has(operation.status) || operation.status === "CANCEL_REQUESTED") throw agentXError("STALE_FENCE", "a finished or stopped step cannot read agent skills");
+  const workspace = await requireWorkspace(dependencies, operation.workspaceId);
+  if (workspace.activeOperationId !== operation.id) throw agentXError("STALE_FENCE", "operation no longer owns the workspace");
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // Read under the operation's org, and only for a task of that same org: any disagreement serves nothing.
