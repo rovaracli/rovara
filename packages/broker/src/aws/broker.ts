@@ -462,8 +462,8 @@ import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
 import { CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, fireChainSchedule, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleDeadLetters } from "../triggers/schedules.js";
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { dispatchTriggerEvent } from "../triggers/dispatch.js";
-import { deliverGithubTriggerEvents, healGithubRepoIndex } from "../triggers/github-events.js";
+import { dispatchTriggerEvent, type TriggerDispatchContext } from "../triggers/dispatch.js";
+import { deliverGithubTriggerEvents, healGithubRepoIndex, type AuthorQuery } from "../triggers/github-events.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
@@ -691,7 +691,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -1479,14 +1479,14 @@ function installChainRunner(dependencies: AwsBrokerDependencies, tasks: Develope
  * What starts the work an event asks for: the broker's own `eventHooks.dispatch` when it was given one, else Task 20's `dispatchTriggerEvent` over the chain runner's dependencies (and the
  * GitHub App's slug, which the loop guard reads). Undefined where agents, chains or sign-in are not set up. Hooks' deliveries and GitHub's events start work through the same one.
  */
-function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((orgId: OrgId, event: TriggerEvent) => Promise<unknown>) | undefined {
+function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((orgId: OrgId, event: TriggerEvent, context?: TriggerDispatchContext) => Promise<unknown>) | undefined {
   const given = dependencies.agents?.eventHooks?.dispatch;
   if (given !== undefined) return given;
   const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
   const githubApp = dependencies.githubPullRequests;
-  return chainDependencies === undefined ? undefined : (orgId, event) => dispatchTriggerEvent({
+  return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
-  }, orgId, event);
+  }, orgId, event, context);
 }
 
 /** What the chain runner and its sweep work with: the agent routes' dependencies with the chain store and Plan 3's run starter. Undefined where agents, chains or developer sign-in are not set up. */
@@ -2100,6 +2100,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               triggerEvents: (trigger: { eventName: string; payload: unknown; installationId: number }) => deliverGithubTriggerEvents({
                 documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, dispatch: triggerDispatch,
                 ...(dependencies.githubPullRequests.appSlug === undefined ? {} : { githubAppSlug: () => dependencies.githubPullRequests.appSlug!() }),
+                // A private org member shows as CONTRIBUTOR or NONE in a payload: the API is asked, with the installation's token, only when a members-only trigger would otherwise miss.
+                ...(dependencies.githubPullRequests.authorStanding === undefined ? {} : {
+                  authorStanding: (query: AuthorQuery) => dependencies.githubPullRequests.authorStanding!(query.installationId, query),
+                }),
               }, trigger),
             }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.

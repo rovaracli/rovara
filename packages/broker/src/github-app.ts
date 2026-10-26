@@ -11,6 +11,7 @@ const FILE_AT_COMMIT_MAX_BYTES = 20_971_520;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
 /** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
+const GITHUB_REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const GITHUB_APP_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$/;
 
 /** One installation of the App, as GitHub reports it (GET /app/installations/{id}): only what the install flow decides on. */
@@ -1226,6 +1227,42 @@ export class GitHubAppCredentialProvider {
     const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
     if (typeof record.state !== "string" || typeof record.role !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid membership response");
     return { state: record.state, role: record.role };
+  }
+
+  /**
+   * Whether the author of a pull request or an issue belongs to the repository, asked of GitHub now with a token of the installation `installationId` (the payload's association shows a
+   * private org member as CONTRIBUTOR or NONE, so it is not enough). For an organization's repository: an active membership of the org (`members: read`) is `member`; otherwise, and for a
+   * user's repository, write, maintain or admin access to the repository (the collaborator permission endpoint, `metadata: read`) is `collaborator`. GitHub's 404 is "no"; any other failure is
+   * thrown, so the caller never mistakes an outage for a membership. A name that could not be an account or repository answers `none` before anything is asked.
+   */
+  async authorStanding(installationId: number, query: { owner: string; ownerType?: string; repo: string; login: string }): Promise<"member" | "collaborator" | "none"> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    const { owner, repo, login } = query;
+    if (!GITHUB_LOGIN.test(owner) || !GITHUB_LOGIN.test(login) || !GITHUB_REPOSITORY_NAME.test(repo) || repo === "." || repo === "..") return "none";
+    const organization = query.ownerType === "Organization";
+    const token = await this.mintInstallationToken(installationId, organization ? { metadata: "read", members: "read" } : { metadata: "read" });
+    const read = (path: string) => this.fetchImplementation(`https://api.github.com${path}`, {
+      headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (organization) {
+      const response = await read(`/orgs/${encodeURIComponent(owner)}/memberships/${encodeURIComponent(login)}`);
+      if (response.ok) {
+        const body: unknown = await response.json();
+        const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+        if (typeof record.state !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid membership response");
+        if (record.state === "active") return "member";
+      } else if (response.status !== 404) {
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's membership lookup failed with HTTP ${response.status}`);
+      }
+    }
+    const response = await read(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(login)}/permission`);
+    if (response.status === 404) return "none";
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository permission lookup failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+    if (typeof record.permission !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid permission response");
+    // `permission` is the legacy role (maintain reads as write, triage as read); `role_name` is the exact one.
+    return record.permission === "admin" || record.permission === "write" || record.role_name === "maintain" || record.role_name === "write" || record.role_name === "admin" ? "collaborator" : "none";
   }
 
   /**

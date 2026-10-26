@@ -12,6 +12,7 @@ import { z } from "zod";
 import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, type OrgId, type TriggerEvent } from "@agentx/contracts";
 import { GithubWebhookRetryableError } from "../aws/github-webhooks.js";
 import { latestRevision } from "../org/project-settings.js";
+import type { AuthorVerdict, TriggerDispatchContext } from "./dispatch.js";
 import { firstSight, forget, markDispatched, outsideEventWindow, type EventMemoryDeps } from "./ingress.js";
 
 export interface GithubTriggerDependencies extends EventMemoryDeps {
@@ -19,8 +20,26 @@ export interface GithubTriggerDependencies extends EventMemoryDeps {
   /** The GitHub App's slug, to tell its own bot (`<slug>[bot]`) from a person. Without it every bot is taken for Rovara's. */
   githubAppSlug?: () => Promise<string | undefined>;
   /** Task 20's `dispatchTriggerEvent`, over the broker's dependencies. */
-  dispatch(orgId: OrgId, event: TriggerEvent): Promise<unknown>;
+  dispatch(orgId: OrgId, event: TriggerEvent, context?: TriggerDispatchContext): Promise<unknown>;
+  /**
+   * Asks GitHub's API (a token of the installation) whether an author is a member of the repository's org or has write access to it. It throws when it can't tell. Without it no author is
+   * ever upgraded from the association the payload shows (a private org member is CONTRIBUTOR or NONE there).
+   */
+  authorStanding?: (query: AuthorQuery) => Promise<AuthorStanding>;
+  /** How long one author lookup may take before it counts as an error. */
+  authorCheckTimeoutMs?: number;
 }
+
+/** Who to ask GitHub about: the pull request's or issue's own author (never the sender), in the repository's account. */
+export interface AuthorQuery {
+  installationId: number;
+  owner: string;
+  ownerType?: string;
+  repo: string;
+  login: string;
+}
+export type AuthorStanding = "member" | "collaborator" | "none";
+
 
 export interface GithubTriggerInput {
   eventName: string;
@@ -32,13 +51,20 @@ export interface GithubTriggerInput {
 const GITHUB_HOOK = "github";
 const MAX_FIELD_VALUES = 50;
 const MAX_FIELD_CHARS = 200;
+const AUTHOR_CHECK_TIMEOUT_MS = 10_000;
+/** What GitHub allows as an account or repository name, so nothing else is put into a path of the API. */
+const GITHUB_ACCOUNT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const GITHUB_REPOSITORY = /^[A-Za-z0-9._-]{1,100}$/;
 
 const Account = z.object({ login: z.string().min(1).max(200), type: z.string().max(40).optional() }).passthrough();
 const Labels = z.array(z.object({ name: z.string() }).passthrough()).optional();
 const Time = z.string().min(1).max(64);
 const Common = z.object({
   action: z.string().max(64).optional(),
-  repository: z.object({ id: z.number().int().positive(), html_url: z.string().max(2048).optional() }).passthrough(),
+  repository: z.object({
+    id: z.number().int().positive(), html_url: z.string().max(2048).optional(), name: z.string().max(200).optional(), full_name: z.string().max(400).optional(),
+    owner: z.object({ login: z.string().max(200), type: z.string().max(40).optional() }).passthrough().optional(),
+  }).passthrough(),
   sender: Account.optional(),
 }).passthrough();
 
@@ -46,14 +72,14 @@ const PullRequestBody = Common.extend({
   action: z.string().max(64),
   pull_request: z.object({
     number: z.number().int().positive(), title: z.string().max(10_000).optional(), html_url: z.string().max(2048).optional(), updated_at: Time,
-    author_association: z.string().max(40).optional(), labels: Labels, base: z.object({ ref: z.string().max(500).optional() }).passthrough().optional(),
+    author_association: z.string().max(40).optional(), user: Account.optional(), labels: Labels, base: z.object({ ref: z.string().max(500).optional() }).passthrough().optional(),
   }).passthrough(),
 });
 const IssueBody = Common.extend({
   action: z.string().max(64),
   issue: z.object({
     number: z.number().int().positive(), title: z.string().max(10_000).optional(), html_url: z.string().max(2048).optional(), created_at: Time.optional(), updated_at: Time.optional(),
-    author_association: z.string().max(40).optional(), labels: Labels, pull_request: z.unknown().optional(),
+    author_association: z.string().max(40).optional(), user: Account.optional(), labels: Labels, pull_request: z.unknown().optional(),
   }).passthrough(),
 });
 const DeploymentStatusBody = Common.extend({
@@ -108,6 +134,8 @@ interface Mapped {
   fields: Record<string, string[]>;
   /** Everyone the event involves: the sender first. A bot among them is Rovara's if it is the App's. */
   involved: Array<z.infer<typeof Account>>;
+  /** The login of the pull request's or issue's author, for the events that have an association to check. */
+  author?: string;
 }
 
 function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | undefined): Mapped | undefined {
@@ -122,6 +150,7 @@ function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | u
       subject: { kind: "pull_request", id: String(pr.number), title: titleOf(pr.title, `Pull request ${String(pr.number)}`), ...urlOf(pr.html_url) },
       fields: { baseBranch: valuesOf([pr.base?.ref]), label: valuesOf((pr.labels ?? []).map((label) => label.name)), authorAssociation: valuesOf([pr.author_association]) },
       involved: sender === undefined ? [] : [sender],
+      ...(pr.user === undefined ? {} : { author: pr.user.login }),
     };
   }
   if (eventName === "issues") {
@@ -136,6 +165,7 @@ function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | u
       subject: { kind: "issue", id: String(issue.number), title: titleOf(issue.title, `Issue ${String(issue.number)}`), ...urlOf(issue.html_url) },
       fields: { label: valuesOf((issue.labels ?? []).map((label) => label.name)), authorAssociation: valuesOf([issue.author_association]) },
       involved: sender === undefined ? [] : [sender],
+      ...(issue.user === undefined ? {} : { author: issue.user.login }),
     };
   }
   if (eventName === "deployment_status") {
@@ -180,6 +210,15 @@ async function actorOf(deps: Pick<GithubTriggerDependencies, "githubAppSlug">, i
   if (own !== undefined) return { kind: "rovara", id: own.login };
   const sender = involved[0];
   return sender === undefined ? { kind: "unknown" } : { kind: "external", id: sender.login };
+}
+
+/** Who the API is to be asked about, when the payload names the author and the repository's account in a form that is safe to put in a path. */
+function authorOf(installationId: number, repository: z.infer<typeof Common>["repository"], login: string | undefined): AuthorQuery | undefined {
+  const [fullOwner, fullName] = (repository.full_name ?? "").split("/");
+  const owner = repository.owner?.login ?? fullOwner;
+  const repo = repository.name ?? fullName;
+  if (login === undefined || owner === undefined || repo === undefined || !GITHUB_ACCOUNT.test(login) || !GITHUB_ACCOUNT.test(owner) || !GITHUB_REPOSITORY.test(repo) || repo === "." || repo === "..") return undefined;
+  return { installationId, owner, repo, login, ...(repository.owner?.type === undefined ? {} : { ownerType: repository.owner.type }) };
 }
 
 /** The org the installation is bound to, when it is bound and active. */
@@ -246,7 +285,7 @@ export async function healGithubRepoIndex(deps: Pick<EventMemoryDeps, "documentC
  * The events a signed GitHub body is, for each org and project that holds the repository through this installation. None for a body that is not one of the events triggers can start on,
  * for an installation that is not bound or not active, and for a repository no project of that org pins.
  */
-export async function githubTriggerEvents(deps: Pick<GithubTriggerDependencies, "documentClient" | "tableName" | "log" | "githubAppSlug">, input: GithubTriggerInput): Promise<Array<{ orgId: OrgId; event: TriggerEvent }>> {
+export async function githubTriggerEvents(deps: Pick<GithubTriggerDependencies, "documentClient" | "tableName" | "log" | "githubAppSlug">, input: GithubTriggerInput): Promise<Array<{ orgId: OrgId; event: TriggerEvent; author?: AuthorQuery }>> {
   const common = Common.safeParse(input.payload);
   if (!common.success) return [];
   const mapped = mapEvent(input.eventName, input.payload, githubUrl(common.data.repository.html_url));
@@ -257,7 +296,8 @@ export async function githubTriggerEvents(deps: Pick<GithubTriggerDependencies, 
     return [];
   }
   const actor = await actorOf(deps, mapped.involved);
-  const found: Array<{ orgId: OrgId; event: TriggerEvent }> = [];
+  const author = authorOf(input.installationId, common.data.repository, mapped.author);
+  const found: Array<{ orgId: OrgId; event: TriggerEvent; author?: AuthorQuery }> = [];
   for (const project of await projectsOf(deps, orgId, input.installationId, common.data.repository.id)) {
     const event = TriggerEventSchema.safeParse({
       source: "github", type: mapped.type, eventKey: mapped.eventKey, occurredAt: mapped.occurredAt, project, subject: mapped.subject, fields: mapped.fields, actor,
@@ -266,9 +306,44 @@ export async function githubTriggerEvents(deps: Pick<GithubTriggerDependencies, 
       log(deps)("github.trigger_invalid", { orgId, project, type: mapped.type });
       continue;
     }
-    found.push({ orgId, event: event.data });
+    found.push({ orgId, event: event.data, ...(author === undefined ? {} : { author }) });
   }
   return found;
+}
+
+/**
+ * What dispatch may ask about an event's author: the API's word, bounded in time and failing closed (an error or a timeout is the verdict `error`, never a membership). The lookup is
+ * shared by every event of the delivery for the same author and repository, so it is made once however many projects hold the repository. Logged by code only: no token, no message.
+ */
+function contextOf(deps: GithubTriggerDependencies, entry: { orgId: OrgId; author?: AuthorQuery }, lookups: Map<string, Promise<AuthorVerdict>>): TriggerDispatchContext {
+  const { author, orgId } = entry;
+  const ask = deps.authorStanding;
+  if (author === undefined || ask === undefined) return {};
+  return {
+    verifyAuthor: () => {
+      const key = `${String(author.installationId)}\0${author.owner.toLowerCase()}/${author.repo.toLowerCase()}\0${author.login.toLowerCase()}`;
+      let verdict = lookups.get(key);
+      if (verdict === undefined) {
+        verdict = (async (): Promise<AuthorVerdict> => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const standing = await Promise.race([
+              ask(author),
+              new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("timeout")), deps.authorCheckTimeoutMs ?? AUTHOR_CHECK_TIMEOUT_MS); }),
+            ]);
+            return standing === "member" || standing === "collaborator" ? standing : "none";
+          } catch (error) {
+            log(deps)("github.trigger_author_check_failed", { orgId, installationId: author.installationId, error: error instanceof Error ? error.name : "unknown" });
+            return "error";
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
+        })();
+        lookups.set(key, verdict);
+      }
+      return verdict;
+    },
+  };
 }
 
 /** What is remembered of an event, per project: the same pull request in two projects of one org is two starts. */
@@ -279,7 +354,7 @@ const memoryKey = (event: TriggerEvent): string => `${event.project}\0${event.ev
  * is forgotten again and answered with a retryable fault, so that GitHub's redelivery starts it (dispatch's own identity makes a second attempt harmless).
  */
 export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies, input: GithubTriggerInput): Promise<{ events: number; duplicates: number }> {
-  const fresh: Array<{ orgId: OrgId; event: TriggerEvent }> = [];
+  const fresh: Array<{ orgId: OrgId; event: TriggerEvent; author?: AuthorQuery }> = [];
   let duplicates = 0;
   try {
     const found = await githubTriggerEvents(deps, input);
@@ -299,9 +374,11 @@ export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies
     for (const left of fresh) await forget(deps, left.orgId, GITHUB_HOOK, [{ ...left.event, eventKey: memoryKey(left.event) }]);
     throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
   }
+  // One lookup per author and repository for the whole delivery, whatever number of projects or triggers hold the repository.
+  const lookups = new Map<string, Promise<AuthorVerdict>>();
   for (const [index, entry] of fresh.entries()) {
     try {
-      await deps.dispatch(entry.orgId, entry.event);
+      await deps.dispatch(entry.orgId, entry.event, contextOf(deps, entry, lookups));
       await markDispatched(deps, entry.orgId, GITHUB_HOOK, { ...entry.event, eventKey: memoryKey(entry.event) });
     } catch (error) {
       log(deps)("github.trigger_dispatch_failed", { orgId: entry.orgId, project: entry.event.project, error: error instanceof Error ? error.name : "unknown" });
