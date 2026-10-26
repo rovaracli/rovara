@@ -1,17 +1,12 @@
-import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { open, readdir, readFile, realpath, rmdir, unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import { agentXError } from "@agentx/contracts";
 import { kindIn, openDirectory, type HeldDirectory } from "./candidate-fs.js";
-import { isolatedGitEnvironment } from "./git.js";
 import { candidateLayout, copyObjectsOut, snapshotTree, withIsolatedGit } from "./isolated-git.js";
 import { withIsolatedRepository } from "./isolated-repository.js";
 import type { IntegrationResult } from "./parallel-parts.js";
 import { readCandidateRepositories } from "./verification/candidate.js";
-
-const execFile = promisify(execFileCallback);
 
 // The git work behind parallel parts (see parallel-parts.ts). Every part is a small repository of its own, in a folder outside every project repository, whose objects borrow the
 // project repository's (alternates), so a part sees the code and can write its own files, and nothing it does reaches the project repository until its tree is merged in.
@@ -126,6 +121,12 @@ async function writeIn(directory: HeldDirectory, name: string, contents: string 
   try { await handle.writeFile(contents); } finally { await handle.close(); }
 }
 
+/** For tests: called with a step's name between a part folder being made and the repository being built in it, where another part's agent could plant something. */
+let creationHook: ((step: string, directory: string) => Promise<void>) | undefined;
+export function setPartCreationHookForTests(next: ((step: string, directory: string) => Promise<void>) | undefined): void {
+  creationHook = next;
+}
+
 export interface PartWorkingCopy {
   readonly directory: string;
   readonly repositoryId: string;
@@ -164,13 +165,21 @@ export async function createPartWorkingCopy(input: { rootPath: string; repositor
       held.push(current!);
     }
     const repositoryFolder = current!;
-    await execFile("git", ["init", "--quiet", "--template=", "."], { env: isolatedGitEnvironment(directory), cwd: repositoryFolder.descriptorPath ?? directory });
-    const gitFolder = (await repositoryFolder.subdirectory(".git", false))!;
+    await creationHook?.("folders made", directory);
+    // The repository is built by hand through held directories, never by `git init` on the folder: the folder is already in the shared workspace, so another part's agent could have
+    // planted `.git` as a link or a `gitdir:` file in the gap, and `git init` would write through it. Each step below opens (or makes) its folder without following a link and
+    // fails when one is there, before anything is written; a `.git` that is a real folder is the part's own.
+    const gitFolder = (await repositoryFolder.subdirectory(".git", true))!;
     held.push(gitFolder);
-    const objectsFolder = (await gitFolder.subdirectory("objects", false))!;
+    const objectsFolder = (await gitFolder.subdirectory("objects", true))!;
     held.push(objectsFolder);
     const infoFolder = (await objectsFolder.subdirectory("info", true))!;
     held.push(infoFolder);
+    for (const name of ["pack"]) held.push((await objectsFolder.subdirectory(name, true))!);
+    const refsFolder = (await gitFolder.subdirectory("refs", true))!;
+    held.push(refsFolder);
+    for (const name of ["heads", "tags"]) held.push((await refsFolder.subdirectory(name, true))!);
+    await writeIn(gitFolder, "config", "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n");
     await writeIn(infoFolder, "alternates", `${main.objects}\n`);
     // A commit whose tree is the start tree, written into the project repository's objects, so the part's HEAD names something every git call can read.
     const commit = await inRepository(input.repositoryDirectory, () => withIsolatedGit(input.repositoryDirectory, "write", async (git) =>
@@ -183,7 +192,8 @@ export async function createPartWorkingCopy(input: { rootPath: string; repositor
       await git.text(["read-tree", commit]);
       await git.text(["checkout-index", "--all", "--force", "-u"]);
       await writeIn(gitFolder, "index", await readFile(git.temporaryIndex));
-    });
+      // Git sees the project repository's objects, not what is in the part's own object directory (which the agent may have written to by now).
+    }, { objectsDirectory: main.objects });
   } catch (error) {
     await remove().catch(() => undefined);
     throw error;

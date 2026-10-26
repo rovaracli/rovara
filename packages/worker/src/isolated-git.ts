@@ -67,8 +67,7 @@ export async function readSmallFile(path: string, limit: number): Promise<Buffer
 }
 
 /** The plain-value settings (see KEPT_CONFIG_KEYS) of the candidate's config, read from a private copy of the file. Any other key, and `include`, is never looked at. */
-async function candidateConfigValues(layout: CandidateLayout, scratch: string, gitDir: string): Promise<Array<readonly [string, string]>> {
-  const bytes = await readSmallFile(join(layout.gitDirectory, "config"), SMALL_FILE_BYTES);
+async function candidateConfigValues(layout: CandidateLayout, scratch: string, gitDir: string, bytes: Buffer | undefined): Promise<Array<readonly [string, string]>> {
   if (bytes === undefined) return [];
   const copy = join(scratch, "candidate-config");
   await writeFile(copy, bytes, { mode: 0o600 });
@@ -165,10 +164,25 @@ export async function withIsolatedGit<T>(
     await mkdir(join(gitDir, "info"), { recursive: true });
     await mkdir(join(gitDir, "objects", "info"), { recursive: true });
     await writeFile(join(gitDir, "objects", "info", "alternates"), `${options.objectsDirectory ?? layout.objects}\n`, { mode: 0o600 });
-    // Ignore patterns and attributes are plain text: the files carry no command, and the agent's own exclusions and attributes keep deciding what `add` stages.
-    for (const name of ["exclude", "attributes"]) {
-      const bytes = await readSmallFile(join(layout.gitDirectory, "info", name), SMALL_FILE_BYTES).catch(() => undefined);
-      if (bytes !== undefined) await writeFile(join(gitDir, "info", name), bytes, { mode: 0o600 });
+    // The candidate's `.git` is opened once, without following a symlink, and its plain-text files are read through that descriptor: a `.git` path the agent swaps for a link to a
+    // host folder after the check above is not what is read.
+    const gitHeld = await openDirectory(layout.gitDirectory);
+    let configBytes: Buffer | undefined;
+    try {
+      await candidateWriteStep("read git files");
+      // Ignore patterns and attributes are plain text: the files carry no command, and the agent's own exclusions and attributes keep deciding what `add` stages.
+      const infoHeld = await gitHeld.subdirectory("info", false).catch(() => undefined);
+      try {
+        for (const name of ["exclude", "attributes"]) {
+          const bytes = infoHeld === undefined ? undefined : await readFileIn(infoHeld, name, SMALL_FILE_BYTES).catch(() => undefined);
+          if (bytes !== undefined) await writeFile(join(gitDir, "info", name), bytes, { mode: 0o600 });
+        }
+      } finally {
+        await infoHeld?.close();
+      }
+      configBytes = await readFileIn(gitHeld, "config", SMALL_FILE_BYTES);
+    } finally {
+      await gitHeld.close();
     }
     // On Linux the work tree is held open and Git is started in it, with no `--work-tree` path: `git` then takes its working directory as the work tree. A path
     // swapped for a symlink afterwards cannot redirect what Git reads or writes, because Git's working directory is the directory that was opened, not a path.
@@ -176,7 +190,7 @@ export async function withIsolatedGit<T>(
     // Git reads `core.bare` from the repository's own config file while it sets itself up (a setting from the environment comes too late), so the throwaway
     // repository, whose config is the worker's, is made non-bare for it to take its working directory as the work tree.
     if (workTreeHeld !== undefined) await execFile("git", [`--git-dir=${gitDir}`, "config", "core.bare", "false"], { cwd: scratch, env: initEnv });
-    const config = await candidateConfigValues(layout, scratch, gitDir);
+    const config = await candidateConfigValues(layout, scratch, gitDir, configBytes);
     const temporaryIndex = join(scratch, "index");
     const workIndex = join(scratch, "work-index");
     const realIndex = join(layout.gitDirectory, "index");

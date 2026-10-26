@@ -4,7 +4,9 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PARTS_DIRECTORY, capturePartTree, createPartWorkingCopy, integrateTrees } from "../../packages/worker/src/parallel-parts-git.js";
+import { setCandidateWriteHookForTests } from "../../packages/worker/src/candidate-fs.js";
+import { withIsolatedGit } from "../../packages/worker/src/isolated-git.js";
+import { PARTS_DIRECTORY, capturePartTree, createPartWorkingCopy, integrateTrees, setPartCreationHookForTests } from "../../packages/worker/src/parallel-parts-git.js";
 import { readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";
 
 // The agent of a part can write everything under its part's folder, and the host worker reads and removes that folder. Nothing the worker does there may follow a link the agent
@@ -30,6 +32,8 @@ beforeEach(async () => {
   git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "base");
 });
 afterEach(async () => {
+  setPartCreationHookForTests(undefined);
+  setCandidateWriteHookForTests(undefined);
   await rm(root, { recursive: true, force: true });
   await rm(outside, { recursive: true, force: true });
 });
@@ -211,5 +215,77 @@ describe("the merge is made of commits", () => {
       if (previous === undefined) delete process.env.GIT_TRACE;
       else process.env.GIT_TRACE = previous;
     }
+  });
+});
+
+describe("building a part's repository in a folder the sandbox can already write", () => {
+  const listing = async (folder: string) => (await readdir(folder)).sort();
+
+  it("writes nothing through a `.git` link planted in the gap before the repository is built", async () => {
+    const target = join(outside, "git-link-target");
+    await mkdir(target, { recursive: true });
+    setPartCreationHookForTests(async (_step, directory) => { await symlink(target, join(directory, ".git")); });
+    await expect(copyOf()).rejects.toThrow();
+    expect(await listing(target)).toEqual([]);
+    expect(existsSync(join(root, PARTS_DIRECTORY, A))).toBe(false);
+  });
+
+  it("writes nothing through a `gitdir:` file planted in the gap", async () => {
+    const target = join(outside, "gitdir-target");
+    await mkdir(target, { recursive: true });
+    setPartCreationHookForTests(async (_step, directory) => { await writeFile(join(directory, ".git"), `gitdir: ${target}\n`); });
+    await expect(copyOf()).rejects.toThrow();
+    expect(await listing(target)).toEqual([]);
+    expect(existsSync(join(root, PARTS_DIRECTORY, A))).toBe(false);
+  });
+
+  it("writes nothing through links planted at the names the repository is built from (objects, refs, HEAD, config)", async () => {
+    for (const name of ["objects", "refs", "HEAD", "config"]) {
+      const target = join(outside, `target-${name}`);
+      await mkdir(target, { recursive: true });
+      setPartCreationHookForTests(async (_step, directory) => {
+        await mkdir(join(directory, ".git"), { recursive: true });
+        await symlink(target, join(directory, ".git", name));
+      });
+      await expect(copyOf()).rejects.toThrow();
+      expect(await listing(target)).toEqual([]);
+    }
+  });
+
+  it("builds a repository an ordinary git accepts, with no template, hooks or leftovers", async () => {
+    const copy = await copyOf();
+    expect(execFileSync("git", ["-C", copy.directory, "rev-parse", "--git-dir"], { encoding: "utf8" }).trim()).toBe(".git");
+    expect(execFileSync("git", ["-C", copy.directory, "status", "--porcelain"], { encoding: "utf8" }).trim()).toBe("");
+    expect(execFileSync("git", ["-C", copy.directory, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(copy.startCommit);
+    expect(await listing(join(copy.directory, ".git"))).not.toContain("hooks");
+    await copy.remove();
+  });
+
+  it("reads the start tree from the project repository's objects only, never from objects planted in the part's own", async () => {
+    // A corrupt loose object, planted where the start tree's object would be in the part, must not be read.
+    const tree = await treeNow();
+    setPartCreationHookForTests(async (_step, directory) => {
+      await mkdir(join(directory, ".git/objects", tree.slice(0, 2)), { recursive: true });
+      await writeFile(join(directory, ".git/objects", tree.slice(0, 2), tree.slice(2)), "not a git object");
+    });
+    const copy = await createPartWorkingCopy({ rootPath: root, repositoryDirectory: repository, repositoryId: "app", itemId: A, treeSha: tree });
+    expect(await readFile(join(copy.directory, "README.md"), "utf8")).toBe("base\n");
+    await copy.remove();
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("the part's git files are read through the held .git directory (Linux: descriptors)", () => {
+  it("does not read info/exclude, attributes or config from a directory the .git path was swapped to after it was checked", async () => {
+    const copy = await copyOf();
+    const decoy = join(outside, "decoy-git");
+    await mkdir(decoy, { recursive: true });
+    // The decoy's config would make the worker refuse (core.excludesFile is refused); a read through the swapped path would see it.
+    await writeFile(join(decoy, "config"), "[core]\n\texcludesFile = /host/ignore\n");
+    setCandidateWriteHookForTests(async (step) => {
+      if (step !== "read git files") return;
+      await rm(join(copy.directory, ".git"), { recursive: true, force: true }).catch(() => undefined);
+      await symlink(decoy, join(copy.directory, ".git"));
+    });
+    await expect(withIsolatedGit(copy.directory, "read", async () => "read")).resolves.toBe("read");
   });
 });
