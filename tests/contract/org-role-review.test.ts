@@ -60,3 +60,6 @@ it("uses a fixed validation refusal without echoing untrusted field names", asyn
  const f = fixture(), path = `/v1/app/org/members/${target}/role`;
  await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, expectedRole: "member", role: "admin", "untrusted-private-field": "fixture" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: Review a valid company role change before submitting." });
 });
+for (const role of ["admin", "member", "maintainer", "viewer", "future-role"]) it(`refuses self-promotion by a live ${role}`, async () => {
+ const f = fixture(role);expect(await f.request({ requestId: id, expectedRole: role === "admin" ? "admin" : "member", role: "owner" }, actor)).toEqual({ code: "FORBIDDEN" });expect(f.role(actor)).toBe(role);expect(f.audit.recorded()).toEqual([]);
+});
