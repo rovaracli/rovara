@@ -177,6 +177,11 @@ describe("workflow-mode worker invocation", () => {
     expect(parse({ workflowBaseCommit: "c".repeat(41), workflowCandidateTreeSha: "a".repeat(40) })).toBe(false);
     expect(parse({ workflowCandidateTreeSha: "a".repeat(40), ...pinned }, "sync")).toBe(false);
     expect(parse({ somethingElse: true })).toBe(false);
+    // Plan 6 Task 15: which fix the reviewed tree is, for its commit's message; never without the tree.
+    const reviewed = { workflowCandidateTreeSha: "a".repeat(40), ...pinned };
+    for (const source of ["ci", "conflict", "feedback"]) expect(parse({ ...reviewed, workflowFix: { source } })).toBe(true);
+    expect(parse({ ...reviewed, workflowFix: { source: "other" } })).toBe(false);
+    expect(parse({ workflowFix: { source: "ci" } })).toBe(false);
     expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowPullRequestUpdate");
   });
 });

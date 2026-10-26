@@ -2,7 +2,7 @@
 // round's coding run is accepted in the task's own workspace with the fix's mark, its key is minted for the task's payer and the build step and is held to the run limit, the member's budget and the
 // org's, and running out pauses the round (the same round resumes at the person's retry). The owner's Retry of a CI fix that waited for them is a route of its own, checked here too.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, WorkflowSnapshotSchema, ciFixAskMessage, ciFixStopMessage, createCandidateManifest, startWorkflowFix, type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -26,7 +26,11 @@ type Meta = Record<string, unknown> & { taskId: string; workspaceId: string; bud
 
 async function world() {
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  // The head GitHub shows for the task's pull request: what the round was made for, unless a test says a person pushed.
+  const heads = { current: PR.headSha };
+  const getPullRequest = vi.fn(async () => ({ headCommit: heads.current }));
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true,
+    githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest, updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(async () => true) } as never } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
@@ -62,7 +66,7 @@ async function world() {
     h.db.set((workflowDispatchItem("state", taskId, fixing.revision, "IMPLEMENT", candidate.digest, NOW) as { Put: { Item: Record<string, unknown> } }).Put.Item);
     return { taskId, workspaceId, fixing, block };
   }
-  return { h, access, meta, operations, byMode, invocationOf, sweep, askForKey, inFixRound };
+  return { h, access, meta, operations, byMode, invocationOf, sweep, askForKey, inFixRound, heads, getPullRequest };
 }
 
 describe("a CI fix round's coding run", () => {
@@ -86,6 +90,43 @@ describe("a CI fix round's coding run", () => {
     // A repeat of the sweep starts nothing more.
     await t.sweep();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toHaveLength(1);
+  });
+});
+
+describe("a person's push before the round's run starts", () => {
+  it("stops the round before anything is paid for: no run, no key, the task waits for the merge as it did, and the person's commits are never touched", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.inFixRound();
+    t.heads.current = "9".repeat(40);
+    await t.sweep();
+    expect(t.getPullRequest).toHaveBeenCalledTimes(1);
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    const stopped = t.meta(taskId).workflow;
+    expect(stopped).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 1 } });
+    expect(stopped.fixSource).toBeUndefined();
+    expect(t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)).toEqual([]);
+    // The sweep does not start it later.
+    await t.sweep();
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
+  });
+
+  it("starts the run when the head is the one the round was made for", async () => {
+    const t = await world();
+    const { workspaceId } = await t.inFixRound();
+    await t.sweep();
+    expect(t.getPullRequest).toHaveBeenCalledTimes(1);
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toHaveLength(1);
+  });
+
+  it("does not guess when GitHub cannot say: nothing starts, and the row stays to be tried again", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.inFixRound();
+    t.getPullRequest.mockRejectedValueOnce(new Error("GitHub is down"));
+    await t.sweep();
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci" });
+    expect(t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)).toHaveLength(1);
   });
 });
 
@@ -171,7 +212,7 @@ describe("the owner's Retry of a CI fix that waited for them", () => {
     const requestId = randomUUID();
     const reply = await retry(t, MAYA, { requestId });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    expect(t.meta(t.taskId).workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: true, revision: t.waiting.revision + 1 });
+    expect(t.meta(t.taskId).workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: [PR.headSha], revision: t.waiting.revision + 1 });
     expect(t.meta(t.taskId).workflow.blockReason).toBeUndefined();
     expect(t.h.db.get(`DEVTASK#${t.taskId}`, `WORKFLOW_CI_FIX_RETRY#${requestId}`)).toMatchObject({ entityType: "WORKFLOW_CI_FIX_RETRY" });
     expect(t.h.db.get("WORKFLOW_MERGE_RECOVERY", `TASK#${t.taskId}`)?.wakeAt).toBeDefined();
@@ -181,11 +222,11 @@ describe("the owner's Retry of a CI fix that waited for them", () => {
     expect(t.meta(t.taskId).workflow.revision).toBe(t.waiting.revision + 1);
   });
 
-  it("after three rounds, starts them again from none", async () => {
+  it("after three rounds, keeps the count: one Retry is one more round, never three", async () => {
     const t = await blocked((check) => ciFixStopMessage(check, "Error: boom"));
     t.h.db.set({ ...t.meta(t.taskId), workflow: { ...t.meta(t.taskId).workflow, fixRounds: { ci: 3, conflict: 0, feedbackAuto: 0 } } });
     expect((await retry(t)).status).toBe(200);
-    expect(t.meta(t.taskId).workflow).toMatchObject({ state: "WAITING", fixRounds: { ci: 0 }, ciFixApproved: true });
+    expect(t.meta(t.taskId).workflow).toMatchObject({ state: "WAITING", fixRounds: { ci: 3 }, ciFixApproved: [PR.headSha] });
   });
 
   it("refuses a stale revision, someone who isn't the owner, and a task that is blocked for another reason", async () => {

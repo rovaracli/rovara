@@ -168,7 +168,7 @@ describe("Suite 14: fixing failing CI", () => {
     expect(stale.isError).toBe(true);
     const done = await retry(e2e, "11111111-2222-4333-8444-555555555552");
     expect(done.isError, JSON.stringify(done)).not.toBe(true);
-    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: true });
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: [e2e.workflow().pullRequests![0]!.headSha] });
     // The same request again changes nothing.
     const again = await retry(e2e, "11111111-2222-4333-8444-555555555552");
     expect(again.isError).not.toBe(true);
@@ -181,7 +181,7 @@ describe("Suite 14: fixing failing CI", () => {
     expect(prompts.some((prompt) => prompt.includes(CI_OUTPUT_BLOCK_HEADER))).toBe(true);
   }, 240_000);
 
-  it("14.4 three rounds that do not help stop with the exact text, and the owner's Retry starts the rounds again", async () => {
+  it("14.4 three rounds that do not help stop with the exact text, and each Retry is one more round and a stop again", async () => {
     let rounds = 0;
     const { e2e, github, pullRequest } = await waitingForMerge({ edits: (latest) => {
       if (!latest.includes(CI_OUTPUT_BLOCK_HEADER)) return EDITS;
@@ -205,9 +205,20 @@ describe("Suite 14: fixing failing CI", () => {
     expect(milestones(e2e, "fixing")).toHaveLength(3);
     expect(e2e.github.pullRequests[0]!.state).toBe("open");
     expect(pullRequest.number).toBe(e2e.github.pullRequests[0]!.number);
-    // Retry: the rounds start again from none.
+    // Retry: the count is kept, and the go-ahead is for the head that failed.
     expect((await retry(e2e, "11111111-2222-4333-8444-555555555553")).isError).not.toBe(true);
-    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 0 }, ciFixApproved: true });
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 3 }, ciFixApproved: [expect.any(String)] });
+    // The next pass runs exactly one more round (not counted), pushes it, and the failure after it stops again.
+    e2e.clock.advance(20 * 60_000);
+    await trackAndFix(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 3 } });
+    expect(e2e.workflow().ciFixApproved).toBeUndefined();
+    expect(milestones(e2e, "fixing")).toHaveLength(4);
+    e2e.clock.advance(20 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", fixRounds: { ci: 3 } });
+    expect(e2e.workflow().blockReason).toBe(stopped.blockReason);
+    expect(dispatchRows(e2e)).toEqual([]);
   }, 480_000);
 
   it("14.5 a run that stops on its budget mid-round is paused, and the same round resumes in the same workspace with its fix mark", async () => {
@@ -228,7 +239,21 @@ describe("Suite 14: fixing failing CI", () => {
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 1 } });
     expect(e2e.workflow().fixSource).toBeUndefined();
     expect(prompts.length).toBeGreaterThan(0);
-    const resumed = e2e.db.find((item) => item.entityType === "OUTBOX" && (item.invocation as { payload?: { workflowFix?: unknown } } | undefined)?.payload?.workflowFix !== undefined);
-    expect(resumed.length).toBe(2);
+    const marked = e2e.db.find((item) => item.entityType === "OUTBOX" && (item.invocation as { payload?: { workflowFix?: unknown } } | undefined)?.payload?.workflowFix !== undefined)
+      .map((item) => (item.invocation as { kind: string }).kind);
+    // The two coding runs of the round, and the push of its reviewed tree (which carries the mark for its commit's message).
+    expect(marked.sort()).toEqual(["maintain", "task", "task"]);
+  }, 240_000);
+
+  it("14.6 a task whose autonomy setting cannot be read asks first, never starts a paid round", async () => {
+    const { e2e, github, prompts } = await waitingForMerge();
+    freezeAutonomy(e2e, "prepare");
+    github.state.red = true;
+    e2e.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "RECIPE", error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    await trackAndFix(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: ciFixAskMessage("test") });
+    expect(dispatchRows(e2e)).toEqual([]);
+    expect(prompts.some((prompt) => prompt.includes(CI_OUTPUT_BLOCK_HEADER))).toBe(false);
+    expect(github.calls.some((call) => call.startsWith("log:"))).toBe(false);
   }, 240_000);
 });

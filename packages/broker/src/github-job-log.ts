@@ -4,10 +4,11 @@
 import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES, agentXError } from "@agentx/contracts";
 
-/** The hosts a job log is served from: GitHub's Actions hosts, and the storage accounts of its results service. */
+/** The hosts a job log is served from: GitHub's Actions hosts, and the numbered storage accounts of its results service. */
 const LOG_HOSTS: readonly RegExp[] = [
   /^(?:[a-z0-9-]+\.)*actions\.githubusercontent\.com$/u,
-  /^productionresultssa\d{1,3}\.blob\.core\.windows\.net$/u,
+  // GitHub's results storage accounts are numbered 0 to 19 (confirm at staging); any other number is not GitHub's.
+  /^productionresultssa(?:[0-9]|1[0-9])\.blob\.core\.windows\.net$/u,
 ];
 
 /** Whether Rovara reads a log from this address: https, an allowed host, the default port, and no credentials in it. */

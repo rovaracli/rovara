@@ -435,9 +435,17 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         workflowCandidateTreeSha: z.string().regex(/^[a-f0-9]{40}$/).optional(),
         /** The base commit the broker pinned for the task in this repository; it must be in the workspace's history. Always and only with workflowCandidateTreeSha. */
         workflowBaseCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+        /**
+         * Which fix the reviewed tree is (failing CI, a conflict, comments), so its commit says so. Only with workflowCandidateTreeSha. It changes nothing about the push: a worker whose /ping does not list
+         * "task.workflowFix" is sent the push without it, and its commit keeps the usual message.
+         */
+        workflowFix: WorkflowFixPayloadSchema.optional(),
       })
       .strict()
       .superRefine((value, context) => {
+        if (value.workflowFix !== undefined && value.workflowCandidateTreeSha === undefined) {
+          context.addIssue({ code: "custom", path: ["workflowFix"], message: "the fix a push is for goes with the reviewed tree" });
+        }
         if (value.workflowCandidateTreeSha !== undefined && value.action !== "append") {
           context.addIssue({ code: "custom", message: "workflowCandidateTreeSha is allowed only with append" });
         }

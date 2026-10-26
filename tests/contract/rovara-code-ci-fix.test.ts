@@ -5,13 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CI_BLOCK_BYTES_MAX, CI_FAILED_JOBS_MAX, CI_FIX_ROUNDS_MAX, CI_OUTPUT_BLOCK_HEADER, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowCiFix, ciFixAskMessage, ciFixStopMessage,
   ciFixUnrelatedMessage, createCandidateManifest, createWorkflowSnapshot, endWorkflowCiFixUnrelated, isCiFixBlockReason, recordWorkflowPullRequestUpdate, retryWorkflowCiFix, startWorkflowFix,
-  workflowFixRoundsLeft, blockWorkflowPullRequestUpdate, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
+  workflowFixRoundsLeft, abandonWorkflowFix, blockWorkflowPullRequestUpdate, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { TrackingRequestCapError, registerMergeActionDecider, trackPullRequest, type MergeActionContext } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import {
-  ciEvidenceKey, ciFixDecider, ciFixPrompt, ciFixPromptWithoutOutput, ciOutputBlock, cleanLog, collectCiEvidence, decideCiFix, firstLogLine, installCiFixDecider, readCiEvidence, uninstallCiFixDecider,
+  ciEvidenceKey, ciFixDecider, ciFixPrompt, ciFixPromptWithoutOutput, ciOutputBlock, cleanLog, collectCiEvidence, decideCiFix, firstLogLine, installCiFixDecider, taskAutonomy, readCiEvidence, uninstallCiFixDecider,
 } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { TRACKING_REQUESTS_BASE } from "../../packages/contracts/src/rovara-code.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
@@ -44,7 +44,7 @@ function waiting(extra: Record<string, unknown> = {}, options: { version?: "1.0.
 
 describe("startWorkflowFix", () => {
   it("moves a task waiting for the merge back to coding, marked as a CI fix with what failed, and counts the round", () => {
-    const next = startWorkflowFix(waiting({ programRounds: { review: 2 }, ciFixApproved: true }), { source: "ci", problems: ["test", "lint"], now: at });
+    const next = startWorkflowFix(waiting({ programRounds: { review: 2 }, ciFixApproved: [HEAD_A] }), { source: "ci", problems: ["test", "lint"], now: at });
     expect(next).toMatchObject({ revision: 10, stage: "IMPLEMENT", state: "READY", fixSource: "ci", fixProblems: ["test", "lint"], fixRounds: { ci: 1, conflict: 0, feedbackAuto: 0 }, programStepId: "build" });
     // The earlier code's review rounds are not counted against this fix, and a go-ahead is used once.
     expect(next.programRounds).toBeUndefined();
@@ -154,6 +154,14 @@ describe("a CI fix that waits for a person", () => {
     expect(() => blockWorkflowCiFix(waiting(), { reason: "Some other reason", now: at })).toThrow(WorkflowTransitionError);
   });
 
+  it("a check's name is redacted in the ask, stop and unrelated texts, and so is the block reason made of it", () => {
+    for (const text of [ciFixAskMessage(`test ${GHP}`), ciFixStopMessage(`test ${GHP}`, `line ${GHP}`), ciFixUnrelatedMessage(`test ${GHP}`)]) {
+      expect(text).not.toContain(GHP);
+      expect(text).toContain("test ");
+    }
+    expect(blockWorkflowCiFix(waiting(), { reason: ciFixAskMessage(`test ${GHP}`), now: at }).blockReason).not.toContain(GHP);
+  });
+
   it("a name or a line from CI is one short line in the reason, however it is written", () => {
     const reason = ciFixStopMessage(`test\n‮evil ${"x".repeat(300)}`, `line one\nline two ${"y".repeat(400)}`);
     expect(reason).not.toMatch(/[\n‮]/u);
@@ -170,14 +178,18 @@ describe("a CI fix that waits for a person", () => {
     expect(() => endWorkflowCiFixUnrelated(waiting(), at)).toThrow(WorkflowTransitionError);
   });
 
-  it("Retry waits for the merge again with a go-ahead; after the rounds ran out it starts them again", () => {
+  it("Retry waits for the merge again with a go-ahead for the failing head; it never gives the rounds back", () => {
     const asked = blockWorkflowCiFix(waiting(), { reason: ciFixAskMessage("test"), now: at });
     const retried = retryWorkflowCiFix(asked, at);
-    expect(retried).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: true, revision: 11 });
+    // The go-ahead is for the head Rovara recorded, the one that failed.
+    expect(retried).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", ciFixApproved: [HEAD_A], revision: 11 });
     expect(retried.blockReason).toBeUndefined();
     expect(retried.fixRounds).toBeUndefined();
     const stopped = blockWorkflowCiFix(waiting({ fixRounds: { ci: CI_FIX_ROUNDS_MAX, conflict: 1, feedbackAuto: 2 } }), { reason: ciFixStopMessage("test", "boom"), now: at });
-    expect(retryWorkflowCiFix(stopped, at).fixRounds).toEqual({ ci: 0, conflict: 1, feedbackAuto: 2 });
+    expect(retryWorkflowCiFix(stopped, at).fixRounds).toEqual({ ci: CI_FIX_ROUNDS_MAX, conflict: 1, feedbackAuto: 2 });
+    // No open pull request with a recorded head: nothing to give a go-ahead for.
+    const noHead = blockWorkflowCiFix(waiting({ pullRequests: [{ ...PULL_REQUEST, headSha: undefined }] }), { reason: ciFixAskMessage("test"), now: at });
+    expect(() => retryWorkflowCiFix(noHead, at)).toThrow(WorkflowTransitionError);
     // Only a CI block is retried this way.
     expect(() => retryWorkflowCiFix(waiting(), at)).toThrow(WorkflowTransitionError);
     expect(() => retryWorkflowCiFix({ ...waiting(), state: "BLOCKED", blockReason: "something else" }, at)).toThrow(WorkflowTransitionError);
@@ -185,21 +197,69 @@ describe("a CI fix that waits for a person", () => {
 });
 
 describe("what to do about failing CI", () => {
-  const failingItem = { ci: "failing" as const, failingChecks: ["test"] };
+  const failingItem = { ci: "failing" as const, failingChecks: ["test"], headSha: HEAD_A };
+  const rounds = (ci: number) => ({ fixRounds: { ci, conflict: 0, feedbackAuto: 0 } });
   it("fixes, asks, stops or does nothing", () => {
     expect(decideCiFix({ item: failingItem, workflow: {}, autonomy: "prepare" })).toBe("fix");
     expect(decideCiFix({ item: failingItem, workflow: {}, autonomy: "run" })).toBe("fix");
     expect(decideCiFix({ item: failingItem, workflow: {}, autonomy: "suggest" })).toBe("ask");
-    expect(decideCiFix({ item: failingItem, workflow: { ciFixApproved: true }, autonomy: "suggest" })).toBe("fix");
+    expect(decideCiFix({ item: failingItem, workflow: { ciFixApproved: [HEAD_A] }, autonomy: "suggest" })).toBe("fix");
     for (const autonomy of ["suggest", "prepare", "run"] as const) {
-      expect(decideCiFix({ item: failingItem, workflow: { fixRounds: { ci: CI_FIX_ROUNDS_MAX, conflict: 0, feedbackAuto: 0 } }, autonomy })).toBe("stop");
-      expect(decideCiFix({ item: failingItem, workflow: { fixRounds: { ci: CI_FIX_ROUNDS_MAX - 1, conflict: 0, feedbackAuto: 0 } }, autonomy })).toBe(autonomy === "suggest" ? "ask" : "fix");
+      expect(decideCiFix({ item: failingItem, workflow: rounds(CI_FIX_ROUNDS_MAX), autonomy })).toBe("stop");
+      expect(decideCiFix({ item: failingItem, workflow: rounds(CI_FIX_ROUNDS_MAX - 1), autonomy })).toBe(autonomy === "suggest" ? "ask" : "fix");
     }
-    for (const ci of ["passing", "pending", "none"] as const) expect(decideCiFix({ item: { ci, failingChecks: [] }, workflow: {}, autonomy: "run" })).toBe("none");
+    for (const ci of ["passing", "pending", "none"] as const) expect(decideCiFix({ item: { ci, failingChecks: [], headSha: HEAD_A }, workflow: {}, autonomy: "run" })).toBe("none");
     // Checks named while CI does not fail (still running, or passing) are not a failure to fix.
-    for (const ci of ["passing", "pending", "none"] as const) expect(decideCiFix({ item: { ci, failingChecks: ["test"] }, workflow: {}, autonomy: "run" })).toBe("none");
+    for (const ci of ["passing", "pending", "none"] as const) expect(decideCiFix({ item: { ci, failingChecks: ["test"], headSha: HEAD_A }, workflow: {}, autonomy: "run" })).toBe("none");
     // Failing with no check named is not a failure to fix.
-    expect(decideCiFix({ item: { ci: "failing", failingChecks: [] }, workflow: {}, autonomy: "run" })).toBe("none");
+    expect(decideCiFix({ item: { ci: "failing", failingChecks: [], headSha: HEAD_A }, workflow: {}, autonomy: "run" })).toBe("none");
+  });
+
+  it("a go-ahead after the rounds ran out is for one more round, and the failure after it stops again", () => {
+    for (const autonomy of ["suggest", "prepare", "run"] as const) {
+      expect(decideCiFix({ item: failingItem, workflow: { ...rounds(CI_FIX_ROUNDS_MAX), ciFixApproved: [HEAD_A] }, autonomy })).toBe("fix");
+    }
+    // The go-ahead is used up by the round it started, so the same failure again is a stop.
+    expect(decideCiFix({ item: failingItem, workflow: rounds(CI_FIX_ROUNDS_MAX), autonomy: "prepare" })).toBe("stop");
+  });
+
+  it("a go-ahead is for the head it was given for: a failure on another head still asks, or stops", () => {
+    const other = { ...failingItem, headSha: "7".repeat(40) };
+    expect(decideCiFix({ item: other, workflow: { ciFixApproved: [HEAD_A] }, autonomy: "suggest" })).toBe("ask");
+    expect(decideCiFix({ item: other, workflow: { ...rounds(CI_FIX_ROUNDS_MAX), ciFixApproved: [HEAD_A] }, autonomy: "run" })).toBe("stop");
+  });
+});
+
+describe("the autonomy of a task", () => {
+  it("is what its recipe says, prepare for a task with no recipe, and suggest (ask first) when the recipe cannot be read", async () => {
+    for (const autonomy of ["suggest", "prepare", "run"] as const) expect(await taskAutonomy(async () => ({ recipe: { autonomy } }))).toBe(autonomy);
+    expect(await taskAutonomy(async () => undefined)).toBe("prepare");
+    const logged: string[] = [];
+    expect(await taskAutonomy(async () => { throw new Error("throttled"); }, (event) => { logged.push(event); })).toBe("suggest");
+    expect(logged).toEqual(["ci_fix.autonomy_unreadable"]);
+  });
+
+  it("a pass that cannot read it asks first instead of starting a paid round", async () => {
+    installCiFixDecider();
+    const w = ciWorld();
+    (w.deps as { autonomy?: unknown }).autonomy = () => taskAutonomy(async () => { throw new Error("throttled"); });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(workflowOf(w)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: ciFixAskMessage("test") });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(w.github.calls.filter((call) => call.startsWith("log:"))).toEqual([]);
+  });
+});
+
+describe("a fix that has not started its run", () => {
+  it("is given up when the pull request was changed meanwhile: the task waits for the merge as it did, the marks go, the round stays counted", () => {
+    const started = startWorkflowFix(waiting(), { source: "ci", problems: ["test"], now: at });
+    const stopped = abandonWorkflowFix(started, at);
+    expect(stopped).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 1 }, revision: started.revision + 1 });
+    expect(stopped.fixSource).toBeUndefined();
+    expect(stopped.fixProblems).toBeUndefined();
+    expect(WorkflowSnapshotSchema.safeParse(stopped).success).toBe(true);
+    expect(() => abandonWorkflowFix(waiting(), at)).toThrow(WorkflowTransitionError);
+    expect(() => abandonWorkflowFix({ ...started, state: "RUNNING" }, at)).toThrow(WorkflowTransitionError);
   });
 });
 
@@ -420,6 +480,38 @@ describe("the CI slot of merge tracking", () => {
     expect(started).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci", fixRounds: { ci: 1 } });
     expect(started.ciFixApproved).toBeUndefined();
     expect(dispatchRows(w)).toHaveLength(1);
+  });
+
+  it("a go-ahead given for one head does not cover a later failure on another: it asks again", async () => {
+    installCiFixDecider();
+    const w = ciWorld({ autonomy: "suggest" });
+    w.setTask({ workflow: waiting({ ciFixApproved: ["7".repeat(40)] }) });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(workflowOf(w)).toMatchObject({ state: "BLOCKED", blockReason: ciFixAskMessage("test") });
+    expect(dispatchRows(w)).toEqual([]);
+  });
+
+  it("three Retries after the stop give three more rounds, not nine: each is one uncounted round, and the failure after it stops again", async () => {
+    installCiFixDecider();
+    const w = ciWorld();
+    w.setTask({ workflow: waiting({ fixRounds: { ci: CI_FIX_ROUNDS_MAX, conflict: 0, feedbackAuto: 0 } }) });
+    for (let retry = 1; retry <= 3; retry += 1) {
+      await trackPullRequest(w.deps, TASK_ID);
+      expect(workflowOf(w), `stop ${retry}`).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", fixRounds: { ci: CI_FIX_ROUNDS_MAX } });
+      w.setTask({ workflow: retryWorkflowCiFix(workflowOf(w), at) });
+      await trackPullRequest(w.deps, TASK_ID);
+      const started = workflowOf(w);
+      expect(started, `round ${retry}`).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci", fixRounds: { ci: CI_FIX_ROUNDS_MAX } });
+      expect(started.ciFixApproved).toBeUndefined();
+      expect(dispatchRows(w)).toHaveLength(retry);
+      // The round is pushed and the task waits for the merge again, CI still red; the next pass stops (it does not start another).
+      w.setTask({ workflow: waiting({ fixRounds: started.fixRounds, revision: started.revision + 1 }) });
+    }
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(workflowOf(w)).toMatchObject({ state: "BLOCKED" });
+    expect(dispatchRows(w)).toHaveLength(3);
+    expect(milestones(w, "fixing")).toHaveLength(3);
+    expect(milestones(w, "fixing").every((item) => !String(item.text).includes("round 4 of 3"))).toBe(true);
   });
 
   it("prepare and run go on by themselves", async () => {

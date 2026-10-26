@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { ModelIdentifierSchema } from "./models.js";
+import { redactText } from "./redaction.js";
 
 // ---- limits (placeholder values, exact names)
 
@@ -291,8 +292,8 @@ export const CI_FIX_PROBLEMS_MAX = CI_FAILED_JOBS_MAX;
 /** The GitHub App id of GitHub Actions: only its check runs are jobs whose log can be read. */
 export const GITHUB_ACTIONS_APP_ID = 15_368;
 
-const ciCheckName = (check: string): string => check.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 100);
-const ciLine = (line: string): string => line.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().replace(/[.:;,\s]+$/u, "").slice(0, 150);
+const ciCheckName = (check: string): string => redactText(check.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim().slice(0, 100);
+const ciLine = (line: string): string => redactText(line.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim().replace(/[.:;,\s]+$/u, "").slice(0, 150);
 
 /** What the owner reads when CI fails and Rovara is set to suggest: it waits to be told to go on (Retry). */
 export const CI_FIX_ASK_PREFIX = "CI is failing on ";

@@ -1324,8 +1324,11 @@ const WorkflowSnapshotShapeSchema = z.object({
   fixSource: FixSourceSchema.optional(),
   /** Both versions: the names of the failing checks the fix now running is for (at most five, one line each); present only with `fixSource`. */
   fixProblems: z.array(z.string().trim().min(1).max(200)).min(1).max(CI_FIX_PROBLEMS_MAX).optional(),
-  /** Both versions: a person told Rovara to go on with a CI fix it was waiting to be told about (Retry); the next CI fix round starts whatever the autonomy, and clears it. */
-  ciFixApproved: z.literal(true).optional(),
+  /**
+   * Both versions: a person told Rovara to go on with a CI fix it was waiting to be told about (Retry). It names the heads of the open pull requests that were failing when they said it, and only a
+   * failure on one of those heads is covered. The next CI fix round starts whatever the autonomy and the rounds used (that one round is not counted), and clears it.
+   */
+  ciFixApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -1987,6 +1990,16 @@ export function workflowFixRoundsBegun(workflow: Pick<WorkflowSnapshot, "fixRoun
 }
 
 /**
+ * A fix that has not started its coding run stops because the pull request is no longer as Rovara left it (a person pushed to it): IMPLEMENT/READY becomes WAIT_FOR_MERGE/WAITING again, the marks
+ * of the fix dropped. The round stays counted: it was begun. The code, checks and reviews are those the pull request was opened with, so the task is as it was.
+ */
+export function abandonWorkflowFix(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "IMPLEMENT" || current.state !== "READY" || current.fixSource === undefined) throw new WorkflowTransitionError("no fix is waiting to start");
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING", updatedAt: now });
+}
+
+/**
  * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
  * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
  */
@@ -2006,8 +2019,9 @@ export function endWorkflowCiFixUnrelated(currentInput: unknown, now: string): W
 }
 
 /**
- * The owner's Retry of a CI fix that waited for a person (Rovara was told to suggest, the three rounds are used up, or a round changed nothing): WAIT_FOR_MERGE/BLOCKED becomes WAITING with the
- * go-ahead recorded, so the next CI fix round starts whatever the autonomy. Once the rounds were used up, they start again from none: the person asked for more.
+ * The owner's Retry of a CI fix that waited for a person (Rovara was told to suggest, the three rounds are used up, or a round changed nothing): WAIT_FOR_MERGE/BLOCKED becomes WAITING with
+ * the go-ahead recorded for the heads the open pull requests hold now, so the next CI fix round, for a failure on one of them, starts whatever the autonomy. The rounds already used stay counted:
+ * one Retry is one round more (see `startWorkflowFix`'s `count`), never three.
  */
 export function retryWorkflowCiFix(currentInput: unknown, now: string): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
@@ -2016,11 +2030,9 @@ export function retryWorkflowCiFix(currentInput: unknown, now: string): Workflow
   }
   const { blockReason: _blockReason, ...rest } = current;
   void _blockReason;
-  const rounds = workflowFixRounds(current);
-  return WorkflowSnapshotSchema.parse({
-    ...rest, revision: current.revision + 1, state: "WAITING", ciFixApproved: true as const,
-    ...(rounds.ci >= CI_FIX_ROUNDS_MAX ? { fixRounds: { ...rounds, ci: 0 } } : {}), updatedAt: now,
-  });
+  const heads = [...new Set((current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN").flatMap((pullRequest) => pullRequest.headSha === undefined ? [] : [pullRequest.headSha]))];
+  if (heads.length === 0) throw new WorkflowTransitionError("no open pull request has a recorded head to give a go-ahead for");
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", ciFixApproved: heads, updatedAt: now });
 }
 
 /** Saves recoverable review input without inventing an independent report or code authority. */

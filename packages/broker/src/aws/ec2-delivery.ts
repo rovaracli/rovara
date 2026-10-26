@@ -539,8 +539,18 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const anchored = withoutCodeAnchors(withRisk, features);
-  if (anchored !== withRisk) {
+  const withPush = withoutPushFix(withRisk, features);
+  if (withPush !== withRisk) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.push_fix_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const anchored = withoutCodeAnchors(withPush, features);
+  if (anchored !== withPush) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.code_anchors_omitted",
@@ -662,6 +672,14 @@ function withoutReviewNote(invocation: WorkerInvocation, features: readonly stri
   if (invocation.kind !== "task" || invocation.payload.workflowReviewNote === undefined || features.includes("task.workflowReviewNote")) return invocation;
   const payload = { ...invocation.payload };
   delete payload.workflowReviewNote;
+  return { ...invocation, payload };
+}
+
+/** A push of a fix without the name of the fix it is, for a worker that does not parse it: the push is the same, and its commit keeps the usual message. */
+function withoutPushFix(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "maintain" || invocation.payload.workflowFix === undefined || features.includes("task.workflowFix")) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowFix;
   return { ...invocation, payload };
 }
 

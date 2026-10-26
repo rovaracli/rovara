@@ -1199,6 +1199,27 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(accepted.post)).toMatchObject({ workflowCandidateTreeSha: "b".repeat(40), workflowBaseCommit: "e".repeat(40) });
     });
 
+    it("sends a reviewed fix's push without the name of the fix to a worker that does not list task.workflowFix: the push is the same, and its commit keeps the usual message (Plan 6 Task 15)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const record = recordFor();
+      const invocation = { ...record.invocation, kind: "maintain", payload: {
+        action: "append", project: { name: "demo", revision: 1, setup: [], readiness: [], orchestratorInstructions: "x",
+          repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }] },
+        repository: "demo", pullRequestNumber: 42, headBranch: `agentx/${randomUUID()}`, baseBranch: "main", expectedHeadCommit: "d".repeat(40), repositoryGrant: "g",
+        workflowCandidateTreeSha: "b".repeat(40), workflowBaseCommit: "e".repeat(40), workflowFix: { source: "ci" },
+      } } as WorkerInvocation;
+      const fix = { ...record, invocation };
+      const older = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate"] });
+      expect(await older.deliver(fix, fix.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).toMatchObject({ workflowCandidateTreeSha: "b".repeat(40) });
+      expect(postedPayload(older.post)).not.toHaveProperty("workflowFix");
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({ event: "dispatch.push_fix_omitted", operationId: fix.operationId }));
+      const newer = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate", "task.workflowFix"] });
+      expect(await newer.deliver(fix, fix.invocation)).toBe("DELIVERED");
+      expect(postedPayload(newer.post).workflowFix).toEqual({ source: "ci" });
+      log.mockRestore();
+    });
+
     it("refuses a publication carrying the task's pinned base before POST unless the worker advertises it, and never drops it", async () => {
       const record = publishRecord({ candidateTreeSha: "b".repeat(40), publicationMode: "CHECKED_TREE", workflowBaseCommit: "c".repeat(40) });
       const refused = delivery({ workerFeatures: async () => ["publish.candidateTree", "publish.mode", "publish.contextDigest"] });

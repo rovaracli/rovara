@@ -847,6 +847,9 @@ export class GitHubAppCredentialProvider {
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions/jobs/${jobId}/logs`,
       { method: "GET", headers: githubHeaders(token), redirect: "manual", signal: AbortSignal.timeout(8_000) },
     );
+    // GitHub's rate limits answer 403 (secondary) or 429: they are the sweep's to back off from, never a log that is not there.
+    const limitedAt = mergeRateLimitRetryAt(located, this.now());
+    if (limitedAt !== undefined) throw new GithubMergeRateLimitError(limitedAt);
     if (located.status === 404 || located.status === 403 || located.status === 410) return undefined;
     const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(budget === undefined ? [] : [budget.signal])]);
     // The log is read with this provider's own fetch, not the pass's (its address is not GitHub's API, so it is not one of the pass's requests), and with no credentials.
@@ -854,6 +857,8 @@ export class GitHubAppCredentialProvider {
       const address = located.headers.get("location") ?? "";
       if (!isAllowedLogAddress(address)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub sent the log somewhere Rovara will not read it");
       const log = await this.fetchImplementation(address, { method: "GET", headers: { accept: "text/plain" }, redirect: "error", signal });
+      const logLimitedAt = mergeRateLimitRetryAt(log, this.now());
+      if (logLimitedAt !== undefined) throw new GithubMergeRateLimitError(logLimitedAt);
       if (log.status === 404 || log.status === 403 || log.status === 410) return undefined;
       if (log.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub log download failed with HTTP ${log.status}`);
       return logTail(await readLogEnd(log, signal));
@@ -1721,7 +1726,7 @@ function safeFutureMilliseconds(value: number, now: number): number | undefined 
   return Number.isSafeInteger(value) && value > now && Number.isFinite(new Date(value).getTime()) ? value : undefined;
 }
 
-function mergeRateLimitRetryAt(response: Response, now: number): number | undefined {
+export function mergeRateLimitRetryAt(response: Response, now: number): number | undefined {
   if (response.status !== 429 && response.status !== 403) return undefined;
   const candidates: number[] = [];
   const retryAfter = response.headers.get("retry-after");

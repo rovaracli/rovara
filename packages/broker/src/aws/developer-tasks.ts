@@ -189,6 +189,7 @@ import {
   isRunLimitBlockReason,
   isCiFixBlockReason,
   retryWorkflowCiFix,
+  abandonWorkflowFix,
   heldPlanStartKey,
   planRunLimitSubject,
   runLimitAskedKey,
@@ -354,6 +355,8 @@ export interface DeveloperTaskRouteDependencies {
   workflowE2EPresentation?(input: { task: DeveloperTaskRecord; operations: readonly unknown[]; actor: "owner" | "viewer" }): Promise<DeveloperTaskView["e2ePresentation"] | undefined>;
   /** Atomic conditions for current managed-E2E authority, attached to publication admission. */
   workflowE2EPublicationChecks?(input: { task: DeveloperTaskRecord; operations: readonly unknown[] }): Promise<TransactItems | undefined>;
+  /** The head GitHub shows for one of the task's pull requests now (Plan 6 Task 15: checked before a fix's coding run is paid for). Throws when GitHub cannot say. */
+  currentPullRequestHead?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
   /** M1.3 Task 3.7: the per-scenario rows of the task's current browser and API round, for the task page; the screenshot behind a row, by digest; the baseline round asked for at APPROVE. */
   workflowE2EScenarioResults?(input: { task: DeveloperTaskRecord; operations: readonly unknown[]; actor: "owner" | "viewer" }): Promise<E2EScenarioResults | undefined>;
   workflowE2EArtifact?(input: { task: DeveloperTaskRecord; sha256: string }): Promise<{ contentType: "image/jpeg"; bytes: Uint8Array } | undefined>;
@@ -4295,6 +4298,26 @@ export async function startTaskWorkflowImplementationFromSystem(
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  // Plan 6 Task 15: a fix is made for the head Rovara pushed. If a person pushed meanwhile, the round stops here, before any model run is paid for: the task waits for the merge again (tracking
+  // says someone else pushed, and stops fixing), and nothing of theirs is ever overwritten.
+  if (workflow.fixSource !== undefined && deps.currentPullRequestHead !== undefined) {
+    for (const pullRequest of (workflow.pullRequests ?? []).filter((entry) => (entry.state === "OPEN" || entry.state === "UNKNOWN") && entry.headSha !== undefined)) {
+      const head = await deps.currentPullRequestHead(task, pullRequest);
+      if (head === pullRequest.headSha) continue;
+      const stoppedAt = iso(deps);
+      try {
+        await deps.actions.transact([{ Update: {
+          TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": abandonWorkflowFix(workflow, stoppedAt), ":now": stoppedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":ready": "READY" },
+        } }]);
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+      }
+      return "STALE";
+    }
+  }
   const receivedAt = iso(deps);
   const requestId = workflowRequestId("agentx-program-implement", taskId, workflow.revision, workflow.programStepId);
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
@@ -5876,7 +5899,7 @@ async function startTaskWorkflowPullRequestUpdate(
       })),
       ...currentE2EChecks,
       ...(ownerAccess === undefined ? [] : [taskAccessFence(deps.tableName, task.taskId, ownerAccess.peopleRevision)]),
-    ], { candidateDigest: expected.candidateDigest, treeSha: repository.treeSha, baseCommitSha, expectedHeadCommit: pullRequest.headSha });
+    ], { candidateDigest: expected.candidateDigest, treeSha: repository.treeSha, baseCommitSha, expectedHeadCommit: pullRequest.headSha, ...(workflow.fixSource === undefined ? {} : { fixSource: workflow.fixSource }) });
   } catch (error) {
     if (error instanceof AgentXError && error.code === "STALE_FENCE") {
       // The pull request changed on GitHub. A merge at the head AgentX recorded completes the task: GitHub is read again

@@ -515,7 +515,7 @@ import { createDeveloperApiConfiguration } from "./workflow-dependencies-configu
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
-import { ciFixUnrelatedItems, installCiFixDecider } from "../rovara-code/ci-fix.js";
+import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -7331,7 +7331,7 @@ async function acceptPullRequestLifecycle(
    * exactly the reviewed tree on the task's pinned base, onto the head the workflow recorded. Only the broker's own
    * dispatch passes it; nothing a person asks for changes a workflow task's pull request.
    */
-  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string } } = {},
+  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"] } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
   // Ruling R60: before any access check, as for acceptPullRequest.
@@ -7587,6 +7587,8 @@ async function acceptPullRequestLifecycle(
       ),
       // The reviewed fix: the worker pushes exactly this tree, built on the pinned base's history, or refuses before pushing.
       ...(candidate === undefined ? {} : { workflowCandidateTreeSha: candidate.treeSha, workflowBaseCommit: candidate.baseCommitSha }),
+      // Which fix it is, for its commit's message (Plan 6 Task 15).
+      ...(candidate?.fixSource === undefined ? {} : { workflowFix: { source: candidate.fixSource } }),
     },
   };
   const outbox = outboxRecord(workspace, invocation);
@@ -12673,8 +12675,8 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
       requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
       ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
     },
-    // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`).
-    autonomy: async (task) => task.orgId === undefined ? "prepare" : (await readTaskRecipe(dependencies, task.taskId, task.orgId).catch(() => undefined))?.recipe.autonomy ?? "prepare",
+    // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
+    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
@@ -13504,6 +13506,13 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      currentPullRequestHead: async (target, pullRequest) => {
+        const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
+        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+        const head = (await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, await githubScopeOf(dependencies, target)) as { headCommit?: unknown } | undefined)?.headCommit;
+        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
+        return head;
+      },
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.

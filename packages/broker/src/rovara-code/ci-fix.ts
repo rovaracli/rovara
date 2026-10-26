@@ -37,12 +37,27 @@ export type CiFixDecision = "fix" | "ask" | "stop" | "none";
 /**
  * `fix`: the checks that count fail on a head that is Rovara's (the caller has checked the head and that nothing else is in flight), the rounds are not used up, and Rovara is allowed to go on.
  * `ask`: the same, with autonomy `suggest` and no go-ahead from a person. `stop`: three fixes have not made CI pass. `none`: nothing fails.
+ * A person's go-ahead (Retry) covers a failure on the heads it was given for, and then it is one round more whatever the rounds used: after it the failure stops again.
  */
-export function decideCiFix(input: { item: Pick<MergeTrackingItem, "ci" | "failingChecks">; workflow: Pick<WorkflowSnapshot, "fixRounds" | "ciFixApproved">; autonomy: Autonomy }): CiFixDecision {
+export function decideCiFix(input: { item: Pick<MergeTrackingItem, "ci" | "failingChecks" | "headSha">; workflow: Pick<WorkflowSnapshot, "fixRounds" | "ciFixApproved">; autonomy: Autonomy }): CiFixDecision {
   if (input.item.ci !== "failing" || input.item.failingChecks.length === 0) return "none";
-  if (workflowFixRounds(input.workflow).ci >= CI_FIX_ROUNDS_MAX) return "stop";
-  if (input.autonomy === "suggest" && input.workflow.ciFixApproved !== true) return "ask";
+  const approved = input.workflow.ciFixApproved?.includes(input.item.headSha) === true;
+  if (workflowFixRounds(input.workflow).ci >= CI_FIX_ROUNDS_MAX && !approved) return "stop";
+  if (input.autonomy === "suggest" && !approved) return "ask";
   return "fix";
+}
+
+/**
+ * How far Rovara may go on its own with a task: what its frozen recipe says, `prepare` for a task that has no recipe (the default), and `suggest` (ask first) when the recipe cannot be read,
+ * so a failed read never starts paid work a person said Rovara should ask about.
+ */
+export async function taskAutonomy(read: () => Promise<{ recipe: { autonomy: Autonomy } } | undefined>, log?: (event: string, fields: Record<string, unknown>) => void): Promise<Autonomy> {
+  try {
+    return (await read())?.recipe.autonomy ?? "prepare";
+  } catch (error) {
+    log?.("ci_fix.autonomy_unreadable", { error: error instanceof Error ? error.name : "unknown" });
+    return "suggest";
+  }
 }
 
 // ---- what CI said
@@ -229,7 +244,9 @@ export async function ciFixDecider(input: MergeActionInput): Promise<MergeAction
     return { slot: "ci_fix", workflow: next, items: codeMilestoneItems({ tableName: context.tableName }, milestone(context, "stuck", at, next.blockReason ?? ""), next.revision) };
   }
   const evidence = await collectCiEvidence(context);
-  const next = startWorkflowFix(workflow, { source: "ci", problems: evidence.map((check) => check.name), now: at });
+  // A round a person asked for after the rounds ran out is not counted: one Retry is one round.
+  const counted = workflowFixRounds(workflow).ci < CI_FIX_ROUNDS_MAX;
+  const next = startWorkflowFix(workflow, { source: "ci", problems: evidence.map((check) => check.name), now: at, count: counted });
   const round = workflowFixRounds(next).ci;
   return {
     slot: "ci_fix", workflow: next,
@@ -237,7 +254,8 @@ export async function ciFixDecider(input: MergeActionInput): Promise<MergeAction
       ciEvidenceItem(context.tableName, { orgId: context.orgId, taskId: context.taskId, revision: next.revision, block: ciOutputBlock(evidence), now: input.now }),
       workflowDispatchItem(context.tableName, context.taskId, next.revision, "IMPLEMENT", next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, at),
       ...codeMilestoneItems({ tableName: context.tableName }, milestone(context, "fixing", at,
-        `CI is failing on ${names(evidence.map((check) => check.name))}, so Rovara is fixing it (round ${String(round)} of ${String(CI_FIX_ROUNDS_MAX)}).`), next.revision),
+        counted ? `CI is failing on ${names(evidence.map((check) => check.name))}, so Rovara is fixing it (round ${String(round)} of ${String(CI_FIX_ROUNDS_MAX)}).`
+          : `CI is still failing on ${names(evidence.map((check) => check.name))}, so Rovara is trying once more because you asked.`), next.revision),
     ],
   };
 }

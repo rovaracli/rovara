@@ -4,7 +4,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES } from "@agentx/contracts";
-import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
+import { GitHubAppCredentialProvider, GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { LOG_DOWNLOAD_BYTES_MAX, isAllowedLogAddress, logTail, readLogEnd } from "../../packages/broker/src/github-job-log.js";
 
 const NOW = Date.parse("2026-10-25T12:00:00.000Z");
@@ -17,6 +17,9 @@ interface Fixture {
   location?: string;
   status?: number;
   tokenStatus?: number;
+  /** Headers on the logs endpoint's answer, and on the log host's. */
+  headers?: Record<string, string>;
+  logHeaders?: Record<string, string>;
   /** The log host's answer: a body, or a status. */
   body?: string | (() => ReadableStream<Uint8Array>);
   logStatus?: number;
@@ -35,11 +38,11 @@ function harness(fixture: Fixture = {}) {
       return fixture.tokenStatus === undefined ? Response.json({ token: "log-token" }, { status: 201 }) : new Response("{}", { status: fixture.tokenStatus });
     }
     if (/\/actions\/jobs\/\d+\/logs$/.test(url)) {
-      if (fixture.status !== undefined) return new Response(null, { status: fixture.status });
+      if (fixture.status !== undefined) return new Response(null, { status: fixture.status, headers: fixture.headers ?? {} });
       return new Response(null, { status: 302, headers: { location: fixture.location ?? LOG_ADDRESS } });
     }
     if (url === (fixture.location ?? LOG_ADDRESS) || url.startsWith("https://")) {
-      if (fixture.logStatus !== undefined) return new Response(null, { status: fixture.logStatus });
+      if (fixture.logStatus !== undefined) return new Response(null, { status: fixture.logStatus, headers: fixture.logHeaders ?? {} });
       const body = typeof fixture.body === "function" ? fixture.body() : fixture.body ?? "";
       return new Response(body, { status: 200 });
     }
@@ -98,6 +101,17 @@ describe("a job log's end", () => {
     for (const status of [404, 410, 403]) expect(await harness({ status }).provider.getJobLogTail(REPO, "4242", SCOPE)).toBeUndefined();
     for (const logStatus of [404, 410, 403]) expect(await harness({ logStatus }).provider.getJobLogTail(REPO, "4242", SCOPE)).toBeUndefined();
     expect(await harness({ tokenStatus: 403 }).provider.getJobLogTail(REPO, "4242", SCOPE)).toBeUndefined();
+  });
+
+  it("tells a rate limit from a permission: a 403 or 429 that says to wait is the sweep's to back off from, a plain 403 is no log", async () => {
+    const soon = String(Math.floor((NOW + 120_000) / 1000));
+    for (const headers of [{ "retry-after": "120" }, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": soon }]) {
+      await expect(harness({ status: 403, headers }).provider.getJobLogTail(REPO, "4242", SCOPE)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+      await expect(harness({ logStatus: 403, logHeaders: headers }).provider.getJobLogTail(REPO, "4242", SCOPE)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+    }
+    await expect(harness({ status: 429 }).provider.getJobLogTail(REPO, "4242", SCOPE)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+    expect(await harness({ status: 403 }).provider.getJobLogTail(REPO, "4242", SCOPE)).toBeUndefined();
+    expect(await harness({ logStatus: 403 }).provider.getJobLogTail(REPO, "4242", SCOPE)).toBeUndefined();
   });
 
   it("throws when GitHub is failing, and for a job id that is not a number", async () => {
@@ -167,5 +181,8 @@ describe("the end of a log", () => {
     expect(isAllowedLogAddress("https://github.com/x")).toBe(false);
     expect(isAllowedLogAddress("https://blob.core.windows.net/x")).toBe(false);
     expect(isAllowedLogAddress("https://productionresultssa.blob.core.windows.net/x")).toBe(false);
+    // Only the numbered accounts GitHub's results service uses (0 to 19).
+    for (const number of ["0", "9", "10", "19"]) expect(isAllowedLogAddress(`https://productionresultssa${number}.blob.core.windows.net/x`), number).toBe(true);
+    for (const number of ["20", "99", "123", "01"]) expect(isAllowedLogAddress(`https://productionresultssa${number}.blob.core.windows.net/x`), number).toBe(false);
   });
 });

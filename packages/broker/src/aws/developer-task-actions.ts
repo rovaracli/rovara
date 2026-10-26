@@ -70,7 +70,7 @@ export interface DeveloperTaskActions {
    * reviewed tree (on the task's pinned base) onto the head the workflow recorded. STALE_FENCE when the pull request
    * changed on GitHub (its head moved, or it is no longer open), before anything is started.
    */
-  acceptPullRequestUpdate(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestLifecycleRequest, extra: ExtraItems, workflowCandidate: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string }): Promise<{ operation: Operation; duplicate: boolean }>;
+  acceptPullRequestUpdate(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestLifecycleRequest, extra: ExtraItems, workflowCandidate: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"] }): Promise<{ operation: Operation; duplicate: boolean }>;
   /**
    * How many workflow publications of this repository's checked tree, for this candidate, ended without succeeding in
    * the workspace. Unchecked: callers must load the owned task first.
