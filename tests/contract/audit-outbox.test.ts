@@ -693,6 +693,7 @@ describe("I4: the builders", () => {
     ["auditIdentityLinked", (occurrence) => builders.auditIdentityLinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditIdentityUnlinked", (occurrence) => builders.auditIdentityUnlinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],
+    ["auditOrgRenamed", (occurrence) => builders.auditOrgRenamed({ ...base, occurrence, details })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],
