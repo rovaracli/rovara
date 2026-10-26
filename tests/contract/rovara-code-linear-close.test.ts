@@ -141,7 +141,7 @@ describe("a model-written line cannot close or link a Linear issue", () => {
   });
 
   it("leaves ordinary use of the words alone: no key follows", () => {
-    for (const line of ["Fixes the null check", "The fix for UTF8 is done", "Closes the connection", "This updates the docs", "Completed the migration", "Fixes #12", "Fixes nothing", "part of the plan", "a ref to the base", "Fixes from PR feedback", "Prefixes ENG-1", "Postfix ENG-1", "Fixture ENG-1", "Fixesing ENG-1", "Closeness ENG-1", "Transfixes ENG-1"]) {
+    for (const line of ["Fixes the null check", "The fix for UTF8 is done", "Closes the connection", "This updates the docs", "Completed the migration", "Fixes #12", "Fixes nothing", "part of the plan", "a ref to the base", "Fixes from PR feedback", "Prefixes ENG-1", "Postfix ENG-1", "Fixture ENG-1", "Fixesing ENG-1", "Closeness ENG-1", "Transfixes ENG-1", "Fixture-1", "Closeness-2", "Refer-3"]) {
       expect(neutralizeLinearWords(line), line).toBe(line);
     }
   });
