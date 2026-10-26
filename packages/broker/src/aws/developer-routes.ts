@@ -136,6 +136,7 @@ import { chainControlFor, chainSessionReads, chainSteerReadsFor } from "../chain
 import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
+import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
@@ -279,6 +280,8 @@ export interface DeveloperRouteDependencies {
    * (`/s/…`, `/review/…`), which don't carry `agents`. Without it the session routes answer NOT_FOUND and the task page admits nobody on a session level.
    */
   agentSessions?: SessionTakeOverDependencies;
+  /** Plan 5, Task 19 (Plan 6's `HandoffRuntime`, H1): moving a session between a Mac and the cloud. Until Plan 6 supplies it the move route answers `RUNTIME_UNAVAILABLE`. */
+  handoff?: HandoffRuntime | undefined;
   /**
    * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
    * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
@@ -1534,6 +1537,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    ...(deps.handoff === undefined ? {} : { handoff: deps.handoff }),
     ...(chainDeps === undefined ? {} : {
       chain: chainSessionReads(chainDeps, caller.orgId),
       chainSteer: chainSteerReadsFor(chainDeps),

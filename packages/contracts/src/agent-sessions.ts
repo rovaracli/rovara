@@ -285,6 +285,8 @@ export const AgentSessionRecordSchema = z
     revision: CountSchema,
     /** The approval whose take-over last moved the owner (Plan 5 Task 12b): a handler called again for it finds the work done. */
     lastTakeOverApprovalId: ApprovalIdSchema.optional(),
+    /** A move to a Mac under way (Task 19): set with the revision moving on, before the cloud task is cancelled, so a take-over decided on the old revision can't land between; gone when the move is done or past `until`. */
+    moving: z.object({ requestId: z.string().uuid(), until: InstantSchema }).strict().optional(),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),

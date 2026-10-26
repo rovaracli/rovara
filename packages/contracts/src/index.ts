@@ -113,4 +113,5 @@ export * from "./agent-sessions.js";
 export * from "./session-views.js";
 export * from "./home.js";
 export * from "./local-agents.js";
+export * from "./session-handoff.js";
 export * from "./realtime.js";
