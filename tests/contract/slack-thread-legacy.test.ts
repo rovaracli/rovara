@@ -5,7 +5,7 @@ import { resolveSlackThreadKey, slackThreadKey } from "../../packages/broker/src
 import { workspaceOwner } from "../../packages/broker/src/aws/admin-reads.js";
 import { legacySlackThread } from "../support/legacy-slack-thread.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { SLACK_TEAM, SLACK_CHANNEL, createBroker, ensureWorkspace, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
+import { SLACK_TEAM, SLACK_CHANNEL, createBroker, ensureWorkspace, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady, prepareThread, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 
 const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const user = "U0123456789";
@@ -75,4 +75,40 @@ it("K1 keeps admin provenance for a pre-org thread", async () => {
   legacySlackThread(db, workspaceId);
   const answer = await workspaceOwner({ documentClient: db, tableName: "state", limitDefaults: { member: 3, organization: 20 } }, db.get(`WORKSPACE#${workspaceId}`, "META") as never);
   expect(answer.owner).toMatchObject({ slackUserId: user, slackTeamId: SLACK_TEAM });
+});
+
+describe("I2: scoped thread rows cannot confer workspace authority", () => {
+  it.each(["org", "owner"] as const)("refuses prepare/close for a scoped mapping with a foreign %s", async (field) => {
+    const { db, handler } = createBroker();
+    await registerSlackProject(handler);
+    const own = String((await lazyEnsureWorkspace(handler, subject, user)).body.workspaceId);
+    const workspace = db.get(`WORKSPACE#${own}`, "META")!;
+    const foreignId = randomUUID();
+    const foreign = { ...workspace, pk: `WORKSPACE#${foreignId}`, id: foreignId, ...(field === "org" ? { orgId: "org_bbbbbbbbbbbbbbbbbbbb" } : { ownerKey: "f".repeat(64) }) };
+    db.set(foreign);
+    const row = db.find((item) => item.entityType === "SLACK_THREAD" && item.workspaceId === own)[0]!;
+    db.set({ ...row, workspaceId: foreignId });
+    for (const item of db.find((item) => item.entityType === "DEFAULT_WORKSPACE")) db.delete({ pk: String(item.pk), sk: String(item.sk) });
+    const data = structuredClone(db.find(() => true));
+    const before = db.commandNames().length;
+    expect(await prepareThread(handler, subject, user)).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
+    expect((await serviceCall(handler, subject, user, "POST", "/v1/service/threads/workspace/close", { requestId: randomUUID() })).body).toEqual({ outcome: "NOT_FOUND", requestId: expect.any(String) });
+    expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
+    expect(db.find(() => true)).toEqual(data);
+  });
+  it.each(["org", "owner"] as const)("refuses Slack stop when a scoped mapping names a foreign %s", async (field) => {
+    const { db, handler } = createBroker();
+    await registerSlackProject(handler);
+    const workspaceId = String((await ensureWorkspace(handler, subject, user)).body.workspaceId);
+    markReady(db, workspaceId);
+    const workspace = db.get(`WORKSPACE#${workspaceId}`, "META")!;
+    db.set({ ...workspace, ...(field === "org" ? { orgId: "org_bbbbbbbbbbbbbbbbbbbb" } : { ownerKey: "f".repeat(64) }) });
+    const data = structuredClone(db.find(() => true));
+    const before = db.commandNames().length;
+    const reply = await handler({ source: "agentx.slack-ingress", action: "stop-task", thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, userId: user });
+    expect(reply.statusCode).toBe(403);
+    expect(JSON.parse(reply.body)).toMatchObject({ error: { code: "FORBIDDEN" } });
+    expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
+    expect(db.find(() => true)).toEqual(data);
+  });
 });
