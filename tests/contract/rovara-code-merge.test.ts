@@ -695,7 +695,7 @@ describe("what the confirmation refuses", () => {
     // Pull request 9 is a real, linked, tracked, approved pull request of the task now: only the change's own list says it was never asked for.
     swapped.setPullRequests([{ ...before[0]!, number: 9, url: "https://github.com/acme/payments/pull/9" }]);
     swapped.github.statuses.set(9, pullStatus(9));
-    swapped.db.set({ ...githubWorkflowPullRequestKey("acme/payments", 9), ...swapped.db.get(githubWorkflowPullRequestKey("acme/payments", 7))!, number: 9, url: "https://github.com/acme/payments/pull/9" });
+    swapped.db.set({ ...swapped.db.get(githubWorkflowPullRequestKey("acme/payments", 7))!, ...githubWorkflowPullRequestKey("acme/payments", 9), number: 9, url: "https://github.com/acme/payments/pull/9" });
     swapped.db.set({ ...mergeTrackingKey(swapped.taskId, "payments", 9), entityType: "MERGE_TRACKING", ...swapped.trackingItem({ repositoryId: "payments", number: 9 }) });
     await expect((await handlerOf(swapped, swappedStarted)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.changedAfterConfirm) as string });
     expect(swapped.github.mergeCalls).toEqual([]);
