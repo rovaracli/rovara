@@ -486,8 +486,8 @@ describe("the feedback slot of merge tracking", () => {
     await expect(trackPullRequest(capped.deps, TASK_ID)).rejects.toBeInstanceOf(TrackingRequestCapError);
   });
 
-  it("an injection in a writer's comment merges nothing and widens nothing: the round is the same ordinary one", async () => {
-    // What a comment says is never read by the rule: only who wrote it and what the review made of it.
+  it("the rule reads who wrote the comments and what the review made of them, never what they say: the round is an ordinary one that merges nothing (the injection text itself is in e2e 15.1)", async () => {
+    // The comment text is not even in the record the rule reads.
     const w = feedbackWorld();
     await trackPullRequest(w.deps, TASK_ID);
     const next = storedWorkflow(w);
