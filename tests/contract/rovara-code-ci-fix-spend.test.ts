@@ -30,7 +30,7 @@ async function world() {
   const heads = { current: PR.headSha };
   const getPullRequest = vi.fn(async () => ({ headCommit: heads.current }));
   const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true,
-    githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest, updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(async () => true) } as never } });
+    githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest, updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(async () => true) } } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
@@ -122,11 +122,23 @@ describe("a person's push before the round's run starts", () => {
   it("does not guess when GitHub cannot say: nothing starts, and the row stays to be tried again", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.inFixRound();
+    // An error, an empty answer and an answer that is not a commit are all "cannot say": none is read as a head that moved.
+    const dueAgain = () => {
+      const row = t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)[0]!;
+      t.h.db.set({ ...row, nextAttemptAt: "2000-01-01T00:00:00.000Z", dispatchDueSk: `2000-01-01T00:00:00.000Z#${String(row.sk)}` });
+    };
     t.getPullRequest.mockRejectedValueOnce(new Error("GitHub is down"));
+    await t.sweep();
+    dueAgain();
+    t.getPullRequest.mockResolvedValueOnce({} as never);
+    await t.sweep();
+    dueAgain();
+    t.getPullRequest.mockResolvedValueOnce({ headCommit: "not a commit" });
     await t.sweep();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci" });
     expect(t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)).toHaveLength(1);
+    expect(t.getPullRequest).toHaveBeenCalledTimes(3);
   });
 });
 
