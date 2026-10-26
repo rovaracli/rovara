@@ -2,7 +2,7 @@
 // page, and everything else applies at once under the revision the caller read.
 import { describe, expect, it } from "vitest";
 import { CODE_SETTINGS_STALE_MESSAGE, DEFAULT_CODE_SETTINGS, NeedsConfirmationSchema, agentXError, codeSettingsKey, type OrgRole } from "../../packages/contracts/src/index.js";
-import { getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
+import { getAnyApproval, getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getCodeSettings, putCodeSettings, readCodeSettings, type CodeSettingsDependencies } from "../../packages/broker/src/rovara-code/code-settings.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA, ZED } from "../support/agent-session-world.js";
@@ -23,7 +23,7 @@ const put = (w: MergeWorld, who: string, body: Record<string, unknown>, project 
   putCodeSettings(settingsDeps(w), w.caller(who), project, { requestId: w.requestId(), expectedRevision: 0, ...body }, w.deps);
 const codeOf = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 const stored = (w: MergeWorld) => w.db.get(codeSettingsKey(ORG_A, "web")) as Record<string, unknown> | undefined;
-const live = (w: MergeWorld) => readCodeSettings({ documentClient: w.db, tableName: "state" }, ORG_A, "web");
+const live = (w: MergeWorld, project = "web") => readCodeSettings({ documentClient: w.db, tableName: "state" }, ORG_A, project);
 
 describe("reading a project's code settings", () => {
   it("answers the defaults for a project that has none, to anyone who can see the project", async () => {
@@ -77,6 +77,13 @@ describe("changing the settings that apply at once", () => {
     expect((await live(w)).revision).toBe(1);
     // The same id with another body is another request, and is refused.
     expect(await codeOf(putCodeSettings(settingsDeps(w), w.caller(MAX), "web", { ...body, mergeMethod: "squash" }, w.deps))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("does not take another request for a repeat just because it asks for the same", async () => {
+    const w = mergeWorld();
+    expect((await put(w, MAX, { mergeMethod: "merge" })).statusCode).toBe(200);
+    // Another request id, the same wish, the revision the first one read: the settings moved under it.
+    expect(await codeOf(put(w, MAX, { mergeMethod: "merge", expectedRevision: 0 }))).toEqual({ code: "CONFIG_INVALID", message: CODE_SETTINGS_STALE_MESSAGE });
   });
 
   it("changes nothing for a self-approval setting that is already the way it is asked", async () => {
@@ -174,6 +181,34 @@ describe("turning self-approval on", () => {
     expect(w.approvalIdOf(NeedsConfirmationSchema.parse(again.body).confirmUrl)).toBe(w.approvalIdOf(NeedsConfirmationSchema.parse(first.body).confirmUrl));
     expect((await live(w)).revision).toBe(1);
     expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(1);
+  });
+
+  it("tells a request that was declined, and asked again, that it was decided", async () => {
+    const w = mergeWorld();
+    const body = { requestId: w.requestId(), expectedRevision: 0, allowSelfApproval: true };
+    const first = await putCodeSettings(settingsDeps(w), w.caller(MAX), "web", body, w.deps);
+    const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(first.body).confirmUrl);
+    await w.decide(approvalId, await w.browser(OLA, approvalId), "decline");
+    expect((await getAnyApproval(w.deps, ORG_A, approvalId))?.status).toBe("DECLINED");
+    expect(await codeOf(putCodeSettings(settingsDeps(w), w.caller(MAX), "web", body, w.deps))).toMatchObject({ code: "APPROVAL_CLOSED" });
+    expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
+  });
+
+  it("applies to the project it was asked for, and to no other", async () => {
+    const w = mergeWorld();
+    const reply = await put(w, OLA, { allowSelfApproval: true }, "ops");
+    const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl);
+    await w.decide(approvalId, await w.browser(OLA, approvalId));
+    expect((await live(w, "ops")).allowSelfApproval).toBe(true);
+    expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
+  });
+
+  it("never applies a change nobody decided", async () => {
+    const w = mergeWorld();
+    const reply = await put(w, MAX, { allowSelfApproval: true });
+    const record = await getAnyApproval(w.deps, ORG_A, w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl));
+    await expect(getApprovalSubjectHandler("code_settings")!(w.deps, record!)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
   });
 
   it("is not available where no confirmation page is set up", async () => {

@@ -3,10 +3,10 @@
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
 import {
-  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError,
+  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey,
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
-import { getApprovalSubjectHandler, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
+import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { humanApprovalOf, mergeReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -143,6 +143,10 @@ describe("mergeReadiness", () => {
     expect(readiness({ pullRequests: [facts({ branch: "behind", behindRequired: true })] })).toEqual(notReady(M.behind("main")));
   });
 
+  it("does not know a pull request's base without Rovara's own record of it, and so does not merge it", () => {
+    expect(readiness({ recordedBases: new Map() })).toEqual(notReady(M.baseChanged("main")));
+  });
+
   it("lets a pull request with no CI, or one a commit behind a base that does not care, through", () => {
     expect(readiness({ pullRequests: [facts({ ci: "none" })] })).toEqual({ ready: true });
     expect(readiness({ pullRequests: [facts({ branch: "behind", behindRequired: false })] })).toEqual({ ready: true });
@@ -171,6 +175,10 @@ describe("mergeReadiness", () => {
       { stage: "PULL_REQUEST", state: "RUNNING" }, { stage: "WAIT_FOR_MERGE", state: "READY" }, { stage: "WAIT_FOR_MERGE", state: "RUNNING" }, { stage: "IMPLEMENT", state: "RUNNING" },
       { stage: "WAIT_FOR_MERGE", state: "WAITING", fixSource: "ci" },
       { stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "PENDING" } },
+      { stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "COLLECTING" } },
+      { stage: "WAIT_FOR_MERGE", state: "WAITING", branchSync: { repositoryId: "payments", number: 7 } },
+      // Waiting for a person to approve a plan is not waiting for the merge.
+      { stage: "PLAN_REVIEW", state: "WAITING" },
     ] as const) {
       expect(readiness({ workflow: workflow })).toEqual(notReady(M.changing));
     }
@@ -422,6 +430,8 @@ describe("confirming a merge", () => {
     const task = w.db.get(taskKey(w.taskId))!;
     w.db.set({ ...task, orgId: ORG_B });
     await expect(getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
+    // It stopped before it read anything from GitHub.
+    expect(w.github.calls).toEqual([]);
     expect(w.github.mergeCalls).toEqual([]);
   });
 
@@ -484,6 +494,8 @@ describe("confirming a merge", () => {
     const { record } = await confirm(w, PRIYA, started);
     expect(record).toMatchObject({ status: "APPROVED_FAILED", failure: M.needsOtherApproval("Priya") });
     expect(w.github.mergeCalls).toEqual([]);
+    // A reviewer whose approval was dismissed is not looked up.
+    expect(w.github.calls).not.toContain(`permission:${LOGIN.arjun}`);
   });
 
   it("re-reads permissions: a reviewer who lost write access since no longer approves", async () => {
@@ -577,6 +589,8 @@ describe("confirming a merge", () => {
     w.clock.now += 130_000;
     w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
     await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.halfMerged("billing", "payments", "GitHub would not merge it")) as string });
+    // The rerun asked GitHub to merge the second pull request again and the first not at all.
+    expect(mergedOf(w)).toEqual(["8:a:squash", "7:a:squash", "7:a:squash"]);
   });
 
   it("ends the change failed with the moved-head words when GitHub refuses the merge because the head moved, and does not call it half-merged when nothing merged", async () => {
@@ -611,6 +625,180 @@ describe("confirming a merge", () => {
     const forged = { ...record!, decidedBy: PRIYA, subject: { ...(record!.subject as object), taskId: other.taskId } } as never;
     await expect(getApprovalSubjectHandler("pull_request_merge")!(w.deps, forged)).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
     expect(w.github.mergeCalls).toEqual([]);
+  });
+});
+
+// ---- more the press and the confirmation refuse
+
+const handlerOf = async (w: MergeWorld, started: { approvalId: string }, decidedBy: string = PRIYA) => {
+  const record = await getAnyApproval(w.deps, ORG_A, started.approvalId);
+  const run = () => getApprovalSubjectHandler("pull_request_merge")!(w.deps, { ...record!, decidedBy } as never);
+  return { record: record!, run };
+};
+const reviewOf = (who: keyof typeof GH, commitId = HEAD_A) => ({ githubUserId: GH[who], login: LOGIN[who], userType: "User", state: "APPROVED" as const, commitId, submittedAt: AT });
+
+describe("what the press refuses besides readiness", () => {
+  it("refuses a session whose task belongs to another org, and a task that is closed", async () => {
+    const w = await ready();
+    const other = w.seedSession({ taskOrgId: ORG_B });
+    expect(await codeOf(pressMerge(w.shareDeps, w.caller(PRIYA), other.sessionId, { requestId: w.requestId() }, w.deps))).toMatchObject({ code: "NOT_FOUND" });
+    w.db.set({ ...w.db.get(taskKey(w.taskId))!, closedAt: "2026-10-22T09:30:00.000Z" });
+    expect(await codeOf(press(w))).toEqual({ code: "MERGE_NOT_READY", message: M.taskClosed });
+  });
+
+  it("asks for a sync only when the branch is why it is not ready", async () => {
+    const w = await ready({}, { branch: "behind", review: "requested", approval: undefined as never });
+    w.github.statuses.set(7, pullStatus(7, { mergeableState: "behind", behindBy: 2 }));
+    const asked: string[] = [];
+    w.host.requireSyncForMerge = async (task) => { asked.push(task.taskId); };
+    expect(await codeOf(press(w))).toEqual({ code: "MERGE_NOT_READY", message: M.needsOtherApproval("Priya") });
+    expect(asked).toEqual([]);
+  });
+
+  it("leaves a pull request that is already merged out of the change", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "billing", number: 8 }] }, (pr) => (pr.number === 8 ? { state: "merged" as const } : {}));
+    const current = (w.db.get(taskKey(w.taskId))!.workflow as { pullRequests: Array<Record<string, unknown>> }).pullRequests;
+    w.setPullRequests(current.map((pr) => (pr.number === 8 ? { ...pr, state: "MERGED" } : pr)));
+    const body = NeedsConfirmationSchema.parse((await press(w)).body);
+    expect(await w.approvalOf(body.confirmUrl)).toMatchObject({ subject: { pullRequests: [{ repositoryId: "payments", number: 7, headSha: HEAD_A }] } });
+    expect(body.changes).toEqual(["Merge payments pull request 7 (squash)"]);
+  });
+
+  it("lets nobody in another org decide the change", async () => {
+    const w = await ready();
+    const { approvalId } = await pressed(w);
+    const record = await getAnyApproval(w.deps, ORG_A, approvalId);
+    expect(await mayDecideApproval(w.deps, { orgId: ORG_B, developerId: PRIYA, orgRole: "member" }, record!)).toBe(false);
+    expect(await mayDecideApproval(w.deps, { orgId: ORG_A, developerId: PRIYA, orgRole: "member" }, record!)).toBe(true);
+  });
+});
+
+describe("what the confirmation refuses", () => {
+  it("refuses a task that was closed after the press, before it reads anything from GitHub", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.db.set({ ...w.db.get(taskKey(w.taskId))!, closedAt: "2026-10-22T09:30:00.000Z" });
+    await expect((await handlerOf(w, started)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
+    expect(w.github.calls).toEqual([]);
+  });
+
+  it("refuses a task that gained a pull request at the end of the list, and one whose pull request was swapped for another of the same repository", async () => {
+    const added = await ready();
+    const addedStarted = await pressed(added);
+    const current = (added.db.get(taskKey(added.taskId))!.workflow as { pullRequests: Array<Record<string, unknown>> }).pullRequests;
+    added.setPullRequests([...current, { ...current[0]!, repositoryId: "zeta", number: 9, url: "https://github.com/acme/zeta/pull/9" }]);
+    await expect((await handlerOf(added, addedStarted)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.changedAfterConfirm) as string });
+    expect(added.github.calls).toEqual([]);
+    const swapped = await ready();
+    const swappedStarted = await pressed(swapped);
+    const before = (swapped.db.get(taskKey(swapped.taskId))!.workflow as { pullRequests: Array<Record<string, unknown>> }).pullRequests;
+    swapped.setPullRequests([{ ...before[0]!, number: 9, url: "https://github.com/acme/payments/pull/9" }]);
+    await expect((await handlerOf(swapped, swappedStarted)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.changedAfterConfirm) as string });
+    expect(swapped.github.calls).toEqual([]);
+  });
+
+  it("refuses a pull request whose link names another address", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    const key = githubWorkflowPullRequestKey("acme/payments", 7);
+    w.db.set({ ...w.db.get(key)!, url: "https://github.com/acme/payments/pull/7?x=1" });
+    expect((await confirm(w, PRIYA, started)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.changedAfterConfirm });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("does not take the answer for another pull request, and leaves it for a retry", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.github.statuses.set(7, pullStatus(99));
+    await expect((await handlerOf(w, started)).run()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("reads the pull request fresh for a conflict, a draft and a changed base", async () => {
+    for (const [change, message] of [
+      [{ mergeableState: "dirty" as const, mergeable: false }, M.conflicted("main")],
+      [{ draft: true }, M.draft],
+      [{ baseBranch: "release" }, M.baseChanged("release")],
+    ] as const) {
+      const w = await ready();
+      const started = await pressed(w);
+      w.github.statuses.set(7, pullStatus(7, change));
+      expect((await confirm(w, PRIYA, started)).record).toMatchObject({ status: "APPROVED_FAILED", failure: message });
+      expect(w.github.mergeCalls).toEqual([]);
+    }
+  });
+
+  it("does not let a merged pull request with another head hold up the rest", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "billing", number: 8 }] });
+    const started = await pressed(w);
+    w.github.statuses.set(8, pullStatus(8, { state: "merged", headSha: HEAD_B }));
+    const { record } = await confirm(w, PRIYA, started);
+    expect(record.status).toBe("APPROVED_DONE");
+    expect(mergedOf(w)).toEqual(["7:a:squash"]);
+  });
+
+  it("re-reads the presser's GitHub link: one who unlinked between the press and the confirmation is refused", async () => {
+    const w = await ready();
+    const started = await pressed(w, MAX);
+    w.db.delete(memberGithubKey(ORG_A, MAX));
+    w.db.delete(githubMemberKey(ORG_A, GH.max));
+    expect((await confirm(w, MAX, started)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.linkGithub });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("reads the org's self-approval setting at confirmation: with it on, the requester's own approval counts", async () => {
+    const w = await ready({ allowSelfApproval: true });
+    const started = await pressed(w);
+    w.github.statuses.set(7, pullStatus(7, { reviews: [reviewOf("priya")] }));
+    expect((await confirm(w, PRIYA, started)).record.status).toBe("APPROVED_DONE");
+    expect(mergedOf(w)).toEqual(["7:a:squash"]);
+    const off = await ready();
+    const offStarted = await pressed(off);
+    off.github.statuses.set(7, pullStatus(7, { reviews: [reviewOf("priya")] }));
+    expect((await confirm(off, PRIYA, offStarted)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.needsOtherApproval("Priya") });
+  });
+
+  it("does not read an approval from a list of reviews GitHub cut short, or from a crowd of reviewers", async () => {
+    const cut = await ready();
+    const cutStarted = await pressed(cut);
+    cut.github.statuses.set(7, pullStatus(7, { reviewsIncomplete: true }));
+    expect((await confirm(cut, PRIYA, cutStarted)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.needsOtherApproval("Priya") });
+    const crowd = await ready();
+    const crowdStarted = await pressed(crowd);
+    crowd.github.statuses.set(7, pullStatus(7, { reviews: Array.from({ length: 9 }, (_, index) => ({ ...reviewOf("arjun"), githubUserId: String(3000 + index), login: `reviewer-${String(index)}` })) }));
+    expect((await confirm(crowd, PRIYA, crowdStarted)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.needsOtherApproval("Priya") });
+    expect(crowd.github.calls.filter((call) => call.startsWith("permission:"))).toEqual([]);
+  });
+
+  it("leaves a pull request whose tracking item is gone for a retry, merging nothing", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.db.delete(mergeTrackingKey(w.taskId, "payments", 7));
+    await expect((await handlerOf(w, started)).run()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.github.mergeCalls).toEqual([]);
+    expect(w.trackingOf({ repositoryId: "payments", number: 7 })).toBeUndefined();
+  });
+
+  it("merges three pull requests in repository order whatever order the task lists them in", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "billing", number: 8 }, { repositoryId: "payments", number: 7 }, { repositoryId: "alpha", number: 9 }] });
+    const { record } = await confirm(w);
+    expect(record.status).toBe("APPROVED_DONE");
+    expect(mergedOf(w)).toEqual(["9:a:squash", "8:a:squash", "7:a:squash"]);
+  });
+
+  it("counts a pull request GitHub says was merged already as merged", async () => {
+    const w = await ready();
+    w.github.results.set(7, { outcome: "already_merged" });
+    const { record } = await confirm(w);
+    expect(record.status).toBe("APPROVED_DONE");
+  });
+
+  it("says why GitHub would not merge, for each reason it can give", async () => {
+    for (const [reason, words] of [["forbidden", "GitHub did not allow Rovara to merge it"], ["closed", "it is closed"], ["not_mergeable", "GitHub would not merge it"]] as const) {
+      const w = await ready();
+      w.github.results.set(7, { outcome: "refused", reason });
+      expect((await confirm(w)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.notMerged("payments", words) });
+    }
   });
 });
 

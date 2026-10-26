@@ -11,7 +11,7 @@ const MERGE_COMMIT = "c".repeat(40);
 const REPO = "https://github.com/acme/payments.git";
 const SCOPE = { system: "private-install" } as const;
 
-interface MergeAnswer { status: number; body?: Record<string, unknown> }
+interface MergeAnswer { status: number; body?: Record<string, unknown>; headers?: Record<string, string> }
 interface Fixture {
   /** The answers to successive `PUT …/merge` calls. */
   merges: MergeAnswer[];
@@ -44,7 +44,7 @@ function harness(fixture: Fixture) {
     }
     if (method === "PUT" && /\/pulls\/42\/merge$/.test(url)) {
       const next = answers.shift() ?? { status: 500 };
-      return new Response(JSON.stringify(next.body ?? {}), { status: next.status });
+      return new Response(JSON.stringify(next.body ?? {}), { status: next.status, ...(next.headers === undefined ? {} : { headers: next.headers }) });
     }
     if (/\/pulls\/42$/.test(url)) return new Response(JSON.stringify(fixture.pull ?? pull()), { status: fixture.pullStatus ?? 200 });
     return new Response("{}", { status: 404 });
@@ -113,6 +113,13 @@ describe("merging a pull request", () => {
     await expect(down.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     const noToken = harness({ merges: [], tokenStatus: 500 });
     await expect(noToken.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("leaves a rate limit for a retry, whether GitHub says it with a 403 or a 429", async () => {
+    const limited = harness({ merges: [{ status: 403, body: { message: "API rate limit exceeded" }, headers: { "retry-after": "30", "x-ratelimit-remaining": "0" } }] });
+    await expect(limited.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    const tooMany = harness({ merges: [{ status: 429, body: {} }] });
+    await expect(tooMany.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
   it("does not take a 200 that does not say merged as a merge", async () => {

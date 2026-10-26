@@ -50,6 +50,19 @@ describe("the approved milestone", () => {
     expect(milestones(w)).toHaveLength(1);
   });
 
+  it("does not say it again when the approval stands and something else on the pull request changes", async () => {
+    const list = heard();
+    const { w, deps } = await approvedWorld();
+    await trackPullRequest(deps, TASK_ID);
+    const pending = [{ name: "test", status: "pending" as const, required: false, url: "" }];
+    w.github.statuses.set(7, status({ draft: false, checks: pending, reviews: [approval("arjun-gh", "1004")] }));
+    await trackPullRequest(deps, TASK_ID);
+    w.github.statuses.set(7, status({ draft: false, checks: passing, reviews: [approval("arjun-gh", "1004")] }));
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toHaveLength(1);
+    expect(milestones(w)).toHaveLength(1);
+  });
+
   it("leaves the link out when the control plane has no origin to build it from", async () => {
     const list = heard();
     const { w } = await approvedWorld();
