@@ -56,7 +56,7 @@ export const CHANNEL_PRIVACY_NOT_SET_UP_STEP = "ask your AgentX admin to finish 
 
 /** FR-035 and US3 scenario 4: the fixed notices in a shared thread (Q1, Q3). */
 export const VIEW_ONLY_NOTICE =
-  "This thread follows a task that a developer is driving from their AI tool, so I don't act on messages here. To ask AgentX for something, post a new message in the channel; it starts its own thread workspace.";
+  "You have view-only access to this task from this thread: it follows a task that a developer is driving from their AI tool, so I don't act on messages here. To ask AgentX for something, post a new message in the channel; it starts its own thread workspace.";
 
 export const CLOSED_SHARED_NOTICE =
   "The task this thread followed is closed, so I don't act on messages here. To ask AgentX for something, post a new message in the channel; it starts its own thread workspace.";
