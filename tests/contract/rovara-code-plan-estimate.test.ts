@@ -581,6 +581,13 @@ async function world(options: { v2?: boolean; proxy?: boolean } = {}) {
     const operationId = String(planOperation(workspaceId).id);
     await h.artifact(workspaceId, operationId, "plan.md", planAnswer(plan));
     await h.finish(workspaceId, operationId, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    // Plan 6 Task 8: a version 2 coding plan is checked by a second model before it reaches the person; here the check finds nothing to say.
+    const taskId = (h.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.workspaceId === workspaceId)[0] as { taskId: string }).taskId;
+    if (meta(taskId).workflow.stage === "PLAN_CRITIQUE") {
+      const check = operations(workspaceId).filter((item) => item.workflowMode === "PLAN_CRITIQUE").at(-1)!;
+      await h.artifact(workspaceId, String(check.id), "plan-critique.md", "```rovara-plan-critique\n{\"verdict\":\"ok\",\"points\":[]}\n```\n");
+      await h.finish(workspaceId, String(check.id), "SUCCEEDED", { result: { workflowMode: "PLAN_CRITIQUE" } });
+    }
   };
   const planned = async (path: "QUICK" | "FULL" = "QUICK", plan: PlanDocument = TESTED_PLAN) => {
     const started = await start(path);

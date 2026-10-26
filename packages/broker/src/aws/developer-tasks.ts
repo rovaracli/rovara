@@ -3027,6 +3027,12 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used for a different recovery request");
     }
   }
+  // Plan 6 Task 8: a repeat of a plan check retry that already took finds the check under way and starts nothing more (another person's request ID is not it).
+  const priorCheckRetry = await get<{ actorId: string }>(deps, planCheckRetryKey(taskId, request.requestId));
+  if (priorCheckRetry !== undefined) {
+    if (priorCheckRetry.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "this retry request ID was already used by someone else");
+    return { task: await taskView(deps, task, { events: 0, details: false }) };
+  }
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   if (priorRecovery !== undefined) {
@@ -3251,6 +3257,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     }
   }
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
+  if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
   if (task.workflow === undefined || task.workflow.state !== "BLOCKED" || task.workflow.stage !== "PLAN") {
     throw agentXError("CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish");
   }
@@ -3574,6 +3581,53 @@ export async function resumeAfterRunLimitApproval(
 }
 
 /** Task 16: the owner retries coding that stopped (IMPLEMENT/BLOCKED) on the same approved plan. */
+/** The record that a plan check retry took, under its request ID, so a repeat of it is the same retry. */
+const planCheckRetryKey = (taskId: string, requestId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_PLAN_CHECK_RETRY#${requestId}` });
+
+/**
+ * Plan 6 Task 8: the owner's retry of a plan check that stopped (its model was refused, its answer couldn't be read, its run failed): the same plan is checked again. PLAN_CRITIQUE/BLOCKED becomes
+ * READY with its dispatch row in one transaction, conditional on the revision the owner saw, and the check then starts as the dispatch would start it. A repeat of the request finds the check
+ * under way (its request ID is derived from the revision) and starts nothing more.
+ */
+async function retryPlanCritique(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
+): Promise<{ task: DeveloperTaskView }> {
+  const { task } = access;
+  const workflow = task.workflow!;
+  if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
+    throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+  }
+  await requireMayGoOn(deps, caller, task);
+  await actionableWorkspace(deps, task);
+  const { blockReason: _blockReason, ...unblocked } = workflow;
+  void _blockReason;
+  const receivedAt = iso(deps);
+  const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "READY", updatedAt: receivedAt };
+  try {
+    await deps.actions.transact([{ Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :critique AND workflow.#state = :blocked AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":critique": "PLAN_CRITIQUE", ":blocked": "BLOCKED" },
+    } }, workflowDispatchItem(deps.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt),
+    putNew(deps.tableName, { ...planCheckRetryKey(task.taskId, request.requestId), entityType: "WORKFLOW_PLAN_CHECK_RETRY", actorId: access.actorId, at: receivedAt }), accessFence(deps, access)]);
+  } catch (error) {
+    if (isConditional(error)) {
+      const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+      // A repeat of the same retry: the check is already under way (or done).
+      if (fresh.workflow !== undefined && fresh.workflow.revision > workflow.revision) return { task: await taskView(deps, fresh, { events: 0, details: false }) };
+      throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+    }
+    return busyOrClosing(deps, task, error);
+  }
+  await startAcceptedStep(deps, task.taskId, next, "CRITIQUE");
+  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
+  const view = await taskView(deps, fresh, { events: 0, details: false });
+  await syncIndex(deps, fresh, view.status, view.updatedAt);
+  return { task: view };
+}
+
 async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
 ): Promise<{ task: DeveloperTaskView }> {
@@ -3751,6 +3805,7 @@ async function startAcceptedStep(deps: DeveloperTaskRouteDependencies, taskId: s
   const candidateDigest = ready.candidate?.digest;
   try {
     if (kind === "IMPLEMENT") await startTaskWorkflowImplementationFromSystem(deps, taskId, { workflowRevision: ready.revision });
+    else if (kind === "CRITIQUE") await startTaskWorkflowPlanCritiqueFromSystem(deps, taskId, { workflowRevision: ready.revision });
     else if (candidateDigest === undefined) return;
     else if (kind === "REVIEW") await startTaskWorkflowReviewFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest });
     else {
@@ -4433,7 +4488,7 @@ export function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boo
   if (workflow?.stage === "MERGED") return "Complete";
   if (closed || workflow === undefined) return "";
   switch (workflow.stage) {
-    case "PLAN": case "PLAN_REVIEW": {
+    case "PLAN": case "PLAN_CRITIQUE": case "PLAN_REVIEW": {
       const name = workflowDocumentName(workflow);
       return name === "coding plan" ? "Coding plan" : name === "design" ? "Design" : "Requirements";
     }

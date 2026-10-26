@@ -6,6 +6,7 @@ import {
   formatMinutes, isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
+import { critiqueLines } from "../rovara-code/critique-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
 
@@ -44,6 +45,8 @@ export interface WorkflowMessageContext {
   runEstimate?: RunEstimate | undefined;
   /** The name of the agent doing the work, for the max-per-run line (Rovara Code when absent). */
   agentName?: string | undefined;
+  /** The task's project, for the plan check's note that the project allows only one model. */
+  project?: string | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -389,6 +392,8 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     }
   } else if (answered !== undefined && answered.total > 0) tail.push(`AgentX answered ${answered.answered} of ${plural(answered.total, "comment")} from v${answered.fromVersion}.`);
   if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code", workflow));
+  // Plan 6 Task 8: what the second model made of a version 2 plan. Its words are the critic's, so each line is redacted, on one line, cut and escaped.
+  if (workflow.definitionVersion === "1.1.0" && workflowDocumentType(workflow) === "plan") tail.push(...critiqueLines(workflow.critique, context.project ?? "this project").map((line) => cleanLine(line, 300)));
   // The owner can always reach the plan: when the document could not be shown or linked, the task page is, and an
   // administrator is named only when no task page exists at all.
   const unlinked = context.taskPageUrl === undefined
@@ -710,12 +715,19 @@ function planRunning(context: WorkflowMessageContext): string {
   const name = workflowDocumentName(workflow);
   const decision = leadingDecision(workflow);
   if (decision?.decision === "REQUEST_CHANGES") return `Got it. Revising the ${name} with your changes.`;
+  // Plan 6 Task 8: the plan check sent the plan back to its planner (no person decided).
+  if (workflow.critique !== undefined && workflow.critique.revisions > 0 && workflow.critique.critiques.length > 0 && workflow.critique.critiques.length <= workflow.critique.revisions) {
+    return `A second model checked the ${name} and found problems. Revising the ${name}.`;
+  }
   if (decision?.decision === "APPROVE" && workflow.path === "FULL") {
     const previous = workflow.reviewPhase === "DESIGN" ? "requirements" : "design";
     return `${capitalized(previous)} approved${approvedBy(context, decision)}. Writing the ${name} next.`;
   }
   return `Working on the ${name}. I'll post it here for your approval; nothing changes in the code until you approve.`;
 }
+
+/** A step's refusal for a model the company or the project doesn't allow (Plan 3's words); shown as it is, escaped. */
+const MODEL_REFUSAL = /^.{1,120}'s .{1,60} step uses [\w./:@-]{1,120}, which isn't allowed on .{1,80}\. Ask the agent's owner to pick another model\.$/u;
 
 function copyOf(context: WorkflowMessageContext): { text: string; buttons: Button[] } | undefined {
   const { workflow } = context;
@@ -733,6 +745,8 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       ? `AgentX couldn't read the ${workflowDocumentName(workflow)} it wrote.`
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
+    // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
+    case "PLAN_CRITIQUE/BLOCKED": return { text: `The plan check stopped before it finished. ${workflow.blockReason !== undefined && MODEL_REFUSAL.test(workflow.blockReason) ? slackText(workflow.blockReason) : plainBlockReason(workflow.blockReason)}`, buttons: [exits.close] };
     case "PLAN_REVIEW/WAITING": return planReview(context, exits);
     // Only a task view shows this (never stored): the saved document failed its digest check, so it can't be approved.
     case "PLAN_REVIEW/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.documentUnverified

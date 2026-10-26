@@ -11,9 +11,11 @@ import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { criticModelFor, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
+import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
@@ -449,7 +451,7 @@ describe("a version 2 plan goes to the plan check", () => {
     const { taskId, workspaceId } = await t.planned();
     expect(t.meta(taskId).workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "PLAN_CRITIQUE", state: "RUNNING", artifacts: [expect.anything()] });
     const [check] = t.byMode(workspaceId, "PLAN_CRITIQUE");
-    expect(check).toMatchObject({ kind: "task", status: expect.any(String), programStepId: "plan_critic" });
+    expect(check).toMatchObject({ kind: "task", programStepId: "plan_critic" });
     expect(t.invocationOf(check!.id)?.payload.workflowMode).toBe("PLAN_CRITIQUE");
     // The row that made it due went with the start.
     expect(t.dispatchRows(taskId)).toEqual([]);
@@ -599,6 +601,44 @@ describe("the plan check's result", () => {
   });
 });
 
+describe("retrying a blocked plan check", () => {
+  const retry = (t: Awaited<ReturnType<typeof world>>, taskId: string, expectedRevision: number, requestId: string = randomUUID(), who = MAYA) =>
+    t.h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, instructions: "Try the plan check again", expectedRevision });
+
+  it("the owner's retry runs the check again on the same plan, once, whatever blocked it", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.finishCritique(workspaceId, "Looks good to me. Approved.");
+    const blocked = t.meta(taskId).workflow;
+    expect(blocked).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
+    const requestId = randomUUID();
+    const reply = await retry(t, taskId, blocked.revision, requestId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const record = t.meta(taskId).workflow;
+    expect(record).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
+    expect(record.blockReason).toBeUndefined();
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
+    expect(t.dispatchRows(taskId)).toEqual([]);
+    // The same request again starts nothing more.
+    expect((await retry(t, taskId, blocked.revision, requestId)).status).toBe(200);
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
+    // And the new answer puts the plan in front of the person.
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+  });
+
+  it("is refused at the wrong revision, and for someone who is not the task's owner", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.finishCritique(workspaceId, "no block");
+    const blocked = t.meta(taskId).workflow;
+    expect((await retry(t, taskId, blocked.revision + 1)).status).toBe(409);
+    expect((await retry(t, taskId, blocked.revision, randomUUID(), OMAR)).status).toBeGreaterThanOrEqual(400);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+  });
+});
+
 describe("the plan check and its budget", () => {
   it("is a model step like the others: the key is minted for the task's payer, capped by the planning limit and the step's own budget", async () => {
     const t = await world();
@@ -675,5 +715,74 @@ describe("the company's choice of the plan check's model", () => {
   });
 });
 
+// ---- what people read
+
+type Button = { action_id: string; text: { text: string } };
+const buttonsOf = (blocks: Array<Record<string, unknown>>): Button[] => blocks.filter((entry) => entry.type === "actions").flatMap((entry) => entry.elements as Button[]);
+
+describe("what people read about the plan check", () => {
+  const atCheck = (state: "READY" | "RUNNING" | "BLOCKED", extra: Record<string, unknown> = {}): WorkflowSnapshot => {
+    const ready = submitted(planning());
+    return WorkflowSnapshotSchema.parse({ ...ready, revision: 7, state, ...extra });
+  };
+
+  it("posts nothing in Slack while the check is waiting or running: the plan is posted once, after its check", () => {
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("READY") })).toBeUndefined();
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("RUNNING") })).toBeUndefined();
+  });
+
+  it("a blocked check says so and offers Close task (the hand-off from the version 2 flip)", () => {
+    for (const blockReason of ["plan check operation ended failed", "Rovara couldn't read the plan check's answer.", "Rovara couldn't start the plan check."]) {
+      const message = workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason }) });
+      expect(message, blockReason).toBeDefined();
+      expect(message!.text).toContain("The plan check stopped before it finished.");
+      expect(buttonsOf(message!.blocks).map((button) => button.action_id)).toEqual(["agentx_workflow_close"]);
+    }
+  });
+
+  it("a blocked check shows the model refusal's own words, escaped, and nothing else a model could have written", () => {
+    const refusal = "Rovara Code's Plan check step uses openai/gpt-5.5, which isn't allowed on payments. Ask the agent's owner to pick another model.";
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: refusal }) })!.text).toContain(refusal);
+    expect(workflowMessage({ taskId: TASK_ID, workflow: atCheck("BLOCKED", { blockReason: "<!channel> something a model wrote" }) })!.text).toContain("Something went wrong on AgentX's side.");
+  });
+
+  it("the progress strip names the plan check's step as the coding plan, as it names planning", () => {
+    expect(taskPageStep(atCheck("RUNNING"), false)).toBe("Coding plan");
+    expect(taskPageStep(atCheck("BLOCKED", { blockReason: "x" }), false)).toBe("Coding plan");
+  });
+
+  it("the plan-ready message carries the critique: a count, each point as Problem or Note, escaped and one line", () => {
+    const checked = critiqued(submitted(planning()), "ok", [point("p1", "blocking", "No limit on <b>retries</b>\nso it loops")]);
+    const waiting = WorkflowSnapshotSchema.parse({ ...checked, revision: 9 });
+    const text = workflowMessage({ taskId: TASK_ID, workflow: waiting, project: "payments" })!.text;
+    expect(text).toContain("A second model checked this plan and found a problem it thinks should be fixed.");
+    expect(text).toContain("Problem: No limit on &lt;b&gt;retries&lt;/b&gt; so it loops");
+  });
+
+  it("says the same model checked the plan, with the project's name, and that the check stopped at the planning limit", () => {
+    const same = critiqued(submitted(planning()), "ok", [], { sameModelAsPlanner: true });
+    expect(workflowMessage({ taskId: TASK_ID, workflow: same, project: "payments" })!.text).toContain("This plan was checked by the same model that wrote it, because payments allows only one model.");
+    const running: WorkflowSnapshot = { ...submitted(planning()), state: "RUNNING" };
+    const stopped = closePlanCritique(running, { expectedRevision: running.revision, status: "stopped_at_limit", now: LATER });
+    const text = workflowMessage({ taskId: TASK_ID, workflow: stopped, project: "payments" })!.text;
+    expect(text).toContain("The plan check stopped at the planning limit.");
+    const unchecked = closePlanCritique(running, { expectedRevision: running.revision, status: "done", now: LATER });
+    expect(workflowMessage({ taskId: TASK_ID, workflow: unchecked, project: "payments" })!.text).toContain("This plan was not checked by a second model.");
+  });
+
+  it("a version 1 plan-ready message is unchanged: no critique lines", () => {
+    const v1 = submitted(planning({ definitionVersion: "1.0.0", program: undefined }));
+    expect(workflowMessage({ taskId: TASK_ID, workflow: v1 })!.text).not.toContain("second model");
+  });
+
+  it("critiqueLines reads nothing for a plan that has no critique", () => {
+    expect(critiqueLines(undefined, "payments")).toEqual([]);
+  });
+
+  it("says the planner is revising after the check found problems", () => {
+    const sentBack = critiqued(submitted(planning()), "revise", [point("p1", "blocking")]);
+    expect(workflowMessage({ taskId: TASK_ID, workflow: { ...sentBack, state: "RUNNING" } })!.text).toContain("A second model checked the coding plan and found problems. Revising the coding plan.");
+  });
+});
+
 void MAYA;
-void workflowMessage;

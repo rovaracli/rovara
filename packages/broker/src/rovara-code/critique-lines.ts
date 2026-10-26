@@ -1,0 +1,31 @@
+// Plan 6 Task 8: what a person reads about the plan check, under the plan. Kept apart from the critic's model choice so the message wording can use it without the model routing.
+import { redactText, type WorkflowCritique } from "@agentx/contracts";
+
+/** The line the plan view shows when the project allows only one model, so the same one wrote and checked the plan. */
+export const sameModelNote = (project: string): string => `This plan was checked by the same model that wrote it, because ${project} allows only one model.`;
+/** The line the plan view shows when the check ran out of planning budget. */
+export const CRITIC_STOPPED_AT_LIMIT_LINE = "The plan check stopped at the planning limit.";
+/** The line the plan view shows when no check was made at all. */
+export const CRITIC_NOT_CHECKED_LINE = "This plan was not checked by a second model.";
+
+/**
+ * The lines a person reads about the plan check, under the plan: the same-model note, how many problems the second model found (and what they were), and when the check stopped short.
+ * Every point is the critic's text, redacted and on one line; the person decides what to make of it.
+ */
+export function critiqueLines(critique: WorkflowCritique | undefined, project: string): string[] {
+  if (critique === undefined) return [];
+  const lines: string[] = [];
+  if (critique.sameModelAsPlanner === true) lines.push(sameModelNote(project));
+  if (critique.status === "stopped_at_limit") lines.push(CRITIC_STOPPED_AT_LIMIT_LINE);
+  const latest = critique.critiques.at(-1);
+  if (latest === undefined) {
+    if (critique.status === "done") lines.push(CRITIC_NOT_CHECKED_LINE);
+    return lines;
+  }
+  const blocking = latest.points.filter((point) => point.severity === "blocking").length;
+  const revised = critique.revisions > 0 ? " I revised the plan once after its first check." : "";
+  lines.push(latest.points.length === 0 ? `A second model checked this plan and found nothing to change.${revised}`
+    : `A second model checked this plan${blocking === 0 ? "" : ` and found ${blocking === 1 ? "a problem" : `${blocking} problems`} it thinks should be fixed`}.${revised}`);
+  for (const point of latest.points) lines.push(`${point.severity === "blocking" ? "Problem" : "Note"}: ${redactText(point.text).replace(/\s+/gu, " ").trim().slice(0, 500)}`);
+  return lines;
+}

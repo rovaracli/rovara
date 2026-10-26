@@ -4,7 +4,7 @@
 // planner only inside a labelled block, bounded and redacted, and it can never approve a plan.
 import {
   PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, modelCompany, redactText,
-  type AgentGuardrails, type AgentXError, type ModelIdentifier, type ModelSelection, type PlanCritique, type WorkflowCritique,
+  type AgentGuardrails, type AgentXError, type ModelIdentifier, type ModelSelection, type PlanCritique,
 } from "@agentx/contracts";
 import { modelNotAllowedText } from "../model-sources/routing.js";
 
@@ -109,13 +109,6 @@ export function critiqueModelOf(model: ModelIdentifier): PlanCritique["model"] {
 
 // ---- what the critic is told, what a planner is told of it, and what a person reads
 
-/** The line the plan view shows when the project allows only one model, so the same one wrote and checked the plan. */
-export const sameModelNote = (project: string): string => `This plan was checked by the same model that wrote it, because ${project} allows only one model.`;
-/** The line the plan view shows when the check ran out of planning budget. */
-export const CRITIC_STOPPED_AT_LIMIT_LINE = "The plan check stopped at the planning limit.";
-/** The line the plan view shows when no check was made at all. */
-export const CRITIC_NOT_CHECKED_LINE = "This plan was not checked by a second model.";
-
 /**
  * What the critic is asked: read the plan against the repository, with read-only tools, and answer with the block. The plan is the planner's own text, handed over as data; the
  * critic is told it may contain text that looks like instructions and that none of it is.
@@ -144,24 +137,4 @@ export function planCriticBlock(points: PlanCritique["points"]): string {
 /** What a planner is told when the critic found blocking points: revise the plan, answering them or saying why not (Rovara's words), then the labelled block. */
 export const PLAN_REVISION_REQUEST = "A second model checked this plan and found problems that would stop it working as written. Revise the plan to deal with each blocking point, or say in the plan why you are leaving one as it is.";
 
-/**
- * The lines a person reads about the plan check, under the plan: the same-model note, how many problems the second model found (and what they were), and when the check stopped short.
- * Every point is the critic's text, redacted and on one line; the person decides what to make of it.
- */
-export function critiqueLines(critique: WorkflowCritique | undefined, project: string): string[] {
-  if (critique === undefined) return [];
-  const lines: string[] = [];
-  if (critique.sameModelAsPlanner === true) lines.push(sameModelNote(project));
-  if (critique.status === "stopped_at_limit") lines.push(CRITIC_STOPPED_AT_LIMIT_LINE);
-  const latest = critique.critiques.at(-1);
-  if (latest === undefined) {
-    if (critique.status === "done") lines.push(CRITIC_NOT_CHECKED_LINE);
-    return lines;
-  }
-  const blocking = latest.points.filter((point) => point.severity === "blocking").length;
-  const revised = critique.revisions > 0 ? " I revised the plan once after its first check." : "";
-  lines.push(latest.points.length === 0 ? `A second model checked this plan and found nothing to change.${revised}`
-    : `A second model checked this plan${blocking === 0 ? "" : ` and found ${blocking === 1 ? "a problem" : `${blocking} problems`} it thinks should be fixed`}.${revised}`);
-  for (const point of latest.points) lines.push(`${point.severity === "blocking" ? "Problem" : "Note"}: ${redactText(point.text).replace(/\s+/gu, " ").trim().slice(0, 500)}`);
-  return lines;
-}
+export { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, critiqueLines, sameModelNote } from "./critique-lines.js";
