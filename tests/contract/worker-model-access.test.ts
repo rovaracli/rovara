@@ -359,6 +359,9 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
     h.db.set({ pk: `DEVELOPER#${raw}`, sk: "META", developerId: raw, provider: "slack", displayName: "Synthetic requester", revoked: false, firstSignInAt: "x", lastSignInAt: "x", mergedInto: survivor });
     h.db.set({ pk: `DEVELOPER#${survivor}`, sk: "META", developerId: survivor, provider: "oidc", displayName: "Synthetic survivor", revoked: false, firstSignInAt: "x", lastSignInAt: "x" });
     seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    expect((await h.ask()).status).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledOnce();
+    h.mintKey.mockClear();
     h.db.delete(orgMemberKey(TEST_ORG, survivor));
     h.db.delete(developerOrgKey(survivor));
     h.db.set({ ...orgRemovedKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor });
