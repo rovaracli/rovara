@@ -403,7 +403,7 @@ describe("reminders on the tracking pass", () => {
     const heard = hear();
     const w = await waiting();
     w.github.permissions.set("bob", "write");
-    const review = (state: "CHANGES_REQUESTED" | "DISMISSED") => [{ githubUserId: "2002", login: "bob", userType: "User", state, commitId: HEAD_A, submittedAt: iso(MON + 2 * H) }];
+    const review = (state: "CHANGES_REQUESTED" | "APPROVED" | "DISMISSED") => [{ githubUserId: "2002", login: "bob", userType: "User", state, commitId: HEAD_A, submittedAt: iso(MON + 2 * H) }];
     await pass(w, MON + DAY);
     expect(heard).toHaveLength(1);
     requestedBy(w, ["1001"], { reviews: review("CHANGES_REQUESTED") });
@@ -420,6 +420,13 @@ describe("reminders on the tracking pass", () => {
     expect(heard).toHaveLength(2);
     expect(heard[1]!.text).toBe("payments #7 has been waiting for your review for 1 day");
     expect(itemOf(w).nudges.count).toBe(2);
+    // An approval that is withdrawn and asked for again starts over the same way.
+    requestedBy(w, ["1001"], { reviews: review("APPROVED") });
+    await pass(w, MON + 4 * DAY + H);
+    expect(itemOf(w).review).toBe("approved");
+    requestedBy(w, ["1001"], { reviews: review("DISMISSED") });
+    await pass(w, MON + 4 * DAY + 2 * H);
+    expect(itemOf(w).reviewersRequestedAt).toBe(iso(MON + 4 * DAY + 2 * H));
   });
 
   it("holds the reminders while a fix round is running, and sends the one that was due when the pull request waits again", async () => {
@@ -430,6 +437,9 @@ describe("reminders on the tracking pass", () => {
     await pass(w, MON + DAY + 2 * H);
     expect(heard).toEqual([]);
     expect(itemOf(w).nudges.count).toBe(0);
+    w.setWorkflow({ stage: "WAIT_FOR_MERGE", state: "RUNNING" });
+    await pass(w, MON + DAY + 2 * H + 1);
+    expect(heard).toEqual([]);
     w.setWorkflow({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     await pass(w, MON + DAY + 3 * H);
     expect(heard).toHaveLength(1);
