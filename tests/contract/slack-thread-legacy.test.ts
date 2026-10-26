@@ -95,6 +95,10 @@ describe("I2: scoped thread rows cannot confer workspace authority", () => {
     expect((await serviceCall(handler, subject, user, "POST", "/v1/service/threads/workspace/close", { requestId: randomUUID() })).body).toEqual({ outcome: "NOT_FOUND", requestId: expect.any(String) });
     expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
     expect(db.find(() => true)).toEqual(data);
+    // Restoring this same mapping to its own workspace admits preparation, rather than a blanket refusal.
+    db.set(row);
+    expect((await prepareThread(handler, subject, user)).body).toMatchObject({ outcome: "WORKSPACE", workspaceId: own });
+    expect(db.get(`WORKSPACE#${foreignId}`, "META")).toEqual(foreign);
   });
   it.each(["org", "owner"] as const)("refuses Slack stop when a scoped mapping names a foreign %s", async (field) => {
     const { db, handler } = createBroker();
