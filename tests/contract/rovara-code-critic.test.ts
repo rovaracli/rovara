@@ -23,6 +23,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 
@@ -677,6 +678,18 @@ describe("the plan check's result", () => {
     passesUnchecked(t, taskId);
   });
 
+  it("a check whose run was stopped and released (the stuck-cancel release) passes the plan on too", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
+    // The workspace is free again, as the release leaves it, though the run's own result never came.
+    const { activeOperationId: _active, ...workspace } = t.h.db.get(`WORKSPACE#${workspaceId}`, "META") as Record<string, unknown>;
+    void _active;
+    t.h.db.set({ ...workspace, status: "READY" });
+    expect(await blockStoppedWorkflowRun(t.h.db as never, "state", check as never, "INTERRUPTED")).toBe(true);
+    passesUnchecked(t, taskId);
+  });
+
   it("a check that can't be started, however often it is tried, passes the plan on instead of blocking it", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.start();
@@ -813,6 +826,7 @@ describe("the automatic revision never asks for money", () => {
     const text = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!.text;
     expect(text).toContain("I couldn't revise this plan for the second model's points, because the planning limit was reached first. It is shown as it was.");
     expect(text).toContain("Problem: No limit on retries.");
+    expect(text).not.toContain("I revised the plan once");
     // The person's approval then goes to coding as ever.
     const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
@@ -1033,6 +1047,15 @@ describe("the plan check and its budget", () => {
     expect(record.budgetPause).toBeUndefined();
     expect(t.h.db.find((item) => item.entityType === "SPEND_REQUEST")).toEqual([]);
     expect(workflowMessage({ taskId, workflow: record.workflow as never })!.text).toContain("The plan check stopped at the planning limit.");
+  });
+
+  it("says a spending limit when the agent's max per run, not the planning limit, was what the spend reached", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    t.h.db.set({ ...t.meta(taskId), budgetUsd: 1, maxPerRunUsd: 0.5, budgetBaselineUsd: 0, modelKeyIds: ["k1"] });
+    t.access!.keySpend.mockResolvedValue(1);
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.meta(taskId).workflow.critique).toMatchObject({ status: "stopped_at_limit", limit: "other" });
   });
 
   it("says a spending limit, not the planning limit, when the step's, the month's or the org's budget ran out", async () => {
