@@ -11,7 +11,7 @@ import { ROVARA_CODE_V2_FOR_NEW_ORGS, builtinDefaultPin, builtinRecipe } from ".
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
   WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, blockWorkflow,
-  submitWorkflowArtifact, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
+  submitPlanCritique, submitWorkflowArtifact, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/task-workflow.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -37,13 +37,21 @@ const verified = (workflow: WorkflowSnapshot, candidate: ReturnType<typeof candi
 const reviewedWith = (workflow: WorkflowSnapshot, candidate: ReturnType<typeof candidateOf>, findings: unknown[]): WorkflowSnapshot =>
   (["CRITIC", "SECURITY"] as const).map((role) => report(role, findings.length > 0 ? "FINDINGS" : "PASS", candidate.digest, findings)).reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now), workflow);
 
+/** A coding plan after its plan check (Task 8) found nothing to say: the person's approval is next. */
+function submittedAndChecked(created: WorkflowSnapshot): WorkflowSnapshot {
+  const submitted = submitWorkflowArtifact(created, { expectedRevision: created.revision, artifact: plan, now });
+  expect(submitted).toMatchObject({ stage: "PLAN_CRITIQUE", state: "READY" });
+  const running: WorkflowSnapshot = { ...submitted, revision: submitted.revision + 1, state: "RUNNING" };
+  return submitPlanCritique(running, { expectedRevision: running.revision, critique: { verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-6-v1", company: "anthropic" } }, now });
+}
+
 describe("a version 2 task in the workflow engine", () => {
   const start = () => createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion: "1.1.0", path: "QUICK", program: v2Program() });
 
   it("starts as a 1.1.0 workflow on the plan step, and the plan's approval goes to IMPLEMENT on the build step, not to the plan check", () => {
     const created = start();
     expect(created).toMatchObject({ definitionVersion: "1.1.0", stage: "PLAN", state: "RUNNING", programStepId: "plan" });
-    const waiting = submitWorkflowArtifact(created, { expectedRevision: created.revision, artifact: plan, now });
+    const waiting = submittedAndChecked(created);
     const approved = decideWorkflow(waiting, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: waiting.revision, decision: "APPROVE", reason: "Go", artifactDigest: plan.sha256 },
       { actorId: ownerId, role: "TASK_OWNER" }, { now, allowedSkipStages: [] });
     expect(approved).toMatchObject({ stage: "IMPLEMENT", state: "READY", programStepId: "build" });
@@ -64,7 +72,7 @@ describe("a version 2 task in the workflow engine", () => {
 /** The v2 workflow with its plan approved: the build is ready. */
 function approvedV2(): WorkflowSnapshot {
   const created = createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion: "1.1.0", program: v2Program() });
-  const waiting = submitWorkflowArtifact(created, { expectedRevision: created.revision, artifact: plan, now });
+  const waiting = submittedAndChecked(created);
   return decideWorkflow(waiting, { requestId: "22222222-2222-4222-8222-222222222222", expectedRevision: waiting.revision, decision: "APPROVE", reason: "Go", artifactDigest: plan.sha256 },
     { actorId: ownerId, role: "TASK_OWNER" }, { now, allowedSkipStages: [] });
 }
