@@ -3,7 +3,7 @@
 // out of that one rule. The opt-out is bound to the digest of the files they reviewed and lapses on its own when that digest changes.
 import { z } from "zod";
 import { OrgIdSchema } from "./org.js";
-import { AgentXNameSchema } from "./project.js";
+import { AgentXNameSchema } from "./project-node.js";
 
 /** A GitHub repository as `owner/name`: an owner login (letters, digits, `-` and `_`) and a name that is not `.` or `..`. */
 export const CommentTriggerRepositorySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/, "must be a repository as owner/name");

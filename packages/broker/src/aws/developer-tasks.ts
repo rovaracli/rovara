@@ -205,6 +205,7 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
+import { parallelPartsForTask, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../rovara-code/critic.js";
 import { noteFinishedTaskDuration } from "../rovara-code/duration.js";
@@ -1149,7 +1150,7 @@ export async function submitWorkflowFeedbackDecision(
     if (!same) throw agentXError("IDEMPOTENCY_CONFLICT", "this decision request ID was already used");
     return { status: prior.decision === "APPROVE" ? "APPROVED" : prior.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "DISMISSED", nextAction: prior.decision === "APPROVE" ? "implementation" : "owner_review" };
   }
-  if (input.decision === "APPROVE" && current.workflowDependenciesApproval !== undefined && deps.workflowDependenciesEnabled !== true) {
+  if (input.decision === "APPROVE" && current.workflowDependenciesApproval !== undefined && !workflowDependenciesAllowed(deps, current)) {
     throw agentXError("CONFIG_INVALID", "this task has an approved ordered work plan, but this broker is not enabled to apply PR feedback through that plan; request changes or dismiss the proposal");
   }
   if (deps.refreshTaskFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "current GitHub PR feedback cannot be verified for this decision");
@@ -2835,7 +2836,7 @@ export async function decideTaskWorkflow(
   const planGraph = loaded?.format === "structured" ? loaded.plan.workBreakdown : undefined;
   let workBreakdownDigest: string | undefined;
   if (planGraph !== undefined && request.decision === "APPROVE") {
-    if (prior === undefined && deps.workflowDependenciesEnabled !== true) throw agentXError("CONFIG_INVALID", "ordered work plans are saved but this broker is not enabled to start them");
+    if (prior === undefined && !workflowDependenciesAllowed(deps, workflow)) throw agentXError("CONFIG_INVALID", "ordered work plans are saved but this broker is not enabled to start them");
     const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined || pinnedProject.definition.repositories.length !== 1) {
       throw agentXError("CONFIG_INVALID", "ordered work is available only when this task is pinned to one registered repository");
@@ -2982,8 +2983,9 @@ export async function decideTaskWorkflow(
   const retired = mode === "PLAN" ? await retiredClaimIdList(deps, workflow) : [];
   // Only a coding run checks its work: a planning run, here revising a plan the owner did not approve, gets no proposed command.
   const selectedReadiness = next.checkPolicy === undefined || mode !== "IMPLEMENT" ? undefined : workflowSelectedChecks(next.checkPolicy).map((check) => check.command);
+  const firstParallel = mode === "IMPLEMENT" && planGraph !== undefined && next.workflowDependenciesApproval !== undefined ? await partsSettingOf(deps, task, next) : undefined;
   const workflowDependencies = mode === "IMPLEMENT" && planGraph !== undefined && next.workflowDependenciesApproval !== undefined
-    ? { graph: planGraph, approval: next.workflowDependenciesApproval, peopleRevision: access.peopleRevision ?? 0, sequenceStart: 0 } : undefined;
+    ? { graph: planGraph, approval: next.workflowDependenciesApproval, peopleRevision: access.peopleRevision ?? 0, sequenceStart: 0, ...(firstParallel === undefined ? {} : { parallel: firstParallel }) } : undefined;
   // The decision's detail, beside the task (never inside it), when there is anything to keep beyond the decision itself.
   const detailItems = request.answers === undefined && included.length === 0 && options.note === undefined ? [] : [putNew(deps.tableName, {
     ...decisionDetailKey(taskId, request.requestId), entityType: "WORKFLOW_DECISION_DETAIL",
@@ -3566,7 +3568,7 @@ async function loadCommittedSourceRecovery(
   }
   await actionableWorkspace(deps, task);
   const invocation = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
-  if (invocation === undefined || deps.workflowDependenciesEnabled !== true) {
+  if (invocation === undefined || !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered plan is not available for retained-source recovery");
   }
   const operationId = workflow.workflowDependenciesOperationId;
@@ -3660,14 +3662,28 @@ async function approvedWorkflowDependencies(deps: DeveloperTaskRouteDependencies
     throw agentXError("CONFIG_INVALID", "the ordered run has an unresolved item start; inspect the workspace and approve a refreshed whole coding plan before continuing");
   }
   const resumeProgress = workflowDependencyAttemptTerminalProgress({ graph, approval, operationId: boundOperation.id,
-    sequenceStart: binding.sequenceStart, resumeProgress: binding.resumeProgress, history: progress });
+    sequenceStart: binding.sequenceStart, resumeProgress: binding.resumeProgress, history: progress, parallel: binding.parallel });
   if (resumeProgress === undefined) throw agentXError("CONFIG_INVALID", "the latest ordered-work checkpoints do not match their operation attempt; approve a refreshed whole coding plan before continuing");
   const last = resumeProgress.at(-1);
-  const resumeTreeSha = last === undefined ? binding.resumeTreeSha
+  // Parts built side by side leave the repository on the newest integrated tree (the last part merged), not on the last part of the plan's order.
+  const newestImplemented = resumeProgress.filter((entry) => entry.state === "IMPLEMENTED").sort((left, right) => right.sequence - left.sequence)[0];
+  const resumeTreeSha = binding.parallel !== undefined
+    ? (newestImplemented !== undefined ? newestImplemented.integratedTreeSha ?? newestImplemented.candidateTreeSha : [...resumeProgress].sort((left, right) => left.sequence - right.sequence)[0]?.baseTreeSha ?? binding.resumeTreeSha)
+    : last === undefined ? binding.resumeTreeSha
     : last.state === "IMPLEMENTED" ? last.candidateTreeSha : last.baseTreeSha;
   if (progress.length > 0 && resumeTreeSha === undefined) throw agentXError("CONFIG_INVALID", "the stopped ordered run has no usable tree checkpoint");
-  return { ...binding, graph, approval, ...(resumeTreeSha === undefined ? {} : { resumeTreeSha }), peopleRevision: peopleRevision ?? 0,
-    sequenceStart: latestProgress?.sequence ?? binding.sequenceStart ?? 0, resumeProgress };
+  // The parts setting is read again for each operation (the org's room changes); the earlier operation's is not carried over.
+  const { parallel: _earlierParallel, ...bindingWithoutParallel } = binding;
+  void _earlierParallel;
+  const parallel = await partsSettingOf(deps, task, workflow);
+  return { ...bindingWithoutParallel, graph, approval, ...(resumeTreeSha === undefined ? {} : { resumeTreeSha }), peopleRevision: peopleRevision ?? 0,
+    sequenceStart: latestProgress?.sequence ?? binding.sequenceStart ?? 0, resumeProgress, ...(parallel === undefined ? {} : { parallel }) };
+}
+
+/** How many parts of the task's approved plan may be built at once (Rovara Code v2 only; see rovara-code/parallel-parts.ts). */
+function partsSettingOf(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "developerId" | "slackUserId" | "charge">, workflow: WorkflowSnapshot | undefined) {
+  return parallelPartsForTask({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: deps.orgId, slackTeamId: deps.slackTeamId, limitDefaults: deps.actions.limitDefaults },
+    { developerId: task.developerId, slackUserId: task.slackUserId, ...(task.charge === undefined ? {} : { charge: task.charge }), workflow });
 }
 
 /** Keep the accepted graph attempt pointer in the task update committed with its operation and outbox. */
@@ -3787,7 +3803,7 @@ export async function resumeAfterRunLimitApproval(
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
   const plan = await approvedCodingPlan(deps, workflow);
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, dispatchAccess?.peopleRevision);
-  if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+  if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
   }
   const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
@@ -3931,7 +3947,7 @@ async function retryWorkflowImplementation(
   const feedbackRound = workflow.fixSource === "feedback" && sendBackProblems(workflow).length === 0;
   const plan = ciBlock === undefined && !feedbackRound ? await approvedCodingPlan(deps, workflow) : undefined;
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
-  if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+  if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to retry it");
   }
   const { blockReason: _blockReason, ...unblocked } = workflow;
@@ -3985,7 +4001,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   await actionableWorkspace(deps, task);
   const plan = await approvedCodingPlan(deps, workflow);
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
-  if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+  if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to continue it");
   }
   const restartApprovedGraph = workflowDependencies === undefined ? undefined : {
@@ -4037,7 +4053,7 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     await actionableWorkspace(deps, task);
     const plan = await approvedCodingPlan(deps, workflow);
     const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
-    if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+    if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
       throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to continue it");
     }
     const restartApprovedGraph = workflowDependencies === undefined ? undefined : {
@@ -4688,7 +4704,7 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
  * one transaction. The planner is given the plan it wrote as data, to write back whole, and the critic's points in the labelled block after Rovara's own words; it decides what to change. Answers STALE
  * unless the task is open, at that revision, and the check did send the plan back.
  */
-export async function startTaskWorkflowPlanRevisionFromSystem(
+export async function startTaskWorkflowCriticRevisionFromSystem(
   deps: DeveloperTaskRouteDependencies,
   taskId: string,
   expected: { workflowRevision: number },
@@ -5491,7 +5507,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     catch (error) { log(deps, { event: "developer.task_e2e_results_unavailable", taskId, errorName: error instanceof Error ? error.name : "unknown" }); }
   }
   return {
-    taskId, now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
     ...(e2eResults === undefined ? {} : { e2eResults }),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,
@@ -7019,6 +7035,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     request: "cancel", response, ...(operationId === undefined ? {} : { operationId }),
   }));
   let handled = false;
+  let planReviewEnded = false;
   const pointer = await get<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId));
   if (pointer?.pendingPrompt !== undefined) {
     // R16, P45: before the instructions run, removing them is the whole cancel. Only the pointer
@@ -7092,12 +7109,20 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
       }
       throw error;
     }
+    // Fix for v0.4.6 staging: a session stopped while its plan waits for approval has nothing running to cancel, so the stop would answer 200 and leave the plan on offer. The
+    // session actor's stop ends that step as a rejected plan does (the workflow closes complete and the task gives back its slot and workspace), in the same transaction as the
+    // idempotency item so a repeat cannot find the cancel recorded and the plan still open. The task's own cancel route is unchanged.
+    const planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING" ? task.workflow : undefined;
     if (outcome === "NOTHING_RUNNING") {
       // R12's one exception (ruling F15): nothing ran, so there is no action transaction for the
       // record to join. It is written with the cancel's idempotency item in its own transaction.
       // A failed write is counted and logged, and never hides the answer.
       try {
-        await deps.actions.transact([marker, record("Nothing was running."), accessFence(deps, access)]);
+        await deps.actions.transact([
+          marker, record(planReview === undefined ? "Nothing was running." : "Stopped while the plan waited for approval."), accessFence(deps, access),
+          ...(planReview === undefined ? [] : [stopPlanReviewItem(deps.tableName, task.taskId, planReview, receivedAt)]),
+        ]);
+        planReviewEnded = planReview !== undefined;
       } catch (error) {
         if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "control");
         if (!isConditional(error)) turnRecordFailed(deps, error);
@@ -7113,9 +7138,23 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
       }
     }
   }
+  // A plan stopped at review is a finished task like a rejected one: its slot and workspace go back now.
+  if (planReviewEnded) await releaseFinishedTaskQuietly(deps, task.taskId);
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
+}
+
+/** The task update that ends a plan waiting for approval because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no decision is offered. */
+function stopPlanReviewItem(tableName: string, taskId: string, workflow: WorkflowSnapshot, now: string): TransactItems[number] {
+  const closed = WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
+  return { Update: {
+    TableName: tableName, Key: taskKey(taskId),
+    UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+    ConditionExpression: "attribute_not_exists(closedAt) AND workflow.revision = :revision AND workflow.#stage = :review AND workflow.#state = :waiting",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": "PLAN_REVIEW", ":waiting": "WAITING" },
+  } };
 }
 
 /**
@@ -7513,7 +7552,7 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
     }
   }
   const now = new Date().toISOString();
-  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : "its plan was rejected";
+  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : task.workflow.outcome === "CLOSED" ? "it was stopped while its plan waited for approval" : "its plan was rejected";
   const rest = (): TransactItems => [
     ...(releaseWorkspace ? [{ Update: {
       TableName: deps.tableName,

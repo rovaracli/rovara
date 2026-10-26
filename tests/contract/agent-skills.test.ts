@@ -9,15 +9,15 @@ import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { SKILL_CONTENT_MAX_BYTES, SkillStore, parseSkillMarkdown, skillDigest } from "../../packages/broker/src/agents/skills.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
-import type { AgentOwner } from "../../packages/contracts/src/agent.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { agentKey, skillKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AGENT_STEP_INSTRUCTIONS_MAX_BYTES, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
-import { MAX_RESOLVED_SKILLS, ResolvedRecipeSchema } from "../../packages/contracts/src/agent-recipe.js";
-import type { OrgRole } from "../../packages/contracts/src/org.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
+import { MAX_RESOLVED_SKILLS, ResolvedRecipeSchema } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { OrgRole } from "../../packages/contracts/src/org-node.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import { orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -840,6 +840,26 @@ describe("GET /v1/internal/agent-skills", () => {
     expect(served.map((entry) => entry.description)).toEqual([description]);
     expect(ResolvedRecipeSchema.shape.skills.safeParse([pinnedOf(skill, description)]).success).toBe(true);
     expect(ResolvedRecipeSchema.shape.skills.safeParse([pinnedOf(skill, "😀".repeat(1025))]).success).toBe(false);
+  });
+
+  it("refuses an operation that is being stopped, or is not the workspace's active one, like the tool routes do", async () => {
+    const h = await runningTask();
+    const skill = await h.skills.create({ orgId: TEST_ORG, content: skillFile("one-skill", "Mine", "SECRET-MINE\n"), owner: MEMBER, by: ALICE });
+    h.seedSnapshot([pinnedOf(skill, "Mine")]);
+    expect((await h.ask()).status).toBe(200);
+    const operation = h.db.get(`WORKSPACE#${h.workspaceId}`, `OPERATION#${h.operationId}`) as Record<string, unknown>;
+    h.db.set({ ...operation, status: "CANCEL_REQUESTED" });
+    const stopping = await h.ask();
+    expect(stopping.status).toBe(409);
+    expect(JSON.stringify(stopping.body)).not.toContain("SECRET-MINE");
+    h.db.set(operation);
+    const workspace = h.db.get(`WORKSPACE#${h.workspaceId}`, "META") as Record<string, unknown>;
+    h.db.set({ ...workspace, activeOperationId: randomUUID() });
+    const superseded = await h.ask();
+    expect(superseded.status).toBe(409);
+    expect(JSON.stringify(superseded.body)).not.toContain("SECRET-MINE");
+    h.db.set(workspace);
+    expect((await h.ask()).status).toBe(200);
   });
 
   it("refuses, with 404 and no content, a task whose org is not the operation's, in either direction", async () => {

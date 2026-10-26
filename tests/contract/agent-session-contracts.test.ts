@@ -1,7 +1,7 @@
 // Plan 5 Task 1: the agent session contracts: ids, limits, records, events, views, keys and error codes.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { atLeast, newPrefixedId } from "../../packages/contracts/src/agent.js";
+import { atLeast, newPrefixedId } from "../../packages/contracts/src/agent-node.js";
 import {
   AGENT_SESSION_CONTRACT_VERSION,
   AgentSessionRecordSchema,
@@ -37,7 +37,7 @@ import {
   sessionViewerOnlyMessage,
   SESSION_ENDED_MESSAGE,
   SESSION_REVISION_CONFLICT_MESSAGE,
-} from "../../packages/contracts/src/agent-sessions.js";
+} from "../../packages/contracts/src/agent-sessions-node.js";
 import { AgentXErrorCodeSchema, agentXError, errorStatus } from "../../packages/contracts/src/errors.js";
 import {
   SESSION_SWEEP_CURSOR_KEY,
@@ -63,7 +63,7 @@ import {
   taskSpendKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
 import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/contracts/src/home.js";
-import { OrgIdSchema } from "../../packages/contracts/src/org.js";
+import { OrgIdSchema } from "../../packages/contracts/src/org-node.js";
 import {
   NeedsConfirmationSchema,
   ProjectOverviewReaderSchema,
@@ -212,7 +212,7 @@ describe("the fixed words and limits", () => {
   });
 
   it("pins the limits the plan names", async () => {
-    const limits = await import("../../packages/contracts/src/agent-sessions.js");
+    const limits = await import("../../packages/contracts/src/agent-sessions-node.js");
     expect({
       SESSION_TITLE_MAX: limits.SESSION_TITLE_MAX,
       SESSION_PEEK_MAX_CHARS: limits.SESSION_PEEK_MAX_CHARS,
@@ -284,7 +284,7 @@ describe("the fixed words and limits", () => {
       REALTIME_TOKEN_SECONDS: 900,
       LOCAL_HEARTBEAT_SECONDS: 60,
       LOCAL_OFFLINE_MINUTES: 10,
-      LOCAL_UPDATE_TURNS_MAX: 50,
+      LOCAL_UPDATE_TURNS_MAX: 40,
       LOCAL_TURN_MAX_CHARS: 4000,
       LOCAL_TURNS_MAX: 2000,
       DEVICE_LABEL_MAX: 60,

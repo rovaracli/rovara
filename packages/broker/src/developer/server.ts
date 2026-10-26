@@ -1,3 +1,7 @@
+import { serverPageCss } from "@agentx/design-tokens";
+import { withDecideIsolation } from "./confirm-page.js";
+import { SessionIdSchema } from "@agentx/contracts";
+import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
 // ANY /v1/auth/{proxy+} with no authorizer, plus direct-invoke operations for the broker
@@ -115,9 +119,14 @@ export type ChannelMembersResult = ChannelMembersResponse | { ok: false; error: 
 const CHALLENGE = /^[A-Za-z0-9_-]{43,128}$/;
 // The PR-feedback review page, or the read-only task page, which may name one document and the earlier version it came from.
 /** A session's link (Plan 5): a person who followed `/s/<id>` signed out comes back to it. Only a real session id shape, no query. */
-const SESSION_RETURN_TO = /^\/s\/(?:ses|crn)_[0-9a-z]{20}$/;
+const SESSION_RETURN_TO = { test: (value: string) => value.startsWith("/s/") && SessionIdSchema.safeParse(value.slice(3)).success };
 const REVIEW_RETURN_TO_PATH = /^\/review\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/task(?:\?doc=(?:requirements|design|coding-plan)(?:&from=[1-9][0-9]{0,2})?)?)?$/i;
-const REVIEW_RETURN_TO = { test: (value: string) => REVIEW_RETURN_TO_PATH.test(value) || SESSION_RETURN_TO.test(value) };
+const APP_RETURN_TO_PATH = /^\/app(?:\/[A-Za-z0-9._~%/-]*)?(?:\?[A-Za-z0-9._~%=&-]*)?$/;
+export const BROWSER_RETURN_TO = { test: (value: string) => {
+  if (REVIEW_RETURN_TO_PATH.test(value)) return true;
+  if (value.startsWith("/s/")) return SESSION_RETURN_TO.test(value);
+  return APP_RETURN_TO_PATH.test(value) && !value.includes("..") && !value.includes("//") && !/%2e|%2f|%5c/i.test(value) && !value.split("?", 1)[0]!.split("/").includes(".");
+} };
 const REVIEW_PKCE_COOKIE = "__Host-agentx_review_pkce";
 const REVIEW_SESSION_COOKIE = "__Host-agentx_review_session";
 /** The join page's own PKCE cookie: the browser that opened an invite is the only one that may read how its join ended. */
@@ -155,9 +164,9 @@ const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? 
 function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string): HttpResult {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>`
     + (refreshTo === undefined ? "" : `<meta http-equiv="refresh" content="0;url=${escape(refreshTo)}">`)
-    + `<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5}a.method{display:block;margin:.75rem 0;padding:.75rem 1rem;border:1px solid #888;border-radius:.5rem;text-decoration:none;color:inherit}</style></head>`
-    + `<body><main><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
-    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</main></body></html>`;
+    + `<style>${serverPageCss()}h1{line-height:1.2;margin:0 0 1.5rem}.rv-wordmark{font-weight:650;margin:0 0 1.5rem}.rv-server-card{padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}p{overflow-wrap:anywhere}a.method{display:flex;align-items:center;min-height:44px;margin:1rem 0;padding:.75rem 1rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-decoration:none;color:var(--rv-accent-text)}</style></head>`
+    + `<body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
+    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</section></main></body></html>`;
   return { statusCode, headers: { ...HTML_HEADERS }, body };
 }
 
@@ -280,7 +289,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     } catch (error) {
       return serverError(error, "/v1/auth/authorize", redirectUri, clientState);
     }
-    return page(200, "Sign in to AgentX", [`Environment: ${config.env}`], choices.map((method) => ({
+    return page(200, "Sign in to Rovara", [`Environment: ${config.env}`], choices.map((method) => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(request.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     })));
@@ -288,7 +297,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
 
   async function authorizeBrowser(query: URLSearchParams): Promise<HttpResult> {
     const returnTo = query.get("return_to") ?? "";
-    if (!REVIEW_RETURN_TO.test(returnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
+    if (!BROWSER_RETURN_TO.test(returnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
     const methods = enabledMethods(deps);
     if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask an AgentX administrator to enable a sign-in method."]);
     const verifier = randomBytes(32).toString("base64url");
@@ -309,7 +318,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         return { ...page(503, "Sign-in is unavailable", ["Try opening the review again in a moment."]), cookies: [cookie] };
       }
     }
-    return { ...page(200, "Sign in to AgentX", [`Environment: ${config.env}`], methods.map(method => ({
+    return { ...page(200, "Sign in to Rovara", [`Environment: ${config.env}`], methods.map(method => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     }))), cookies: [cookie] };
@@ -397,7 +406,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (await store.chooseMethod(auth.id, methods[0]!) === undefined) return joinUnavailable([cookie]);
       return { ...await joinToProvider(auth.id, auth.nonce, methods[0]!), cookies: [cookie] };
     }
-    return { ...page(200, `Sign in to join ${found.invite.orgName}`, [], methods.map((method) => ({
+    return { ...page(200, "Sign in to Rovara", [], methods.map((method) => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     }))), cookies: [cookie] };
@@ -485,9 +494,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     throw error;
   }
 
-  const browserReturn = (returnTo: string, signedIn: boolean, sessionId?: string): HttpResult => ({
+  const browserReturn = (returnTo: string, signedIn: boolean, sessionId?: string, reason: "removed" | "ended" | "cancelled" | "failed" = "failed"): HttpResult => ({
     statusCode: 302,
-    headers: { location: returnTo, "cache-control": "no-store", "referrer-policy": "no-referrer" },
+    headers: { location: !signedIn && (returnTo === "/app" || returnTo.startsWith("/app/") || returnTo.startsWith("/app?") || returnTo.startsWith("/s/")) ? `/app/signed-out?reason=${reason}` : returnTo, "cache-control": "no-store", "referrer-policy": "no-referrer" },
     body: "",
     cookies: [
       `${REVIEW_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
@@ -507,7 +516,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return await decideFlow.callback(decide, query.get("code"), headers);
         } catch (error) {
           deps.log({ event: "signin.decide_error", error: errorName(error) });
-          return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
+          return withDecideIsolation(page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]));
         }
       }
     }
@@ -527,7 +536,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (request.linkDeveloperId !== undefined) return linkCallback(method, request, query.get("code"));
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
-      if (!REVIEW_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
+      if (!BROWSER_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
         return page(400, "This review sign-in link expired", ["Open the review from Slack and sign in again."]);
       }
     }
@@ -547,11 +556,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const client = (params: Record<string, string>) => toClient(request.clientRedirectUri, { ...params, state: request.clientState });
     // A join (the invite page's sign-in) ends on a page and a stored result, never in a session, a code or a redirect to the CLI.
     const join = request.purpose === "join";
-    if (request.browserReturnTo !== undefined && !REVIEW_RETURN_TO.test(request.browserReturnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
+    if (request.browserReturnTo !== undefined && !BROWSER_RETURN_TO.test(request.browserReturnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
     if (code === null && join) return page(400, "Sign-in was cancelled", ["Open the invite link again to try again."]);
     if (code === null) return request.browserReturnTo === undefined
       ? client({ error: "access_denied", error_description: `the sign-in was cancelled at ${methodLabel(method)}; run agentx login again` })
-      : browserReturn(request.browserReturnTo, false);
+      : browserReturn(request.browserReturnTo, false, undefined, "cancelled");
     let result: ProviderResult;
     try {
       result = await provider(method).complete({ code, nonce: request.nonce, redirectUri: endpoint(`/callback/${method}`) });
@@ -575,7 +584,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (existing?.revoked === true) {
       deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
       if (join) return page(403, "Your sign-in was turned off", ["Contact a Rovara administrator."]);
-      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
       return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
     let slackUserId = identity.slackUserId;
@@ -619,7 +628,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
       deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
-      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "removed");
       return client({ error: "access_denied", error_description: (error as Error).message.replace(/^REMOVED_FROM_ORG: /, "") });
     }
     if (join) {
@@ -627,6 +636,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       // Joining an org with a GitHub sign-in unlocks that org's trial as any GitHub sign-in does; no other outcome touches an org.
       if (outcome === "joined" && method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined && org.orgId !== undefined) {
         await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
+      }
+      if (outcome === "joined") {
+        const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
+        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime),
+          ...(slackUserId === undefined ? {} : { slackUserId }), reviewExpiresAt: endsAt, endsAt });
+        return browserReturn(endpoint(`/join/done?request=${request.id}`), true, session.sessionId);
       }
       return redirect(endpoint(`/join/done?request=${request.id}`));
     }
@@ -901,6 +916,22 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"], scopes_supported: ["openid"],
   });
 
+  async function browserSignOut(headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const sessionId = cookieValue(headers.cookie, REVIEW_SESSION_COOKIE);
+    const refused = () => jsonResult(403, { error: "request_refused" });
+    const ended = (): HttpResult => ({ statusCode: 204, headers: { "cache-control": "no-store" }, body: "", cookies: [`${REVIEW_SESSION_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] });
+    if (headers.origin !== new URL(config.issuer).origin) return refused();
+    if (sessionId === undefined || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) return refused();
+    const session = await store.getSession(sessionId);
+    const now = Math.floor(deps.now() / 1000);
+    if (session === undefined || session.revokedAt !== undefined || session.endsAt <= now || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= now) return ended();
+    if (!appCsrfMatches(sessionId, headers[APP_CSRF_HEADER])) return refused();
+    // Revoke in DeveloperIdentity, which already owns this grant. Never log the cookie or its session id.
+    await store.revokeSession(sessionId, "browser_sign_out");
+    deps.log({ event: "signin.browser_signed_out" });
+    return ended();
+  }
+
   async function route(method: string, pathname: string, url: URL, body: string | undefined, headers: Record<string, string | undefined>): Promise<HttpResult> {
     if (method === "GET") {
       switch (pathname) {
@@ -934,6 +965,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return callback("github", url.searchParams, headers);
       }
     }
+    if (method === "POST" && pathname === "/v1/auth/browser/sign-out") return browserSignOut(headers);
     if (method === "POST" && pathname === "/v1/auth/token") return token(new URLSearchParams(body ?? ""));
     if (method === "POST" && pathname === "/v1/auth/revoke") return revokeToken(new URLSearchParams(body ?? ""));
     return jsonResult(404, { error: "not_found" });
@@ -1072,13 +1104,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const request = adaptHttpApiEvent(event);
     const url = new URL(request.path, "https://agentx.invalid");
     try {
-      return await route(request.method, url.pathname, url, request.body, request.headers);
+      const response = await route(request.method, url.pathname, url, request.body, request.headers);
+      return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     } catch (error) {
       // Only the error's name: a KMS or AWS message can carry a key ARN or other detail.
       deps.log({ event: "signin.error", path: url.pathname, error: errorName(error) });
-      return isPage(url.pathname)
+      const response = isPage(url.pathname)
         ? page(500, "Sign-in failed", ["Something went wrong on the AgentX server. Run agentx login again."])
         : oauthError(500, "server_error", "sign-in failed on the server; try again");
+      return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     }
   };
 }

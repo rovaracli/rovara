@@ -223,7 +223,18 @@ interface Judged { session: AgentSessionRecord; access: SessionAccess }
  * `LIVE_ENDED_KEEP_HOURS` or are open with a failed last run. A person who is no longer in the org has an empty wall.
  */
 export async function liveSessions(deps: LiveDependencies, caller: SessionReadCaller, query: LiveQuery): Promise<LiveResponse> {
-  const { filter, project, limit } = checkedQuery(query);
+  return readLive(deps, caller, query, false);
+}
+
+/** Task 6: all caller-visible open tiles for navigation, using the exact same access checks and one live-index read. Never a public page-size option. */
+export async function navigationLive(deps: LiveDependencies, caller: SessionReadCaller): Promise<LiveTile[]> {
+  return (await readLive(deps, caller, { filter: "all" }, true)).tiles;
+}
+
+async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query: LiveQuery, navigation: boolean): Promise<LiveResponse> {
+  const checked = checkedQuery(query);
+  const { filter, project } = checked;
+  const limit = navigation ? LIVE_INDEX_SCAN_MAX : checked.limit;
   const { orgId } = caller;
   cursorKeyOf(deps); // a wall that can't seal its cursor doesn't start
   const cursorLabel = `${orgId}#LIVE#${filter}#${project ?? ""}`;

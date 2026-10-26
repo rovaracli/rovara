@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, type WorkflowCheck, type WorkflowCheckProposal } from "./task-workflow.js";
+import { WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, type WorkflowCheck } from "./task-workflow.js";
+import { type WorkflowCheckProposal } from "./task-workflow-node.js";
 import { WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS, WorkflowProposedCheckInputSchema as ProposedCheckInputSchema, hasControlCharacter } from "./workflow-check-input.js";
 
 export { WORKFLOW_FEEDBACK_CHECK_COMMAND_MAX, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS, WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, hasControlCharacter, proposedCheckExecutableAllowed, proposedCheckProblem, type WorkflowProposedCheckInput } from "./workflow-check-input.js";

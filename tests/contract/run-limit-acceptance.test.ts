@@ -12,7 +12,7 @@ import { acceptRunLimit } from "../../packages/broker/src/spend/estimate.js";
 import { applyProjectAiChange, readProjectAi, writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
 import { RUN_LIMIT_BLOCK_PREFIX, defaultSpendPolicy, isRunLimitBlockReason } from "../../packages/contracts/src/spend.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import type { OrgRole } from "../../packages/contracts/src/org.js";
+import type { OrgRole } from "../../packages/contracts/src/org-node.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 import { createSpendRequest, decideSpendRequest, spendApprovers } from "../../packages/broker/src/spend/requests.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

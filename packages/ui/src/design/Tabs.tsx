@@ -1,0 +1,4 @@
+import type { ReactNode } from "react";
+import { Tabs as R } from "radix-ui";
+export interface TabItem { value: string; label: string; content: ReactNode; disabled?: boolean }
+export function Tabs({ label, value, defaultValue, onValueChange, items }: { label: string; value?: string; defaultValue?: string; onValueChange?: (value: string) => void; items: readonly TabItem[] }) { return <R.Root {...(value !== undefined ? { value } : {})} {...(defaultValue !== undefined ? { defaultValue } : {})} {...(onValueChange ? { onValueChange } : {})}><R.List aria-label={label} className="rv-tabs">{items.map(item => <R.Trigger key={item.value} value={item.value} disabled={Boolean(item.disabled)} className="rv-tab">{item.label}</R.Trigger>)}</R.List>{items.map(item => <R.Content key={item.value} value={item.value} className="rv-tab-panel">{item.content}</R.Content>)}</R.Root>; }

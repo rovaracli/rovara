@@ -10,7 +10,7 @@ import {
   type DeveloperTaskView,
   type WorkflowStage,
 } from "../../packages/contracts/src/index.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 

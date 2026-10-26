@@ -6,7 +6,7 @@ import { EnvironmentNameSchema } from "./environments.js";
 export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
 import { OrgRoleSchema } from "./org.js";
-import { DeveloperTaskPolicySchema } from "./project.js";
+import { DeveloperTaskPolicySchema } from "./project-node.js";
 import { SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
 import { WorkspaceStatusSchema } from "./workspace.js";
 
@@ -24,8 +24,8 @@ export const DEVELOPER_AUTH_REQUEST_SECONDS = 600;
 export const FRESH_SIGN_IN_SECONDS = 600;
 export const SLACK_OIDC_ISSUER = "https://slack.com";
 
-export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
-export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
+export { DeveloperSignInMethodSchema, type DeveloperSignInMethod } from "./developer-web.js";
+import { DeveloperSignInMethodSchema } from "./developer-web.js";
 
 const LOOPBACK_REDIRECT = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/callback$/;
 
@@ -87,31 +87,8 @@ export const DeveloperSummarySchema = z.object({
 });
 export type DeveloperSummary = z.infer<typeof DeveloperSummarySchema>;
 
-/**
- * One sign-in method linked to a developer (`GET /v1/app/me`). It names the method and what the person recognises it by, never the
- * provider's issuer or subject.
- */
-export const LinkedIdentitySchema = z.object({
-  provider: DeveloperSignInMethodSchema,
-  email: z.string().optional(),
-  login: z.string().optional(),
-  linkedAt: z.string(),
-  lastSignInAt: z.string(),
-});
-export type LinkedIdentity = z.infer<typeof LinkedIdentitySchema>;
-
-/** `GET /v1/app/me`: who the signed-in developer is, their org, and every sign-in method linked to them. */
-export const AppMeResponseSchema = z.object({
-  developer: z.object({
-    id: z.string().regex(/^[a-f0-9]{64}$/),
-    name: z.string().min(1).max(200),
-    email: z.string().optional(),
-    orgRole: OrgRoleSchema,
-  }),
-  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string() }),
-  identities: z.array(LinkedIdentitySchema),
-});
-export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
+export { LinkedIdentitySchema, type LinkedIdentity, AppMeResponseSchema, type AppMeResponse } from "./developer-web.js";
+import { LinkedIdentitySchema } from "./developer-web.js";
 
 /** `DELETE /v1/app/me/identities/{provider}`: the sign-in methods still linked after one was removed (Plan 2, Task 8). */
 export const UnlinkIdentityAppResponseSchema = z.object({ identities: z.array(LinkedIdentitySchema) });

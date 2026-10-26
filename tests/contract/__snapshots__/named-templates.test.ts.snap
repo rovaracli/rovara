@@ -312,6 +312,175 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "cloudfront:CreateDistribution",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontDistributionCreate",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontDistributionTag",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                    "cloudfront:GetDistribution",
+                    "cloudfront:GetDistributionConfig",
+                    "cloudfront:UpdateDistribution",
+                    "cloudfront:DeleteDistribution",
+                    "cloudfront:ListTagsForResource",
+                    "cloudfront:UntagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontDistributions",
+                },
+                {
+                  "Action": [
+                    "cloudfront:GetOriginAccessControl",
+                    "cloudfront:GetOriginAccessControlConfig",
+                    "cloudfront:UpdateOriginAccessControl",
+                    "cloudfront:DeleteOriginAccessControl",
+                    "cloudfront:GetResponseHeadersPolicy",
+                    "cloudfront:GetResponseHeadersPolicyConfig",
+                    "cloudfront:UpdateResponseHeadersPolicy",
+                    "cloudfront:DeleteResponseHeadersPolicy",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":origin-access-control/*",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":response-headers-policy/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "CloudFrontPolicies",
+                },
+                {
+                  "Action": [
+                    "cloudfront:CreateOriginAccessControl",
+                    "cloudfront:CreateResponseHeadersPolicy",
+                    "cloudfront:GetCachePolicy",
+                    "cloudfront:ListCachePolicies",
+                    "cloudfront:ListDistributions",
+                    "cloudfront:ListOriginAccessControls",
+                    "cloudfront:ListResponseHeadersPolicies",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontUnscoped",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "Null": {
+                      "aws:ResourceTag/agentx:env": "false",
+                    },
+                    "StringNotEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontKeepEnvironmentTag",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "Null": {
+                      "aws:RequestTag/agentx:env": "false",
+                    },
+                    "StringNotEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "CloudFrontOnlyOwnEnvironmentTag",
+                },
+                {
+                  "Action": [
                     "iam:CreateRole",
                     "iam:DeleteRole",
                     "iam:GetRole",
@@ -756,10 +925,13 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "codebuild:*",
                 "execute-api:*",
                 "xray:*",
+                "cloudfront:*Distribution*",
+                "cloudfront:*OriginAccessControl*",
+                "cloudfront:*Polic*",
+                "cloudfront:*Tag*",
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "Services",
             },
             {
               "Action": [
@@ -769,7 +941,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Resource": {
                 "Fn::Sub": "arn:\${AWS::Partition}:events:\${AWS::Region}:\${AWS::AccountId}:rule/agentx-staging-*-service-failures",
               },
-              "Sid": "EcsFailureEventsRule",
             },
             {
               "Action": [
@@ -805,7 +976,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AppSyncEvents",
             },
             {
               "Action": [
@@ -821,7 +991,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               },
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "AppSyncEventsCreate",
             },
             {
               "Action": [
@@ -848,7 +1017,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AppSyncEventsPublish",
             },
             {
               "Action": [
@@ -856,7 +1024,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "CallerIdentity",
             },
             {
               "Action": [
@@ -879,7 +1046,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "SesSendNotice",
             },
             {
               "Action": [
@@ -903,7 +1069,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "ConnectorSecretsRole",
             },
             {
               "Action": [
@@ -984,7 +1149,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AssumeOrgRoles",
             },
             {
               "Action": [
@@ -992,7 +1156,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "Quotas",
             },
             {
               "Action": [
@@ -1030,7 +1193,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamRoles",
             },
             {
               "Action": [
@@ -1125,7 +1287,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 },
               ],
-              "Sid": "IamFixedNameRolesNotYetCreated",
             },
             {
               "Action": [
@@ -1154,7 +1315,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamInstanceProfiles",
             },
             {
               "Action": [
@@ -1186,7 +1346,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamManagedPolicies",
             },
             {
               "Action": [
@@ -1227,7 +1386,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 },
               ],
-              "Sid": "PassRoles",
             },
             {
               "Action": [
@@ -1260,7 +1418,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "ServiceLinkedRoles",
             },
             {
               "Action": [
@@ -1288,7 +1445,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "CognitoEmailServiceLinkedRole",
             },
             {
               "Action": [
@@ -1315,7 +1471,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "SesIdentityCheck",
             },
             {
               "Action": [
@@ -1330,7 +1485,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               },
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "SesAccountCheck",
             },
             {
               "Action": [
@@ -1339,7 +1493,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Deny",
               "Resource": "*",
-              "Sid": "DenyAccountChanges",
             },
             {
               "Action": [
@@ -1348,7 +1501,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Deny",
               "Resource": "*",
-              "Sid": "DenyUsersAndGroups",
             },
             {
               "Action": [
@@ -1374,7 +1526,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "DenyPolicyManagement",
             },
             {
               "Action": [
@@ -1397,7 +1548,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "DenyBoundaryChanges",
             },
           ],
           "Version": "2012-10-17",
@@ -2753,6 +2903,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Comma-separated private subnet IDs of the foundation VPC",
       "Type": "String",
     },
+    "RovaraCodeV2Enabled": {
+      "AllowedValues": [
+        "true",
+        "false",
+      ],
+      "Default": "false",
+      "Description": "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)",
+      "Type": "String",
+    },
     "SessionManagerSecurityGroupId": {
       "Description": "The foundation's session manager security group",
       "Type": "String",
@@ -2834,6 +2993,48 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::Scheduler::Schedule",
+    },
+    "AgentSkillsReadRoute": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /v1/internal/agent-skills",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "AgentToolsListRoute": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /v1/internal/agent-tools",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "AnthropicSecretRead": {
       "Condition": "AnthropicEnabled",
@@ -3161,6 +3362,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",os=",
                   {
                     "Ref": "DeveloperOidcSince",
+                  },
+                  ",rv=",
+                  {
+                    "Ref": "RovaraCodeV2Enabled",
                   },
                   ",sn=",
                   {
@@ -4226,6 +4431,43 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::IAM::ManagedPolicy",
     },
+    "BrokerWebApiInvoke5544CA63": {
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "BrokerE1355FD6",
+            "Arn",
+          ],
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition",
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region",
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              ":",
+              {
+                "Ref": "HttpApi",
+              },
+              "/*/*/v1/web/*",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::Lambda::Permission",
+    },
     "ChainScheduleDeadLettersA90411ED": {
       "DeletionPolicy": "Delete",
       "Properties": {
@@ -4891,6 +5133,206 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::IAM::Role",
     },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536": {
+      "DependsOn": [
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+      ],
+      "Properties": {
+        "Architectures": [
+          "arm64",
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Environment": {
+          "Variables": {
+            "AWS_CA_BUNDLE": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+          },
+        },
+        "Handler": "index.handler",
+        "Layers": [
+          {
+            "Ref": "WebAppUploadAwsCliLayer2F180912",
+          },
+        ],
+        "MemorySize": 1024,
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+            "Arn",
+          ],
+        },
+        "Runtime": "python3.13",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Timeout": 900,
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+              ],
+            ],
+          },
+        ],
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+                      },
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+                      },
+                      "/*",
+                    ],
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "WebAppAssetsD11F49C2",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "WebAppAssetsD11F49C2",
+                          "Arn",
+                        ],
+                      },
+                      "/*",
+                    ],
+                  ],
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+        "Roles": [
+          {
+            "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
     "DefaultStage": {
       "DependsOn": [
         "DeveloperSignInAppRouteBAD38FAA",
@@ -4898,8 +5340,12 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "DeveloperSignInDevRoute4BB932E2",
         "DeveloperSignInFeedbackReviewRoute881C7CFE",
         "DeveloperSignInSessionLinkRoute06DE5874",
+        "DeveloperSignInWebRoute253F2267",
         "GithubInstallCallbackRoute",
         "GithubInstallConfirmRoute",
+        "WebAppAppPathRouteC44AC6EE",
+        "WebAppAppRoute46037100",
+        "WebAppSessionRouteA44E7FCE",
       ],
       "Properties": {
         "ApiId": {
@@ -4926,6 +5372,22 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "ANY /v1/dev/{proxy+}": {
             "ThrottlingBurstLimit": 50,
             "ThrottlingRateLimit": 20,
+          },
+          "ANY /v1/web/{proxy+}": {
+            "ThrottlingBurstLimit": 400,
+            "ThrottlingRateLimit": 200,
+          },
+          "GET /app": {
+            "ThrottlingBurstLimit": 200,
+            "ThrottlingRateLimit": 100,
+          },
+          "GET /app/{proxy+}": {
+            "ThrottlingBurstLimit": 200,
+            "ThrottlingRateLimit": 100,
+          },
+          "GET /s/{sessionId}": {
+            "ThrottlingBurstLimit": 200,
+            "ThrottlingRateLimit": 100,
           },
           "GET /v1/github/install/callback": {
             "ThrottlingBurstLimit": 50,
@@ -5697,6 +6159,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::KMS::Alias",
+    },
+    "DeveloperSignInWebRoute253F2267": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "ANY /v1/web/{proxy+}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "DeveloperTaskNotifierFunction551419CC": {
       "DependsOn": [
@@ -13249,6 +13732,653 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::DynamoDB::Table",
       "UpdateReplacePolicy": "Retain",
+    },
+    "WebAppAppPathRouteC44AC6EE": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /app/{proxy+}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "WebAppIntegration5E3F10BA",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "WebAppAppRoute46037100": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /app",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "WebAppIntegration5E3F10BA",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "WebAppAssetAccess44D7FD6A": {
+      "Properties": {
+        "OriginAccessControlConfig": {
+          "Name": {
+            "Fn::Join": [
+              "",
+              [
+                "agentx-staging-web-assets-",
+                {
+                  "Ref": "AWS::Region",
+                },
+              ],
+            ],
+          },
+          "OriginAccessControlOriginType": "s3",
+          "SigningBehavior": "always",
+          "SigningProtocol": "sigv4",
+        },
+      },
+      "Type": "AWS::CloudFront::OriginAccessControl",
+    },
+    "WebAppAssetHeaders5FBFFD13": {
+      "Properties": {
+        "ResponseHeadersPolicyConfig": {
+          "CorsConfig": {
+            "AccessControlAllowCredentials": false,
+            "AccessControlAllowHeaders": {
+              "Items": [
+                "*",
+              ],
+            },
+            "AccessControlAllowMethods": {
+              "Items": [
+                "GET",
+                "HEAD",
+              ],
+            },
+            "AccessControlAllowOrigins": {
+              "Items": [
+                {
+                  "Fn::GetAtt": [
+                    "HttpApi",
+                    "ApiEndpoint",
+                  ],
+                },
+              ],
+            },
+            "OriginOverride": true,
+          },
+          "Name": {
+            "Fn::Join": [
+              "",
+              [
+                "agentx-staging-web-assets-headers-",
+                {
+                  "Ref": "AWS::Region",
+                },
+              ],
+            ],
+          },
+          "SecurityHeadersConfig": {
+            "ContentTypeOptions": {
+              "Override": true,
+            },
+            "StrictTransportSecurity": {
+              "AccessControlMaxAgeSec": 31536000,
+              "IncludeSubdomains": true,
+              "Override": true,
+            },
+          },
+        },
+      },
+      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+    },
+    "WebAppAssetsD11F49C2": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "BucketName": {
+          "Fn::Join": [
+            "",
+            [
+              "agentx-staging-web-assets-",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              "-",
+              {
+                "Ref": "AWS::Region",
+              },
+            ],
+          ],
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true,
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "aws-cdk:cr-owned:app/assets/:286ed356",
+            "Value": "true",
+          },
+        ],
+      },
+      "Type": "AWS::S3::Bucket",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "WebAppAssetsPolicy0C091E3A": {
+      "Properties": {
+        "Bucket": {
+          "Ref": "WebAppAssetsD11F49C2",
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false",
+                },
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*",
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "WebAppAssetsD11F49C2",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "WebAppAssetsD11F49C2",
+                          "Arn",
+                        ],
+                      },
+                      "/*",
+                    ],
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": "s3:GetObject",
+              "Condition": {
+                "StringEquals": {
+                  "AWS:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/",
+                        {
+                          "Ref": "WebAppDistributionCE585001",
+                        },
+                      ],
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudfront.amazonaws.com",
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "WebAppAssetsD11F49C2",
+                        "Arn",
+                      ],
+                    },
+                    "/*",
+                  ],
+                ],
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+      },
+      "Type": "AWS::S3::BucketPolicy",
+    },
+    "WebAppDistributionCE585001": {
+      "Properties": {
+        "DistributionConfig": {
+          "DefaultCacheBehavior": {
+            "AllowedMethods": [
+              "GET",
+              "HEAD",
+            ],
+            "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+            "Compress": true,
+            "ResponseHeadersPolicyId": {
+              "Ref": "WebAppAssetHeaders5FBFFD13",
+            },
+            "TargetOriginId": "AgentXControlPlaneWebAppDistributionOrigin12155C770",
+            "ViewerProtocolPolicy": "https-only",
+          },
+          "Enabled": true,
+          "HttpVersion": "http2",
+          "IPV6Enabled": true,
+          "Origins": [
+            {
+              "DomainName": {
+                "Fn::GetAtt": [
+                  "WebAppAssetsD11F49C2",
+                  "RegionalDomainName",
+                ],
+              },
+              "Id": "AgentXControlPlaneWebAppDistributionOrigin12155C770",
+              "OriginAccessControlId": {
+                "Fn::GetAtt": [
+                  "WebAppAssetAccess44D7FD6A",
+                  "Id",
+                ],
+              },
+              "S3OriginConfig": {
+                "OriginAccessIdentity": "",
+              },
+            },
+          ],
+          "PriceClass": "PriceClass_100",
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::CloudFront::Distribution",
+    },
+    "WebAppFunction611CC907": {
+      "DependsOn": [
+        "WebAppFunctionServiceRole9F730320",
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Environment": {
+          "Variables": {
+            "ASSET_ORIGIN": {
+              "Fn::Join": [
+                "",
+                [
+                  "https://",
+                  {
+                    "Fn::GetAtt": [
+                      "WebAppDistributionCE585001",
+                      "DomainName",
+                    ],
+                  },
+                ],
+              ],
+            },
+            "REALTIME_HTTP_HOST": {
+              "Fn::GetAtt": [
+                "RealtimeApiD4415F9E",
+                "Dns.Http",
+              ],
+            },
+            "REALTIME_WS_HOST": {
+              "Fn::GetAtt": [
+                "RealtimeApiD4415F9E",
+                "Dns.Realtime",
+              ],
+            },
+          },
+        },
+        "FunctionName": "agentx-staging-web",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "WebAppFunctionLogsC7F3963C",
+          },
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "WebAppFunctionServiceRole9F730320",
+            "Arn",
+          ],
+        },
+        "Runtime": "nodejs22.x",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Timeout": 10,
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "WebAppFunctionAppInvoke4817599B": {
+      "DependsOn": [
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "WebAppFunction611CC907",
+            "Arn",
+          ],
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition",
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region",
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              ":",
+              {
+                "Ref": "HttpApi",
+              },
+              "/*/GET/app",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::Lambda::Permission",
+    },
+    "WebAppFunctionAppPathInvoke4A185FE1": {
+      "DependsOn": [
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "WebAppFunction611CC907",
+            "Arn",
+          ],
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition",
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region",
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              ":",
+              {
+                "Ref": "HttpApi",
+              },
+              "/*/GET/app/*",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::Lambda::Permission",
+    },
+    "WebAppFunctionLogsC7F3963C": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "RetentionInDays": 30,
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "WebAppFunctionServiceRole9F730320": {
+      "DependsOn": [
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+              ],
+            ],
+          },
+        ],
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "WebAppFunctionSessionInvoke212B1438": {
+      "DependsOn": [
+        "WebAppUploadAwsCliLayer2F180912",
+        "WebAppUploadCustomResourceC5294313",
+      ],
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "WebAppFunction611CC907",
+            "Arn",
+          ],
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition",
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region",
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId",
+              },
+              ":",
+              {
+                "Ref": "HttpApi",
+              },
+              "/*/GET/s/*",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::Lambda::Permission",
+    },
+    "WebAppIntegration5E3F10BA": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Fn::GetAtt": [
+            "WebAppFunction611CC907",
+            "Arn",
+          ],
+        },
+        "PayloadFormatVersion": "2.0",
+      },
+      "Type": "AWS::ApiGatewayV2::Integration",
+    },
+    "WebAppSessionRouteA44E7FCE": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /s/{sessionId}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "WebAppIntegration5E3F10BA",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "WebAppUploadAwsCliLayer2F180912": {
+      "Properties": {
+        "Content": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Description": "/opt/awscli/aws",
+      },
+      "Type": "AWS::Lambda::LayerVersion",
+    },
+    "WebAppUploadCustomResourceC5294313": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "DestinationBucketKeyPrefix": "app/assets/",
+        "DestinationBucketName": {
+          "Ref": "WebAppAssetsD11F49C2",
+        },
+        "OutputObjectKeys": true,
+        "Prune": false,
+        "RetainOnDelete": true,
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536",
+            "Arn",
+          ],
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+        ],
+        "SourceObjectKeys": [
+          "<asset-hash>.zip",
+        ],
+        "SystemMetadata": {
+          "cache-control": "public, max-age=31536000, immutable",
+        },
+        "WaitForDistributionInvalidation": true,
+      },
+      "Type": "Custom::CDKBucketDeployment",
+      "UpdateReplacePolicy": "Delete",
     },
     "WorkerCallbackRoute": {
       "Properties": {

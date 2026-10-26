@@ -1,3 +1,4 @@
+import { serverPageCss } from "@agentx/design-tokens";
 // Plan 2, Task 13: the pages a person sees at the end of "agentx github connect": GitHub sends their browser to the callback, and the
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
@@ -74,7 +75,7 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
   }
 }
 
-const STYLE = ":root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:36rem;margin:0 auto;padding:clamp(1rem,4vw,2.5rem);line-height:1.55}h1{line-height:1.2;font-size:1.5rem}code{padding:.15rem .4rem;border:1px solid #888;border-radius:.35rem;overflow-wrap:anywhere}button{font:inherit;padding:.65rem 1rem;margin:.35rem .5rem .35rem 0;border-radius:.35rem;cursor:pointer}button:focus{outline:3px solid #478cff;outline-offset:2px}";
+const STYLE = serverPageCss() + "h1{line-height:1.2;font-size:var(--rv-font-xxl)}code{padding:.15rem .4rem;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);overflow-wrap:anywhere}button{margin:.35rem .5rem .35rem 0;background:var(--rv-bg-raised);color:var(--rv-text)}main{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg)}";
 
 /**
  * One page, as a private response (no store, a nonce-only policy). The referrer policy is `same-origin`, not `no-referrer`: with
@@ -88,8 +89,10 @@ export function githubConnectPage(kind: ConnectPageKind, data: ConnectPageData =
   const form = copy.form === true && data.connectId !== undefined
     ? `<form method="post" action="${GITHUB_CONFIRM_PATH}"><input type="hidden" name="connect" value="${escapeHtml(data.connectId)}"><button type="submit" name="decision" value="connect">Connect</button><button type="submit" name="decision" value="cancel">Cancel</button></form>`
     : "";
+  const appStatus = kind === "connected" ? "connected" : kind === "connected_trial_used" ? "trial_used" : kind === "requested" ? "requested" : undefined;
+  const appLink = appStatus === undefined ? "" : `<p><a href="/app/onboard?github=${appStatus}">Continue in Rovara</a></p>`;
   const next = copy.code === undefined ? "" : `<p>Next: <code>${escapeHtml(copy.code)}</code></p>`;
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${next}</main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${appLink}${next}</main></body></html>`;
   const response = safeResponse(copy.status, html, nonce);
   return { ...response, headers: { ...response.headers, "referrer-policy": "same-origin" } };
 }

@@ -34,7 +34,7 @@ function ecsFailureRuleArn(scope: Pick<PolicyScope, "env" | "partition" | "regio
   return `arn:${scope.partition}:events:${scope.region}:${scope.account}:rule/agentx-${scope.env}-*-service-failures`;
 }
 
-/** Services the service role may use with any resource; IAM is handled separately and name-scoped. */
+/** Services the service role may use with any resource; IAM is handled separately and name-scoped. CloudFront is not here: its actions are named below (`cloudFrontStatements`). */
 export const SERVICE_ROLE_SERVICES: readonly string[] = [
   "apigateway",
   "cloudformation",
@@ -135,6 +135,74 @@ const appsyncEvents = (scope: Pick<PolicyScope, "partition" | "region" | "accoun
   { Sid: "AppSyncEvents", Effect: "Allow", Action: [...APPSYNC_EVENTS_ACTIONS], Resource: `arn:${scope.partition}:appsync:${scope.region}:${scope.account}:apis/*` },
   { Sid: "AppSyncEventsCreate", Effect: "Allow", Action: [...APPSYNC_EVENTS_UNSCOPED_ACTIONS], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": scope.region } } },
 ];
+
+
+/**
+ * CloudFront (the web app's asset distribution, its origin access control and its response headers policy), by name and by ARN instead of `cloudfront:*` on "*". Checked against AWS's
+ * service authorization reference (servicereference.us-east-1.amazonaws.com/v1/cloudfront/cloudfront.json, 2026-10-26); CloudFront ARNs carry no region.
+ *  This is the service role's list; the boundary's ceiling (CLOUDFRONT_BOUNDARY_ACTIONS) is coarser, see there.
+ *  - Distributions take the environment tag (`agentx:env`, which Tags.of(app) puts on the distribution): CreateDistribution (what CloudFormation's create-with-tags call is authorized as,
+ *    together with TagResource) only when the request carries this environment's tag; TagResource on "*" (the resource the create-time tag call is authorized against is not known, so it is not
+ *    pinned to distribution ARNs) only with that request tag; and every other action, TagResource included (a later update that changes only other tags sends no agentx:env), only on a distribution
+ *    that carries the tag, so one environment's role cannot create, change or delete another's. Two Denies keep it so: no TagResource on a distribution tagged for another environment, and none
+ *    that sets another environment's value. CreateDistribution takes no resource type (the distribution does not exist yet), so it needs "*", held by the request tag.
+ *  - Origin access controls and response headers policies support no tags and no condition keys. Their get, update and delete are scoped to this account's ARNs, but not to one environment (the id
+ *    is generated), and their create actions take no resource type, so they need "*". The environment is only in their names.
+ *  - Read-only hedges on "*": GetCachePolicy (attaching the managed CachingOptimized policy; it is not known whether CloudFront authorizes that read against the managed policy's ARN, which carries no
+ *    environment either way) and the four List calls (ListDistributions, ListOriginAccessControls, ListResponseHeadersPolicies, ListCachePolicies take no resource type). Drop them once a
+ *    deploy proves CloudFormation does not call them.
+ */
+export const CLOUDFRONT_ENV_TAG = "agentx:env";
+export const CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS: readonly string[] = ["cloudfront:CreateDistribution"];
+export const CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS: readonly string[] = ["cloudfront:TagResource"];
+export const CLOUDFRONT_DISTRIBUTION_ACTIONS: readonly string[] = [
+  "cloudfront:TagResource",
+  "cloudfront:GetDistribution",
+  "cloudfront:GetDistributionConfig",
+  "cloudfront:UpdateDistribution",
+  "cloudfront:DeleteDistribution",
+  "cloudfront:ListTagsForResource",
+  "cloudfront:UntagResource",
+];
+export const CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS: readonly string[] = ["cloudfront:GetOriginAccessControl", "cloudfront:GetOriginAccessControlConfig", "cloudfront:UpdateOriginAccessControl", "cloudfront:DeleteOriginAccessControl"];
+export const CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS: readonly string[] = ["cloudfront:GetResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicyConfig", "cloudfront:UpdateResponseHeadersPolicy", "cloudfront:DeleteResponseHeadersPolicy"];
+/** The actions that need Resource "*": two creates that take no resource type, and the read-only hedges described above. */
+export const CLOUDFRONT_UNSCOPED_ACTIONS: readonly string[] = [
+  "cloudfront:CreateOriginAccessControl",
+  "cloudfront:CreateResponseHeadersPolicy",
+  "cloudfront:GetCachePolicy",
+  "cloudfront:ListCachePolicies",
+  "cloudfront:ListDistributions",
+  "cloudfront:ListOriginAccessControls",
+  "cloudfront:ListResponseHeadersPolicies",
+];
+/**
+ * The boundary's CloudFront ceiling: action families, not `cloudfront:*`, on "*", appended to the boundary's one `Services` statement. The service role holds the exact actions, ARNs and
+ * tag conditions above, and a role's effective permission is the intersection of its policy and the boundary, so the boundary only has to exclude the rest of CloudFront (functions,
+ * key-value stores, public keys, field-level encryption, invalidations and so on). It is this coarse because the boundary is an IAM managed policy, capped at 6,144 characters, and the
+ * boundary without CloudFront is already within 150 characters of that cap for the longest environment name, so every extra character counts (the size test in access-policies.test.ts holds the line).
+ * `*Polic*` is the cache and response headers policy actions (and, being a ceiling, the other CloudFront policy kinds); `*Tag*` is TagResource, UntagResource and ListTagsForResource.
+ */
+export const CLOUDFRONT_BOUNDARY_ACTIONS: readonly string[] = [
+  "cloudfront:*Distribution*",
+  "cloudfront:*OriginAccessControl*",
+  "cloudfront:*Polic*",
+  "cloudfront:*Tag*",
+];
+const cloudFrontStatements = (scope: Pick<PolicyScope, "env" | "partition" | "account">): PolicyStatementJson[] => {
+  const arn = (type: string) => `arn:${scope.partition}:cloudfront::${scope.account}:${type}/*`;
+  return [
+    { Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS], Resource: "*", Condition: { StringEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: "*", Condition: { StringEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontDistributions", Effect: "Allow", Action: [...CLOUDFRONT_DISTRIBUTION_ACTIONS], Resource: arn("distribution"), Condition: { StringEquals: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontPolicies", Effect: "Allow", Action: [...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS], Resource: [arn("origin-access-control"), arn("response-headers-policy")] },
+    { Sid: "CloudFrontUnscoped", Effect: "Allow", Action: [...CLOUDFRONT_UNSCOPED_ACTIONS], Resource: "*" },
+    // TagResource on "*" with this environment's request tag (the create path, whichever resource CloudFront authorizes it against) cannot also require the resource's current tag (a new distribution has none yet),
+    // so without the first Deny a role could re-tag another environment's distribution as its own; the second never lets a role set another environment's value. A distribution with no tag is not matched by the first.
+    { Sid: "CloudFrontKeepEnvironmentTag", Effect: "Deny", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: arn("distribution"), Condition: { Null: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: "false" }, StringNotEquals: { [`aws:ResourceTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+    { Sid: "CloudFrontOnlyOwnEnvironmentTag", Effect: "Deny", Action: [...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS], Resource: "*", Condition: { Null: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: "false" }, StringNotEquals: { [`aws:RequestTag/${CLOUDFRONT_ENV_TAG}`]: scope.env } } },
+  ];
+};
 
 /** Role management the service role needs on this environment's roles. */
 const ROLE_ACTIONS = [
@@ -350,6 +418,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     // support rule resources remain unavailable with this resource constraint.
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
+    ...cloudFrontStatements(scope),
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
@@ -390,6 +459,18 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
   ];
 }
 
+/**
+ * The statements without their Sids, for the DEPLOYED boundary: Sids are optional, and an IAM managed policy is capped at 6,144 characters (non-whitespace) of which the 23 Sids are about 590.
+ * Tests find statements by Sid in `defaultBoundaryStatements`, so the Sids stay there and only the deployed copy drops them.
+ */
+export function withoutSids<T extends { Sid?: string }>(statements: readonly T[]): Array<Omit<T, "Sid">> {
+  return statements.map((statement) => {
+    const rest: Partial<T> = { ...statement };
+    delete rest.Sid;
+    return rest as Omit<T, "Sid">;
+  });
+}
+
 /** The exact ARNs of the three roles the default boundary's AssumeOrgRoles statement raises the ceiling for. */
 function assumeOrgRolePrincipals(scope: Pick<PolicyScope, "env" | "partition" | "account">): string[] {
   const prefix = `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(scope.env)}`;
@@ -409,7 +490,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
   }
   const roles = environmentRoles(scope);
   return [
-    { Sid: "Services", Effect: "Allow", Action: BOUNDARY_SERVICES.map((s) => `${s}:*`), Resource: "*" },
+    { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS], Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     ...appsyncEvents(scope),
     // The broker and the outbox publisher publish change notices to the realtime events API's one namespace (Plan 5 Task 8): the boundary allows that action on that namespace only.

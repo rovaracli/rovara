@@ -794,6 +794,59 @@ describe("what GitHub says", () => {
   });
 });
 
+describe("the request GitHub sees (v0.4.6 staging: every call came back refused with HTTP 403)", () => {
+  it("carries a User-Agent on every request to GitHub's API, the App's calls and the tool's, because GitHub refuses one that has none", async () => {
+    const w = await world();
+    const args: Record<string, Record<string, unknown>> = {
+      list_workflow_runs: {}, get_workflow_execution: { workflowRunId: 9001 }, list_execution_jobs: { workflowRunId: 9001 }, get_job_log: { jobId: 7001 },
+      list_deployments: {}, list_deployment_statuses: { deploymentId: 5001 },
+    };
+    for (const tool of TOOLS) expect((await run(w, tool, args[tool])).status, tool).toBe("SUCCEEDED");
+    const toGitHubApi = w.fake.requests.filter((request) => new URL(request.url).hostname === "api.github.com");
+    expect(toGitHubApi.length).toBeGreaterThan(12);
+    for (const request of toGitHubApi) expect(request.userAgent, `${request.method} ${request.url}`).toBe("agentx-control-plane");
+  });
+
+  it("logs a refused call with the tool, the repository, the status, the permissions the token was minted with and GitHub's message, and never the token", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const w = await world({ fake: { status: 403 } });
+    const result = await run(w, "list_workflow_runs");
+    expect(result).toMatchObject({ status: "FAILED", reason: "vendor_error" });
+    // The model still gets the fixed words, not GitHub's.
+    expect(result.text).not.toContain("secret-detail-xyz");
+    const entries = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((entry) => String(entry["event"]).startsWith("github_actions."));
+    expect(entries).toEqual([{
+      component: "broker", event: "github_actions.request_refused", tool: "list_workflow_runs", repository: "example/demo", status: 403,
+      requestedPermissions: { actions: "read", metadata: "read" }, installationId: 55, message: "fake outage with secret-detail-xyz",
+    }]);
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/ghs_/u);
+    // The permissions it names are what the token request carried.
+    expect(w.fake.minted().map((request) => request.body)).toEqual([{ repositories: ["demo"], permissions: { actions: "read", metadata: "read" } }]);
+  });
+
+  it("logs the deployments tools with the deployments permission, and a plain not-found with nothing", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const refused = await world({ fake: { status: 401 } });
+    await run(refused, "list_deployments");
+    const missing = await world({ fake: { status: 404 } });
+    await run(missing, "get_workflow_execution", { workflowRunId: 9001 });
+    const entries = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((entry) => String(entry["event"]).startsWith("github_actions."));
+    expect(entries).toMatchObject([{ event: "github_actions.request_refused", tool: "list_deployments", status: 401, requestedPermissions: { deployments: "read", metadata: "read" } }]);
+  });
+
+  it("logs a token that could not be issued with the permissions asked for and our own error words", async () => {
+    const entries: Array<Record<string, unknown>> = [];
+    const tokens = { createAgentInstallationToken: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App installation token request failed with HTTP 500"); } };
+    await expect(mintActionsToken({
+      tokens, orgId: ORG_A, tool: "list_deployments", scope: { owner: "example", repo: "demo", installationId: 55, log: (entry) => entries.push(entry) },
+    })).rejects.toMatchObject({ name: "NativeToolRefusal", reason: "vendor_error" });
+    expect(entries).toEqual([{
+      event: "github_actions.token_not_issued", tool: "list_deployments", repository: "example/demo", requestedPermissions: { deployments: "read", metadata: "read" },
+      code: "RUNTIME_UNAVAILABLE", message: "RUNTIME_UNAVAILABLE: GitHub App installation token request failed with HTTP 500",
+    }]);
+  });
+});
+
 describe("the connector context", () => {
   it("carries the deployment's agent token minter and the caller's org, and nothing when the deployment has no minter", async () => {
     await loadSlackBroker();

@@ -3,7 +3,8 @@
 // org-scoped-keys.ts.
 import { z } from "zod";
 import { AgentIdSchema } from "./agent.js";
-import { ChainIdSchema, RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX } from "./chains.js";
+import { ChainIdSchema } from "./chains.js";
+import { RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX } from "./chains.js";
 import { EVENT_TYPES, EventSourceSchema, type EventSource } from "./trigger-specs.js";
 
 /** What a trigger starts: a chain's current version, or an agent's. */

@@ -14,7 +14,7 @@ export const SlackMessageTimestampSchema = z.string().regex(/^\d{10}\.\d{6}$/);
 
 const LINEAR_ISSUE_ID_MAX = 64;
 const LINEAR_URL_MAX = 2048;
-const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
+export const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
 
 /** A session id: `ses_` for a task or local session, the chain run's own id for a chain session (Plan 4 pins `sessionId = ChainRunId`). */
 export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), ChainRunIdSchema]);

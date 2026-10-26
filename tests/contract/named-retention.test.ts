@@ -40,7 +40,7 @@ describe("retained resources in a named environment", () => {
         "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
         "AuditLedgerAuditLedgerBucket AWS::S3::Bucket",
         "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
-        "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table",
+        "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table", "WebAppAssets AWS::S3::Bucket",
       ],
       "agentx-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
       "agentx-staging-identity": [],

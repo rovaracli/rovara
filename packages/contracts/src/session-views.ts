@@ -1,54 +1,26 @@
-// What session routes answer and clients read (Plan 5 Task 1 declares the shapes; the tasks that serve each one fill it in).
-//
-// Every shape has a strict server schema (`…Schema`, which refuses what it doesn't know) and a forward-compatible reader (`…ReaderSchema`,
-// which keeps unknown fields and reads a value a newer server added to an enum as "unknown"). Clients parse with the reader; the server
-// validates what it writes with the strict one. The reader is derived from the strict schema, so the two can't drift apart.
 import { z } from "zod";
-import {
-  AGENT_SESSION_CONTRACT_VERSION,
-  SESSION_ACTIONS,
-  SESSION_SHARES_MAX,
-  LocalToolSchema,
-  SessionActionSchema,
-  LIVE_PAGE_MAX,
-  LIVE_FILTERS,
-  LIVE_VIEWING_MAX,
-  SESSION_EVENTS_PAGE_MAX,
-  SESSION_ANCHORS_MAX,
-  SESSION_MESSAGES_PAGE_MAX,
-  SESSION_KINDS,
-  SessionAnchorRefSchema,
-  SESSION_LEVELS,
-  SESSION_MODES,
-  SessionAgentSchema,
-  SessionEventSchema,
-  SessionIdSchema,
-  SessionLegSchema,
-  SessionMessageSchema,
-  SessionOwnerSchema,
-  SessionStartedBySchema,
-  SessionSummarySchema,
-  SessionWhereSchema,
-  SESSION_LEGS_MAX,
-} from "./agent-sessions.js";
-import { AgentIdSchema, AgentPrincipalSchema } from "./agent.js";
-import { ProjectRoleSchema, ProjectSetupStatusSchema, ProjectStatusSchema } from "./app-projects.js";
-import { DeveloperTaskViewSchema } from "./developer-tasks.js";
+import { AGENT_SESSION_CONTRACT_VERSION, SessionIdSchema, SESSION_KINDS, SESSION_MODES, SessionAgentSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SESSION_LEVELS, SessionActionSchema, SESSION_ACTIONS, SessionLegSchema, SESSION_LEGS_MAX, SessionAnchorRefSchema, SESSION_ANCHORS_MAX, LocalToolSchema, SESSION_SHARES_MAX, SessionWhereSchema, LIVE_FILTERS, LIVE_VIEWING_MAX, LIVE_PAGE_MAX, SessionEventSchema, SessionMessageSchema, SESSION_EVENTS_PAGE_MAX, SESSION_MESSAGES_PAGE_MAX } from "./agent-sessions.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
+import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { ChainRunViewSchema } from "./chain-session.js";
 import { forwardReader } from "./forward-reader.js";
+import { AgentPrincipalSchema, AgentIdSchema } from "./agent.js";
+import { ProjectStatusSchema, ProjectSetupStatusSchema, ProjectRoleSchema } from "./app-projects.js";
 
-const InstantSchema = z.string().datetime();
+export const InstantSchema = z.string().datetime();
+
 /** The most people `viewingNow` names. */
 export const PRESENCE_VIEWERS_MAX = 20;
-const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
-const CHANGE_TEXT_MAX = 300;
-const URL_MAX = 2048;
 
-// ---- the session as one person reads it
+export const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
 
-const LinkSchema = z.string().url().max(URL_MAX);
-const CountSchema = z.number().int().min(0);
+export const CHANGE_TEXT_MAX = 300;
+
+export const URL_MAX = 2048;
+
+export const LinkSchema = z.string().url().max(URL_MAX);
+
+export const CountSchema = z.number().int().min(0);
 
 /** Where a session runs as a person is told: the cloud, or a Mac by its label (never its device id) and whether it is offline. */
 export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
@@ -56,11 +28,11 @@ export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("mac"), label: z.string().min(1).max(200), offline: z.boolean() }).strict(),
 ]);
 
-/** Who pays for a session: the kind and a name to show (a person, a project or an agent). */
-const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent", "chain"]), name: z.string().min(1).max(200) }).strict();
+export const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent", "chain"]), name: z.string().min(1).max(200) }).strict();
 
 /**
- * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). `approvals` are the caller's own
+ * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). A session on a Mac (`kind: "local"`) always costs 0 and has no payer: it runs on the
+ * person's own machine and credentials, and a Mac can never report `paused` (a pause for budget is Rovara's, for cloud work). `approvals` are the caller's own
  * pending decisions on this session and `cost.paused.confirmUrl` is the link of a budget request they may decide: bare `/v1/app/approve/<id>`
  * links, never present for a person who may not decide, and never holding what is being approved (the confirmation page shows that).
  */
@@ -112,15 +84,19 @@ export const SessionViewSchema = z
     ]),
   })
   .strict();
+
 export type SessionView = z.infer<typeof SessionViewSchema>;
+
 export const SessionViewReaderSchema = forwardReader(SessionViewSchema);
 
 /** `GET /v1/app/sessions/{id}`. */
 export const SessionResponseSchema = z.object({ session: SessionViewSchema }).strict();
+
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
 
 /** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
 export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();
+
 export const SessionStepTaskResponseReaderSchema = forwardReader(SessionStepTaskResponseSchema);
 
 /** One share on a session, as `GET .../shares` lists it. */
@@ -132,23 +108,34 @@ export const SessionShareSchema = z
     sharedAt: InstantSchema,
   })
   .strict();
+
 export type SessionShare = z.infer<typeof SessionShareSchema>;
+
 export const SessionShareReaderSchema = forwardReader(SessionShareSchema);
+
 /** `GET /v1/app/sessions/{id}/shares`. */
 export const SessionSharesResponseSchema = z.object({ shares: z.array(SessionShareSchema).max(SESSION_SHARES_MAX) }).strict();
+
 export const SessionSharesResponseReaderSchema = forwardReader(SessionSharesResponseSchema);
+
 /** `PUT /v1/app/sessions/{id}/shares` when it applies at once (a person or a project); a company-wide share answers `NeedsConfirmationSchema` with 202. */
 export const SessionSharePutResponseSchema = z.object({ share: SessionShareSchema }).strict();
+
 export const SessionSharePutResponseReaderSchema = forwardReader(SessionSharePutResponseSchema);
+
 /** `DELETE /v1/app/sessions/{id}/shares/{principalKey}`. */
 export const SessionShareDeleteResponseSchema = z.object({ removed: z.boolean() }).strict();
+
 export const SessionShareDeleteResponseReaderSchema = forwardReader(SessionShareDeleteResponseSchema);
 
 /** `POST` and `DELETE /v1/app/sessions/{id}/follow`: whether the caller follows now (the session's owner always does, with no item). */
 export const SessionFollowResponseSchema = z.object({ following: z.boolean() }).strict();
+
 export const SessionFollowResponseReaderSchema = forwardReader(SessionFollowResponseSchema);
+
 /** `POST /v1/app/sessions/{id}/presence`: who is looking at the session now, counting this heartbeat. */
 export const SessionPresenceResponseSchema = z.object({ viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX) }).strict();
+
 export const SessionPresenceResponseReaderSchema = forwardReader(SessionPresenceResponseSchema);
 
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
@@ -170,14 +157,15 @@ export const SessionTileSchema = z
     endedAt: InstantSchema.optional(),
   })
   .strict();
+
 export type SessionTile = z.infer<typeof SessionTileSchema>;
+
 export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
 
 // ---- the Live wall (Plan 5 Task 14)
 
 /** The filter of `GET /v1/app/live`. */
 export const LiveFilterSchema = z.enum(LIVE_FILTERS);
-export type LiveFilter = z.infer<typeof LiveFilterSchema>;
 
 /**
  * One session on the Live wall, as one person sees it. Everything on it is read for that person now: `actions` is what they may do (the session view's `you.actions` without
@@ -211,26 +199,34 @@ export const LiveTileSchema = z
     updatedAt: InstantSchema,
   })
   .strict();
-export type LiveTile = z.infer<typeof LiveTileSchema>;
+
 export const LiveTileReaderSchema = forwardReader(LiveTileSchema);
 
 /** `GET /v1/app/live?filter=&project=&cursor=`: one page of tiles, newest session first; `next` is opaque, passed back as `cursor`. */
 export const LiveResponseSchema = z.object({ tiles: z.array(LiveTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
-export type LiveResponse = z.infer<typeof LiveResponseSchema>;
+
 export const LiveResponseReaderSchema = forwardReader(LiveResponseSchema);
 
 /** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
 export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+
 export type SessionList = z.infer<typeof SessionListSchema>;
+
 export const SessionListReaderSchema = forwardReader(SessionListSchema);
 
+export const DeveloperTaskViewReaderSchema = forwardReader(DeveloperTaskViewSchema);
+
 export const SessionEventReaderSchema = forwardReader(SessionEventSchema);
+
+export const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 
 /** A page of a session's timeline, oldest first. `next` is the last event's sort key (`<at>#<eventId>`); readers re-read a little before it and de-duplicate by `eventId`. */
 export const SessionEventPageSchema = z
   .object({ events: z.array(SessionEventSchema).max(SESSION_EVENTS_PAGE_MAX), next: z.string().min(1).optional() })
   .strict();
+
 export type SessionEventPage = z.infer<typeof SessionEventPageSchema>;
+
 export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema);
 
 /**
@@ -241,14 +237,16 @@ export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema
 export const SessionMessagePageSchema = z
   .object({ messages: z.array(SessionMessageSchema).max(2 * SESSION_MESSAGES_PAGE_MAX), next: z.string().min(1).optional() })
   .strict();
-export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
+
 export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
 // ---- the project page (Plan 5 Task 16; Home's shapes are in home.ts)
 
 /** The most repositories, channels and agents a project page lists. */
 export const PROJECT_OVERVIEW_REPOSITORIES_MAX = 50;
+
 export const PROJECT_OVERVIEW_CHANNELS_MAX = 20;
+
 export const PROJECT_OVERVIEW_AGENTS_MAX = 100;
 
 /** The project's card: what it is, where its code is, how ready it is, and the Slack channels that reach it. */
@@ -300,7 +298,9 @@ export const ProjectOverviewSchema = z
     running: z.array(LiveTileSchema).max(LIVE_PAGE_MAX),
   })
   .strict();
+
 export type ProjectOverview = z.infer<typeof ProjectOverviewSchema>;
+
 export const ProjectOverviewReaderSchema = forwardReader(ProjectOverviewSchema);
 
 // ---- asking for a confirmation
@@ -317,4 +317,29 @@ export const NeedsConfirmationSchema = z
     changes: z.array(z.string().min(1).max(CHANGE_TEXT_MAX)).max(NEEDS_CONFIRMATION_CHANGES_MAX),
   })
   .strict();
+
 export type NeedsConfirmation = z.infer<typeof NeedsConfirmationSchema>;
+
+/** Plan 7 Task 13c: a bounded, redacted page of an authorized session's PR files. */
+export const DIFF_FILES_PAGE_MAX = 100;
+
+export const DIFF_PATCH_MAX_BYTES = 65_536;
+
+export const SessionDiffSchema = z.object({
+ files: z.array(z.object({
+  path: z.string().min(1).max(4096),
+  status: z.enum(["added", "removed", "modified", "renamed"]),
+  previousPath: z.string().max(4096).optional(),
+  additions: z.number().int().nonnegative(), deletions: z.number().int().nonnegative(),
+  patch: z.string().refine(value => new TextEncoder().encode(value).length <= DIFF_PATCH_MAX_BYTES).optional(),
+  patchOmitted: z.enum(["too_large", "binary"]).optional(),
+ }).strict()).max(DIFF_FILES_PAGE_MAX),
+ nextPage: z.number().int().positive().optional(),
+ pullRequest: z.object({ repository: z.string(), number: z.number().int().positive(), url: z.string().url() }).strict(),
+}).strict();
+
+export type SessionDiff = z.infer<typeof SessionDiffSchema>;
+
+export const SessionDiffReaderSchema = forwardReader(SessionDiffSchema);
+
+export { forwardReader, type ForwardReader } from "./forward-reader.js";

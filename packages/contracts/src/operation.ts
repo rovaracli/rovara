@@ -3,9 +3,9 @@ import { z } from "zod";
 import { StepIdSchema } from "./agent-recipe.js";
 import { OrgIdSchema } from "./org.js";
 import { WorkflowFeedbackApprovalBindingSchema } from "./task-workflow.js";
-import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
+import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { SlackRequesterSchema } from "./slack.js";
-import { E2EWorkflowAdmissionRefSchema, E2EWorkflowEvidenceRefSchema, E2EWorkflowGroupEvidenceRefSchema } from "./e2e.js";
+import { E2EWorkflowAdmissionRefSchema, E2EWorkflowEvidenceRefSchema, E2EWorkflowGroupEvidenceRefSchema } from "./e2e-node.js";
 
 /** Spec 025 FR-022: an operation a developer started from an AI tool. */
 export const DeveloperRequesterSchema = z

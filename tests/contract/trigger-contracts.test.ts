@@ -3,12 +3,11 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_AGENT_IDS } from "../../packages/contracts/src/agent.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { EMPTY_RECIPE, RecipeOverlaySchema, TRIGGER_KINDS_AT_LAUNCH, TriggerSpecSchema, recipeProblems } from "../../packages/contracts/src/agent-recipe.js";
+import { RecipeOverlaySchema, TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { EMPTY_RECIPE, TRIGGER_KINDS_AT_LAUNCH, recipeProblems } from "../../packages/contracts/src/agent-recipe-node.js";
 import { BUILTIN_TRIGGER_SUGGESTIONS } from "../../packages/contracts/src/builtin-triggers.js";
-import {
-  EVENT_FILTER_KEYS, EVENT_SOURCES, EVENT_TYPES, MAX_TRIGGERS_PER_TARGET, SCHEDULE_INTERVAL_MINUTES, ScheduleSpecSchema, TRIGGER_ACTIVITY_TTL_DAYS, TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR,
-  TRIGGER_MAX_RUNS_PER_HOUR, eventFilterKeys, triggerScheduleRate, triggerSpecWidens,
-} from "../../packages/contracts/src/trigger-specs.js";
+import { EVENT_FILTER_KEYS, EVENT_SOURCES, EVENT_TYPES, SCHEDULE_INTERVAL_MINUTES, ScheduleSpecSchema, eventFilterKeys } from "../../packages/contracts/src/trigger-specs.js";
+import { MAX_TRIGGERS_PER_TARGET, TRIGGER_ACTIVITY_TTL_DAYS, TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR, TRIGGER_MAX_RUNS_PER_HOUR, triggerScheduleRate, triggerSpecWidens } from "../../packages/contracts/src/trigger-specs.js";
 import { TriggerEventSchema, TriggerTargetSchema, triggerSummary, type TriggerEvent } from "../../packages/contracts/src/triggers.js";
 import {
   targetTriggersKey, triggerActivityKey, triggerKey, triggerMatchKey, triggerNoticeKey, triggersByCreatorKey, triggerTargetKey,

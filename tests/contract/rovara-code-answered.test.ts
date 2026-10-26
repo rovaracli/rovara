@@ -11,7 +11,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { CHANGE_ANYWAY_RULE, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
 import { answeredMilestoneItems } from "../../packages/broker/src/rovara-code/answered.js";
 import { CodeIntentRequestSchema } from "../../packages/contracts/src/rovara-code-intent.js";
-import { FOLLOW_UP_UNAVAILABLE_MESSAGE, NOT_ANSWERED_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
+import { FOLLOW_UP_UNAVAILABLE_MESSAGE, NOT_ANSWERED_MESSAGE, SESSION_ON_MAC_FOLLOW_UP_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
@@ -19,9 +19,8 @@ import {
   type CodeMilestone, type IntentAssessment,
 } from "../../packages/contracts/src/rovara-code.js";
 import { UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
-import {
-  WORKFLOW_BLOCK_REASONS, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer,
-} from "../../packages/contracts/src/task-workflow.js";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
+import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/contracts/src/task-workflow-node.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -595,6 +594,17 @@ describe("a plan that says no change is needed, through the broker", () => {
 });
 
 describe("Make a change anyway after an answer", () => {
+  it("refuses to start a follow-up for a session that now runs on a Mac, like the other session controls do, and starts nothing", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    t.db.set({ ...(t.sessionRecord(run.sessionId) as Record<string, unknown>), where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Maya's MacBook" } });
+    const tasksBefore = t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META").length;
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect((reply.body.error as { message: string }).message).toBe(SESSION_ON_MAC_FOLLOW_UP_MESSAGE);
+    expect(t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META")).toHaveLength(tasksBefore);
+  });
+
   it("starts a NEW task for the caller with the same request and path, the earlier answer as context and a link to the old task; the caller pays", async () => {
     const t = await world();
     const run = await t.answeredTask(answerAssessment(), { path: "FULL" });

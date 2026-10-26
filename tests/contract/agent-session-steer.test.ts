@@ -429,14 +429,14 @@ describe("a task that cannot take a message", () => {
     expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: `The agent can't take messages right now: ${PLAIN_REASON}.` });
   });
 
-  it("takes a message for an agent-step run (Task 11b: its next agent step reads it), and does not take one for a session on a Mac before Task 18, writing nothing", async () => {
+  it("takes a message for an agent-step run (Task 11b: its next agent step reads it), and keeps a message for a session on a Mac whose device is not there as not delivered (Task 18: the working path is in agent-session-local)", async () => {
     const run = steerWorld({ workflow: false });
     run.w.db.set({ ...run.task(), agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1 } });
     expect((await run.send(ARJUN, "go")).delivery).toMatchObject({ state: "queued" });
     expect(run.messageItems()).toHaveLength(1);
     const local = steerWorld({ kind: "local" });
-    expect(await code(local.send(PRIYA, "go"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    expect(local.messageItems()).toHaveLength(0);
+    expect((await local.send(PRIYA, "go")).delivery).toMatchObject({ state: "not_delivered", reason: "this Mac isn't available" });
+    expect(local.messageItems()).toHaveLength(1);
   });
 
   it("marks a message not delivered, not lost, when the task holds all the notes it keeps; a Slack reply and an app message count together", async () => {

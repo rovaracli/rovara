@@ -18,13 +18,13 @@ import {
   TRIAL_LIMITS_R49, defaultSpendPolicy, scopeKey, type BudgetScope,
 } from "../../packages/contracts/src/spend.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { orgMetaKey, type OrgId, type OrgRole } from "../../packages/contracts/src/org.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
+import { orgMetaKey, type OrgId, type OrgRole } from "../../packages/contracts/src/org-node.js";
 import {
   agentRequestKey, budgetAlertKey, modelKeyKey, openSpendRequestsKey, orgProjectCatalogKey, ownerBudgetKey, pausedTasksKey,
   projectAiKey, runCostKey, spendCounterKey, spendRequestKey, topUpKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
-import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "../../packages/contracts/src/org-budget.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "../../packages/contracts/src/org-budget-node.js";
 import { addToCounter } from "../../packages/broker/src/agents/table-writes.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

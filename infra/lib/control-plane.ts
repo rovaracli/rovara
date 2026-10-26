@@ -1,3 +1,4 @@
+import { WebApp } from "./web-app.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
@@ -876,6 +877,25 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // The agent step's two GET callbacks. Like the setup read above, a GET is not covered by the POST-only internal route and would fall to the JWT route, where API
+    // Gateway answers 401 before the broker is reached (staging 0.4.5: no agent or chain step with tools could run). No authorizer: the broker authenticates each
+    // call itself, verifying the HMAC-signed `x-agentx-callback-capability` header (signature, expiry, the `agent-skills` or `agent-tools` action, the operation's fence)
+    // before it reads anything (handleAgentSkills, handleAgentTools). tests/contract/internal-routes-infrastructure.test.ts keeps every broker internal GET routed.
+    // A named environment only: the legacy template has no agent steps and stays as it was.
+    if (naming.env !== undefined) {
+      new apigwv2.CfnRoute(this, "AgentToolsListRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/agent-tools",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
+      new apigwv2.CfnRoute(this, "AgentSkillsReadRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/agent-skills",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
+    }
     // GitHub signs webhook bodies itself; the broker verifies its HMAC and linked repository scope.
     new apigwv2.CfnRoute(this, "GithubWebhookRoute", {
       apiId: api.ref,
@@ -1135,8 +1155,15 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
+      // A bootstrap-free (legacy-synthesizer) template is the released one: the release pipeline packages zip Lambda code only, and CloudFront hosting adds a BucketDeployment and its AWS CLI layer (a file asset), so a released template has the cell serve the web files.
+      // Every other named environment (deployed with the CDK engine, bootstrapped) defaults to CloudFront, as Plan 7 Task 4 specifies.
+      const configuredHosting: unknown = this.node.tryGetContext("agentxWebAssetHosting");
+      if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
+      const releasable = this.node.tryGetContext("agentxSynthesizer") === "legacy";
+      if (releasable && configuredHosting === "cloudfront") throw new Error("agentxWebAssetHosting=cloudfront cannot be used with agentxSynthesizer=legacy: a bootstrap-free (released) template cannot carry the CloudFront upload's file asset; use cell");
+      const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" || releasable ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: githubInstallRoutes, ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
@@ -1146,6 +1173,9 @@ export class ControlPlaneStack extends Stack {
       const realtime = new RealtimeEvents(this, "Realtime", {
         env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
       });
+      // RULING Q11: the realtime construct now exists; allow only its actual DNS hosts in the web CSP.
+      web.handlerFunction.addEnvironment("REALTIME_HTTP_HOST", realtime.api.httpDns);
+      web.handlerFunction.addEnvironment("REALTIME_WS_HOST", realtime.api.realtimeDns);
       realtime.grantPublish(broker);
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
@@ -1166,6 +1196,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("taskPeoplePublicInvitations", signInParameters.taskPeoplePublicInvitationsEnabled.valueAsString);
       brokerSettings.add("taskPeoplePrivateInvitations", signInParameters.taskPeoplePrivateInvitationsEnabled.valueAsString);
       brokerSettings.add("workflowDependencies", signInParameters.workflowDependenciesEnabled.valueAsString);
+      // Rovara Code v2, per environment: a packed setting, not a variable (ENV-ROOM). Off unless the operator sets the parameter.
+      brokerSettings.add("rovaraCodeV2", signInParameters.rovaraCodeV2Enabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1574,6 +1606,9 @@ export function packagedFunction(
   /** Files copied beside the bundled handler, as [absolute source, name in the bundle]. */
   extraFiles: ReadonlyArray<readonly [string, string]> = [],
   memorySize = 512,
+  /** Directories copied beside the handler, as [absolute source, name in the bundle]. */
+  extraDirectories: ReadonlyArray<readonly [string, string]> = [],
+  tracing = lambda.Tracing.ACTIVE,
 ): lambdaNodejs.NodejsFunction {
   return new lambdaNodejs.NodejsFunction(scope, id, {
     runtime: lambda.Runtime.NODEJS_22_X,
@@ -1581,7 +1616,7 @@ export function packagedFunction(
     handler: "handler",
     timeout,
     memorySize,
-    tracing: lambda.Tracing.ACTIVE,
+    tracing,
     environment,
     logGroup: new logs.LogGroup(scope, `${id}Logs`, {
       retention: logs.RetentionDays.ONE_MONTH,
@@ -1592,11 +1627,14 @@ export function packagedFunction(
       minify: true,
       sourceMap: true,
       target: "node22",
-      ...(extraFiles.length === 0 ? {} : {
+      ...(extraFiles.length === 0 && extraDirectories.length === 0 ? {} : {
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
-          afterBundling: (_inputDir: string, outputDir: string) => extraFiles.map(([source, name]) => `cp "${source}" "${outputDir}/${name}"`),
+          afterBundling: (_inputDir: string, outputDir: string) => {
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+            return [...extraFiles.map(([source, name]) => `cp ${quote(source)} ${quote(`${outputDir}/${name}`)}`), ...extraDirectories.map(([source, name]) => `cp -R ${quote(source)} ${quote(`${outputDir}/${name}`)}`)];
+          },
         },
       }),
     },

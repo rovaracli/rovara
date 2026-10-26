@@ -6,13 +6,10 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore, updateAvailable } from "../../packages/broker/src/agents/store.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { codingProgram, recipeDigest, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
+import { codingProgram, recipeDigest, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
 import { ROVARA_CODE_V2_FOR_NEW_ORGS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import {
-  WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, blockWorkflow,
-  submitPlanCritique, submitWorkflowArtifact, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, blockWorkflow, submitPlanCritique, submitWorkflowArtifact, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

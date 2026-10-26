@@ -384,7 +384,7 @@ export interface FakeGitHubActionsOptions {
   stepCount?: number;
 }
 
-export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown }
+export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown; userAgent?: string | undefined }
 
 /** The repositories the fake knows, all under installation 55 of the owner `example`. */
 export const FAKE_GITHUB_REPOSITORIES = { demo: 4242, other: 777, legacy: 5151 } as const;
@@ -436,7 +436,9 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
     const authorization = headers.get("authorization") ?? undefined;
     const isStorage = url.hostname.endsWith(".actions.githubusercontent.com") || url.hostname.endsWith(".blob.core.windows.net");
     if (url.hostname !== "api.github.com" && !isStorage) return undefined;
-    requests.push({ method: init?.method ?? "GET", url: url.href, authorization, body });
+    requests.push({ method: init?.method ?? "GET", url: url.href, authorization, body, userAgent: headers.get("user-agent") ?? undefined });
+    // GitHub's API refuses a request with no User-Agent header (HTTP 403, not a permissions answer); node's own https request sends none, so every caller must set one.
+    if (!isStorage && !headers.has("user-agent")) return new Response("Request forbidden by administrative rules. Please make sure your request has a User-Agent header.", { status: 403, headers: { "content-type": "text/html; charset=utf-8" } });
     if (isStorage) {
       if (authorization !== undefined) return json({ message: "storage takes no Authorization header" }, 400);
       if (options.storageRedirects === true) return new Response(null, { status: 302, headers: { location: `https://${FAKE_GITHUB_STORAGE_HOST}/second/log.txt` } });

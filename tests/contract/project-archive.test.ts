@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AppProjectsResponseSchema, EGRESS_SYNC_PENDING_WARNING, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { approvedUnion, decideEgressDomain, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { archiveProject, restoreProject } from "../../packages/broker/src/org/project-archive.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";

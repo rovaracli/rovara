@@ -53,6 +53,9 @@ export const WORKER_IMAGE_INPUTS = [
   "packages/model-proxy/package.json",
   "packages/mcp/package.json",
   "packages/slack-service/package.json",
+  "packages/design-tokens/package.json",
+  "packages/ui/package.json",
+  "packages/web/package.json",
   "infra/package.json",
 ] as const;
 
@@ -77,6 +80,9 @@ export const SLACK_ORCHESTRATOR_IMAGE_INPUTS = [
   "packages/gateway/package.json",
   "packages/model-proxy/package.json",
   "packages/mcp/package.json",
+  "packages/design-tokens/package.json",
+  "packages/ui/package.json",
+  "packages/web/package.json",
   "infra/package.json",
 ] as const;
 

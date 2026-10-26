@@ -14,7 +14,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   // M1.2 to M1.4: the application plan, application and baseline rounds, AI navigation steps, replay, and the model-free time limits and model choice (mainline's worker implements each).
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
   "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
-  "model.route", "task.agentStep", "task.agentRun",
+  "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1",
   // Rovara Code version 2 (Plan 6): Understand runs read-only and answers with a `rovara-intent` block.
   "task.workflowUnderstand",
   // Plan 6 Task 8: the plan check of Rovara Code version 2 (a read-only model run that answers with a rovara-plan-critique block).
@@ -27,4 +27,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowFix",
   // Plan 6 Task 16: a coding run whose PR feedback approval is Rovara's own (it carries the autonomy it was decided under).
   "task.workflowFeedbackAutonomy",
+  // Rovara Code v2: independent parts of an approved plan build side by side (parallel-parts.ts).
+  "task.workflowParallelParts",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -3,12 +3,16 @@
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { createHash } from "node:crypto";
 import { canonicalInstant, indexDay } from "./admin.js";
-import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
+import { principalKey, type AgentId } from "./agent.js";
+export { principalKey } from "./agent.js";
+import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
+import type { SessionId } from "./agent-sessions.js";
+import type { DeviceId, SessionBinding } from "./agent-sessions-node.js";
+import { OrgIdSchema, type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 import type { ChainId, ChainRunId } from "./chains.js";
 import type { EventSource } from "./trigger-specs.js";
 import type { TriggerTarget } from "./triggers.js";
-import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions.js";
-import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
 const REVISION_WIDTH = 12;
@@ -76,6 +80,14 @@ export const MEMBER_GRANT_SK_PREFIX = "PROJECT#";
 
 export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
+}
+
+/**
+ * A person's default workspace for a project in one org: the map from (person, project) to the workspace an administrator prepared or the Slack channel started. A person has one
+ * owner key across orgs, so the org is part of the key: leaving one org and joining another with a project of the same name never reads the old org's workspace.
+ */
+export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
 }
 
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS";
@@ -209,13 +221,6 @@ export function agentDirectoryKey(orgId: OrgId, agentId: AgentId): OrgKey {
 /** The item that makes an agent's name unique in its org, ignoring case and surrounding spaces. */
 export function agentNameKey(orgId: OrgId, name: string): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_NAME"), sk: name.trim().toLowerCase() };
-}
-
-/** `MEMBER#<developerId>`, `PROJECT#<project>` or `ORG`: the principal's part of a key. */
-export function principalKey(principal: AgentPrincipal): string {
-  if (principal.kind === "member") return `MEMBER#${principal.developerId}`;
-  if (principal.kind === "project") return `PROJECT#${principal.project}`;
-  return "ORG";
 }
 
 /** The index item that lists, per principal, the agents shared with it. */
@@ -625,15 +630,22 @@ export type AgentSessionItemSk =
   | `PRESENCE#${string}`
   | `MESSAGE#${string}`
   | `TURN#${string}`
+  | "LOCAL"
   | `EVENT#${string}`
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
   | `REQUEST#${string}`
+  | `HANDOFF_PENDING#${string}`
   | "RETRIED";
 
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
+}
+
+/** A local session's transcript line, `TURN#<number>`; six digits keep a query on `TURN#` in order. */
+export function sessionTurnSk(seq: number): `TURN#${string}` {
+  return `TURN#${paddedCounter(seq, "a turn number")}`;
 }
 
 /** An event's sort key: `EVENT#<instant>#<eventId>`, so a query on `EVENT#` reads them in order. */
@@ -691,7 +703,7 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
  * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
  * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
  */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all"): OrgKey {
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 
@@ -763,6 +775,26 @@ export function memberDevicesKey(orgId: OrgId, developerId: string, deviceId: De
   return { pk: orgScoped(orgId, `MEMBER_DEVICES#${keyPart(developerId, "a developer id")}`), sk: keyPart(deviceId, "a device id") };
 }
 
+/** The count of commands a device was given: the next command is this plus one. Sits beside the commands (its sort key is not a command's) and expires with them. */
+export function deviceCommandCounterKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: "COMMAND_SEQ" };
+}
+
+/** Which sessions run on a device, one item per session (`SESSION#<sessionId>`), so removing the device finds them without reading its owner's whole list. */
+export function deviceSessionKey(orgId: OrgId, deviceId: DeviceId, sessionId: SessionId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `SESSION#${keyPart(sessionId, "a session id")}` };
+}
+
+/** A window's count of one kind of write by a Mac (`update`), in the device's own partition so it goes with the device. */
+export function deviceRateKey(orgId: OrgId, deviceId: DeviceId, kind: "update"): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `RATE#${kind}` };
+}
+
+/** A window's count of one kind of write by one person (`local_register`: local sessions started), in a partition of their own. */
+export function personRateKey(orgId: OrgId, developerId: string, kind: "local_register"): OrgKey {
+  return { pk: orgScoped(orgId, `PERSON_RATE#${keyPart(developerId, "a developer id")}`), sk: kind };
+}
+
 /** One command waiting for a device (stop, move to the cloud, a steering message); six digits keep them in order. */
 export function deviceCommandKey(orgId: OrgId, deviceId: DeviceId, seq: number): OrgKey {
   return { pk: devicePk(orgId, deviceId), sk: `COMMAND#${paddedCounter(seq, "a command number")}` };
@@ -812,6 +844,21 @@ export function prHeadKey(orgId: OrgId, repositoryId: string, headSha: string): 
 export function mergeTrackingKey(taskId: string, repositoryId: string, number: number): { pk: string; sk: string } {
   if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
   return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `MERGE_TRACKING#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
+}
+
+/**
+ * A reminder one reviewer was sent about one pull request (Plan 6 Task 18), in the reviewer's own partition of the org: Home reads it to show the reviewer the pull request
+ * that waits for them. One item per reviewer and pull request.
+ */
+export function reviewWaitKey(orgId: OrgId, developerId: string, taskId: string, repositoryId: string, number: number): OrgKey {
+  if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
+  return { pk: orgScoped(orgId, `REVIEW_WAIT#${keyPart(developerId, "a developer id")}`), sk: `${keyPart(taskId, "a task id")}#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
+}
+
+/** Who one pull request's reminders went to, in the task's own partition (it carries `orgId`, and a reader re-checks it): so a reminder can be taken away when it no longer applies. */
+export function reviewNudgeLedgerKey(taskId: string, repositoryId: string, number: number): { pk: string; sk: string } {
+  if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
+  return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `REVIEW_NUDGE#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
 }
 
 /** One milestone of a task: the `n`th of its kind (`n` from 0; six digits keep them in order). */

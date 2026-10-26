@@ -32,6 +32,7 @@ import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { prHeadItems } from "./head-index.js";
 import { readCodeSettings } from "./code-settings.js";
+import { runReviewNudges } from "./nudges.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
 export const TRACKED_DEFINITION_VERSION = "1.1.0";
@@ -289,6 +290,7 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
   const checksEverSeen = prior?.checksEverSeen === true || status.checks.length > 0;
   const ci = readCi(status, { checksEverSeen, lastRovaraPushAt, now });
   const today = new Date(now).toISOString().slice(0, 10);
+  const reAsked = (prior?.review === "changes_requested" || prior?.review === "approved") && input.reviews.review === "requested";
   return {
     orgId: task.orgId, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number,
     headSha: status.headSha, draft: status.draft, state: status.state, baseBranch: status.baseBranch,
@@ -297,7 +299,8 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
     branch: readBranch(status), headByRovara,
     ...(lastRovaraPushAt === undefined ? {} : { lastRovaraPushAt: new Date(lastRovaraPushAt).toISOString() }),
     ...(prior?.readyAt === undefined ? {} : { readyAt: prior.readyAt }),
-    ...(prior?.reviewersRequestedAt === undefined ? {} : { reviewersRequestedAt: prior.reviewersRequestedAt }),
+    // A decision withdrawn (a dismissed review) puts the pull request back to waiting: the review is asked for again, so the reminders' clock starts over (Task 18).
+    ...(reAsked ? { reviewersRequestedAt: new Date(now).toISOString() } : prior?.reviewersRequestedAt === undefined ? {} : { reviewersRequestedAt: prior.reviewersRequestedAt }),
     nudges: prior?.nudges ?? { count: 0 },
     syncs: prior?.syncs ?? { day: today, count: 0 },
     ...(prior?.mergeClaim === undefined ? {} : { mergeClaim: prior.mergeClaim }),
@@ -535,8 +538,9 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     const pullRequest = task.workflow.pullRequests?.find((entry) => entry.repositoryId === listedPullRequest.repositoryId && entry.number === listedPullRequest.number);
     if (pullRequest === undefined) continue;
     let one: Awaited<ReturnType<typeof trackOne>>;
+    const seen: PassSeen = {};
     try {
-      one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, standings);
+      one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, standings, seen);
     } catch (error) {
       if (error instanceof TrackingRequestCapError) await setCursor(cursor + position);
       throw error;
@@ -544,6 +548,14 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     changed ||= one.changed;
     anyNotOpen ||= one.notOpen;
     if (one.recheckAt !== undefined) recheckAt = recheckAt === undefined ? one.recheckAt : Math.min(recheckAt, one.recheckAt);
+    // Reminders for the reviewers (Task 18): from what this pass read, with no GitHub request of their own; a failure there is theirs and never fails the pass.
+    if (seen.item !== undefined) {
+      const reminded = await runReviewNudges(
+        { documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }) },
+        { task, pullRequest: { repositoryId: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }, item: seen.item, requested: seen.requestedReviewerIds },
+      );
+      if (reminded.recheckAt !== undefined) recheckAt = recheckAt === undefined ? reminded.recheckAt : Math.min(recheckAt, reminded.recheckAt);
+    }
     // An action changed the workflow: the other pull requests are decided on the next pass, from the workflow as it now is.
     if (one.acted) break;
   }
@@ -561,6 +573,12 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
   return { result: changed ? "changed" : "unchanged", anyNotOpen, ...(recheckAt === undefined ? {} : { recheckAt }) };
 }
 
+/** What a pass saw of one pull request that the reminders of reviewers (nudges.ts) need: the tracking item as it is stored when the pass ends, and who GitHub lists as asked for a review. */
+interface PassSeen {
+  item?: MergeTrackingItem;
+  requestedReviewerIds?: string[];
+}
+
 async function trackOne(
   deps: MergeTrackingDependencies,
   task: TrackedTask & { workflow: WorkflowSnapshot; orgId: OrgId },
@@ -568,6 +586,7 @@ async function trackOne(
   settings: CodeSettings,
   budget: GithubMergeReadBudget | undefined,
   standings: Map<string, Promise<RepositoryStanding>>,
+  seen: PassSeen,
 ): Promise<{ changed: boolean; notOpen: boolean; acted: boolean; recheckAt?: number }> {
   const url = await deps.repositoryUrl(task.project, task.startingRevision, pullRequest.repositoryId, task.orgId);
   if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -581,6 +600,7 @@ async function trackOne(
   const scope = deps.scope(task.orgId);
   const status = await deps.github.getPullRequestStatus(url, pullRequest.number, scope, budget);
   if (status.number !== pullRequest.number) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
+  seen.requestedReviewerIds = status.requestedReviewerIds ?? [];
   const prior = trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
   // One lookup for each person a pass asks about, whoever asks (the reviews, or the rule for a feedback round): the answer carries the permission and, where GitHub says it, the kind of account.
   const standingOn = async (repositoryId: string, login: string): Promise<RepositoryStanding> => {
@@ -661,6 +681,7 @@ async function trackOne(
     const flipped = current !== undefined && current.headByRovara !== merged.headByRovara;
     const unchanged = current !== undefined && current.decisionDigest === digested.decisionDigest && !justReady;
     const nextItem: MergeTrackingItem = { ...digested, version: (current?.version ?? 0) + 1, observedAt: stamp };
+    seen.item = unchanged && current !== undefined ? current : nextItem;
     const items: TransactItem[] = [];
     let action: MergeActionRequest | undefined;
     const github = deps.github;

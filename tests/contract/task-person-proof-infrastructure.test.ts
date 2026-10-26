@@ -82,6 +82,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Spec 059's default-OFF runtime graph addition is asserted exactly below; exclude only that
   // named parameter and its corresponding Broker environment reference from the proof-only hash.
   delete remainder.Parameters?.WorkflowDependenciesEnabled;
+  // Rovara Code v2 per environment (Plan 6): its parameter and its packed setting are no part of the proof-only addition either.
+  delete remainder.Parameters?.RovaraCodeV2Enabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -114,7 +116,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -275,18 +277,24 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
     // Staging 0.4.3 fix: the broker's `rt` name is the DNS prefix of the events API's HTTP host (Fn::Select of Fn::Split of Dns.Http), not the API's id, so the named and foreign digests were taken again; legacy did not move.
     // Round 5 merge (Tasks 17, 21 and the staging 0.4.3 fixes onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Staging 0.4.5 fix: a named environment's API gains `GET /v1/internal/agent-tools` and `GET /v1/internal/agent-skills` (AgentToolsListRoute, AgentSkillsReadRoute, no authorizer; the broker
+    // verifies the callback capability), so the named and foreign digests were retaken from the test's output; the legacy digests did not move (named environments only).
+    // M3: regenerated named/foreign pins from the merged template; web routes and chain hook throttles coexist. Legacy unchanged.
+    // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Round 8 release-path fixes: the web app's ResponseHeadersPolicy and OriginAccessControl got explicit prefixed names, so the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Staging v0.4.9: the invalid `GET /app/` web route (an empty path segment, refused by API Gateway) was removed with its Lambda permission, so the named and foreign digests were retaken from the test's output; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4d4a16b5c244c692aa62c8a068a5fc36d10d5d3324bf9057cc335d117a911966",
-        withoutRoute: "ba8159b0f93f6e562ecd35c5f43bb29b6996ede067116e305a516d8debc044e2",
+        withRoute: "f077aa59651ad246c33b474f9c9144f3e746a257312a363999a234367f652fc5",
+        withoutRoute: "e5b39d57a7e00923907c876036171bc6ca3cc2a396d1c7eff0240ce2ae4c9bf8",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "942ac5af3a2d43675aaeac9a946c819459fffe07de521b18638b45d0709c3eea",
-        withoutRoute: "a60f894f0653a4aeffea66ac9f885f00daa39f74ca3a2ed45cada8909493185a",
+        withRoute: "bd635f276ba294accfddf7216d598e51adf5377faf297c55105b5e05162da9a7",
+        withoutRoute: "cf6eb4815361f98ee9cda36712d3bf7d27ac0753cf6f6a3704d3c35abf2697e4",
       },
       {
         label: "legacy",

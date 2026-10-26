@@ -4,9 +4,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { RiskAssessmentSchema, type VerificationReport } from "../../packages/contracts/src/index.js";
-import {
-  WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type WorkflowSnapshot,
-} from "../../packages/contracts/src/task-workflow.js";
+import { workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
 import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";

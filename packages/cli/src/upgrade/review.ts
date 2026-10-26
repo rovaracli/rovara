@@ -14,6 +14,12 @@ export const DATA_RESOURCE_TYPES: ReadonlySet<string> = new Set(["AWS::DynamoDB:
 const POLICY_RESOURCE_TYPES: ReadonlySet<string> = new Set(["AWS::S3::BucketPolicy", "AWS::Lambda::Permission", "AWS::SQS::QueuePolicy", "AWS::SNS::TopicPolicy", "AWS::SecretsManager::ResourcePolicy"]);
 const isIamType = (type: string) => type.startsWith("AWS::IAM::") || POLICY_RESOURCE_TYPES.has(type);
 
+/** A custom resource's type, as CloudFormation names it: `Custom::` and up to 60 letters, digits and `_@-`. Its handler can do anything, so what it replaces or deletes cannot be read from its type. */
+const isCustomType = (type: string) => type.startsWith("Custom::");
+/** The only custom types whose replacement is not treated as losing data: CDK's BucketDeployment, which only copies this build's files (regenerable) into the web assets bucket, with prune off and the files
+ * retained when the deployment is deleted. Its DELETE is never on this list: the diff does not show whether the deployment prunes or retains, so removing one stops like any other custom resource. */
+export const REPLACEABLE_CUSTOM_TYPES: ReadonlySet<string> = new Set(["Custom::CDKBucketDeployment"]);
+
 /** "orphan": cdk diff says a retained resource leaves the stack (its data stays, unmanaged).
  * "unclear": cdk diff output this code could not read; `line` holds it, and logicalId and type are ""
  * when they could not be read either. */
@@ -29,6 +35,9 @@ export function reviewChanges(changes: ChangeSetChange[]): ReviewedChanges {
   for (const change of changes) {
     if (DATA_RESOURCE_TYPES.has(change.type) && !keepsData(change)) {
       reviewed.data.push({ logicalId: change.logicalId, type: change.type, verb: change.action === "Remove" ? "delete" : "replace" });
+    } else if (isCustomType(change.type) && !keepsData(change) && !(change.action === "Modify" && REPLACEABLE_CUSTOM_TYPES.has(change.type))) {
+      // Adding one, or changing it in place, loses nothing; replacing or removing a custom resource runs its delete handler, which may remove data.
+      reviewed.data.push({ logicalId: change.logicalId, type: change.type, verb: "unclear", line: `${change.action} ${change.logicalId} (${change.type})${change.replacement === "" ? "" : `, replacement ${change.replacement}`}` });
     } else if (isIamType(change.type) || (change.type === "AWS::KMS::Key" && change.action === "Modify")) {
       // A change set does not say which property changed, so a KMS key's modification may be its KeyPolicy.
       reviewed.iam.push(change);
@@ -129,8 +138,9 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
 // - a "[~] ... replace" resource line with no property lines under it (a type change);
 // - a line naming a guarded type that is not a resource line, in any section;
 // - a marked line in another section without that section's "[+|-|~] <EntryType> <id>:" shape;
-// - no Resources section, unless "There were no differences" is a column-0 line of its own, or
-//   the only sections are Outputs, Metadata, or Template with nothing but its Description.
+// - no Resources section, unless "There were no differences" (alone, or followed by one parenthesised
+//   note) is a column-0 line of its own, or the only sections are Outputs, Metadata, or Template with
+//   nothing but its Description.
 // Section headings are taken at face value: a column-0 line of a multi-line value could look like
 // one. That cannot hide a guarded change (every line naming a guarded type is a resource line or
 // unclear); at worst it adds an unclear entry or misses a non-guarded resource's IAM flag.
@@ -140,13 +150,16 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
 // to a resource whose template did not change; nor a Conditions or Mappings change that adds or
 // removes a conditional resource. The templates engine's change set does see those.
 const MARK = /^\[([^\]]{1,2})\]\s+(.*)$/;
-const RESOURCE_TYPE = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+(?:::[A-Za-z0-9]+)*)(?:\s+(.*))?$/;
+const RESOURCE_TYPE = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+(?:::[A-Za-z0-9]+)*|Custom::[A-Za-z0-9_@-]+)(?:\s+(.*))?$/;
 const IMPACT = /\s*\b(may be replaced|replace|destroy|orphan|import)$/;
 const MOVE = /\s*\(OR move .*\)$/;
 const LOGICAL_ID = /^[A-Za-z0-9]+$/;
 const REPLACING_PROPERTY = /\((?:requires|may cause) replacement\)/;
 const HEADINGS: ReadonlySet<string> = new Set(["Template", "IAM Statement Changes", "IAM Policy Changes", "IAM Identity Center Changes", "Security Group Changes", "Parameters", "Metadata", "Mappings", "Conditions", "Resources", "Outputs", "Other Changes", "Resources In Sync", "Unchecked Resources"]);
 const NO_DIFFERENCES = "There were no differences";
+/** The line alone, or (aws-cdk 2.1142.0, when it hid CDK metadata changes) with one parenthesised note:
+ * "There were no differences (CDK metadata changes were hidden, run cdk diff --strict to show)". */
+const NO_DIFFERENCES_LINE = /^There were no differences(?: \([^()]*\))?$/;
 /** The entry type formatDifference prints in each non-Resources section. */
 const ENTRY_TYPES: Readonly<Record<string, string>> = { Parameters: "Parameter", Metadata: "Metadata", Mappings: "Mapping", Conditions: "Condition", Outputs: "Output", "Other Changes": "Unknown", Template: "(?:AWSTemplateFormatVersion|Transform|Description)" };
 const SAFE_WITHOUT_RESOURCES: ReadonlySet<string> = new Set(["Outputs", "Metadata", "Template"]);
@@ -209,7 +222,7 @@ export function cdkDiffRisks(text: string): { data: DataChange[]; iam: boolean }
       pending = undefined;
       continue;
     }
-    if (!indented && line === NO_DIFFERENCES && sawHeader) noDifferencesLine = true;
+    if (!indented && NO_DIFFERENCES_LINE.test(line) && sawHeader) noDifferencesLine = true;
     if (indented || !MARK.test(line)) {
       // A property line, a JSON hunk line, or a multi-line value's continuation: detail of the resource above.
       if (resource?.type === "AWS::KMS::Key" && /^[├└]─ \[.\] KeyPolicy\b/.test(line)) iam = true;
@@ -251,6 +264,17 @@ export function cdkDiffRisks(text: string): { data: DataChange[]; iam: boolean }
         } else pending = { ...change, verb: "replace" };
       }
       // "+" adds and "←" imports: nothing is lost.
+    }
+    if (isCustomType(parsed.type)) {
+      // "+" adds and "←" imports: nothing is lost. A change in place runs the handler's update, which this code cannot read either way, so it is as safe as any other in-place change.
+      // A replacement or a removal runs the old resource's delete handler: unclear (so --allow-replace can name it), unless the type is on the replace list.
+      const replaces = parsed.impact === "replace" || parsed.impact === "may be replaced";
+      if (parsed.mark === "-") unclear(line, parsed);
+      else if (parsed.mark === "~" && !REPLACEABLE_CUSTOM_TYPES.has(parsed.type)) {
+        if (replaces) entry = { logicalId: parsed.logicalId, type: parsed.type, verb: "unclear", line };
+        else pending = { logicalId: parsed.logicalId, type: parsed.type, verb: "unclear", line };
+        if (entry !== undefined) data.push(entry);
+      }
     }
     if (parsed.mark === "~" && parsed.impact === "replace") bare = { line, parsed, entry };
   }

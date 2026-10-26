@@ -5,7 +5,7 @@ import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
 import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
 import {
-  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
+  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requestedReviewerIds, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
   type RequiredCheck,
   type PullRequestCheck, type PullRequestReview, type PullRequestStatus,
 } from "./github-pull-status.js";
@@ -19,6 +19,7 @@ const FILE_AT_COMMIT_MAX_BYTES = 20_971_520;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
 /** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
+const GITHUB_REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const GITHUB_APP_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$/;
 
 /** One installation of the App, as GitHub reports it (GET /app/installations/{id}): only what the install flow decides on. */
@@ -54,9 +55,53 @@ export interface GitHubAppCredentialProviderOptions {
    * an `orgId` scope. Absent on a private install.
    */
   requireInstallationBound?: (orgId: OrgId, installationId: number, repository?: { owner: string; name: string }) => Promise<void>;
+  /**
+   * Told after each repository-scoped installation token is issued, with what was asked and what GitHub says it granted (permission names, repository names, selection,
+   * expiry). Never the token. It lets an operator tell a token GitHub issued with less than was asked, or for another repository, from a refused clone.
+   */
+  onTokenIssued?: (issued: GitHubTokenIssued) => void;
   fetchImplementation?: typeof fetch;
   now?: () => number;
+  /**
+   * Staging v0.4.9: `git clone` with a repository token GitHub had just issued sometimes got "Repository not found" (and succeeded a minute later with
+   * the same code and settings). With this set, `resolve` checks the new token against GitHub's git endpoint, the request `git clone` makes first, and waits
+   * while GitHub answers 404 for it. Absent: the token is handed over unchecked.
+   */
+  tokenReadiness?: GitHubTokenReadinessOptions;
 }
+
+/** What `onTokenIssued` is told: names and words only. */
+export interface GitHubTokenIssued {
+  installationId: number;
+  repository: string;
+  requested: Record<string, "read" | "write">;
+  granted?: Record<string, string>;
+  repositorySelection?: string;
+  repositories?: string[];
+  expiresAt?: string;
+}
+
+export interface GitHubTokenReadinessOptions {
+  /** Waits between probes; one more probe than there are delays is made at most. Default 150, 300, 600, 1200, 2400 ms. */
+  delaysMs?: readonly number[];
+  /** Reports each probe (never the token), for the broker log. */
+  onProbe?: (event: GitHubTokenProbeEvent) => void;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface GitHubTokenProbeEvent {
+  repository: string;
+  access: RepositoryAccess;
+  attempt: number;
+  /** HTTP status of the probe; absent when the probe itself failed. */
+  status?: number;
+  /** `ready`: GitHub accepted the token; `not_found`: 404, the answer a clone turns into "Repository not found"; `other`: any other status; `error`: the probe failed. */
+  outcome: "ready" | "not_found" | "other" | "error";
+  /** Milliseconds from the token being issued to this probe's answer. */
+  sinceIssuedMs: number;
+}
+
+const DEFAULT_TOKEN_READINESS_DELAYS_MS: readonly number[] = [150, 300, 600, 1_200, 2_400];
 
 export interface GitHubPullRequestInput {
   repositoryUrl: string;
@@ -280,10 +325,44 @@ export class GitHubAppCredentialProvider {
     scope: GitHubTokenScope,
   ): Promise<RepositoryCredential> {
     if (credentialRef !== this.options.credentialRef) return {};
-    const token = await this.createInstallationToken(parseGitHubRepository(repositoryUrl), {
+    const repository = parseGitHubRepository(repositoryUrl);
+    const token = await this.createInstallationToken(repository, {
       contents: access === "push" ? "write" : "read",
     }, scope);
+    await this.waitUntilGitAccepts(repository, token, access);
     return { username: "x-access-token", password: token };
+  }
+
+  /**
+   * Asks GitHub's git endpoint for the repository's refs with the new token, as `git clone` does, until it stops answering 404 (a few seconds at most).
+   * It never refuses: a token that stays unaccepted is handed over all the same, so the worker reports GitHub's own error, and a failed probe changes nothing.
+   */
+  private async waitUntilGitAccepts(repository: { owner: string; name: string }, token: string, access: RepositoryAccess): Promise<void> {
+    const readiness = this.options.tokenReadiness;
+    if (readiness === undefined) return;
+    const delays = readiness.delaysMs ?? DEFAULT_TOKEN_READINESS_DELAYS_MS;
+    const sleep = readiness.sleep ?? ((ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }));
+    const service = access === "push" ? "git-receive-pack" : "git-upload-pack";
+    const url = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}.git/info/refs?service=${service}`;
+    const headers = { authorization: `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`, "user-agent": "git/2.45.0", accept: "*/*" };
+    const issuedAt = this.now();
+    for (let attempt = 0; ; attempt += 1) {
+      const event = { repository: `${repository.owner}/${repository.name}`, access, attempt };
+      let status: number;
+      try {
+        const response = await this.fetchImplementation(url, { headers, signal: AbortSignal.timeout(3_000), redirect: "error" });
+        status = response.status;
+        await response.body?.cancel().catch(() => undefined);
+      } catch {
+        readiness.onProbe?.({ ...event, outcome: "error", sinceIssuedMs: this.now() - issuedAt });
+        return;
+      }
+      const outcome = status === 404 ? "not_found" : status >= 200 && status < 300 ? "ready" : "other";
+      readiness.onProbe?.({ ...event, status, outcome, sinceIssuedMs: this.now() - issuedAt });
+      const delay = delays[attempt];
+      if (outcome !== "not_found" || delay === undefined) return;
+      await sleep(delay);
+    }
   }
 
   /**
@@ -606,6 +685,29 @@ export class GitHubAppCredentialProvider {
     return { ...after, headTreeSha };
   }
 
+  /** A read-only page, keeping full patches for the session boundary's redaction and byte cap. */
+  async listPullRequestFiles(repositoryUrl: string, number: number, options: { page: number }, scope: GitHubTokenScope): Promise<{ files: Array<GitHubPullRequestChangedFile & { previous_filename?: string }>; nextPage?: number }> {
+    if (!Number.isSafeInteger(number) || number < 1 || !Number.isSafeInteger(options.page) || options.page < 1 || options.page > 10_000) throw agentXError("CONFIG_INVALID", "Invalid diff page.");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.diffTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/files?per_page=100&page=${options.page}`,
+      { headers: { ...githubHeaders(token), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8_000), redirect: "error" },
+    );
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", "The pull request diff is unavailable.");
+    const body: unknown = await response.json();
+    if (!Array.isArray(body) || body.length > 100) throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request diff.");
+    const files = body.map((entry: unknown): GitHubPullRequestChangedFile & { previous_filename?: string } => {
+      if (entry === null || typeof entry !== "object") throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request file.");
+      const file = entry as Record<string, unknown>;
+      if (typeof file.filename !== "string" || typeof file.status !== "string" || !Number.isSafeInteger(file.additions) || !Number.isSafeInteger(file.deletions)) throw agentXError("RUNTIME_UNAVAILABLE", "Invalid pull request file.");
+      return { filename: file.filename, status: file.status, additions: file.additions as number, deletions: file.deletions as number,
+        ...(typeof file.patch === "string" ? { patch: file.patch } : {}), ...(typeof file.previous_filename === "string" ? { previous_filename: file.previous_filename } : {}) };
+    });
+    const hasNext = (response.headers.get("link") ?? "").split(",").some(link => /;\s*rel="next"/.test(link));
+    return { files, ...(hasNext && options.page < 10_000 ? { nextPage: options.page + 1 } : {}) };
+  }
+
   /** The provider a tracking pass reads through: itself with no budget, else one bounded provider per budget (a pass's reads share its installation lookup). */
   private trackingProvider(budget: GithubMergeReadBudget | undefined): GitHubAppCredentialProvider {
     if (budget === undefined) return this;
@@ -723,7 +825,7 @@ export class GitHubAppCredentialProvider {
       ...(typeof raw.mergeable === "boolean" ? { mergeable: raw.mergeable } : {}),
       ...(behindBy === undefined ? {} : { behindBy }), checks, ...(checksUnavailable ? { checksUnavailable: true as const } : {}), requiredChecks,
       baseHasRequiredChecks: requiredChecks.length > 0 || checks.some((check) => check.required),
-      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
+      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), ...(requestedReviewerIds(raw).length === 0 ? {} : { requestedReviewerIds: requestedReviewerIds(raw) }), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
     };
   }
 
@@ -1208,6 +1310,17 @@ export class GitHubAppCredentialProvider {
     return token;
   }
 
+  /** Reuse only the two diff read permissions; installed() checks the live org binding before every call. */
+  private diffTokenFor(repository: InstalledRepository, scope: GitHubTokenScope): Promise<string> {
+    const key = `${repository.installationId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:contents=read,pull_requests=read`;
+    const cached = this.readTokens.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.token;
+    const token = this.createInstallationToken(repository, { contents: "read", pull_requests: "read" }, scope);
+    this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
+    void token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
+    return token;
+  }
+
   /** The parents of a commit GitHub holds in the installed repository; throws when GitHub does not have that commit. */
   async getCommitParents(repositoryUrl: string, commitSha: string, scope: GitHubTokenScope): Promise<string[]> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
@@ -1535,6 +1648,42 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
+   * Whether the author of a pull request or an issue belongs to the repository, asked of GitHub now with a token of the installation `installationId` (the payload's association shows a
+   * private org member as CONTRIBUTOR or NONE, so it is not enough). For an organization's repository: an active membership of the org (`members: read`) is `member`; otherwise, and for a
+   * user's repository, write, maintain or admin access to the repository (the collaborator permission endpoint, `metadata: read`) is `collaborator`. GitHub's 404 is "no"; any other failure is
+   * thrown, so the caller never mistakes an outage for a membership. A name that could not be an account or repository answers `none` before anything is asked.
+   */
+  async authorStanding(installationId: number, query: { owner: string; ownerType?: string; repo: string; login: string }): Promise<"member" | "collaborator" | "none"> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    const { owner, repo, login } = query;
+    if (!GITHUB_LOGIN.test(owner) || !GITHUB_LOGIN.test(login) || !GITHUB_REPOSITORY_NAME.test(repo) || repo === "." || repo === "..") return "none";
+    const organization = query.ownerType === "Organization";
+    const token = await this.mintInstallationToken(installationId, organization ? { metadata: "read", members: "read" } : { metadata: "read" });
+    const read = (path: string) => this.fetchImplementation(`https://api.github.com${path}`, {
+      headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (organization) {
+      const response = await read(`/orgs/${encodeURIComponent(owner)}/memberships/${encodeURIComponent(login)}`);
+      if (response.ok) {
+        const body: unknown = await response.json();
+        const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+        if (typeof record.state !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid membership response");
+        if (record.state === "active") return "member";
+      } else if (response.status !== 404) {
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's membership lookup failed with HTTP ${response.status}`);
+      }
+    }
+    const response = await read(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(login)}/permission`);
+    if (response.status === 404) return "none";
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository permission lookup failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+    if (typeof record.permission !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid permission response");
+    // `permission` is the legacy role (maintain reads as write, triage as read); `role_name` is the exact one.
+    return record.permission === "admin" || record.permission === "write" || record.role_name === "maintain" || record.role_name === "write" || record.role_name === "admin" ? "collaborator" : "none";
+  }
+
+  /**
    * Every repository one installation can reach (`GET /installation/repositories`, 100 to a page, at most 10 pages), read with a token minted
    * for the installation. For an org's scope on a cloud install the installation must be bound to that org and active, checked before the mint.
    */
@@ -1624,7 +1773,7 @@ export class GitHubAppCredentialProvider {
       return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true, options);
     }
     if (response.status === 422 && "orgId" in scope) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
-    return this.tokenOf(response);
+    return this.tokenOf(response, { installationId: installed.installationId, repository: `${installed.owner}/${installed.name}`, requested: permissions });
   }
 
   /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
@@ -1635,11 +1784,14 @@ export class GitHubAppCredentialProvider {
   }
 
   /** The token of a successful token response; anything else is GitHub being unavailable. */
-  private async tokenOf(response: Response): Promise<string> {
+  private async tokenOf(response: Response, issued?: Pick<GitHubTokenIssued, "installationId" | "repository" | "requested">): Promise<string> {
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${response.status}`);
     const body: unknown = await response.json();
     if (!body || typeof body !== "object" || !("token" in body) || typeof body.token !== "string") {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    }
+    if (issued !== undefined && this.options.onTokenIssued !== undefined) {
+      try { this.options.onTokenIssued({ ...issued, ...grantOf(body) }); } catch { /* a report that cannot be made never fails the mint */ }
     }
     return body.token;
   }
@@ -1952,6 +2104,25 @@ export function webhookSecretFromSecret(secret: string): string {
     // Do not include secret material in errors.
   }
   throw agentXError("RUNTIME_UNAVAILABLE", GITHUB_WEBHOOK_SECRET_MISSING);
+}
+
+/** The well-formed part of what GitHub says an installation token grants: permission names with read, write or admin, the repositories' names, the selection and the expiry. */
+function grantOf(body: Record<string, unknown>): Partial<Pick<GitHubTokenIssued, "granted" | "repositorySelection" | "repositories" | "expiresAt">> {
+  const out: Partial<Pick<GitHubTokenIssued, "granted" | "repositorySelection" | "repositories" | "expiresAt">> = {};
+  const permissions = body["permissions"];
+  if (permissions !== null && typeof permissions === "object" && !Array.isArray(permissions)) {
+    const granted = Object.fromEntries(Object.entries(permissions).filter(([name, level]) => /^[a-z_]{1,64}$/.test(name) && (level === "read" || level === "write" || level === "admin")));
+    out.granted = granted;
+  }
+  if (typeof body["repository_selection"] === "string" && /^[a-z]{1,16}$/.test(body["repository_selection"])) out.repositorySelection = body["repository_selection"];
+  if (Array.isArray(body["repositories"])) {
+    out.repositories = body["repositories"].flatMap((entry: unknown) => {
+      const name = entry !== null && typeof entry === "object" ? (entry as Record<string, unknown>)["name"] : undefined;
+      return typeof name === "string" && GITHUB_REPOSITORY_NAME.test(name) ? [name] : [];
+    }).slice(0, 20);
+  }
+  if (typeof body["expires_at"] === "string" && /^[0-9TZ:.+-]{10,40}$/.test(body["expires_at"])) out.expiresAt = body["expires_at"];
+  return out;
 }
 
 export function parseGitHubRepository(repositoryUrl: string): { owner: string; name: string } {

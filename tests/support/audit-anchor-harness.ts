@@ -76,7 +76,9 @@ export function harness(options: HarnessOptions = {}) {
   const keyOf = (entry: Record<string, unknown>): string => String(((entry.Key ?? entry.Item) as { pk: string }).pk);
   const sortOf = (entry: Record<string, unknown>): { sk?: string } => {
     const sk = ((entry.Key ?? entry.Item) as { sk?: unknown } | undefined)?.sk;
-    return sk === undefined ? {} : { sk: String(sk) };
+    if (sk === undefined) return {};
+    if (typeof sk !== "string") throw new Error("Audit harness sort key must be a string");
+    return { sk };
   };
   const documentClient = {
     send: async (command: Command) => {

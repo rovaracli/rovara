@@ -123,9 +123,9 @@ describe("judging a tsc run, so a crash or config error never passes as zero err
     if (!run.ok) expect(run.reason).not.toMatch(/out of memory/);
   });
 
-  it("runs tsc with a 6 GB heap, the same limit npm run lint gives ESLint, so the whole lint project fits", () => {
+  it("runs tsc with an 8 GB heap (more than the 6 GB npm run lint gives ESLint: the merged tree needs it), so the whole lint project fits", () => {
     expect(tscArguments("/repo/node_modules/typescript/bin/tsc")).toEqual([
-      "--max-old-space-size=6144",
+      "--max-old-space-size=8192",
       "/repo/node_modules/typescript/bin/tsc",
       "-p",
       "tsconfig.lint.json",

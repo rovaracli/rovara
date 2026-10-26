@@ -5,7 +5,7 @@ import { evaluateProjectAuthority, readProjectAuthority, type ProjectAuthorityRe
 import { DEFAULT_DEVELOPER_TASK_POLICY, developerTaskPolicy, type SlackChannelBinding } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 
 const binding = (channelId: string, projectName = "payments-api"): SlackChannelBinding & { pk: string; sk: string } => ({
   pk: slackBindingPk(TEST_ORG, "T0BSHLLUGBD"), sk: `CHANNEL#${channelId}`,

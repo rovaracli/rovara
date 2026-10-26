@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AGENT_STEP_PREAMBLE, agentSessionKey, sessionQueuedSteersKey, WORKFLOW_THREAD_NOTES_MAX, orgMemberKey } from "../../packages/contracts/src/index.js";
-import { renderRunInput } from "../../packages/contracts/src/agent-run.js";
+import { renderRunInput } from "../../packages/contracts/src/agent-run-node.js";
 import { AGENT_STEP_INPUTS_MAX_BYTES } from "../../packages/contracts/src/protocol.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";

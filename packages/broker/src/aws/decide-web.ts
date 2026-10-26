@@ -6,14 +6,14 @@ import { AgentXError, agentXError } from "@agentx/contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {
-  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, endOfFailure, endedWords, requireDecideSession, settleSession,
+  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, endOfFailure, endedWords, requireDecideNavigation, requireDecideSession, settleSession,
   type DecideRequestContext, type DecisionEnd,
 } from "../developer/decide-session.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 
 const APPROVE_PATH = /^\/v1\/app\/approve\/([^/]+)$/;
 const MAX_FORM_BYTES = 2_048;
-const NO_STORE = { "cache-control": "no-store", "referrer-policy": "same-origin" };
+const NO_STORE = { "cache-control": "no-store", "referrer-policy": "same-origin", "cross-origin-opener-policy": "same-origin" };
 
 /** Whether the path belongs to the confirmation page (`/v1/app/approve/...`); the caller answers anything else. */
 export const isDecidePagePath = (pathname: string) => pathname.startsWith("/v1/app/approve/");
@@ -27,6 +27,11 @@ const wordsOf = (error: AgentXError) => error.message.replace(`${error.code}: `,
  * then removes from the address bar) or, with no ticket, to the identify step.
  */
 export async function routeDecidePage(context: DecideRequestContext | undefined, request: AdaptedHttpRequest, url: URL): Promise<PageResponse> {
+  try { requireDecideNavigation(request); }
+  catch (error) {
+    if (error instanceof AgentXError && error.code === "FORBIDDEN") return refusedPage(403, "Open this approval", wordsOf(error));
+    throw error;
+  }
   if (context === undefined) throw agentXError("NOT_FOUND", "route not found");
   const approvalId = APPROVE_PATH.exec(url.pathname)?.[1];
   if (approvalId === undefined || !APPROVAL_ID_PATTERN.test(approvalId) || (request.method !== "GET" && request.method !== "POST")) return notFoundPage();

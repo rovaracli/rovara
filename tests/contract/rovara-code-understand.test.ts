@@ -19,18 +19,17 @@ import {
   ANSWERS_BLOCK_HEADER, PLAN_UNDERSTANDING_HEADER, UNDERSTAND_REQUEST_HEADER, UNDERSTAND_RULES, understandPrompt,
 } from "../../packages/broker/src/rovara-code/understand.js";
 import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { ModelSelection } from "../../packages/contracts/src/models.js";
+import type { ModelSelection } from "../../packages/contracts/src/models-node.js";
 import {
   INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_TIMED_OUT_MESSAGE,
   UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, UNDERSTAND_WATCHDOG_GRACE_MINUTES, checkIntentAssessment, intentAssumptionLine, readIntentArtifact, readIntentBlock,
   type IntentAssessment, type IntentQuestion,
 } from "../../packages/contracts/src/index.js";
-import {
-  WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand,
-} from "../../packages/contracts/src/task-workflow.js";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";

@@ -9,10 +9,10 @@ import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
@@ -1280,4 +1280,28 @@ describe("a confirmed change applied before its record ended is done when its ha
     const refused = await getApprovalSubjectHandler("agent_share")!(deps, { ...approvals()[0]!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
     expect(refused?.message).toMatch(/^AGENT_REVISION_CONFLICT: Who this agent is shared with changed/);
   });
+});
+
+for (const issue of ["archived base", "missing version", "missing skill", "layer loop"] as const) it("keeps a draft readable and repairable with " + issue, async () => {
+ const f=await setup(),base=await f.create(MAYA);await f.seed(base,SAFE);const child=await f.create(MAYA,SAFE,{extends:base});
+ const {agentKey}=await import("@agentx/contracts"),key=agentKey(TEST_ORG,child,"DRAFT"),stored=f.db.get(key)!;
+ if(issue==="archived base")await f.call(MAYA,"POST",`/v1/app/agents/${base}/archive`,{});
+ if(issue==="missing version")f.db.set({...stored,extends:{agentId:base,version:999}});
+ if(issue==="missing skill")f.db.set({...stored,overlay:{...SAFE,skills:{add:[{skillId:"skl_"+"z".repeat(20)}]}}});
+ if(issue==="layer loop")f.db.set({...stored,extends:{agentId:child,version:1}});
+ const answer=await f.call(MAYA,"GET",`/v1/app/agents/${child}/draft`);expect(answer.status).toBe(200);expect(answer.body.draft).toMatchObject({revision:stored.revision});expect(answer.body.resolved).toBeUndefined();expect(answer.body.base).toBeUndefined();expect((answer.body.problems as Array<{path:string;message:unknown}>).some(problem=>problem.path===(issue==="missing skill"?"skills":"extends")&&typeof problem.message==="string"&&problem.message.length>0)).toBe(true);
+ const repaired=await f.call(MAYA,"PUT",`/v1/app/agents/${child}/draft`,{expectedRevision:stored.revision,overlay:SAFE,extends:"rovara-code"});expect(repaired.status).toBe(200);
+});
+it("preserves the store's budget error and the original finite-only body bounds",async()=>{
+ const {AgentBudgetBodySchema}=await import("@agentx/contracts"),requestId=randomUUID();
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:1_000_001}).success).toBe(true);
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:-1}).success).toBe(true);
+ expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:Infinity}).success).toBe(false);
+ const f=await setup(),id=await f.create(MAYA),answer=await f.call(MAYA,"PUT",`/v1/app/agents/${id}/budget`,{monthlyUsd:-1});
+ expect(answer.status).toBe(400);expect((answer.body.error as {message:string}).message).toContain("monthlyUsd: must be a number of dollars, zero or more");
+});
+it("returns the exact resolved recipes alongside their authorized diff",async()=>{
+ const f=await setup(),id=await f.create(MAYA);await f.seed(id,SAFE);await f.saveDraft(MAYA,id,{...SAFE,instructions:"Check duplicate webhooks before implementation."});
+ const answer=await f.call(MAYA,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`);expect(answer.status).toBe(200);expect(answer.body.comparison).toMatchObject({before:{instructions:[expect.objectContaining({text:SAFE.instructions})]},after:{instructions:[expect.objectContaining({text:"Check duplicate webhooks before implementation."})]}});
+ expect((await f.call(EVE,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`)).status).toBe(404);
 });

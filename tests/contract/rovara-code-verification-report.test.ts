@@ -5,12 +5,9 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { VerificationReportSchema, redactText } from "../../packages/contracts/src/index.js";
 import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { codingProgram } from "../../packages/contracts/src/agent-recipe.js";
+import { codingProgram } from "../../packages/contracts/src/agent-recipe-node.js";
 import { builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
-import {
-  WorkflowSnapshotSchema, blockWorkflow, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, returnWorkflowToImplementation, submitWorkflowArtifact,
-  submitPlanCritique, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, blockWorkflow, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, returnWorkflowToImplementation, submitWorkflowArtifact, submitPlanCritique, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import {
   IMPLEMENT_TEST_RULE, TEST_PATH_PATTERNS, isTestPath, verificationReport, withTestRule, workflowReviewRound,
 } from "../../packages/broker/src/rovara-code/verification-report.js";
@@ -23,7 +20,7 @@ import { resumeAfterRunLimitApproval, startTaskWorkflowImplementationFromSystem 
 
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { runLimitBlockText } from "../../packages/contracts/src/spend.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies.js";
+import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { agentGuardrailsKey, builtinSettingsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

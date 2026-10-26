@@ -16,6 +16,8 @@ export interface SessionChange {
   stepChanged: boolean;
   /** The refresh that ended the session. */
   ended: boolean;
+  /** The change is one a local session made over its limit on changes that tell followers: followers are left out unless the session ended. */
+  quiet?: true;
   at: string;
 }
 

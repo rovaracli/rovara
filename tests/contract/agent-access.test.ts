@@ -12,11 +12,11 @@ import {
 } from "../../packages/broker/src/agents/access.js";
 import { AgentStore, type AgentRecord } from "../../packages/broker/src/agents/store.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENT_IDS } from "../../packages/contracts/src/agent.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import { BUILTIN_AGENT_IDS } from "../../packages/contracts/src/agent-node.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import { agentKey, orgProjectCatalogKey, principalSharesKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

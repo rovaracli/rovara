@@ -10,11 +10,11 @@ import { routeChainRequest, type ChainRouteDependencies } from "../../packages/b
 import { chainTriggerHooksFor, triggerHooksFor } from "../../packages/broker/src/triggers/lifecycle.js";
 import type { ScheduledTrigger, TriggerHook, TriggerHookReader, TriggerScheduler } from "../../packages/broker/src/triggers/ports.js";
 import { TriggerStore, type TriggerRecord } from "../../packages/broker/src/triggers/store.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { connectionKey, connectionsKey } from "../../packages/contracts/src/connections.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 import { INVESTIGATE_THEN_FIX } from "./chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "./chain-gate-world.js";
 import type { WorldOptions } from "./chain-run-world.js";

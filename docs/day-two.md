@@ -212,6 +212,7 @@ set` (the CloudFormation console, say) are not recorded. Each key lives in exact
 | `budget.monthlyUsd` | stack parameter BudgetMonthlyUsd on agentx-<env>-control-plane | 0 | 0 for none |
 | `budget.scope` | stack parameter BudgetScope on agentx-<env>-control-plane | tag | tag or account |
 | `audit.lock` | stack parameter AuditLockProfile on agentx-<env>-control-plane | production (trial in staging, test and dev*, when init chose nothing) | production or trial; trial to production only, never back: records written from now on are locked for 3 years and can't be shortened |
+| `rovaraCode.v2` | stack parameter RovaraCodeV2Enabled on agentx-<env>-control-plane | false | true or false; true makes Rovara Code version 2 available in this environment (an org admin then adopts it; new tasks of an org that did run it, existing tasks keep their version). Named environments only; a released install never has it |
 | `mcp.confirmElicitation` | stack parameter McpConfirmElicitation on agentx-<env>-control-plane | enabled | enabled or disabled; disabled leaves only the Slack Confirm button or the CLI to confirm an admin change |
 
 - **Models.** A new model must answer a one-token call before anything changes. `set` then

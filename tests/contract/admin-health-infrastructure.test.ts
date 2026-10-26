@@ -179,6 +179,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/lifecycle.ts",
       // Plan 5, Task 17: a removed device keeps its record, and its row in the member's list, for a year (`revokedAt`), then the TTL deletes both.
       "packages/broker/src/devices/store.ts",
+      // Plan 5, Task 18: a local session's state, its turns, its device entry and a device's commands (and the counter beside them) expire on it (local-sessions.ts writes them; a command past its time is left out of a poll).
+      "packages/broker/src/devices/local-sessions.ts",
+      // Plan 5, Task 19: a move to a Mac starts the Mac's state and entry for the session with the same expiry (handoff.ts writes them), and the move's request item expires like a stop's.
+      "packages/broker/src/agent-sessions/handoff.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
@@ -203,6 +207,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/ci-fix.ts",
       // Rovara Code (Plan 6 Task 16): the replies a landed push of an automatic comment fix left to send (30 days, then the TTL deletes them); only feedback-autonomy.ts writes and sends them.
       "packages/broker/src/rovara-code/feedback-autonomy.ts",
+      // Rovara Code (Plan 6 Task 18): the record that a review reminder was sent (and when the next may be), kept for the waiting window (REVIEW_WAIT_RETENTION_DAYS), then the TTL deletes it; only nudges.ts writes and reads it.
+      "packages/broker/src/rovara-code/nudges.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

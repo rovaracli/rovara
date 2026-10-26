@@ -1,0 +1,37 @@
+AI agent detected
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[Warning] Template validation found issues in your templates (reported as warnings).
+Set feature flag "@aws-cdk/core:validateAgainstDefaultRules" to true to turn these into errors.
+file:///repo/infra/dist/lib/app.js:111:23
+WARNING Outputs/EffectiveBoundaryArn/Value.Fn::If.2: Reference to 'DefaultPermissionsBoundary' which is conditional on 'UseDefaultBoundary' - target may not exist (CloudFormation Validate)
+   AgentXAccess aws-cdk-lib.Stack
+   Suggested fix: Add a Condition to the output that implies the target's condition
+   Acknowledge with 'CloudFormation-Validate::W1001'
+Stack AgentXAccess (agentx-staging-access) (aws://944937319445/us-west-2)
+There were no differences (CDK metadata changes were hidden, run cdk diff --strict to show)
+
+
+✨  Number of stacks with differences: 0

@@ -32,6 +32,7 @@ import {
   type AgentPrincipal,
   type AgentSessionRecord,
   type ApprovalId,
+  type AuditProof,
   type NeedsConfirmation,
   type OrgId,
   type OrgRole,
@@ -49,6 +50,10 @@ import {
   type SessionShareOrgSubject,
 } from "../agents/approvals.js";
 import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
+import { auditSessionSharedOrg } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditDeps } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
 import { effectiveOwnerOf, readSessionShares, requireSessionLevel, resolveSessionAccess, sessionLevelOf, type SessionAccessDependencies, type SessionCaller, type SessionShareRow } from "./access.js";
 import { sameMember } from "../agents/lifecycle.js";
 import { removeFollower } from "./followers.js";
@@ -119,8 +124,8 @@ async function memberRole(deps: SessionShareDependencies, orgId: OrgId, develope
   return role.success ? role.data : undefined;
 }
 
-/** Refuses a principal that isn't in the company, and a `use` or `edit` share to a project viewer of the session's project (m8). */
-async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, session: AgentSessionRecord, principal: AgentPrincipal, level: SessionLevel): Promise<void> {
+/** Refuses a principal that isn't in the company, and a `use` or `edit` share to a project viewer of the session's project (m8). A local session's registration checks its first shares the same way (Task 18). */
+export async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, session: Pick<AgentSessionRecord, "project">, principal: AgentPrincipal, level: SessionLevel): Promise<void> {
   if (principal.kind === "member") {
     const role = await memberRole(deps, orgId, principal.developerId);
     // The words never name the person: an id from another company must not reveal who it is.
@@ -147,6 +152,11 @@ interface ApplyInput {
   /** Names this write: its request item, its event and its notice are keyed by it, so a repeat of it writes the same ones. */
   requestId: string;
   fingerprint: string;
+  /**
+   * Set only by the confirmation of a share with the whole company (Task 22): the ledger's outbox and the decision's proof. The event goes in this write's transaction, with the
+   * approval's id as its occurrence (`requestId` is that id there). A share with a person or a project is not recorded, so its callers leave this out.
+   */
+  audit?: { deps: AuditDeps; proof?: AuditProof };
 }
 
 /** The deterministic position of a change notice among the owner's notices written in one instant (the feed's own counter is Task 8's). */
@@ -154,7 +164,7 @@ const noticeNumber = (seed: string) => Number.parseInt(createHash("sha256").upda
 
 /**
  * Writes one share in one transaction: the session's revision (conditional, so a lost race is the conflict text), the share, its index item, the
- * `shared` event, a notice with an undo for the owner when someone else shared it, and the request's item last. A share already at that level writes
+ * `shared` event, a notice with an undo for the owner when someone else shared it, the audit item of a company-wide share, and the request's item last. A share already at that level writes
  * only the request item. A lost race on the request item is a repeat: its stored outcome is returned.
  */
 async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Promise<SessionShareRow> {
@@ -214,15 +224,23 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
       [INDEX_EXPIRY_ATTRIBUTE]: secondsOf(nowMs) + CHANGES_FEED_DAYS * DAY_SECONDS,
     }));
   }
+  const events = input.audit === undefined ? [] : await tryAuditEvents(input.audit.deps, () => [auditSessionSharedOrg({
+    orgId, actor: auditActorOf(input.sharer.developerId), occurredAt: at, occurrence: input.requestId, ...(input.audit?.proof === undefined ? {} : { proof: input.audit.proof }),
+    related: [ownerId, ...(session.subject.kind === "task" ? [session.subject.taskId] : session.subject.kind === "chain" ? [session.subject.chainRunId] : [])],
+    sessionId: session.sessionId, level,
+  })]);
+  if (input.audit !== undefined) items.push(...events.flatMap((event) => auditPending(input.audit!.deps, event)));
   items.push(requestItem({ share: row }));
-  await send(deps, items, 0, input);
+  // A repeat of a request that already committed wrote nothing, and its events were flushed by the call that wrote them.
+  if (await send(deps, items, 0, input) === "written" && input.audit !== undefined) await flushAuditEvents(input.audit.deps, events);
   return row;
 }
 
 /** Sends the transaction; a cancelled one is read for what it means: the session moved (the conflict text), or this very request already committed (its stored outcome). */
-async function send(deps: SessionShareDependencies, items: TransactItem[], revisionIndex: number | undefined, input: ApplyInput): Promise<void> {
+async function send(deps: SessionShareDependencies, items: TransactItem[], revisionIndex: number | undefined, input: ApplyInput): Promise<"written" | "repeat"> {
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    return "written";
   } catch (error) {
     const failed = failedIndexes(error);
     if (failed === undefined) throw error;
@@ -230,7 +248,7 @@ async function send(deps: SessionShareDependencies, items: TransactItem[], revis
       const earlier = await readRequest(deps, input.orgId, input.sharer.developerId, input.requestId);
       if (earlier !== undefined) {
         if (earlier.fingerprint !== input.fingerprint) throw agentXError("IDEMPOTENCY_CONFLICT", "this request ID was already used for a different request");
-        return;
+        return "repeat";
       }
     }
     if (revisionIndex !== undefined && failed.has(revisionIndex)) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
@@ -405,7 +423,7 @@ export function registerSessionShareApprovals(): void {
       throw error;
     }
   });
-  registerApprovalSubjectHandler(SHARE_RULE, async (deps, record) => {
+  registerApprovalSubjectHandler(SHARE_RULE, async (deps, record, decision) => {
     if (!isChange(record)) return;
     const sessions = deps.agentSessions;
     if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Sharing sessions isn't available right now.");
@@ -421,6 +439,7 @@ export function registerSessionShareApprovals(): void {
       orgId: record.orgId, session, sharer: { developerId: decider.developerId, name: await nameOf(sessions, decider.developerId) ?? "Someone" },
       principal: { kind: "org" }, level: subject.level, requestId: record.approvalId,
       fingerprint: sha256({ op: "share", sessionId: subject.sessionId, principal: { kind: "org" }, level: subject.level }),
+      audit: { deps, ...(decision?.proof === undefined ? {} : { proof: decision.proof }) },
     });
   });
 }

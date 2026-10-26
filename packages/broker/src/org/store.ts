@@ -22,6 +22,7 @@ import {
   orgEmailKey,
   orgInviteKey,
   orgInviteRequestKey,
+  orgRenameRequestKey,
   orgMemberKey,
   orgMetaKey,
   orgPk,
@@ -41,7 +42,7 @@ import {
   type OrgRole,
 } from "@agentx/contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
-import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgClosed } from "../audit/events.js";
+import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
@@ -176,6 +177,33 @@ export class OrgStore {
   async getOrg(orgId: OrgId): Promise<OrgRecord | undefined> {
     const item = await this.get(orgMetaKey(orgId));
     return item === undefined ? undefined : (strip(item) as unknown as OrgRecord);
+  }
+
+  /** Owner checked again inside the atomic rename, replay marker and audit transaction. */
+  async renameOrg(input: { orgId: OrgId; developerId: string; requestId: string; name: string }): Promise<void> {
+    const { orgId, developerId, requestId, name } = input;
+    const key = orgRenameRequestKey(orgId, requestId), digest = sha256Hex(JSON.stringify({ developerId, name }));
+    const replay = async () => {
+      const previous = await this.get(key);
+      if (previous === undefined) return false;
+      if (previous.digest !== digest) throw coded("IDEMPOTENCY_CONFLICT", "that request was used for a different rename");
+      return true;
+    };
+    if (await replay()) return;
+    const at = this.iso();
+    const event = await tryAuditEvent(this.deps(), () => auditOrgRenamed({ orgId, actor: { kind: "member", id: developerId }, occurredAt: at, occurrence: requestId }));
+    try {
+      await this.transact([
+        { ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "#role = :owner", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":owner": "owner" } } },
+        { Update: { TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET #name = :name, nameIsDefault = :no", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeNames: { "#name": "name" }, ExpressionAttributeValues: { ":name": name, ":no": false } } },
+        { Put: { TableName: this.input.tableName, Item: { ...key, digest, entityType: "ORG_RENAME_REQUEST" }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ...this.pendingFor(event),
+      ], failed => failed.has(0) ? coded("FORBIDDEN", "only an owner can rename the organization") : failed.has(2) ? coded("IDEMPOTENCY_CONFLICT", "that rename request was already used") : coded("NOT_FOUND", "your organization was not found"));
+    } catch (error) {
+      if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT" && await replay()) return;
+      throw error;
+    }
+    await this.flush(event);
   }
 
   /** Idempotent creation of an org with no owner (a single-org install's org, ruling R3). An existing org is left untouched. */

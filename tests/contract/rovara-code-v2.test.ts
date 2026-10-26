@@ -2,14 +2,11 @@
 // overlay like any step's, and nothing here asks for a different AI company (owner, question 10). Version 1 stays exactly as it was.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  ResolvedRecipeSchema, applyOverlay, codingProgram, formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, STEP_TOOLS,
-  type RecipeOverlay, type ResolvedRecipe, type ResolvedStep,
-} from "../../packages/contracts/src/agent-recipe.js";
+import { ResolvedRecipeSchema, STEP_TOOLS } from "../../packages/contracts/src/agent-recipe.js";
+import { applyOverlay, codingProgram, formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
 import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import {
-  WorkflowProgramSchema, WorkflowSnapshotSchema, advanceStage, createWorkflowSnapshot, nextProgramStep, type WorkflowProgram,
-} from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowProgramSchema } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, advanceStage, createWorkflowSnapshot, nextProgramStep, type WorkflowProgram } from "../../packages/contracts/src/task-workflow-node.js";
 import { crossCompanyTargets, stepForOperation } from "../../packages/broker/src/agents/dispatch.js";
 import { lessSafeChanges } from "../../packages/broker/src/agents/less-safe.js";
 

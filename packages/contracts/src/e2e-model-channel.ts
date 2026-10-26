@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { canonicalJson } from "./canonical-json.js";
-import type { E2ELimits } from "./e2e.js";
+import type { E2ELimits } from "./e2e-node.js";
 import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "./e2e-model-failure-classes.js";
 import { MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "./model-providers.js";
 
@@ -52,7 +52,6 @@ export const E2E_AGENT_STOP_CODES = [
   "AUTOMATION_UNSUPPORTED", "POLICY_DENIED", "STEP_BUDGET_EXHAUSTED", "STEP_TIMEOUT", "STEP_NO_CONCLUSION", "ASSERTION_FAILED",
   "ASSERTION_INCONCLUSIVE", "REPLAY_STALE", "CANCELLED",
 ] as const;
-
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Route definition

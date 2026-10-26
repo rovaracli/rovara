@@ -1,0 +1,73 @@
+AI agent detected
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[Warning] Template validation found issues in your templates (reported as warnings).
+Set feature flag "@aws-cdk/core:validateAgainstDefaultRules" to true to turn these into errors.
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Conditions/HasPermissionsBoundary: Condition 'HasPermissionsBoundary' is not used by any resource or Fn::If (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W8001'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/OpenRouterSecretArn: Parameter 'OpenRouterSecretArn' is not referenced anywhere in the template (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2001'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/OpenRouterSecretArn: Parameter 'OpenRouterSecretArn' is not referenced anywhere in the template (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2001'
+
+file:///repo/infra/dist/lib/app.js:149:5
+WARNING Parameters/OpenRouterSecretArn: Parameter 'OpenRouterSecretArn' is not referenced anywhere in the template (CloudFormation Validate)
+   AgentXProductionRuntime aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2001'
+Stack AgentXProductionRuntime (agentx-staging-runtime) (aws://944937319445/us-west-2)
+Parameters
+[+] Parameter E2eAgentModelId E2eAgentModelId: {"Type":"String","Default":"default","AllowedPattern":"^(default|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$","Description":"AI navigation model for browser checks: default (Rovara's recommendation) or an eligible model id"}
+[+] Parameter ModelFallback ModelFallback: {"Type":"String","Default":"none","AllowedPattern":"^(none|[A-Za-z0-9][A-Za-z0-9._:-]{0,79})$","Description":"Bedrock model used when a provider key secret is missing: none, or a Bedrock model id"}
+
+Resources
+[+] AWS::SSM::Parameter WorkerE2eAgentModelParameter WorkerE2eAgentModelParameter3B6AA65C
+[+] AWS::SSM::Parameter WorkerModelFallbackParameter WorkerModelFallbackParameter4DCAF22C
+
+
+
+✨  Number of stacks with differences: 1

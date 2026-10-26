@@ -7,7 +7,7 @@ import {
   DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, chainKey, agentGuardrailsKey, ledgerKey,
   type BudgetScope, type Payer, type SpendRequestRecord,
 } from "@agentx/contracts";
-import { PayerSchema } from "../../packages/contracts/src/agent-run.js";
+import { PayerSchema } from "../../packages/contracts/src/agent-run-node.js";
 import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

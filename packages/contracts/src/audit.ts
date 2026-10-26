@@ -117,6 +117,7 @@ export const AUDIT_ACTIONS = [
   "member.removed",
   "member.left",
   "org.closed",
+  "org.renamed",
   "project_member.changed",
   "project_member.removed",
   "identity.linked",
@@ -126,10 +127,12 @@ export const AUDIT_ACTIONS = [
   "session.owner_changed",
   "session.stopped",
   "session.retried",
+  "session.shared",
   "connection.saved",
   "connection.removed",
   "project_connector.changed",
   "guardrails.changed",
+  "local_agents.policy_changed",
   "comment_trigger_opt_out.applied",
   "comment_trigger_opt_out.lapsed",
   "egress_domain.decided",
@@ -193,7 +196,8 @@ const SPEND_REQUEST_DECIDED_FACTS = [...SPEND_REQUEST_FACTS, "approvedAmountCent
 /**
  * The facts each action may carry. Every value is a fixed-vocabulary word, a count, a sequence number, an amount
  * in cents or a flag: never a name, an email, a login, a repository or project name, a domain or a reason.
- * Where a key is a version, `from` and `to` are integers (a spend threshold in cents, the multiplier in hundredths).
+ * Where a key is a version, `from` and `to` are integers (a spend threshold in cents, the multiplier in hundredths). For `local_agents.policy_changed` they are
+ * a flag (`allowed`), a comma-joined list of the tools' fixed names or `none` (`tools`), and `all` or the number of projects listed (`projects`).
  */
 export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "approval.decided": ["kind", "decision", "subjectKind", "class"],
@@ -216,6 +220,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "member.removed": ["role"],
   "member.left": ["role"],
   "org.closed": ["plan"],
+  "org.renamed": [],
   "project_member.changed": ["fromRole", "toRole"],
   "project_member.removed": ["role"],
   "identity.linked": ["provider"],
@@ -225,10 +230,12 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "session.owner_changed": ["sessionKind", "payerMoved"],
   "session.stopped": ["sessionKind"],
   "session.retried": ["sessionKind", "branch"],
+  "session.shared": ["level", "principalKind"],
   "connection.saved": ["connectorType"],
   "connection.removed": ["connectorType"],
   "project_connector.changed": ["connectorType", "revision", "change"],
   "guardrails.changed": ["revision", "widened"],
+  "local_agents.policy_changed": ["field", "from", "to"],
   "comment_trigger_opt_out.applied": ["scope"],
   "comment_trigger_opt_out.lapsed": ["scope"],
   "egress_domain.decided": ["decision"],

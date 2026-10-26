@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
+import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
+import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
@@ -159,6 +161,51 @@ describe("a Rovara Code task, through the real broker", () => {
     const own = await t.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/cancel`, { requestId: randomUUID() });
     expect(own.status, JSON.stringify(own.body)).toBe(200);
     expect(t.operations(task.workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
+  });
+
+  it("reads stopped at once, not running, when the stop lands before the instructions ran (v0.4.6 staging, slow stop)", async () => {
+    const t = await setup();
+    // The task is made and its workspace is still being prepared: the instructions are pending, so the stop is the pointer's `cancelledAt` and no operation is cancelled.
+    const reply = await t.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const task = reply.body.task as { taskId: string; sessionId: string };
+    expect(t.session(task.sessionId).record.summary.status).toBe("starting");
+    const stopped = await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId: randomUUID() });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    // The answer and the stored summary both say so right away, with no sweep in between.
+    expect((stopped.body.session as { status: string }).status).toBe("stopped");
+    expect(t.session(task.sessionId)).toMatchObject({ record: { summary: { status: "stopped" } }, open: true });
+  });
+
+  it("ends a session whose plan is ready when it is stopped: the plan is no longer offered for approval (v0.4.6 staging)", async () => {
+    const t = await setup();
+    const task = await startWorkflow(t);
+    const planning = t.steps(task.workspaceId)[0]!;
+    const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
+    const digest = await finishPlanningWithMarkdown(t, task.workspaceId, planning.id, plan);
+    // The stream projector's refresh, which the harness does not run: the session now waits for its owner.
+    await refreshSessionSummary({ documentClient: t.db, tableName: "state", now: Date.now }, TEST_ORG, task.sessionId);
+    expect(t.session(task.sessionId).record.summary.status).toBe("needs_person");
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+    grantProject(t.db, OMAR);
+    expect((await t.share(task.sessionId)).status).toBe(200);
+    const requestId = randomUUID();
+    const stopped = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toEqual([{ type: "stopped", text: "Omar Diaz stopped this session." }]);
+    // The session is over, not waiting on its owner, and the task's plan step is closed with no one asked to approve.
+    expect(t.session(task.sessionId)).toMatchObject({ record: { summary: { status: "cancelled", needsPeople: [], pendingApprovals: 0 } }, open: false });
+    expect(t.meta(task.taskId)).toMatchObject({ workflow: { stage: "CLOSED", state: "COMPLETE" } });
+    const view = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { waiting?: boolean; stage: string } };
+    expect(view.workflow.stage).toBe("CLOSED");
+    // The old approval is refused, and nothing was started by it.
+    const approve = await t.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: 2, decision: "APPROVE", reason: "Looks right", artifactDigest: digest });
+    expect(approve.status).toBeGreaterThanOrEqual(400);
+    expect(t.steps(task.workspaceId).filter((operation) => operation.status !== "SUCCEEDED")).toEqual([]);
+    // The same request again changes nothing.
+    const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId });
+    expect(again.status).toBe(200);
+    expect(t.events(task.sessionId).filter((event) => event.type === "stopped")).toHaveLength(1);
   });
 
   it("fences the stop on the task's People revision: a task with a People list is stopped at the revision the list has", async () => {

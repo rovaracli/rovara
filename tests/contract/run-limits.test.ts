@@ -14,10 +14,10 @@ import {
   acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit,
 } from "../../packages/broker/src/spend/estimate.js";
 import { writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
-import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentRunsKey, projectAgentKey, projectAiKey, projectMemberKey, runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, runLimitBlockText, type RunEstimate } from "../../packages/contracts/src/spend.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";

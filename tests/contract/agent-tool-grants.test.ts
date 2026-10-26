@@ -6,8 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CatalogCache, connectMcp, type McpConnection } from "@agentx/gateway";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe-node.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { validateRecipeForOrg } from "../../packages/broker/src/agents/guardrails.js";
 import { applyAgentStep, givesAgentTools } from "../../packages/broker/src/agents/dispatch.js";
 import { DEFAULT_AGENT_GUARDRAILS as GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
@@ -25,7 +25,7 @@ import { callConnector, connectorCatalogKey, discoverConnector, type ScopeDiscov
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import type { OrgId, WorkspaceInstance } from "../../packages/contracts/src/index.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
-import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors.js";
+import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors-node.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";
 import { treeReader, workflow } from "../support/fake-repository.js";

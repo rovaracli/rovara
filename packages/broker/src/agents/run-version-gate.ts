@@ -12,7 +12,6 @@ import { agentApprovers, orgAdminApprovers, requireActiveForConfirmation, resolv
 import { requireAgentEnabled } from "./guardrails.js";
 import { resolveAgentForTask, type RosterDependencies } from "./roster.js";
 import { readRunRequest } from "./runs.js";
-import type { AgentRecord } from "./store.js";
 
 /** What a start that waits for the owner answers (the route's 202 body). */
 export interface WaitingForOwner { confirmUrl: string; changes: string[] }
@@ -40,7 +39,7 @@ export async function gateRunVersion(deps: RosterDependencies, caller: AgentCall
   // The run was already started (the owner approved it, or the first answer was repeated): the start answers it, whatever the versions or the roster are now.
   if (await readRunRequest(deps, caller.orgId, request.requestId) !== undefined) return undefined;
   const { agent } = await requireAgentAccess(deps, caller, request.agent.agentId, "use");
-  const custom = "owner" in agent ? agent as AgentRecord : undefined;
+  const custom = "owner" in agent ? agent : undefined;
   const { current, safety } = await versionSafety(deps, caller.orgId, request.agent.agentId, version, custom);
   if (safety.kind !== "less_safe" || current === undefined) return undefined;
   const resolved = await resolveAgentForTask(deps, caller, { project: request.project, agent: { agentId: request.agent.agentId, version }, versionApproved: true });

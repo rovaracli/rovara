@@ -9,7 +9,7 @@ import {
   agentKey, errorStatus, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
   type BudgetScope, type OrgId, type PauseScope,
 } from "@agentx/contracts";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { MINIMUM_REMAINING_USD, keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { SCOPE_ERRORS, admitWork, mintOperationKey, type AdmitWorkInput, type MintOperationKeyInput } from "../../packages/broker/src/spend/admission.js";
@@ -1023,7 +1023,7 @@ describe("a task's key at the broker", () => {
     const recipeItem = t.db.find((item) => item.pk === `DEVTASK#${r.taskId}` && item.sk === "RECIPE")[0] as unknown as { recipe: { steps: Array<{ kind: string; settings: Record<string, unknown> }> }; digest: string };
     const step = recipeItem.recipe.steps.find((candidate) => candidate.kind === "build")!;
     step.settings.stepBudgetUsd = 1.5;
-    const { recipeDigest } = await import("../../packages/contracts/src/agent-recipe.js");
+    const { recipeDigest } = await import("../../packages/contracts/src/agent-recipe-node.js");
     const digest = recipeDigest(recipeItem.recipe as never);
     t.db.set({ ...recipeItem, digest });
     t.db.set({ ...r.task(), agent: { ...(r.task() as unknown as { agent: object }).agent, digest } });

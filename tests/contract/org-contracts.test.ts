@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OrgIdSchema, OrgRoleSchema, developerOrgKey, newOrgId, orgEmailKey, orgInviteKey, orgMemberKey,
   orgMetaKey, orgPk, orgScoped, singleOrgIdForEnv, slackTeamOrgKey,
-} from "../../packages/contracts/src/org.js";
+} from "../../packages/contracts/src/org-node.js";
 import * as contracts from "../../packages/contracts/src/index.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;

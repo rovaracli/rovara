@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { startChainRun } from "../../packages/broker/src/chains/runner.js";
-import { AgentSessionRecordSchema } from "../../packages/contracts/src/agent-sessions.js";
+import { AgentSessionRecordSchema } from "../../packages/contracts/src/agent-sessions-node.js";
 import { agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { ARJUN, MAX, ORG_A, PRIYA, callerOf, setupWorld, type ChainWorld } from "../support/chain-run-world.js";

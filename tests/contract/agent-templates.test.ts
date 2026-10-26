@@ -1,7 +1,7 @@
 // Plan 3 Task 5: the built-in agents are versioned code. A published version never changes; a change is a new version.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from "../../packages/contracts/src/agent.js";
+import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from "../../packages/contracts/src/agent-node.js";
 import {
   AgentConnectorTypeSchema,
   ResolvedRecipeSchema,
@@ -10,7 +10,7 @@ import {
   recipeProblems,
   recipeRunner,
   type ResolvedRecipe,
-} from "../../packages/contracts/src/agent-recipe.js";
+} from "../../packages/contracts/src/agent-recipe-node.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 
 const DIGESTS = JSON.parse(readFileSync(new URL("../fixtures/builtin-agent-digests.json", import.meta.url), "utf8")) as Record<string, Record<string, string>>;

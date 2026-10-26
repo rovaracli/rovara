@@ -8,7 +8,7 @@ import {
   developerOrgKey, githubInstallationKey, orgBanKey, orgEmailKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey,
   slackTeamOrgKey, trialGithubKey, type OrgRole,
 } from "@agentx/contracts";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { routeDeveloperTaskRequest, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";

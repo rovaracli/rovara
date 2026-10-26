@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_SERVICES, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
+  BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
 
@@ -415,7 +415,8 @@ describe("default permission boundary", () => {
 
   it("allows each needed service by wildcard, never IAM, Organizations or Account", () => {
     const services = allows.find((s) => s.Sid === "Services")!;
-    expect(services.Action).toEqual(BOUNDARY_SERVICES.map((s) => `${s}:*`));
+    // CloudFront is the exception: action families (not cloudfront:*), as a ceiling over the service role's exact actions.
+    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS]);
     expect(services.Resource).toBe("*");
     for (const service of ["iam", "organizations", "account", "sts"]) expect(BOUNDARY_SERVICES).not.toContain(service);
     // The service role's own wildcard services must all pass the boundary it runs under.
@@ -510,5 +511,85 @@ describe("default permission boundary", () => {
     expect(services).not.toContain("servicequotas:*");
     expect(BOUNDARY_SERVICES).not.toContain("servicequotas");
     expect(allows.find((s) => s.Sid === "Quotas")).toEqual({ Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" });
+  });
+});
+
+describe("CloudFront permissions (web app deploy)", () => {
+  const arn = (type: string) => `arn:aws:cloudfront::123456789012:${type}/*`;
+  const cloudfront = (statements: ReturnType<typeof serviceRoleStatements>) => statements.filter((s) => s.Sid?.startsWith("CloudFront"));
+  const service = serviceRoleStatements(scope);
+
+  it("never grants cloudfront:* to the service role or the boundary", () => {
+    for (const statements of [service, defaultBoundaryStatements(scope)]) {
+      expect(statements.flatMap((s) => s.Action)).not.toContain("cloudfront:*");
+      expect(SERVICE_ROLE_SERVICES).not.toContain("cloudfront");
+      expect(BOUNDARY_SERVICES).not.toContain("cloudfront");
+    }
+  });
+
+  it("creates a distribution, and tags on create, only with this environment's tag", () => {
+    const create = service.find((s) => s.Sid === "CloudFrontDistributionCreate")!;
+    expect(create).toEqual({ Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: ["cloudfront:CreateDistribution"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    // On "*": which resource CloudFront authorizes the create-time tag call against is not known, so it works whichever way CloudFormation tags; the request tag and the two Denies keep it narrow.
+    const tag = service.find((s) => s.Sid === "CloudFrontDistributionTag")!;
+    expect(tag).toEqual({ Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: ["cloudfront:TagResource"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+  });
+
+  it("changes a distribution, a tag-only update included, only when it carries this environment's tag", () => {
+    const manage = service.find((s) => s.Sid === "CloudFrontDistributions")!;
+    expect(manage.Resource).toBe(arn("distribution"));
+    expect(manage.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    expect([...manage.Action].sort()).toEqual(["cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig", "cloudfront:ListTagsForResource", "cloudfront:TagResource", "cloudfront:UntagResource", "cloudfront:UpdateDistribution"]);
+  });
+
+  it("denies tagging a distribution that carries another environment's tag, and setting another environment's value", () => {
+    expect(service.find((s) => s.Sid === "CloudFrontKeepEnvironmentTag")).toEqual({
+      Sid: "CloudFrontKeepEnvironmentTag", Effect: "Deny", Action: ["cloudfront:TagResource"], Resource: arn("distribution"),
+      Condition: { Null: { "aws:ResourceTag/agentx:env": "false" }, StringNotEquals: { "aws:ResourceTag/agentx:env": "staging" } },
+    });
+    // Present and different. A call that sends no agentx:env (a tag-only update of other tags) is not matched, so the ResourceTag Allow above takes it.
+    expect(service.find((s) => s.Sid === "CloudFrontOnlyOwnEnvironmentTag")).toEqual({
+      Sid: "CloudFrontOnlyOwnEnvironmentTag", Effect: "Deny", Action: ["cloudfront:TagResource"], Resource: "*",
+      Condition: { Null: { "aws:RequestTag/agentx:env": "false" }, StringNotEquals: { "aws:RequestTag/agentx:env": "staging" } },
+    });
+  });
+
+  it("scopes the origin access control and response headers policy actions by ARN, and puts only the resource-less actions on \"*\"", () => {
+    const policies = service.find((s) => s.Sid === "CloudFrontPolicies")!;
+    expect(policies.Resource).toEqual([arn("origin-access-control"), arn("response-headers-policy")]);
+    expect([...policies.Action].sort()).toEqual([
+      "cloudfront:DeleteOriginAccessControl", "cloudfront:DeleteResponseHeadersPolicy", "cloudfront:GetOriginAccessControl", "cloudfront:GetOriginAccessControlConfig", "cloudfront:GetResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicyConfig", "cloudfront:UpdateOriginAccessControl", "cloudfront:UpdateResponseHeadersPolicy",
+    ]);
+    const onStar = cloudfront(service).filter((s) => s.Effect === "Allow" && s.Resource === "*");
+    expect(onStar.map((s) => s.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontDistributionTag", "CloudFrontUnscoped"]);
+    expect([...service.find((s) => s.Sid === "CloudFrontUnscoped")!.Action].sort()).toEqual([
+      "cloudfront:CreateOriginAccessControl", "cloudfront:CreateResponseHeadersPolicy", "cloudfront:GetCachePolicy", "cloudfront:ListCachePolicies", "cloudfront:ListDistributions", "cloudfront:ListOriginAccessControls", "cloudfront:ListResponseHeadersPolicies",
+    ]);
+  });
+
+  it("gives the boundary only the CloudFront action families, on its Services statement", () => {
+    const boundary = defaultBoundaryStatements(scope);
+    expect(cloudfront(boundary)).toEqual([]);
+    expect(boundary.find((s) => s.Sid === "Services")!.Action.filter((a) => a.startsWith("cloudfront:"))).toEqual([...CLOUDFRONT_BOUNDARY_ACTIONS]);
+  });
+
+  it("keeps the deployed boundary within IAM's 6,144-character managed policy limit, with margin, and the service role within the 10,240-character inline limit, in the worst case", () => {
+    const size = (statements: unknown[]) => JSON.stringify({ Version: "2012-10-17", Statement: statements }).replace(/\s/g, "").length;
+    const orgId = `o-${"a".repeat(32)}`;
+    let worst = 0;
+    for (const env of ["staging", "agentxlivetest123", "a".repeat(20)]) {
+      for (const rovaraOrganizationId of [undefined, orgId]) {
+        const longest: PolicyScope = {
+          ...scope, env, account: "944937319445", region: "ap-southeast-2", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl`,
+          ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
+        };
+        // As deployed: without the Sids (infra/lib/access.ts).
+        const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
+        worst = Math.max(worst, boundary);
+        expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 300);
+        expect(size(serviceRoleStatements(longest)), `service role, ${env}`).toBeLessThanOrEqual(10_240 - 1000);
+      }
+    }
+    expect(worst).toBeGreaterThan(5000);
   });
 });

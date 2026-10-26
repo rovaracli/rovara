@@ -11,7 +11,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, bearerFor, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const now = "2026-10-25T12:00:00.000Z";

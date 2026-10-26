@@ -14,8 +14,9 @@ const lock = JSON.parse(readFileSync("package-lock.json", "utf8")) as {
   packages: Record<string, { version?: string; dev?: boolean; dependencies?: Record<string, string> }>;
 };
 
+/** The browser driver is installed under the verifier since the web app's browser tests need a newer root `playwright-core` (a dev dependency): the executor's copy is the verifier's own. */
 function installed(name: string) {
-  return lock.packages[`node_modules/${name}`];
+  return lock.packages[name === "playwright-core" ? "packages/verifier/node_modules/playwright-core" : `node_modules/${name}`];
 }
 
 describe("the browser executor image", () => {

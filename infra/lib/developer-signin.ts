@@ -23,6 +23,7 @@ export interface DeveloperSignInParameters {
   workflowDependenciesEnabled: CfnParameter;
   /** Spec 025 E16: whether an admin may confirm a change in the AI tool's own pop-up. */
   mcpConfirmElicitation: CfnParameter;
+  rovaraCodeV2Enabled: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -43,6 +44,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     taskPeoplePublicInvitationsEnabled: new CfnParameter(stack, "TaskPeoplePublicInvitationsEnabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether task people may invite members to public channels in this environment" }),
     taskPeoplePrivateInvitationsEnabled: new CfnParameter(stack, "TaskPeoplePrivateInvitationsEnabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether task people may invite members to private channels in this environment" }),
     workflowDependenciesEnabled: new CfnParameter(stack, "WorkflowDependenciesEnabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether bounded serial task work breakdowns are enabled in this environment" }),
+    rovaraCodeV2Enabled: new CfnParameter(stack, "RovaraCodeV2Enabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }
@@ -59,7 +61,7 @@ export interface DeveloperSignInProps {
   /** The API's default stage, which throttles the public /v1/auth routes. */
   stage: apigwv2.CfnStage;
   /** Further public routes of the same API the stage throttles like the /v1/auth, /v1/dev and /v1/app ones (the GitHub install routes). */
-  throttledRoutes?: apigwv2.CfnRoute[];
+  throttledRoutes?: Array<{ route: apigwv2.CfnRoute; burst: number; rate: number }>;
   /** Plan 4 Task 19: the public event-hook route. It gets a bucket of its own, larger than the sign-in routes' (route settings are per route key, so it does not share `/v1/app`'s). */
   hookRoute?: apigwv2.CfnRoute;
   /** The TurnRecords table (control-plane.ts), so the broker may write AI-tool audit records.
@@ -341,6 +343,8 @@ export class DeveloperSignIn extends Construct {
     const appRoute = new apigwv2.CfnRoute(this, "AppRoute", {
       apiId: props.api.ref, routeKey: APP_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
     });
+    const webRoute = new apigwv2.CfnRoute(this, "WebRoute", { apiId: props.api.ref, routeKey: "ANY /v1/web/{proxy+}", target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE" });
+    props.broker.addPermission("WebApiInvoke", { principal: new iam.ServicePrincipal("apigateway.amazonaws.com"), sourceArn: `arn:${stack.partition}:execute-api:${stack.region}:${stack.account}:${props.api.ref}/*/*/v1/web/*` });
     // The review page uses its own opaque, revocable session cookie and owner checks in the broker.
     const feedbackReviewRoute = new apigwv2.CfnRoute(this, "FeedbackReviewRoute", {
       apiId: props.api.ref, routeKey: FEEDBACK_REVIEW_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
@@ -351,10 +355,10 @@ export class DeveloperSignIn extends Construct {
     // Public routes are stage-capped: bursts of 50, 20 requests a second on average,
     // across all callers. A developer signs in a few times a week, so this only bites a flood.
     const throttle = { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 };
-    const throttledRoutes = props.throttledRoutes ?? [];
+    const throttledRoutes = [...(props.throttledRoutes ?? []), { route: webRoute, burst: 400, rate: 200 }];
     props.stage.routeSettings = {
       [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle, [SESSION_LINK_ROUTE_KEY]: throttle,
-      ...Object.fromEntries(throttledRoutes.map((route) => [route.routeKey, throttle])),
+      ...Object.fromEntries(throttledRoutes.map(({ route, burst, rate }) => [route.routeKey, { ThrottlingBurstLimit: burst, ThrottlingRateLimit: rate }])),
       ...(props.hookRoute === undefined ? {} : { [props.hookRoute.routeKey]: { ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 } }),
     };
     // Route settings must name routes that already exist.
@@ -363,7 +367,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
     props.stage.addDependency(sessionLinkRoute);
-    for (const route of throttledRoutes) props.stage.addDependency(route);
+    for (const { route } of throttledRoutes) props.stage.addDependency(route);
     if (props.hookRoute !== undefined) props.stage.addDependency(props.hookRoute);
 
     const broker = props.broker;

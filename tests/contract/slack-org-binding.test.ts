@@ -3,7 +3,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, slackMemberLimitKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { slackTeamOrgKey, singleOrgIdForEnv, type OrgId } from "../../packages/contracts/src/org.js";
+import { slackTeamOrgKey, singleOrgIdForEnv, type OrgId } from "../../packages/contracts/src/org-node.js";
 import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-ingress.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSlackOrg, resolveSlackOrgForInstall, type OrgResolver } from "../../packages/broker/src/org/resolve.js";

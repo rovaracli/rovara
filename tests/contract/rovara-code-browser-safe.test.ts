@@ -7,6 +7,7 @@ import * as ids from "../../packages/contracts/src/browser-ids.js";
 import * as chains from "../../packages/contracts/src/chains.js";
 import * as org from "../../packages/contracts/src/org.js";
 import * as sessions from "../../packages/contracts/src/agent-sessions.js";
+import * as sessionsNode from "../../packages/contracts/src/agent-sessions-node.js";
 import * as slack from "../../packages/contracts/src/slack.js";
 
 const root = process.cwd();
@@ -51,7 +52,7 @@ describe("rovara-code.ts is browser-safe", () => {
     expect(org.OrgIdSchema).toBe(ids.OrgIdSchema);
     expect(chains.ChainRunIdSchema).toBe(ids.ChainRunIdSchema);
     expect(sessions.SessionIdSchema).toBe(ids.SessionIdSchema);
-    expect(sessions.SessionBindingSchema).toBe(ids.SessionBindingSchema);
+    expect(sessionsNode.SessionBindingSchema).toBe(ids.SessionBindingSchema);
     for (const name of ["SlackTeamIdSchema", "SlackChannelIdSchema", "SlackMessageTimestampSchema"] as const) expect(slack[name]).toBe(ids[name]);
   });
 });

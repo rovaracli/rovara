@@ -253,11 +253,11 @@ describe("stopping a session", () => {
     expect(without.eventTexts(bare.sessionId)).toEqual([]);
   });
 
-  it("does not stop a session on a Mac here (a later task adds it) and says so, writing nothing", async () => {
+  it("does not stop a session on a Mac whose device is not there (Task 18: the working path is in agent-session-local) and says so, writing nothing", async () => {
     const w = world();
     const { sessionId } = w.seedSession({ kind: "local" });
     w.seedShare(ORG_A, sessionId, { kind: "member", developerId: MAX }, "edit");
-    expect(await code(w.stop(MAX, sessionId))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Stopping a session on a Mac isn't available yet." });
+    expect(await code(w.stop(MAX, sessionId))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "This session's Mac isn't available right now." });
     expect(w.eventTexts(sessionId)).toEqual([]);
   });
 

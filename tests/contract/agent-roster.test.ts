@@ -10,12 +10,12 @@ import { requireRecipeAllowed, resolveAgentForAutonomousRun, resolveAgentForTask
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { agentXError } from "@agentx/contracts";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
-import type { ModelIdentifier } from "../../packages/contracts/src/models.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { ModelIdentifier } from "../../packages/contracts/src/models-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

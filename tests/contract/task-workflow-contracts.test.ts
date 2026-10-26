@@ -1,4 +1,4 @@
-import * as workflowContracts from "../../packages/contracts/src/task-workflow.js";
+import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {

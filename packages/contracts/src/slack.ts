@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { ActionPolicySchema } from "./action-policy.js";
-import { MAX_PROJECT_CONNECTORS, ThreadConnectorSchema } from "./connectors.js";
+import { ActionPolicySchema } from "./action-policy-node.js";
+import { MAX_PROJECT_CONNECTORS, ThreadConnectorSchema } from "./connectors-node.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
-import { AgentXNameSchema } from "./project.js";
+import { AgentXNameSchema } from "./project-node.js";
 import { WorkspaceStatusSchema } from "./workspace.js";
 import { SlackChannelIdSchema, SlackMessageTimestampSchema, SlackTeamIdSchema } from "./browser-ids.js";
 

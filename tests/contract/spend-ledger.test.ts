@@ -26,7 +26,7 @@ import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-acc
 import { MAYA as DEV_MAYA, OMAR as DEV_OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 import { taskSpendKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -329,6 +329,54 @@ describe("settleKey", () => {
     expect(await settleKey(mine.deps(), mine.orgId, keyIdOf("sk-never-registered"))).toMatchObject({ deltaUsd: 0 });
     expect(mine.counter("ORG")).toBeUndefined();
     expect(mine.ledger()).toEqual([]);
+  });
+
+  // Staging 0.4.6, 2026-10-26T13:48:05Z: two keys of one chain run were settled by one sweep batch at once. They share every scope counter, the agent counters and
+  // the run total, so DynamoDB cancelled the transactions with a TransactionConflict (no condition failed). The spend waited five minutes for the next sweep.
+  const conflict = { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }, { Code: "TransactionConflict" }] };
+
+  it("settles a key whose transaction was cancelled by a conflict with another settle, counting it once", async () => {
+    const t = setup();
+    const key = t.input();
+    await registerKey(t.deps(), key);
+    t.spend(key, 1.2);
+    t.db.injectFault({ command: "TransactWriteCommand", error: conflict, times: 2 });
+    expect(await settleKey(t.deps(), t.orgId, key.keyId)).toMatchObject({ deltaUsd: 1.2, settledUsd: 1.2 });
+    for (const sk of ["ORG", "PROJECT#web", `MEMBER#${MAYA}`, agentUsageCounter(AGENT)]) near(t.counter(sk)?.spentUsd, 1.2);
+    expect(t.ledger()).toHaveLength(1);
+    near(t.record(key.keyId)?.settledUsd, 1.2);
+  });
+
+  it("gives a conflict that does not clear up to the caller with nothing counted, and the next settle counts it once", async () => {
+    const t = setup();
+    const key = t.input();
+    await registerKey(t.deps(), key);
+    t.spend(key, 1.2);
+    let busy = true;
+    t.db.injectFault({ command: "TransactWriteCommand", match: () => busy, error: conflict, times: 1000 });
+    await expect(settleKey(t.deps(), t.orgId, key.keyId)).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    expect(t.counter("ORG")).toBeUndefined();
+    expect(t.ledger()).toEqual([]);
+    busy = false;
+    expect(await settleKey(t.deps(), t.orgId, key.keyId)).toMatchObject({ deltaUsd: 1.2 });
+    expect(await settleKey(t.deps(), t.orgId, key.keyId)).toMatchObject({ deltaUsd: 0 });
+    near(t.counter("ORG")?.spentUsd, 1.2);
+    expect(t.ledger()).toHaveLength(1);
+  });
+
+  it("names the reasons DynamoDB gave when the sweep cannot settle a key, and settles it on the next sweep", async () => {
+    const t = setup();
+    const key = t.input({ scopes: [{ key: ORG }] });
+    await reserve(t.deps(), key);
+    t.spend(key, 1.2);
+    let busy = true;
+    t.db.injectFault({ command: "TransactWriteCommand", match: () => busy, error: conflict, times: 1000 });
+    const lines: Array<Record<string, unknown>> = [];
+    expect(await sweepSpend(t.deps({ log: (entry) => lines.push(entry) }), t.clock.now)).toMatchObject({ failed: 1, settled: 0 });
+    expect(lines).toContainEqual({ event: "spend.settle_failed", keyId: key.keyId, error: "TransactionCanceledException", reasons: ["None", "TransactionConflict", "TransactionConflict"] });
+    busy = false;
+    expect(await sweepSpend(t.deps(), t.clock.now)).toMatchObject({ failed: 0, settled: 1 });
+    near(t.counter("ORG")?.spentUsd, 1.2);
   });
 
   it("leaves everything as it was when the proxy cannot be asked", async () => {

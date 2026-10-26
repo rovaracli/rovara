@@ -10,7 +10,8 @@ import {
 } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { ScheduleTriggerSpecSchema, type ScheduleSpec } from "../../packages/contracts/src/trigger-specs.js";
+import { ScheduleTriggerSpecSchema } from "../../packages/contracts/src/trigger-specs.js";
+import { type ScheduleSpec } from "../../packages/contracts/src/trigger-specs.js";
 import { FakeDeadLetterQueue, FakeSchedulerClient } from "../support/fake-scheduler.js";
 import { DANA, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 

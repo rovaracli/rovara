@@ -69,7 +69,8 @@ export function joinDonePage(result: JoinResultRecord, cellUrl: string): PageSpe
       return {
         statusCode: 200,
         title: `You joined ${result.orgName}`,
-        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`, `Next: in your terminal, run agentx login ${cellUrl}`],
+        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`, `Using the terminal? Run: agentx login ${cellUrl}`],
+        links: [{ href: "/app/welcome?joined=1", label: "Open Rovara" }],
       };
     case "ALREADY_IN_ORG": {
       const current = result.currentOrgName ?? "your organization";
@@ -78,7 +79,7 @@ export function joinDonePage(result: JoinResultRecord, cellUrl: string): PageSpe
         title: `You're already in ${current}`,
         paragraphs: [
           `For now, a person can belong to one Rovara organization. To join ${result.invitedOrgName}, sign in with a different email address, or ask an owner of ${current} to remove you.`,
-          `If ${current} is a team you made by mistake and no one else is in it, run agentx org leave, then open this invite again.`,
+          `If ${current} is a team you made by mistake and no one else is in it, leave it from your account menu in Rovara, then open this invite again.`,
         ],
       };
     }

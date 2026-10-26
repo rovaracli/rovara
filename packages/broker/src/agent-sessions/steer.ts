@@ -30,6 +30,7 @@ import {
 } from "@agentx/contracts";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { commandableDevice } from "../devices/local-facts.js";
 import { onlyTheEventCancelled } from "./events.js";
 import type { SessionAccessDependencies } from "./access.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
@@ -46,6 +47,7 @@ export const CHAIN_GATE_REASON = "the chain is waiting for an approval";
 export const NO_STEP_REASON = "no step of the chain is running right now";
 export const TASK_FULL_REASON = "this task already holds all the messages it keeps";
 export const SESSION_ENDED_REASON = "the session has ended";
+export const MAC_GONE_REASON = "this Mac isn't available";
 
 /**
  * Plan 4's chain run, as far as a message needs it: what the run is doing now. Injected where Plan 4 is merged; until it is, a message to a chain session is refused before anything is written.
@@ -64,12 +66,13 @@ export interface SteerDependencies extends Pick<SessionAccessDependencies, "docu
 /** Where a message goes now. */
 type Route =
   | { kind: "note"; task: DeveloperTaskRecord }
+  | { kind: "device"; deviceId: string }
   | { kind: "not_delivered"; reason: string }
   | { kind: "ended"; taskId?: string }
   | { kind: "unavailable"; message: string };
 
-/** What `planSteer` decides: a note for a task's next step, or the reason the message can't be delivered. */
-export type SteerPlan = { kind: "note"; task: DeveloperTaskRecord } | { kind: "not_delivered"; reason: string };
+/** What `planSteer` decides: a note for a task's next step, a command for the Mac a local session runs on, or the reason the message can't be delivered. */
+export type SteerPlan = { kind: "note"; task: DeveloperTaskRecord } | { kind: "device"; deviceId: string } | { kind: "not_delivered"; reason: string };
 
 const getItem = async (deps: Pick<SteerDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
@@ -125,8 +128,9 @@ async function routeOf(deps: SteerDependencies, session: AgentSessionRecord): Pr
     const route = taskRoute(session, step);
     return route.kind === "ended" ? { kind: "not_delivered", reason: NO_STEP_REASON } : route;
   }
-  // PLAN: a session on a Mac takes messages in Task 18.
-  return { kind: "unavailable", message: STEER_UNAVAILABLE_TEXT };
+  // A session on a Mac: the message goes to its device as a command (Task 18), if the device is its owner's and not removed.
+  const device = await commandableDevice(deps, session);
+  return device === undefined ? { kind: "not_delivered", reason: MAC_GONE_REASON } : { kind: "device", deviceId: device.deviceId };
 }
 
 /** Before anything is written: where a message will go, or the refusal a person is given. A task with no room left for a note takes the message as `not_delivered`. */
@@ -134,7 +138,7 @@ export async function planSteer(deps: SteerDependencies, session: AgentSessionRe
   const route = await routeOf(deps, session);
   if (route.kind === "ended") throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
   if (route.kind === "unavailable") throw agentXError("RUNTIME_UNAVAILABLE", route.message);
-  if (route.kind === "not_delivered") return route;
+  if (route.kind === "not_delivered" || route.kind === "device") return route;
   return (route.task.threadNoteCount ?? 0) >= WORKFLOW_THREAD_NOTES_MAX ? { kind: "not_delivered", reason: TASK_FULL_REASON } : route;
 }
 
@@ -320,5 +324,21 @@ export async function settleSteerDeliveriesFor(deps: SteerDependencies, orgId: O
     }
   } catch (error) {
     deps.log?.({ event: "agent_session.steer_settle_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
+ * A steer the Mac's poll handed over is `delivered` (it has the words now): its message, the queue's count and the session's event, as a step taking a note does. Never throws: a message
+ * left queued is closed when the session ends.
+ */
+export async function deliverSteerToDevice(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<void> {
+  try {
+    const session = await new AgentSessionStore(deps).get(orgId, sessionId);
+    if (session === undefined || session.subject.kind !== "local") return;
+    const message = messageOf(await getItem(deps, messageKey(session, messageId)), session);
+    if (message?.kind !== "steer" || message.delivery?.state !== "queued") return;
+    await answerMessage(deps, session, message, { state: "delivered" });
+  } catch (error) {
+    deps.log?.({ event: "agent_session.steer_deliver_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
   }
 }

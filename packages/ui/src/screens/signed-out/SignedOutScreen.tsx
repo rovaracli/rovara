@@ -1,0 +1,3 @@
+import { Button } from "../../design/Button.js";
+const REASONS: Record<string, string> = { removed: "You're no longer a member of this organization. Ask an owner to invite you again.", ended: "Your sign-in was ended. Sign in again to continue.", cancelled: "Sign-in was cancelled.", failed: "Sign-in didn't work. Try again in a minute." };
+export function SignedOutScreen({ reason = "failed", onSignIn }: { reason?: string; onSignIn: () => void }) { return <main className="rv-empty"><h1 tabIndex={-1}>Sign in to Rovara</h1><p>{Object.hasOwn(REASONS, reason) ? REASONS[reason] : REASONS.failed}</p><Button variant="primary" onClick={onSignIn}>Sign in</Button></main>; }

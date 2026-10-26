@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { OrgId, ProjectDefinition, WorkerInvocation } from "@agentx/contracts";
+import type { ProjectDefinition, WorkerInvocation } from "@agentx/contracts";
 import {
   InMemoryRegistry,
   OperationStore,
@@ -127,7 +127,7 @@ describe("remote coding delegation", () => {
     );
     // The same owner key in another org is another caller: the workspace reads as not found.
     await expect(
-      output.getArtifact({ ...owner, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as OrgId }, workspace.id, artifactIds[0]!),
+      output.getArtifact({ ...owner, orgId: "org_zzzzzzzzzzzzzzzzzzzz" }, workspace.id, artifactIds[0]!),
     ).rejects.toThrow(/not found/i);
     const page = await output.pageEvents(owner, workspace.id, first.operation.id, { limit: 2 });
     expect(page.events.map(({ sequence }) => sequence)).toEqual([1, 2]);

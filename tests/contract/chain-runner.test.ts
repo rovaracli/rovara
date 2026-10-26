@@ -11,9 +11,7 @@ import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { BUILTIN_AGENTS, builtinDefaultPin, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import {
-  CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult,
-} from "../../packages/contracts/src/chains.js";
+import { CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult } from "../../packages/contracts/src/chains.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError } from "@agentx/contracts";
 import { chainKey, chainRunKey, openChainRunKey, projectAiKey, projectMetaKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -992,6 +990,18 @@ describe("onStepTaskEnded", () => {
     expect(message.length).toBeLessThan(400);
     const lastText = w.events(run.runId).at(-1)!.text;
     expect(lastText.includes("\u202e") || lastText.includes("\u0007")).toBe(false);
+  });
+
+  it("ends a chain run failed, never succeeded, when its agent step's report was unverified, and says so with a reason of its own (staging 0.4.6)", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.db.set({ ...w.db.get({ pk: "DEVTASK#task-1", sk: "AGENT_RUN" })!, endReason: "Unverified, needs a person: The report cites pull request #5, which no tool returned and the request did not contain." });
+    await endTask(w, "task-1", { outcome: "failed", finalReport: "Found it: PR #5. healthy" });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "failed", failure: { reason: "step_unverified" } });
+    expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { reason: "step_unverified" } });
+    expect(w.run(run.runId)!.failure!.message).toContain("Unverified, needs a person: The report cites pull request #5");
+    expect(w.starts).toHaveLength(1);
   });
 
   it("says why a coding task failed in its own words when the task has none", async () => {

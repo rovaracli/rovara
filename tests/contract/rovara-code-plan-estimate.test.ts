@@ -13,8 +13,8 @@ import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-vi
 import {
   PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, type PlanDocument,
 } from "../../packages/contracts/src/workflow-plan-document.js";
-import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, durationHistoryKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "../../packages/contracts/src/rovara-code.js";

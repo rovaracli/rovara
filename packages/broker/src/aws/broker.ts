@@ -1,6 +1,10 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
+import { withDecideIsolation } from "../developer/confirm-page.js";
+import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
+import { appCsrfTokenFor } from "../developer/app-csrf.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { posix as posixPath } from "node:path";
 import { cancelCallbackForbidden, verifyCancelCallbackCapability } from "./cancel-callback-capability.js";
@@ -251,6 +255,8 @@ import {
   projectMetaKey,
   projectMemberKey,
   projectSetupApprovalKey,
+  defaultWorkspaceKey,
+  orgScoped,
   slackBindingKey,
   slackBindingPk,
   SLACK_BINDING_SK_PREFIX,
@@ -375,7 +381,7 @@ import {
 } from "../org/github-connection.js";
 import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
-import { monthOf, unlockTrial } from "../org/trial.js";
+import { admitMachineTime, admitTrial, monthOf, unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
@@ -384,6 +390,8 @@ import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
+import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
+import { rovaraCodeV2LiveFromEnvironment } from "../rovara-code/v2-switch.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -480,8 +488,8 @@ import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
 import { CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, fireChainSchedule, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleDeadLetters } from "../triggers/schedules.js";
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { dispatchTriggerEvent } from "../triggers/dispatch.js";
-import { deliverGithubTriggerEvents, healGithubRepoIndex } from "../triggers/github-events.js";
+import { dispatchTriggerEvent, type TriggerDispatchContext } from "../triggers/dispatch.js";
+import { deliverGithubTriggerEvents, healGithubRepoIndex, type AuthorQuery } from "../triggers/github-events.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
@@ -511,7 +519,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, planAutomaticFeedbackRound, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowPlanRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, planAutomaticFeedbackRound, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
@@ -717,7 +725,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -855,9 +863,8 @@ const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i;
 const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
+export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
-/** A session's link (Plan 5, Task 5), served to a browser like the review pages. Its API Gateway route (`ANY /s/{proxy+}`) is in the infrastructure; the web app (Plan 7) adds the page. */
-const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
 function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): string {
@@ -1165,8 +1172,10 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
-    ...(agents.rovaraCodeV2Live === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live }),
+    // Rovara Code v2 is on per environment: the explicit dependency (tests) wins, else the packed setting (RovaraCodeV2Enabled, off by default). Only "true" turns it on.
+    ...((agents.rovaraCodeV2Live ?? (rovaraCodeV2LiveFromEnvironment(process.env) ? true : undefined)) === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live ?? true }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
+    ...(routing === undefined ? {} : { modelRouting: routing }),
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
@@ -1541,14 +1550,14 @@ function installChainRunner(dependencies: AwsBrokerDependencies, tasks: Develope
  * What starts the work an event asks for: the broker's own `eventHooks.dispatch` when it was given one, else Task 20's `dispatchTriggerEvent` over the chain runner's dependencies (and the
  * GitHub App's slug, which the loop guard reads). Undefined where agents, chains or sign-in are not set up. Hooks' deliveries and GitHub's events start work through the same one.
  */
-function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((orgId: OrgId, event: TriggerEvent) => Promise<unknown>) | undefined {
+function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((orgId: OrgId, event: TriggerEvent, context?: TriggerDispatchContext) => Promise<unknown>) | undefined {
   const given = dependencies.agents?.eventHooks?.dispatch;
   if (given !== undefined) return given;
   const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
   const githubApp = dependencies.githubPullRequests;
-  return chainDependencies === undefined ? undefined : (orgId, event) => dispatchTriggerEvent({
+  return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
-  }, orgId, event);
+  }, orgId, event, context);
 }
 
 /** What the chain runner and its sweep work with: the agent routes' dependencies with the chain store and Plan 3's run starter. Undefined where agents, chains or developer sign-in are not set up. */
@@ -2094,15 +2103,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // the broker through the authorizer-free /v1/dev route (D17), so it must never be resolved.
       if (DOT_SEGMENT.test(event.rawPath ?? "/")) throw agentXError("NOT_FOUND", "route not found");
       const url = new URL(request.path, "https://agentx.invalid");
+      // Shared links belong exclusively to the web shell, including stale broker route events.
+      if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || event.routeKey === SESSION_LINK_ROUTE_KEY || isAuditViewPath(url.pathname)) {
-        if (!(url.pathname.startsWith("/review/") || (event.routeKey === SESSION_LINK_ROUTE_KEY && url.pathname.startsWith("/s/")) || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
@@ -2112,6 +2124,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === WEB_ROUTE_KEY && !url.pathname.startsWith("/v1/web/")) throw agentXError("NOT_FOUND", "route not found");
+      if (url.pathname.startsWith("/v1/web/") && (event.routeKey !== WEB_ROUTE_KEY || !webRouteAllowed(request.method, url.pathname))) throw agentXError("NOT_FOUND", "route not found");
       // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
@@ -2175,6 +2189,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               triggerEvents: (trigger: { eventName: string; payload: unknown; installationId: number }) => deliverGithubTriggerEvents({
                 documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, dispatch: triggerDispatch,
                 ...(dependencies.githubPullRequests.appSlug === undefined ? {} : { githubAppSlug: () => dependencies.githubPullRequests.appSlug!() }),
+                // A private org member shows as CONTRIBUTOR or NONE in a payload: the API is asked, with the installation's token, only when a members-only trigger would otherwise miss.
+                ...(dependencies.githubPullRequests.authorStanding === undefined ? {} : {
+                  authorStanding: (query: AuthorQuery) => dependencies.githubPullRequests.authorStanding!(query.installationId, query),
+                }),
               }, trigger),
             }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
@@ -2337,10 +2355,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       // Spec 025: the developer API. /v1/dev/* has no API Gateway authorizer (D17): the broker
       // verifies the developer token, then checks the method and session (FR-009).
-      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
+      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/") || url.pathname.startsWith("/v1/web/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         const orgConnections = orgConnectionStoreOf(dependencies);
-        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+        const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
@@ -2349,6 +2367,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
@@ -2368,7 +2387,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
-          ...workflowApplicationRouteDependencies(dependencies) }, request, url);
+          ...workflowApplicationRouteDependencies(dependencies) };
+        let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
+        if (url.pathname.startsWith("/v1/web/")) {
+          const caller = await authenticateWebRequest(routeDependencies, request);
+          authenticated = { caller, csrf: appCsrfTokenFor(caller.sessionId) };
+          url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
+        }
+        const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
 
@@ -2518,7 +2544,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const policy = projectSetupPolicy(proposal, agentRoute);
         if (!sameJsonContent(artifact.policy, policy)) {
           // A proposal made under an earlier default is not approvable now, but a decision already recorded for it is still answered the same way (an idempotent retry).
-          const decided = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${approvalInput.projectName}`, sk: `PROPOSAL#${approvalInput.proposalSha256}` });
+          const decided = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), approvalInput.projectName, approvalInput.proposalSha256));
           if (decided) {
             if (decided.ownerKey !== identity.ownerKey || decided.decision !== approvalInput.decision) throw agentXError("PROJECT_REVISION_MISMATCH", "setup proposal already has a different immutable decision");
             return json({ proposalRef: approvalInput.proposalRef, proposalSha256: approvalInput.proposalSha256, decision: approvalInput.decision, duplicate: true }, request.requestId);
@@ -2670,11 +2696,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         "AgentX developer workflows run in the project's Slack channel; this endpoint serves administration only",
       );
     } catch (error) {
+      // Confirmation and task pages remain isolated even when their adapter throws before rendering.
+      const errorPath = request.path.split("?", 1)[0]!;
+      const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        return json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        return isolate ? withDecideIsolation(response) : response;
       }
-      return unexpectedErrorAnswer(error, request.requestId);
+      const response = unexpectedErrorAnswer(error, request.requestId);
+      return isolate ? withDecideIsolation(response) : response;
     }
   };
 }
@@ -3239,7 +3270,7 @@ export async function registerProjectFor(
   }
   const planAccounts = async () => {
     if (accountSetup === undefined) return { items: [] as TransactItems, written: 0, planKey: "" };
-    try { return await planSetupAccountWrites(dependencies, { projectId: definition.name, snapshot: accountSetup.snapshot, setup: accountSetup, now: Date.now() }); }
+    try { return await planSetupAccountWrites(dependencies, { orgId, projectId: definition.name, snapshot: accountSetup.snapshot, setup: accountSetup, now: Date.now() }); }
     catch (error) {
       if (error instanceof E2EAccountRegistryError) throw agentXError("PROJECT_REVISION_MISMATCH", error.message);
       throw error;
@@ -3277,7 +3308,7 @@ export async function registerProjectFor(
           ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":administrator": "administrator" } } }]
         : membership === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: membership } }]),
       ...(authority === "takeover" && takeover !== undefined ? [{ Put: { TableName: dependencies.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
-        pk: `PROJECT_TAKEOVER#${definition.name}`, sk: `AT#${now}#${randomUUID()}`, entityType: "PROJECT_OWNERSHIP_TAKEOVER",
+        pk: orgScoped(orgId, `PROJECT_TAKEOVER#${definition.name}`), sk: `AT#${now}#${randomUUID()}`, entityType: "PROJECT_OWNERSHIP_TAKEOVER",
         projectName: definition.name, revision: definition.revision, takenBy: actor.ownerKey, subject: actor.subject, orgId, reason: takeover.reason, at: now,
       } } }] : []),
       // Only a project new to the org gets a META item; a revision of an existing one leaves its META alone.
@@ -3884,7 +3915,7 @@ async function prepareWorkspace(
     return { operationId: idempotency.operationId, workspace: publicWorkspace(workspace), alreadyReady: workspace.status === "READY", duplicate: true };
   }
   const project = await requireProject(dependencies, requireOrgId(identity.orgId), projectName, projectRevision);
-  const existing = await getDefaultWorkspace(dependencies, targetOwnerKey, projectName);
+  const existing = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName);
   if (existing) {
     if (existing.projectRevision !== projectRevision) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "existing workspace is pinned to another revision");
@@ -4050,7 +4081,7 @@ async function newWorkspacePreparation(
     membership: existingMembership,
     items: [
       { Put: { TableName: dependencies.tableName, Item: workspaceItem(requireOrgId(identity.orgId), workspace), ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: dependencies.tableName, Item: { pk: `OWNER#${targetOwnerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: dependencies.tableName, Item: { ...defaultWorkspaceKey(requireOrgId(identity.orgId), targetOwnerKey, projectName), entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       // The target's membership is created here only when absent, recording who granted it; an existing row is required to be as it was read, never rewritten.
@@ -4832,7 +4863,7 @@ async function ensureThreadWorkspace(
       throw agentXError("FORBIDDEN", "this thread's workspace belongs to the channel's previous project binding");
     }
   }
-  const existing = threadWorkspace ?? await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+  const existing = threadWorkspace ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (existing) {
     if (existing.status === "CLOSED" && existing.closedAt) {
       return { outcome: "CLOSED", workspaceId: existing.id, closedAt: existing.closedAt };
@@ -4891,7 +4922,7 @@ async function ensureThreadWorkspace(
       if (!isConditional(error)) throw error;
       // The membership changed since it was read: decide again from the row as it now is, never over it.
       if (await membershipMovedSince(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName, attempted.membership)) continue;
-      const concurrent = await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+      const concurrent = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
       if (concurrent) {
         return existingThreadWorkspace(dependencies, identity, requestId, concurrent, include, includeSettingsRevision, input.includeOpenTaskCount === true);
       }
@@ -4938,7 +4969,7 @@ async function createUnpreparedThreadWorkspace(
         { Put: { TableName: dependencies.tableName, Item: workspaceItem(orgId, attempted), ConditionExpression: "attribute_not_exists(pk)" } },
         { Put: {
           TableName: dependencies.tableName,
-          Item: { pk: `OWNER#${identity.ownerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId: attempted.id },
+          Item: { ...defaultWorkspaceKey(orgId, identity.ownerKey, projectName), entityType: "DEFAULT_WORKSPACE", workspaceId: attempted.id },
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         // Created only when absent; an existing row is required to be as it was read, never rewritten.
@@ -4964,7 +4995,7 @@ async function createUnpreparedThreadWorkspace(
       // The membership changed since it was read: decide again from the row as it now is, never over it.
       if (await membershipMovedSince(dependencies, orgId, identity.ownerKey, projectName, existingMembership)) continue;
       // Another first message in this thread created the record.
-      const concurrent = await getDefaultWorkspace(dependencies, identity.ownerKey, projectName);
+      const concurrent = await getDefaultWorkspace(dependencies, orgId, identity.ownerKey, projectName);
       if (concurrent) return existingThreadWorkspace(dependencies, identity, requestId, concurrent, include, includeSettingsRevision);
       throw agentXError("WORKSPACE_BUSY", "thread workspace creation conflicted with another request; retry");
     }
@@ -5040,7 +5071,7 @@ async function prepareThreadWorkspace(
     return { outcome: "WORKSPACE", workspaceId: workspace.id, status: workspace.status, operationId: (await activeOperationForChannel(dependencies, workspace)).operationId, created: false };
   }
   const workspace = await getThreadWorkspace(dependencies, identity.ownerKey)
-    ?? await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+    ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   if (workspace.status === "CLOSED" && workspace.closedAt) {
     return { outcome: "CLOSED", workspaceId: workspace.id, closedAt: workspace.closedAt };
@@ -5805,7 +5836,7 @@ async function resolveWorkspace(
   const orgId = requireOrgId(identity.orgId);
   await requireMembership(dependencies, orgId, identity.ownerKey, projectName);
   await requireProject(dependencies, orgId, projectName, revision);
-  const workspace = await getDefaultWorkspace(dependencies, identity.ownerKey, projectName);
+  const workspace = await getDefaultWorkspace(dependencies, orgId, identity.ownerKey, projectName);
   if (!workspace) throw agentXError("WORKSPACE_NOT_READY", "workspace has not been prepared by an administrator");
   if (workspace.projectRevision !== revision) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "workspace is pinned to another project revision");
@@ -6145,9 +6176,10 @@ async function codingPlanRequiresParts(dependencies: AwsBrokerDependencies, work
 
 /** Bind planner guidance to the task's starting project revision; never consult the latest project here. */
 async function codingPlanWorkBreakdownContext(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<{ taskId: string; repositoryId: string } | undefined> {
-  if (dependencies.developer?.workflowDependenciesEnabled !== true) return undefined;
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  // A version 1 task needs the install's switch; a Rovara Code v2 task always plans in ordered, independent parts.
+  if (!workflowDependenciesAllowed({ workflowDependenciesEnabled: dependencies.developer?.workflowDependenciesEnabled }, task?.workflow)) return undefined;
   if (task === undefined) throw agentXError("CONFIG_INVALID", "the task for this planning step is missing");
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   if (project.definition.repositories.length !== 1) return undefined;
@@ -6259,9 +6291,10 @@ async function evaluateWorkflowE2EApplicationSelectionNow(dependencies: AwsBroke
     binding: parseRuntimeBinding(project.runtimeBinding), now, read: (key) => getItem<Record<string, unknown>>(dependencies, key) });
   // The test accounts the plan's executable targets run as: the registry's rows for exactly those (application, account profile) pairs (Task 3.1).
   const projectId = project.definition.name;
+  const orgId = await orgOfRecord(dependencies, task);
   let accountEntries: E2EAccountRegistryEntry[];
   try {
-    const read = await readAccountRegistryEntries(dependencies, projectId, intent.applicationRuntimeRefs.map((ref) => ({ applicationId: ref.applicationId, profileId: ref.accountProfileId })),
+    const read = await readAccountRegistryEntries(dependencies, orgId, projectId, intent.applicationRuntimeRefs.map((ref) => ({ applicationId: ref.applicationId, profileId: ref.accountProfileId })),
       { earlierFor: accountDefinitionIsForOtherContract(setup.snapshot) });
     // An account whose rows cannot be read refuses only the plans that run as it, and says which account to repair (registering the project's setup again does).
     if (read.corrupt.length > 0) return { ok: false, kind: "refused", reason: unreadableAccountMessage(read.corrupt[0]!.applicationId, read.corrupt[0]!.profileId), scope: "accounts" };
@@ -6276,7 +6309,7 @@ async function evaluateWorkflowE2EApplicationSelectionNow(dependencies: AwsBroke
   if (!evaluation.ok) return { ok: false, kind: "refused", reason: evaluation.reason, ...(evaluation.scope === undefined ? {} : { scope: evaluation.scope }) };
   // The rows and account pointers this derivation was made from must still be exactly those when the transaction commits.
   const conditions: TransactItems = [...applicationRuntimeRowFences({ tableName: dependencies.tableName, rows, selected: evaluation.selection.runtimeRows }),
-    ...accountRegistryFences({ tableName: dependencies.tableName, projectId, refs: evaluation.accountRefs, entries: accountEntries })];
+    ...accountRegistryFences({ orgId, tableName: dependencies.tableName, projectId, refs: evaluation.accountRefs, entries: accountEntries })];
   return { ok: true, selection: evaluation.selection, conditions, inputs: { policy: policy.data,
     setup: { snapshot: setup.snapshot, setupProposal: setup.setupProposal, setupApproval: setup.setupApproval }, rows, runtimeCatalogId: catalogId, runtimeBinding: parseRuntimeBinding(project.runtimeBinding),
     accountEntries } };
@@ -6304,6 +6337,18 @@ async function validateWorkflowE2EApplicationPlan(dependencies: AwsBrokerDepende
     throw agentXError("CONFIG_INVALID", `the application E2E plan cannot be approved: ${derived.reason}. Request changes so the plan is written against the test accounts registered now, or ask an administrator to approve the project's setup again`);
   }
   throw agentXError("CONFIG_INVALID", `the application E2E plan cannot be approved: ${derived.reason}. Request changes to correct the plan, or approve it again once the runtime is ready`);
+}
+
+/**
+ * Whether `agent` steps are offered to the planner: only while the route the policy pinned is the one the installation would use now (Task 4.2); a registry or settings read that
+ * fails offers none. Never on a cloud install: AI navigation is not available to a Cloud org until its model calls are charged through the cloud spend ledger
+ * (`AI_NAVIGATION_NOT_ON_CLOUD`), so the planner is not told it may write them.
+ */
+export async function agentStepsOfferedToPlanner(dependencies: Pick<AwsBrokerDependencies, "cloud" | "documentClient" | "tableName" | "e2eAgentInstallation">, modelRouteRevision: string | null): Promise<boolean> {
+  if (dependencies.cloud === true || modelRouteRevision === null || dependencies.e2eAgentInstallation === undefined) return false;
+  try {
+    return (await checkE2EAgentRouteCurrent({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, await dependencies.e2eAgentInstallation(), modelRouteRevision)).ok;
+  } catch { return false; }
 }
 
 /** Supplies source-backed feature-plan references only from the task's pinned project and immutable prepared commit. */
@@ -6358,18 +6403,11 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
   let accountRegistry: E2EAccountRegistryEntry[];
   try {
     // An account whose rows cannot be read is left out, so only its own targets are listed as unavailable.
-    accountRegistry = (await readAccountRegistryEntries(dependencies, project.definition.name,
+    accountRegistry = (await readAccountRegistryEntries(dependencies, await orgOfRecord(dependencies, task), project.definition.name,
       parsedPolicy.data.targets.map((target) => ({ applicationId: target.applicationId, profileId: target.accountProfileId })),
       { earlierFor: accountDefinitionIsForOtherContract(snapshot) })).entries;
   } catch { accountRegistry = []; }
-  // `agent` steps are offered to the planner only while the route the policy pinned is the one the installation would use now (Task 4.2); a registry or settings read that fails offers none.
-  let agentRouteApproved = false;
-  if (parsedPolicy.data.modelRouteRevision !== null && dependencies.e2eAgentInstallation !== undefined) {
-    try {
-      agentRouteApproved = (await checkE2EAgentRouteCurrent({ documentClient: dependencies.documentClient, tableName: dependencies.tableName },
-        await dependencies.e2eAgentInstallation(), parsedPolicy.data.modelRouteRevision)).ok;
-    } catch { agentRouteApproved = false; }
-  }
+  const agentRouteApproved = await agentStepsOfferedToPlanner(dependencies, parsedPolicy.data.modelRouteRevision);
   return buildFeatureE2EPlanningContext(parsedPolicy.data, snapshot, { origin: sourceOrigin,
     preparedCommitSha: prepared?.baseCommitSha ?? null, readyRuntimes, accountRegistry, agentRouteApproved });
 }
@@ -6436,7 +6474,10 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
   catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
   const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
   if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
-  if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot read agent skills");
+  // Like the tool routes: a finished or stopping step reads nothing, and neither does one the workspace has moved on from.
+  if (TERMINAL.has(operation.status) || operation.status === "CANCEL_REQUESTED") throw agentXError("STALE_FENCE", "a finished or stopped step cannot read agent skills");
+  const workspace = await requireWorkspace(dependencies, operation.workspaceId);
+  if (workspace.activeOperationId !== operation.id) throw agentXError("STALE_FENCE", "operation no longer owns the workspace");
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // Read under the operation's org, and only for a task of that same org: any disagreement serves nothing.
@@ -8716,7 +8757,10 @@ async function handleCallback(
     return json(await handleWorkflowE2EEvidenceUpload(dependencies, operation, parseBody(request.body)), request.requestId);
   }
   if (action === "e2e-model-budget") {
+    // Defence in depth with the dispatch refusal: nothing on a cloud install may spend the installation's model credentials through this meter.
+    if (dependencies.cloud === true) throw agentXError("CALLBACK_FORBIDDEN", AI_NAVIGATION_NOT_ON_CLOUD);
     return json(await handleE2EModelBudgetCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      orgOf: (record) => orgOfRecord(dependencies, record),
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
       ...(dependencies.e2eAgentInstallation === undefined ? {} : { e2eAgentInstallation: dependencies.e2eAgentInstallation }) }, operation, body), request.requestId);
   }
@@ -12123,6 +12167,21 @@ async function validateWorkflowProgressChunk(
     }
     if (progress.sequence !== latestSequence + 1 || progress.graphDigest !== invocation.approval.graphDigest || progress.runId !== invocation.approval.runId
       || progress.operationId !== operation.id) throw agentXError("CALLBACK_FORBIDDEN", "work breakdown progress is out of sequence or bound to another operation");
+    if (invocation.parallel !== undefined) {
+      // Rovara Code v2: several items may be running at once. The shape (what may start, how many run, what may finish) is the projection's; the trees are judged here: a part
+      // starts from the tree the run began at or from a tree some finished part was merged into. A worker that builds parts side by side names that tree on each finished part
+      // (`integratedTreeSha`); one that was not sent the setting (an older worker) builds them one after another, and the tree a finished part ends on is its own.
+      const stored = [...(nextWorkflow.workflowDependenciesProgress ?? []), progress];
+      const projected = workflowDependencyAttemptTerminalProgress({ graph: invocation.graph, approval: invocation.approval, operationId: operation.id,
+        sequenceStart: invocation.sequenceStart, resumeProgress: invocation.resumeProgress, history: stored, parallel: invocation.parallel });
+      const startTrees = parallelStartTrees(stored, firstBaseTree);
+      if (projected === undefined || (progress.state === "STARTED" && !startTrees.has(progress.baseTreeSha))) {
+        throw agentXError("CALLBACK_FORBIDDEN", "work breakdown progress does not continue the retained graph's trees and order");
+      }
+      latestSequence = progress.sequence;
+      nextWorkflow = WorkflowSnapshotSchema.parse({ ...nextWorkflow, revision: nextWorkflow.revision + 1, workflowDependenciesProgress: stored });
+      continue;
+    }
     const operationHistory = [...history, ...((nextWorkflow.workflowDependenciesProgress ?? []).slice(history.length))]
       .filter((entry) => entry.operationId === operation.id);
     const active = operationHistory.at(-1)?.state === "STARTED" ? operationHistory.at(-1) : undefined;
@@ -13030,7 +13089,7 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       : item.kind === "REVIEW" ? ["REVIEW", "WAITING", WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE] as const
       : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
       : item.kind === "CRITIQUE" ? ["PLAN_CRITIQUE", "READY", WORKFLOW_BLOCK_REASONS.planCheckNotStarted] as const
-      : item.kind === "REPLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planRevisionNotStarted] as const
+      : item.kind === "CRITIC_REPLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planRevisionNotStarted] as const
       : ["PULL_REQUEST", "READY", WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE] as const;
     const reason = finalReason ?? usualReason;
     // A fix AgentX gave up pushing: the task waits for the merge, blocked, naming the pull request.
@@ -13541,7 +13600,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       : item.kind === "IMPLEMENT" ? workflow?.stage === "IMPLEMENT" && workflow.state === "READY" && workflow.program !== undefined
       // Plan 6 Task 8: the plan check of a version 2 plan, and the one revision a blocking point of it asks for.
       : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
-      : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
+      : item.kind === "CRITIC_REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
@@ -13597,7 +13656,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
         : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
         : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
-        : item.kind === "REPLAN" ? await startTaskWorkflowPlanRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
+        : item.kind === "CRITIC_REPLAN" ? await startTaskWorkflowCriticRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
     }
     await remove();
@@ -13756,7 +13815,7 @@ async function refuseApplicationRoundBeforeWarmUp(dependencies: AwsBrokerDepende
   const current = await requireApplicationSelectionStillCurrent(dependencies, task, approved.plan.e2e, artifact);
   // Task 4.2: a round with an agent step is refused here, before compute is woken, when its route is no longer the installation's or the project's day has no room. The dispatch
   // checks it again once the round is being admitted (`startApplicationE2EChecksDispatch`).
-  await requireAgentRouteStillCurrent(dependencies, task.project, approved.plan.e2e, E2EPolicySchema.parse(current.inputs.policy));
+  await requireAgentRouteStillCurrent(dependencies, await orgOfRecord(dependencies, task), task.project, approved.plan.e2e, E2EPolicySchema.parse(current.inputs.policy));
   if (workflow.candidate === undefined) return;
   const source = await candidateSourceOperation(dependencies, task, workflow.candidate.digest);
   if (source === undefined) throw applicationRoundRefusal(NO_COMMITTED_EXPORT_REASON);
@@ -13803,14 +13862,23 @@ async function storeWorkflowE2EAdmission(dependencies: AwsBrokerDependencies, in
 }
 
 /**
+ * AI navigation steps call a model provider with the installation's own credentials; the only meter is the project's day budget, and none of it is charged to the org's
+ * spend ledger or held to its limits. So a cloud install refuses every round with an `agent` step until those calls are charged through the cloud spend ledger. Legacy and self-hosted
+ * installs (no `cloud` flag) keep the day budget as their only meter.
+ */
+export const AI_NAVIGATION_NOT_ON_CLOUD = "ai-navigation-not-available: AI navigation steps are not available on Rovara Cloud yet, because their model calls are not yet charged to your organization's spend limits. The checks did not start; remove the AI navigation steps from the plan, or run them on a self-hosted install";
+
+/**
  * Task 4.2, the dispatch half of the route registry. For a plan with an `agent` step: the route is derived from the installation's worker settings again and must be the one the
  * project's policy pinned and the registry holds (any change of provider, model, secret ARN or OpenRouter policy is `model-route-changed-reapprove`; no usable route is
  * `agent-route-not-approved`), and the project's UTC day must have room for the round's worst case (`model-route-budget-exhausted`, before anything starts). Each is a terminal
  * refusal that blocks the workflow with its code and a plain sentence. A plan with no agent step is not judged here. Returns whether the plan has an agent step.
  */
-export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDependencies, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>): Promise<boolean> {
+export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>): Promise<boolean> {
   const agentSteps = intent.scenarios.reduce((total, scenario) => total + scenario.steps.filter((step) => step.kind === "agent").length, 0);
   if (agentSteps === 0) return false;
+  // Fail closed on a cloud install, before the route, the budget or any compute is looked at.
+  if (dependencies.cloud === true) throw new ApplicationDispatchRefusal(AI_NAVIGATION_NOT_ON_CLOUD);
   const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   // No round starts without the check. What cannot be read for a lasting reason (settings missing or denied, a malformed row) is a plain refusal with its code. A fault that a later
   // attempt can get past (throttling, a 5xx, a network error, a timeout) is rethrown, so the dispatch takes its ordinary bounded retry path and the task is not blocked.
@@ -13830,7 +13898,7 @@ export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDepen
   const calls = Math.min(budgets.maxModelCallsPerGroup, agentSteps * (budgets.maxActionsPerStep + budgets.extraModelCallsPerStep));
   const need = { calls, inputTokens: Math.min(budgets.maxInputTokensPerGroup, calls * budgets.maxInputTokens) };
   let room: boolean;
-  try { room = await e2eDayBudgetRoom({ ...store, projectName, now: Date.now() }, need, { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay }); }
+  try { room = await e2eDayBudgetRoom({ ...store, orgId, projectName, now: Date.now() }, need, { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay }); }
   catch (error) { throw unreadable("The project's daily AI navigation budget", error); }
   if (!room) throw new ApplicationDispatchRefusal("model-route-budget-exhausted: This project's daily AI navigation budget is spent, so the checks did not start. They can run again tomorrow (UTC)");
   return true;
@@ -13854,7 +13922,7 @@ async function startApplicationE2EChecksDispatch(
   const candidate = workflow.candidate!;
   const current = await requireApplicationSelectionStillCurrent(dependencies, task, intent, artifact);
   // Task 4.2: a round with an agent step runs only on the route the installation has now, and only while the project's day has room for its worst case.
-  const usesAgentSteps = await requireAgentRouteStillCurrent(dependencies, task.project, intent, E2EPolicySchema.parse(current.inputs.policy));
+  const usesAgentSteps = await requireAgentRouteStillCurrent(dependencies, await orgOfRecord(dependencies, task), task.project, intent, E2EPolicySchema.parse(current.inputs.policy));
   const sourceOperation = await candidateSourceOperation(dependencies, task, candidate.digest);
   if (sourceOperation === undefined) throw applicationRoundRefusal(NO_COMMITTED_EXPORT_REASON);
   const stored = readyCandidateBuildSource(sourceOperation, candidate.digest);
@@ -14726,7 +14794,7 @@ async function completedWorkflowItems(
     const acknowledgedTerminal = dependencyBinding === undefined ? undefined : workflowDependencyAttemptTerminalProgress({
       graph: dependencyBinding.graph, approval: dependencyBinding.approval, operationId: operation.id,
       sequenceStart: dependencyBinding.sequenceStart, resumeProgress: dependencyBinding.resumeProgress,
-      history: task.workflow.workflowDependenciesProgress ?? [],
+      history: task.workflow.workflowDependenciesProgress ?? [], parallel: dependencyBinding.parallel,
     });
     const dependencyResultValid = dependencyBinding !== undefined && dependencyResult?.success === true
       && dependencyResult.data.taskId === dependencyBinding.graph.taskId
@@ -14744,8 +14812,11 @@ async function completedWorkflowItems(
       && dependencyResult.data.items.every((item, index) => canonicalJson(item) === canonicalJson(acknowledgedTerminal[index]))
       && dependencyResult.data.items.every((item, index) => item.itemId === dependencyOrder[index]
         && item.sequence > 0
-        && (index === 0 || dependencyResult.data.items[index - 1]?.state === "IMPLEMENTED"
-          && dependencyResult.data.items[index - 1]?.candidateTreeSha === item.baseTreeSha));
+        // One at a time: each item starts on the tree the one before it ended on. In parallel the items are merged as they finish, so each names the tree it was merged into instead.
+        && (dependencyBinding.parallel !== undefined
+          ? item.state !== "IMPLEMENTED" || (item.integratedTreeSha ?? item.candidateTreeSha) !== undefined
+          : index === 0 || dependencyResult.data.items[index - 1]?.state === "IMPLEMENTED"
+            && dependencyResult.data.items[index - 1]?.candidateTreeSha === item.baseTreeSha));
     const graphItemsComplete = dependencyBinding !== undefined && dependencyResult?.success === true
       && dependencyResult.data.status === "SUCCEEDED"
       && dependencyResult.data.items.length === dependencyBinding.graph.items.length
@@ -14760,7 +14831,22 @@ async function completedWorkflowItems(
         : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
-      if (dependencyBinding !== undefined && unfinished?.operationId === operation.id && unfinished.state === "STARTED") {
+      if (dependencyBinding?.parallel !== undefined) {
+        // Parts run side by side, so a stopped run can leave several started and unfinished: each is marked unknown, in the order it started.
+        const open = new Map<string, (typeof progress)[number]>();
+        for (const entry of progress) {
+          if (entry.operationId !== operation.id) continue;
+          if (entry.state === "STARTED") open.set(entry.itemId, entry);
+          else open.delete(entry.itemId);
+        }
+        let marked = progress;
+        for (const entry of [...open.values()].sort((left, right) => left.sequence - right.sequence)) {
+          const { candidateTreeSha: _tree, integratedTreeSha: _integrated, ...rest } = entry;
+          void _tree; void _integrated;
+          marked = [...marked, { ...rest, sequence: (marked.at(-1)?.sequence ?? entry.sequence) + 1, state: "UNKNOWN" as const, at: now, producer: "agentx-broker-terminal" }];
+        }
+        if (marked !== progress) next = WorkflowSnapshotSchema.parse({ ...next, workflowDependenciesProgress: marked });
+      } else if (dependencyBinding !== undefined && unfinished?.operationId === operation.id && unfinished.state === "STARTED") {
         const unknown = { ...unfinished, sequence: unfinished.sequence + 1, state: "UNKNOWN" as const, at: now, producer: "agentx-broker-terminal" };
         delete unknown.candidateTreeSha;
         next = WorkflowSnapshotSchema.parse({ ...next, workflowDependenciesProgress: [...progress, unknown] });
@@ -14876,9 +14962,12 @@ async function completedWorkflowItems(
           throw new Error(verificationFailure);
         }
         if (dependencyBinding !== undefined && dependencyResult?.success === true) {
-          const finalProgress = dependencyResult.data.items.at(-1);
+          // In parallel the combined tree is the one the last part to finish was merged into; one at a time it is the last item's tree.
+          const finalProgress = dependencyBinding.parallel === undefined ? dependencyResult.data.items.at(-1)
+            : [...dependencyResult.data.items].sort((left, right) => right.sequence - left.sequence)[0];
           const actualFinalTree = candidate.repositories.length === 1 ? candidate.repositories[0]?.treeSha : undefined;
-          if (finalProgress?.state !== "IMPLEMENTED" || actualFinalTree === undefined || finalProgress.candidateTreeSha !== actualFinalTree) {
+          const expectedFinalTree = dependencyBinding.parallel === undefined ? finalProgress?.candidateTreeSha : finalProgress?.integratedTreeSha ?? finalProgress?.candidateTreeSha;
+          if (finalProgress?.state !== "IMPLEMENTED" || actualFinalTree === undefined || expectedFinalTree !== actualFinalTree) {
             verificationFailure = "work breakdown final item does not bind the final combined candidate tree";
             throw new Error(verificationFailure);
           }
@@ -15183,7 +15272,7 @@ async function completedWorkflowItems(
     : operation.workflowMode === "PLAN" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN" && next.state === "READY"
-    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REPLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIC_REPLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
     && next.stage === "VERIFY" && next.state === "WAITING" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CHECKS", next.candidate.digest, now)]
@@ -16375,16 +16464,25 @@ async function requireWorkspace(dependencies: AwsBrokerDependencies, workspaceId
   return WorkspaceInstanceSchema.parse(workspaceRecordFields(item));
 }
 
+/**
+ * A person's default workspace for a project in one org. The map is keyed by org, person and project (`defaultWorkspaceKey`): a person has one owner key across orgs, so a
+ * person who left one org and joined another with a same-named project must not read the first org's workspace. A row written before the key carried the org (the old
+ * `OWNER#<person>` / `PROJECT#<name>`) is still found, but is returned only if the workspace it names belongs to this very org (one with no org recorded belongs to the install's single org);
+ * a workspace of any other org reads as absent.
+ */
 async function getDefaultWorkspace(
   dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
   ownerKey: string,
   projectName: string,
 ): Promise<WorkspaceInstance | undefined> {
-  const mapping = await getItem<{ workspaceId: string }>(dependencies, {
-    pk: `OWNER#${ownerKey}`,
-    sk: `PROJECT#${projectName}`,
-  });
-  return mapping ? requireWorkspace(dependencies, mapping.workspaceId) : undefined;
+  const scoped = await getItem<{ workspaceId: string }>(dependencies, defaultWorkspaceKey(orgId, ownerKey, projectName));
+  if (scoped) return requireWorkspace(dependencies, scoped.workspaceId);
+  const earlier = await getItem<{ workspaceId: string }>(dependencies, { pk: `OWNER#${ownerKey}`, sk: `PROJECT#${projectName}` });
+  if (!earlier) return undefined;
+  const workspace = await requireWorkspace(dependencies, earlier.workspaceId);
+  // A workspace from before records named their org belongs to the install's single org (the same rule as `installOrgId`); a workspace of another org reads as absent.
+  return (workspace.orgId ?? installOrgId(dependencies)) === orgId ? workspace : undefined;
 }
 
 async function getThreadWorkspace(
@@ -16815,6 +16913,12 @@ async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity:
     return { sourceRoundId: roundId.data, replays: records.map(replayRecordView) };
   }
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
+  // A replay runs a runner for the task's org, so on a cloud install it is admitted like any other launch: a locked trial, or a month of machine time used up, refuses it before anything is created.
+  if (dependencies.cloud === true) {
+    const trial = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
+    await admitTrial(trial, orgId);
+    await admitMachineTime(trial, orgId);
+  }
   // The route dependencies act for the task's developer (the task's owner); the request is the administrator's, and is recorded as theirs (Task FU2, REPLAYACTOR).
   // The task's owner now (Plan 5 Task 12a): the person who took it over, else its creator.
   const owner = effectiveTaskOwner(task);

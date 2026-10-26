@@ -1,14 +1,16 @@
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
-import { ProjectCommandSchema, StoredProjectDefinitionSchema } from "./project.js";
-import { ModelSelectionSchema, type ModelSelection } from "./models.js";
-import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
+import { ProjectCommandSchema } from "./project.js";
+import { StoredProjectDefinitionSchema } from "./project-node.js";
+import { ModelSelectionSchema } from "./models.js";
+import { type ModelSelection } from "./models-node.js";
+import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
-import { E2EWorkflowAdmissionRefSchema } from "./e2e.js";
-import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks.js";
+import { E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
+import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
-import { ResultContractSchema, RunCheckoutSchema } from "./agent-run.js";
+import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
 import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
@@ -20,11 +22,16 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk"] as const;
+export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
 export const AGENT_RUN_FEATURE = "task.agentRun" as const;
+/**
+ * A worker that lists this checks an agent step's report against the tool calls it made and sends `agentStepResult.grounding` with every step (grounded or unverified).
+ * Nothing is sent to the worker for it, so an older worker is never refused: it sends no grounding, the broker has no signal and treats the step as it always did.
+ */
+export const AGENT_GROUNDING_FEATURE = "task.agentGrounding.v1" as const;
 /** A routed model (`modelRoute`) goes only to a worker that lists this. */
 export const MODEL_ROUTE_FEATURE = "model.route" as const;
 /** What a delivery says when the worker lacks a feature an agent step or a model route needs. Such a field is never dropped. */

@@ -31,6 +31,9 @@ const ROWS: readonly Row[] = [
   // a take-over (Plan 5 Task 12b): the default payer of a task that recorded none is its creator's (money, as in `paymentOfTask`; the take-over then writes it explicitly), and the
   // creator's task-list row is the one the taker's row is copied from (it calls `ownerFenceOf` for the owner the write is fenced on)
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
+  // Plan 6 Task 11: how many parts of an approved plan may build at once is the room left in the creator's and the organization's workspace counts (the creator's own charge keys), so it reads the creator like the other money reads; it never grants authority
+  ["aws/developer-tasks.ts", "partsSettingOf", "money", ".developerId", ".slackUserId"],
+  ["rovara-code/parallel-parts.ts", "parallelPartsForTask", "money", ".developerId", ".slackUserId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
   // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
@@ -161,6 +164,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId*2", ".startedBy"],
   ["agent-sessions/create.ts", "startedText", "history", ".startedBy*4"],
   ["agent-sessions/retry.ts", "repairLink", "other-record", ".developerId"],
+  // a move to the cloud (Plan 5 Task 19): the task the runtime answered with must be the caller's own new one (its row names the caller as creator); it validates the shape of the runtime's answer and decides nothing about ownership
+  ["agent-sessions/handoff.ts", "toCloud", "shape", ".developerId"],
   // Task 14 minor: a retry is recorded as the caller's only when the idempotency item of ITS request id exists (the key is the task's owner key, as Plan 3 writes it)
   ["agent-sessions/retry.ts", "workflowMovedOn", "principal", ".ownerKey"],
   ["agents/agent-tools-routes.ts", "callAgentTool>holdRecord", "principal", ".ownerKey"],
@@ -242,4 +247,3 @@ describe("every read of a task's owner is classified, and the ones that carry au
     expect(projections[0]).toContain("slackUserId");
   });
 });
-

@@ -4,6 +4,7 @@ import {
   DRAFT_REFUSED_PULL_REQUEST_NOTE,
   GitHubAppCredentialProvider,
   GithubMergeRateLimitError,
+  type GitHubTokenIssued,
   appIdFromSecret,
   createGitHubAppJwt,
   pullRequestBodyWithDraftNote,
@@ -1468,5 +1469,125 @@ describe("organizationMembership (Plan 2, Task 14)", () => {
     await expect(f.github.organizationMembership(601, "acme", "../../user", { system: "webhook" })).resolves.toBeUndefined();
     await expect(f.github.organizationMembership(601, "ac/me", "rhea", { system: "webhook" })).resolves.toBeUndefined();
     expect(f.calls).toEqual([]);
+  });
+});
+
+describe("authorStanding (staging 0.4.6, check 4a)", () => {
+  type Answers = { token?: Response; membership?: Response; permission?: Response };
+  function provider(answers: Answers) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      calls.push({ url: target, init });
+      if (target.endsWith("/access_tokens")) return answers.token ?? Response.json({ token: "ghs_installation" });
+      if (target.includes("/memberships/")) return answers.membership ?? new Response("nope", { status: 404 });
+      return answers.permission ?? Response.json({ permission: "read", role_name: "read" });
+    });
+    return { calls, github: new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation }) };
+  }
+  const ORG = { owner: "acme", ownerType: "Organization", repo: "web", login: "rhea" };
+
+  it("counts an active org member (private or not) as a member, with one token that asks for members and metadata only", async () => {
+    const f = provider({ membership: Response.json({ state: "active", role: "member" }) });
+    await expect(f.github.authorStanding(601, ORG)).resolves.toBe("member");
+    expect(f.calls[0]!.url).toBe("https://api.github.com/app/installations/601/access_tokens");
+    expect(JSON.parse(f.calls[0]!.init?.body as string)).toEqual({ permissions: { metadata: "read", members: "read" } });
+    expect(f.calls.map((call) => call.url)).toEqual(["https://api.github.com/app/installations/601/access_tokens", "https://api.github.com/orgs/acme/memberships/rhea"]);
+    expect((f.calls[1]!.init?.headers as Record<string, string>).authorization).toBe("Bearer ghs_installation");
+  });
+
+  it("does not count a pending invitation, and then looks at the repository permission", async () => {
+    const f = provider({ membership: Response.json({ state: "pending", role: "member" }) });
+    await expect(f.github.authorStanding(601, ORG)).resolves.toBe("none");
+    expect(f.calls.at(-1)!.url).toBe("https://api.github.com/repos/acme/web/collaborators/rhea/permission");
+  });
+
+  it("counts write, maintain and admin access of a non-member, and not read or triage", async () => {
+    await expect(provider({ permission: Response.json({ permission: "write", role_name: "write" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "write", role_name: "maintain" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "admin", role_name: "admin" }) }).github.authorStanding(601, ORG)).resolves.toBe("collaborator");
+    await expect(provider({ permission: Response.json({ permission: "read", role_name: "triage" }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+    await expect(provider({ permission: Response.json({ permission: "none", role_name: "none" }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+    await expect(provider({ permission: new Response("nope", { status: 404 }) }).github.authorStanding(601, ORG)).resolves.toBe("none");
+  });
+
+  it("asks only for the repository permission, with a metadata-only token, on a user's repository", async () => {
+    const f = provider({ permission: Response.json({ permission: "write", role_name: "write" }) });
+    await expect(f.github.authorStanding(601, { ...ORG, ownerType: "User" })).resolves.toBe("collaborator");
+    expect(JSON.parse(f.calls[0]!.init?.body as string)).toEqual({ permissions: { metadata: "read" } });
+    expect(f.calls.map((call) => call.url)).toEqual(["https://api.github.com/app/installations/601/access_tokens", "https://api.github.com/repos/acme/web/collaborators/rhea/permission"]);
+  });
+
+  it("throws for every failure that is not a 404, so an outage is never read as a membership or a refusal", async () => {
+    await expect(provider({ membership: new Response("bad", { status: 502 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ membership: Response.json({ nothing: true }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ permission: new Response("bad", { status: 403 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ permission: Response.json({ nothing: true }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ token: new Response("bad", { status: 403 }) }).github.authorStanding(601, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("calls GitHub for nothing when a name could not be an account or a repository", async () => {
+    const f = provider({ membership: Response.json({ state: "active", role: "member" }) });
+    for (const bad of [{ login: "../../user" }, { owner: "ac/me" }, { repo: "../x" }, { repo: ".." }, { login: "rhea[bot]" }]) {
+      await expect(f.github.authorStanding(601, { ...ORG, ...bad })).resolves.toBe("none");
+    }
+    expect(f.calls).toEqual([]);
+  });
+});
+
+describe("the clone credential for a cloud org (v0.4.9 staging: every clone said 'Repository not found' although the exchange answered 200)", () => {
+  const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never, OTHER = "org_bbbbbbbbbbbbbbbbbbbb" as never;
+  const URL_OF = "https://github.com/PrepLabsAI/Sample-Project-A.git";
+  function cloud(bound: (orgId: unknown, installationId: number) => boolean, tokenBody: Record<string, unknown> = { token: "ghs_secret_token_value" }) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const issued: GitHubTokenIssued[] = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      requests.push({ url: target, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}) });
+      if (target.endsWith("/repos/PrepLabsAI/Sample-Project-A/installation")) return Response.json({ id: 173228775, account: { login: "PrepLabsAI" } });
+      return Response.json(tokenBody, { status: 201 });
+    });
+    const provider = new GitHubAppCredentialProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5389609", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation,
+      requireInstallationBound: async (orgId, installationId) => { if (!bound(orgId, installationId)) throw Object.assign(new Error("not connected"), { code: "GITHUB_NOT_CONNECTED", name: "AgentXError" }); },
+      onTokenIssued: (entry) => issued.push(entry),
+    });
+    return { provider, requests, issued };
+  }
+
+  it("asks the org's own installation for a contents-read token on exactly the repository, and says what GitHub granted (never the token)", async () => {
+    const f = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775, {
+      token: "ghs_secret_token_value", expires_at: "2026-10-26T18:00:00Z", repository_selection: "selected",
+      permissions: { contents: "read", metadata: "read" }, repositories: [{ name: "Sample-Project-A", full_name: "PrepLabsAI/Sample-Project-A" }],
+    });
+    await expect(f.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: ORG })).resolves.toEqual({ username: "x-access-token", password: "ghs_secret_token_value" });
+    expect(f.requests.map((request) => request.url)).toEqual([
+      "https://api.github.com/repos/PrepLabsAI/Sample-Project-A/installation",
+      "https://api.github.com/app/installations/173228775/access_tokens",
+    ]);
+    expect(f.requests[1]!.body).toEqual({ repositories: ["Sample-Project-A"], permissions: { contents: "read" } });
+    expect(f.issued).toEqual([{
+      installationId: 173228775, repository: "PrepLabsAI/Sample-Project-A", requested: { contents: "read" }, granted: { contents: "read", metadata: "read" },
+      repositorySelection: "selected", repositories: ["Sample-Project-A"], expiresAt: "2026-10-26T18:00:00Z",
+    }]);
+    expect(JSON.stringify(f.issued)).not.toContain("ghs_secret_token_value");
+  });
+
+  it("asks for a push token with contents write, and mints nothing for an org that does not hold the installation", async () => {
+    const f = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775);
+    await f.provider.resolve("github-agentx-sdlc", URL_OF, "push", { orgId: ORG });
+    expect(f.requests.at(-1)!.body).toEqual({ repositories: ["Sample-Project-A"], permissions: { contents: "write" } });
+    const other = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775);
+    await expect(other.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: OTHER })).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
+    expect(other.requests.some((request) => request.url.endsWith("/access_tokens"))).toBe(false);
+    expect(other.issued).toEqual([]);
+  });
+
+  it("reports only well-formed grant fields: a response with odd shapes is summarised without them", async () => {
+    const f = cloud(() => true, { token: "ghs_secret_token_value", permissions: { contents: "read", "bad key!": "read", issues: "execute" }, repositories: "none", repository_selection: 7 });
+    await f.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: ORG });
+    expect(f.issued).toEqual([{ installationId: 173228775, repository: "PrepLabsAI/Sample-Project-A", requested: { contents: "read" }, granted: { contents: "read" } }]);
   });
 });

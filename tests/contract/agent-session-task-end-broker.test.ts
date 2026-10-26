@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { hasTaskEndHandlers, hasTaskPauseHandlers, registerTaskEndHandler } from "../../packages/broker/src/agents/task-end.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";

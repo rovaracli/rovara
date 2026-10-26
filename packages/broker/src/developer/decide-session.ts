@@ -9,7 +9,7 @@
 // Raw values (the ticket, the cookie, the state, the PKCE verifier) are never stored or logged: only their hashes.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, type AuditProof, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, TICKET_PATTERN, type AuditProof, type OrgId } from "@agentx/contracts";
 import { mayDecide, type DecideKinds } from "./decide-kinds.js";
 import { sha256Hex } from "./tokens.js";
 
@@ -20,7 +20,7 @@ export const DECIDE_SECONDS = 600;
 export const APPROVAL_ID_PATTERN = /^(?:apr|spr)_[0-9a-z]{20}$/;
 /** The only places a decide flow returns to (R67): checked on the identify route's parameter, again on the ticket's, and on the stored state. */
 export const APPROVE_RETURN_PATTERN = /^\/v1\/app\/approve\/((?:apr|spr)_[0-9a-z]{20})$/;
-export const TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+export { TICKET_PATTERN };
 export const TICKET_EXPIRED_MESSAGE = "This confirmation link has expired. Open the approval again from Rovara.";
 export const RATE_LIMIT_MESSAGE = "Too many confirmation attempts. Try again later.";
 export const FORBIDDEN_ORIGIN_MESSAGE = "This request didn't come from Rovara's page.";
@@ -255,6 +255,18 @@ export interface DecideRequestContext {
   authenticateBearer?: (authorization: string) => Promise<{ developerId: string; orgId: OrgId }>;
 }
 export interface DecideRequest { method: string; path: string; headers: Record<string, string | undefined>; body?: string }
+export const DECIDE_NAVIGATION_MESSAGE = "Open this approval from its link.";
+/** Sec-Fetch-Site identifies browser requests; Node fetch also sends mode cors without Site and retains the existing presence rules. */
+export function requireDecideNavigation(request: DecideRequest): void {
+  if (!Object.entries(request.headers).some(([key, value]) => key.toLowerCase() === "sec-fetch-site" && value !== undefined)) return;
+  // RULING Q10: both JSON decision handlers use this shared guard before any ticket is minted.
+  if (request.path.endsWith("/decide")) {
+    if (["cors", "same-origin", "no-cors"].includes(request.headers["sec-fetch-mode"] ?? "")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+    return;
+  }
+  if (request.headers["sec-fetch-dest"] !== "document" || request.headers["sec-fetch-mode"] !== "navigate"
+    || (request.method === "POST" && request.headers["sec-fetch-user"] !== "?1")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+}
 export interface DecideAuthority {
   orgId: OrgId; developerId: string; approvalId: string;
   /**
@@ -364,6 +376,7 @@ export async function mintConfirmUrl(context: Pick<DecideRequestContext, "store"
  * - A state-changing request also needs the cell's own Origin and the session's CSRF field, and claims the session: it can decide once.
  */
 export async function requireDecideSession(context: DecideRequestContext, request: DecideRequest): Promise<DecideAuthority> {
+  requireDecideNavigation(request);
   const approvalId = approvalIdOfRequest(request.path);
   if (approvalId === undefined) throw agentXError("NOT_FOUND", "route not found");
   const authorization = request.headers.authorization;

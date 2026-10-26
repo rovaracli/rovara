@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { agentXError, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";

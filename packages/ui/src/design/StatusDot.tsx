@@ -1,0 +1,2 @@
+import { VisibleText, visibleText } from "./VisibleText.js";
+export function StatusDot({ status, words }: { status: string; words: string }) { const known = ["running", "needs_person", "waiting", "failed", "succeeded", "stopped", "paused", "cancelled", "starting"].includes(status) ? status : "unknown";return <span role="img" aria-label={visibleText(words)} className="rv-status"><span aria-hidden="true" data-status={known} className="rv-status-dot" /><VisibleText text={words} /></span>; }

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   WORKER_INVOCATION_FEATURES, WorkflowReviewReportSchema, parseWorkflowReviewerResponse, reviewJsonShape,
 } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, submitWorkflowReview } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, submitWorkflowReview } from "../../packages/contracts/src/task-workflow-node.js";
 import { runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
