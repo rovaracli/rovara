@@ -1,3 +1,4 @@
+import { adminDirectoryRead } from "./admin-directory.js";
 import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
@@ -48,7 +49,7 @@ const deps: DeveloperRouteDependencies = {
  return {};
  } },
  developer: { issuer: origin + "/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "mock-signin", verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
- orgs: { renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: "member" } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
+ orgs: { renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: current.me.developer.orgRole } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
 };
 const handler = createAppHandler({ appDirectory: resolve("packages/web/dist/app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -60,6 +61,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/agent-state" && method === "POST" && current.agent !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.agent = AgentProfileResponseSchema.parse({ ...current.agent, agent: { ...current.agent.agent, ...changes } });json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/admin-role" && method === "POST" && current.name === "admin") { current.me.developer.orgRole = "member";current.nav.me.orgRole = "member";json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
@@ -85,7 +87,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname.startsWith("/v1/web/") || url.pathname === "/v1/auth/browser/sign-out") {
  if (url.pathname.startsWith("/v1/web/") && !webRouteAllowed(method, url.pathname)) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
- await authenticateWebRequest(deps, { method, path: url.pathname, headers, requestId: "mock-request" });
+ const webCaller = await authenticateWebRequest(deps, { method, path: url.pathname, headers, requestId: "mock-request" });
+ if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/me" || url.pathname === "/v1/web/org/members")) { json(200, await adminDirectoryRead(deps, webCaller, url.pathname.replace("/v1/web/", "/v1/app/")));return; }
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }

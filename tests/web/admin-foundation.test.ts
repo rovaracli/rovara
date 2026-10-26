@@ -15,10 +15,11 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const member = { developerId: "b".repeat(64), name: "Maya", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" };
-function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
+function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; kind?: "web" | "desktop"; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner", nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, admin: options.enabled ?? true } });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
  const f = fakeHost(async r => options.respond?.(r) ?? { status: 200, body: r.path === "/v1/app/nav" ? nav : r.path === "/v1/app/me" ? me : { members: [member] } });
+ f.host.kind = options.kind ?? "web";
  const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/admin/people"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -52,3 +53,15 @@ it("searches only loaded members and renders hostile names as text", async () =>
 });
 it("overview explains available administration without pretending health is verified", async () => { const f = mount({ path: "/app/admin" });expect(await screen.findByRole("heading", { name: "Administration" })).toBeTruthy();expect(screen.getByText("Review who belongs to Acme and what each role allows.")).toBeTruthy();expect(screen.queryByText("All systems healthy")).toBeNull();expect(screen.queryByRole("link", { name: "Spending" })).toBeNull();f.close(); });
 for (const theme of ["light", "dark"] as const) it(`has accessible People and Roles pages in ${theme}`, async () => { const f = mount({ theme });await screen.findByText("Maya");await expectNoAxeViolations(f.container);fireEvent.click(screen.getByRole("link", { name: "Roles explained" }));await screen.findByRole("heading", { name: "Roles" });await expectNoAxeViolations(f.container);f.close(); });
+
+it("does not load admin data in a desktop host", async () => { const f = mount({ kind: "desktop" });expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(f.request).not.toHaveBeenCalled();f.close(); });
+it("hides cached directory data when an identity refresh fails", async () => {
+ const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "untrusted detail" } } }));await f.query.invalidateQueries({ queryKey: ["admin", "identity"] });expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(screen.queryByText("Maya")).toBeNull();expect(screen.queryByText("untrusted detail")).toBeNull();expect(f.query.getQueriesData({ queryKey: ["admin", "members"] })).toEqual([]);f.close();
+});
+it("rejects an unreadable directory without rendering a partial list", async () => {
+ const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 200, body: { members: [member, { name: "incomplete" }] } }));await f.query.invalidateQueries({ queryKey: ["admin", "members"] });expect(await screen.findByText("Couldn't load company members. Try again.")).toBeTruthy();expect(screen.queryByText("Maya")).toBeNull();f.close();
+});
+
+it("keeps the member-name filter when inspecting roles and returning", async () => {
+ const f = mount();await screen.findByText("Maya");fireEvent.change(screen.getByRole("searchbox", { name: "Find in this member list" }), { target: { value: "Maya" } });fireEvent.click(screen.getByRole("link", { name: "Roles explained" }));await screen.findByRole("heading", { name: "Roles" });fireEvent.click(screen.getByRole("link", { name: "Back to people" }));await screen.findByText("Maya");expect(screen.getByRole("searchbox")).toHaveProperty("value", "Maya");f.close();
+});
