@@ -184,6 +184,24 @@ describe("when a session ends", () => {
     expect(p.sessionOf(closed.sessionId).summary.status).toBe("cancelled");
   });
 
+  it("a workflow session whose workspace failed to prepare ends failed at once, and does not read running at its plan step (v0.4.9 staging: every clone failed and the sessions stayed 'Running: Coding plan', a stop changed nothing)", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.w.db.set({ ...p.w.db.get({ pk: `WORKSPACE#${s.workspaceId}`, sk: "META" })!, status: "PREPARATION_FAILED" });
+    p.operation(s.workspaceId, "prepare", "FAILED", 0, "Command failed: git clone ... remote: Repository not found.");
+    p.patchTask(s.taskId, { workflow: workflow("PLAN", "RUNNING") });
+    await p.refresh(s.sessionId);
+    const session = p.sessionOf(s.sessionId);
+    expect(session.summary).toMatchObject({ status: "failed", step: "Coding plan" });
+    expect(session.endedAt).toBeDefined();
+    // The same session before the preparation fails is still starting or running, and one whose task has no workflow keeps reading as it did.
+    const plain = p.open();
+    p.w.db.set({ ...p.w.db.get({ pk: `WORKSPACE#${plain.workspaceId}`, sk: "META" })!, status: "PREPARATION_FAILED" });
+    p.operation(plain.workspaceId, "prepare", "FAILED", 0, "boom");
+    await p.refresh(plain.sessionId);
+    expect(p.sessionOf(plain.sessionId).summary.status).toBe("waiting");
+  });
+
   it("never reopens: a session that ended and now looks open is left alone and the refusal is logged", async () => {
     const p = projectorWorld();
     const s = p.open();

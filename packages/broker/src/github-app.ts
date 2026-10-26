@@ -47,8 +47,24 @@ export interface GitHubAppCredentialProviderOptions {
    * an `orgId` scope. Absent on a private install.
    */
   requireInstallationBound?: (orgId: OrgId, installationId: number, repository?: { owner: string; name: string }) => Promise<void>;
+  /**
+   * Told after each repository-scoped installation token is issued, with what was asked and what GitHub says it granted (permission names, repository names, selection,
+   * expiry). Never the token. It lets an operator tell a token GitHub issued with less than was asked, or for another repository, from a refused clone.
+   */
+  onTokenIssued?: (issued: GitHubTokenIssued) => void;
   fetchImplementation?: typeof fetch;
   now?: () => number;
+}
+
+/** What `onTokenIssued` is told: names and words only. */
+export interface GitHubTokenIssued {
+  installationId: number;
+  repository: string;
+  requested: Record<string, "read" | "write">;
+  granted?: Record<string, string>;
+  repositorySelection?: string;
+  repositories?: string[];
+  expiresAt?: string;
 }
 
 export interface GitHubPullRequestInput {
@@ -1342,7 +1358,7 @@ export class GitHubAppCredentialProvider {
       return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true, options);
     }
     if (response.status === 422 && "orgId" in scope) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
-    return this.tokenOf(response);
+    return this.tokenOf(response, { installationId: installed.installationId, repository: `${installed.owner}/${installed.name}`, requested: permissions });
   }
 
   /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
@@ -1353,11 +1369,14 @@ export class GitHubAppCredentialProvider {
   }
 
   /** The token of a successful token response; anything else is GitHub being unavailable. */
-  private async tokenOf(response: Response): Promise<string> {
+  private async tokenOf(response: Response, issued?: Pick<GitHubTokenIssued, "installationId" | "repository" | "requested">): Promise<string> {
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${response.status}`);
     const body: unknown = await response.json();
     if (!body || typeof body !== "object" || !("token" in body) || typeof body.token !== "string") {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    }
+    if (issued !== undefined && this.options.onTokenIssued !== undefined) {
+      try { this.options.onTokenIssued({ ...issued, ...grantOf(body) }); } catch { /* a report that cannot be made never fails the mint */ }
     }
     return body.token;
   }
@@ -1670,6 +1689,25 @@ export function webhookSecretFromSecret(secret: string): string {
     // Do not include secret material in errors.
   }
   throw agentXError("RUNTIME_UNAVAILABLE", GITHUB_WEBHOOK_SECRET_MISSING);
+}
+
+/** The well-formed part of what GitHub says an installation token grants: permission names with read, write or admin, the repositories' names, the selection and the expiry. */
+function grantOf(body: Record<string, unknown>): Partial<Pick<GitHubTokenIssued, "granted" | "repositorySelection" | "repositories" | "expiresAt">> {
+  const out: Partial<Pick<GitHubTokenIssued, "granted" | "repositorySelection" | "repositories" | "expiresAt">> = {};
+  const permissions = body["permissions"];
+  if (permissions !== null && typeof permissions === "object" && !Array.isArray(permissions)) {
+    const granted = Object.fromEntries(Object.entries(permissions).filter(([name, level]) => /^[a-z_]{1,64}$/.test(name) && (level === "read" || level === "write" || level === "admin")));
+    out.granted = granted;
+  }
+  if (typeof body["repository_selection"] === "string" && /^[a-z]{1,16}$/.test(body["repository_selection"])) out.repositorySelection = body["repository_selection"];
+  if (Array.isArray(body["repositories"])) {
+    out.repositories = body["repositories"].flatMap((entry: unknown) => {
+      const name = entry !== null && typeof entry === "object" ? (entry as Record<string, unknown>)["name"] : undefined;
+      return typeof name === "string" && GITHUB_REPOSITORY_NAME.test(name) ? [name] : [];
+    }).slice(0, 20);
+  }
+  if (typeof body["expires_at"] === "string" && /^[0-9TZ:.+-]{10,40}$/.test(body["expires_at"])) out.expiresAt = body["expires_at"];
+  return out;
 }
 
 export function parseGitHubRepository(repositoryUrl: string): { owner: string; name: string } {

@@ -4,6 +4,7 @@ import {
   DRAFT_REFUSED_PULL_REQUEST_NOTE,
   GitHubAppCredentialProvider,
   GithubMergeRateLimitError,
+  type GitHubTokenIssued,
   appIdFromSecret,
   createGitHubAppJwt,
   pullRequestBodyWithDraftNote,
@@ -1532,5 +1533,61 @@ describe("authorStanding (staging 0.4.6, check 4a)", () => {
       await expect(f.github.authorStanding(601, { ...ORG, ...bad })).resolves.toBe("none");
     }
     expect(f.calls).toEqual([]);
+  });
+});
+
+describe("the clone credential for a cloud org (v0.4.9 staging: every clone said 'Repository not found' although the exchange answered 200)", () => {
+  const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never, OTHER = "org_bbbbbbbbbbbbbbbbbbbb" as never;
+  const URL_OF = "https://github.com/PrepLabsAI/Sample-Project-A.git";
+  function cloud(bound: (orgId: unknown, installationId: number) => boolean, tokenBody: Record<string, unknown> = { token: "ghs_secret_token_value" }) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const issued: GitHubTokenIssued[] = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      requests.push({ url: target, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}) });
+      if (target.endsWith("/repos/PrepLabsAI/Sample-Project-A/installation")) return Response.json({ id: 173228775, account: { login: "PrepLabsAI" } });
+      return Response.json(tokenBody, { status: 201 });
+    });
+    const provider = new GitHubAppCredentialProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5389609", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation,
+      requireInstallationBound: async (orgId, installationId) => { if (!bound(orgId, installationId)) throw Object.assign(new Error("not connected"), { code: "GITHUB_NOT_CONNECTED", name: "AgentXError" }); },
+      onTokenIssued: (entry) => issued.push(entry),
+    });
+    return { provider, requests, issued };
+  }
+
+  it("asks the org's own installation for a contents-read token on exactly the repository, and says what GitHub granted (never the token)", async () => {
+    const f = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775, {
+      token: "ghs_secret_token_value", expires_at: "2026-10-26T18:00:00Z", repository_selection: "selected",
+      permissions: { contents: "read", metadata: "read" }, repositories: [{ name: "Sample-Project-A", full_name: "PrepLabsAI/Sample-Project-A" }],
+    });
+    await expect(f.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: ORG })).resolves.toEqual({ username: "x-access-token", password: "ghs_secret_token_value" });
+    expect(f.requests.map((request) => request.url)).toEqual([
+      "https://api.github.com/repos/PrepLabsAI/Sample-Project-A/installation",
+      "https://api.github.com/app/installations/173228775/access_tokens",
+    ]);
+    expect(f.requests[1]!.body).toEqual({ repositories: ["Sample-Project-A"], permissions: { contents: "read" } });
+    expect(f.issued).toEqual([{
+      installationId: 173228775, repository: "PrepLabsAI/Sample-Project-A", requested: { contents: "read" }, granted: { contents: "read", metadata: "read" },
+      repositorySelection: "selected", repositories: ["Sample-Project-A"], expiresAt: "2026-10-26T18:00:00Z",
+    }]);
+    expect(JSON.stringify(f.issued)).not.toContain("ghs_secret_token_value");
+  });
+
+  it("asks for a push token with contents write, and mints nothing for an org that does not hold the installation", async () => {
+    const f = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775);
+    await f.provider.resolve("github-agentx-sdlc", URL_OF, "push", { orgId: ORG });
+    expect(f.requests.at(-1)!.body).toEqual({ repositories: ["Sample-Project-A"], permissions: { contents: "write" } });
+    const other = cloud((orgId, installationId) => orgId === ORG && installationId === 173228775);
+    await expect(other.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: OTHER })).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
+    expect(other.requests.some((request) => request.url.endsWith("/access_tokens"))).toBe(false);
+    expect(other.issued).toEqual([]);
+  });
+
+  it("reports only well-formed grant fields: a response with odd shapes is summarised without them", async () => {
+    const f = cloud(() => true, { token: "ghs_secret_token_value", permissions: { contents: "read", "bad key!": "read", issues: "execute" }, repositories: "none", repository_selection: 7 });
+    await f.provider.resolve("github-agentx-sdlc", URL_OF, "clone", { orgId: ORG });
+    expect(f.issued).toEqual([{ installationId: 173228775, repository: "PrepLabsAI/Sample-Project-A", requested: { contents: "read" }, granted: { contents: "read" } }]);
   });
 });
