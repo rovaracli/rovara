@@ -2,7 +2,7 @@
 // report cites (pull requests, commits, files, tool names) and what it claims to have called with what the successful calls returned and what the step was given.
 // Deterministic and bounded: no model call.
 import { describe, expect, it } from "vitest";
-import { ToolCallRecorder, checkGrounding, type GroundingInput } from "../../packages/worker/src/agent-run/grounding.js";
+import { ToolCallRecorder, checkGrounding, cleanGrounding, type GroundingInput } from "../../packages/worker/src/agent-run/grounding.js";
 
 const connectorOk = (tool: string, args: unknown, text: string) => ({ tool, connector: true, args, outcome: "ok" as const, text });
 const connectorFailed = (tool: string, args: unknown, text: string) => ({ tool, connector: true, args, outcome: "failed" as const, text });
@@ -206,5 +206,205 @@ describe("ToolCallRecorder", () => {
     const kept = recorder.calls().reduce((sum, call) => sum + call.text.length, 0);
     expect(kept).toBeLessThanOrEqual(2_100_000);
     expect(recorder.calls()).toHaveLength(400);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Review findings (agent-report-grounding-review.md): precision first (an honest run must not be failed), then the cheap holes
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+const answer = (text: string) => JSON.stringify({ status: "SUCCEEDED", text });
+const failure = (text: string, reason = "vendor_error") => JSON.stringify({ status: "FAILED", reason, text });
+const startEvent = (toolCallId: string, toolName: string, args: unknown) => ({ type: "tool_execution_start", toolCallId, toolName, args });
+const endEvent = (toolCallId: string, toolName: string, text: string, isError = false) => ({ type: "tool_execution_end", toolCallId, toolName, isError, result: { content: [{ type: "text", text }] } });
+const recorded = (connectors: string[], steps: Array<[string, string, unknown, string, boolean?]>) => {
+  const recorder = new ToolCallRecorder(new Set(connectors));
+  steps.forEach(([tool, , args, text, isError], index) => {
+    recorder.observe(startEvent(String(index), tool, args));
+    recorder.observe(endEvent(String(index), tool, text, isError === true));
+  });
+  return recorder.calls();
+};
+
+describe("review I1: a benign failed call does not condemn a run that other calls back", () => {
+  const prs = connectorOk("list_pull_requests", {}, answer("[{\"number\":5,\"title\":\"Add Notes\"}]"));
+  const tools = [tool("list_pull_requests"), tool("get_file_contents")];
+
+  it("keeps a run grounded when the last call was a 404 probe, and still shows the failure", () => {
+    const grounding = check({
+      report: "PR #5 \"Add Notes\" is merged. No CONTRIBUTING file exists.",
+      calls: [prs, connectorFailed("get_file_contents", { path: "CONTRIBUTING.md" }, failure("GitHub answered 404: Not Found"))],
+      connectorTools: tools,
+    });
+    expect(grounding?.verdict).toBe("grounded");
+    expect(grounding?.tools).toMatchObject({ calls: 2, failed: 1, failures: [{ tool: "get_file_contents" }] });
+  });
+
+  it("keeps a run grounded when a tool worked and then a later call of the same tool failed with 404", () => {
+    const ok = connectorOk("get_file_contents", { path: "README.md" }, answer("# Readme"));
+    const grounding = check({ report: "The README exists; no CONTRIBUTING file.", calls: [ok, connectorFailed("get_file_contents", { path: "CONTRIBUTING.md" }, failure("GitHub answered 404"))], connectorTools: tools });
+    expect(grounding?.verdict).toBe("grounded");
+  });
+
+  it("still condemns an unacknowledged auth failure (403, policy denied) even when other calls worked", () => {
+    for (const bad of [failure("GitHub answered 403: forbidden"), failure("not allowed", "policy_denied"), failure("connect GitHub first", "not_connected")]) {
+      const grounding = check({ report: "Everything is posted and healthy.", calls: [prs, connectorFailed("get_file_contents", {}, bad)], connectorTools: tools });
+      expect(grounding?.verdict, bad).toBe("unverified");
+      expect(grounding?.reasons.join("\n")).toContain("get_file_contents");
+    }
+  });
+
+  it("accepts an auth failure the report owns up to, in any of the honest forms", () => {
+    const calls = [prs, connectorFailed("get_file_contents", {}, failure("GitHub answered 403: forbidden"))];
+    for (const report of ["PR #5 is merged. I could not read the file: access was forbidden.", "PR #5 is merged. get_file_contents answered with an error.", "PR #5 is merged. I was unable to read files."]) {
+      expect(check({ report, calls, connectorTools: tools })?.verdict, report).toBe("grounded");
+    }
+  });
+
+  it("condemns a thrown error (the broker refused) when the report does not own up to it", () => {
+    const grounding = check({ report: "All fine.", calls: [prs, { tool: "get_file_contents", connector: true, args: {}, outcome: "failed", text: "the broker refused" }], connectorTools: tools });
+    expect(grounding?.verdict).toBe("unverified");
+  });
+});
+
+describe("review I2: an honest negative mention of a tool is not a claim to have called it", () => {
+  const names = [tool("github__add_issue_comment", "add_issue_comment"), tool("github__search", "search")];
+  it("is grounded for an inability, a list of available tools, and a plan", () => {
+    for (const report of [
+      "I couldn't call add_issue_comment because no write tool was approved.",
+      "I could not use `add_issue_comment`: it was denied.",
+      "Tools available to me: add_issue_comment, search.",
+      "The tool add_issue_comment was not offered to this step.",
+      "If a write tool were approved I would call add_issue_comment.",
+    ]) {
+      expect(check({ report, connectorTools: names }), report).toBeUndefined();
+    }
+  });
+  it("is still unverified for a plain claim to have used it", () => {
+    for (const report of ["I used `add_issue_comment` to post the findings.", "I called add_issue_comment and it succeeded.", "Posted via add_issue_comment."]) {
+      expect(check({ report, connectorTools: names })?.verdict, report).toBe("unverified");
+    }
+  });
+  it("does not take a plain English word that is also a tool's name for a mention", () => {
+    expect(check({ report: "I ran a search through the repo files and used my judgement.", connectorTools: names })).toBeUndefined();
+  });
+});
+
+describe("review I5: quoted tool-call markup is not tool-call text", () => {
+  it("is not flagged inside a fenced block or an inline code span", () => {
+    for (const report of [
+      "The prompt contains `<tool_call>` text that is a bug.",
+      "Found this in the template:\n```\n<tool_call>\n{\"name\":\"x\"}\n</tool_call>\n```\nIt should be removed.",
+      "Example:\n~~~xml\n<function_calls><invoke name=\"x\"></invoke></function_calls>\n~~~\nDone.",
+    ]) {
+      expect(check({ report }), report).toBeUndefined();
+    }
+  });
+  it("is still flagged in prose, and when a fence is never closed", () => {
+    expect(check({ report: "I looked.\n<tool_call>{\"name\":\"x\"}</tool_call>\nDone." })?.verdict).toBe("unverified");
+    expect(check({ report: "```\nnot a block\n<tool_call>{\"name\":\"x\"}</tool_call>\nDone." })?.verdict).toBe("unverified");
+    expect(check({ report: "A `quote` then <tool_call>{}</tool_call> in prose." })?.verdict).toBe("unverified");
+  });
+});
+
+describe("review I6: loose text is not a pull request citation", () => {
+  it("does not count 'prs 12', 'pull request 3 areas' or an HTML entity", () => {
+    for (const report of ["Open prs 12 of them.", "It touches pull request 3 areas of the code.", "The PRs 4 and 5 are mentioned as text.", "Entity &#123; is not a PR."]) {
+      expect(check({ report }), report).toBeUndefined();
+    }
+  });
+});
+
+describe("review I3: one big read does not switch the citation checks off", () => {
+  const BIG = `${"filler line of a lockfile, nothing to cite\n".repeat(2_000)}${"x".repeat(70_000)}\nTAIL: apps/backend/src/late.ts and PR #31 and commit 0a1b2c3d4e5f\n`;
+  it("keeps checking after a read over 64 KiB, so an invented pull request is still caught", () => {
+    const calls = recorded([], [["read", "", { path: "package-lock.json" }, BIG]]);
+    expect(calls[0]!.text.length).toBeLessThan(BIG.length);
+    const grounding = check({ report: "The lockfile is big. PR #5 is the cause.", calls });
+    expect(grounding?.verdict).toBe("unverified");
+    expect(grounding?.reasons.join("\n")).toMatch(/#5/);
+  });
+  it("accepts what sits beyond the first 64 KiB of that read", () => {
+    const calls = recorded([], [["read", "", { path: "package-lock.json" }, BIG]]);
+    expect(check({ report: "See apps/backend/src/late.ts, PR #31 and commit 0a1b2c3d4e.", calls })).toBeUndefined();
+  });
+  it("switches off only the kind of check whose evidence overflowed the bound", () => {
+    const many = Array.from({ length: 60_000 }, (_, index) => `file${String(index)}.txt`).join("\n");
+    const calls = recorded([], [["ls", "", {}, many]]);
+    const grounding = check({ report: "PR #5 is the cause; see apps/x/never-listed.ts", calls });
+    expect(grounding?.reasons.join("\n")).toMatch(/#5/);
+    expect(grounding?.reasons.join("\n")).not.toContain("never-listed");
+  });
+});
+
+describe("review I3: an index that overflows blames nothing of its kind", () => {
+  it("does not blame a pull request when the numbers a call returned did not all fit", () => {
+    const numbers = Array.from({ length: 45_000 }, (_, index) => String(100_000 + index)).join(" ");
+    const calls = recorded([], [["read", "", {}, numbers]]);
+    expect(check({ report: "PR #5 is the cause.", calls })).toBeUndefined();
+    expect(check({ report: "PR #5 is the cause.", calls: recorded([], [["read", "", {}, "two numbers: 7 8"]]) })?.verdict).toBe("unverified");
+  });
+});
+
+describe("review I4/I6: what the step was given is evidence, in any form", () => {
+  it("accepts a PR number, a short sha and a path that the request, instructions or skill text held", () => {
+    const provided = "Request:\n{\"event\":{\"pr\":12,\"sha\":\"b68926a2f91\"}}\n\nInstructions: follow docs/runbook/deploy.md.";
+    expect(check({ report: "PR #12 at b68926a2f9 follows docs/runbook/deploy.md.", provided })).toBeUndefined();
+  });
+});
+
+describe("review P2: more ways to cite", () => {
+  const calls = [connectorOk("list_pull_requests", {}, answer("[{\"number\":9,\"html_url\":\"https://github.com/o/r/pull/9\",\"sha\":\"4f2a9c1d7e0b\"}]"))];
+  const base = { calls, connectorTools: [tool("list_pull_requests")] };
+  it("catches an invented #5, PR-5, /pulls/5, an issues URL and a 6-character sha", () => {
+    for (const report of ["Fixed in #5.", "See PR-5 for context.", "https://api.github.com/repos/o/r/pulls/5", "https://github.com/o/r/issues/5 explains it.", "The change landed in commit 9d8c7b."]) {
+      expect(check({ report, ...base })?.verdict, report).toBe("unverified");
+    }
+  });
+  it("accepts the same forms when a tool returned them", () => {
+    for (const report of ["Fixed in #9.", "See PR-9 for context.", "https://api.github.com/repos/o/r/pulls/9", "https://github.com/o/r/issues/9 explains it.", "The change landed in commit 4f2a9c."]) {
+      expect(check({ report, ...base }), report).toBeUndefined();
+    }
+  });
+  it("does not take a colour or a version for a citation", () => {
+    expect(check({ report: "The badge is `#333` and #a1b2c3 on v1.2.3, build ab12cd, entity &#123;.", ...base })).toBeUndefined();
+  });
+});
+
+describe("review P2: a claim to have posted, with no connector call that answered", () => {
+  const claims = ["I posted a comment on the pull request.", "I have commented on the PR with the findings.", "I opened a PR for the fix.", "Comment posted on the PR.", "I've left a review on the issue."];
+  it("is unverified with zero tool calls, and with only file reads", () => {
+    for (const report of claims) {
+      expect(check({ report })?.verdict, report).toBe("unverified");
+      expect(check({ report, calls: [fileOk("read", { path: "a.md" }, "text")] })?.verdict, report).toBe("unverified");
+    }
+  });
+  it("is fine when a connector call answered, when it is denied, or when the text is about a plan", () => {
+    const worked = [connectorOk("add_issue_comment", { body: "x" }, answer("posted"))];
+    expect(check({ report: claims[0]!, calls: worked, connectorTools: [tool("add_issue_comment")] })).toBeUndefined();
+    for (const report of ["I have not posted a comment on the pull request.", "No comment was posted on the PR.", "I did not open a PR; I can't.", "I wrote a summary of the pull request."]) {
+      expect(check({ report }), report).toBeUndefined();
+    }
+  });
+});
+
+describe("review M1: no pattern is quadratic", () => {
+  it("reads pathological reports quickly", () => {
+    const shapes = [
+      `PR${" ".repeat(250_000)}7`, `pull request${" \t".repeat(120_000)}#`, `${"a/".repeat(120_000)}`, `${"```\n".repeat(60_000)}<tool_call>`,
+      `${"`".repeat(250_000)}`, `${"#".repeat(250_000)}`, `${"deadbeef".repeat(30_000)}`, `I posted ${"a ".repeat(120_000)}`, `${"<parameter ".repeat(20_000)}`,
+    ];
+    for (const report of shapes) {
+      const started = performance.now();
+      check({ report, provided: report });
+      expect(performance.now() - started, report.slice(0, 20)).toBeLessThan(1_500);
+    }
+  });
+});
+
+describe("cleanGrounding", () => {
+  it("gives a grounded verdict with the tools summary, so a broker can tell checked from never checked", () => {
+    const calls = [fileOk("read", { path: "a" }, "x"), fileFailed("ls", { path: "b" }, "denied")];
+    expect(cleanGrounding(calls)).toEqual({ verdict: "grounded", reasons: [], tools: { calls: 2, failed: 1, failures: [{ tool: "ls", message: "denied" }] } });
   });
 });

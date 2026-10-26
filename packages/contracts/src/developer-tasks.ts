@@ -77,13 +77,14 @@ export const PullRequestSummarySchema = z.object({
 export const DeveloperTaskRunViewSchema = z.object({
   state: z.enum(AGENT_RUN_STATES),
   currentStep: z.object({ id: StepIdSchema, name: z.string() }).strict().optional(),
+  // A step is read tolerantly (an unknown field is dropped, not refused): the broker may show a client more about a step than this build knows, and `tools` and `unverified` are optional.
   steps: z.array(z.object({
     id: StepIdSchema, name: z.string(), status: z.enum(AGENT_RUN_STEP_STATUSES), report: z.string().optional(),
     /** The tool calls the step made and the ones that failed (shown when one failed or the report was unverified). */
     tools: AgentStepToolsSchema.optional(),
     /** Why the step's report was not backed by what the agent did: the run ended FAILED with these words, "Unverified, needs a person". */
     unverified: z.array(z.string().max(300)).max(10).optional(),
-  }).strict()),
+  })),
   pendingApprovals: z.array(z.object({ approvalId: ApprovalIdSchema, kind: z.enum(["write", "step"]), text: z.string(), confirmUrl: z.string().optional() }).strict()),
   finalReport: z.string().optional(),
   branch: z.string().optional(),

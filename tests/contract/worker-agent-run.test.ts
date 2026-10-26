@@ -444,14 +444,16 @@ describe("choose_branch", () => {
     expect(results[1]!.content[0]!.text).toContain("fix, escalate");
     expect(results[2]!.content[0]!.text).toBe("Noted: escalate.");
     expect(results[3]!.isError).toBe(true);
-    expect(result).toEqual({ report: "Escalating.", outcome: "SUCCEEDED", branch: "escalate", reason: "Not sure after all." });
+    expect(result).toMatchObject({ report: "Escalating.", outcome: "SUCCEEDED", branch: "escalate", reason: "Not sure after all." });
   });
 
   it("reports no branch when the model chose none, or only chose ones outside the contract", async () => {
     const none = await run([fauxAssistantMessage("Done.")], { payload: step({ resultContract: contract }) });
-    expect(none.result).toEqual({ report: "Done.", outcome: "SUCCEEDED" });
+    expect(none.result).toMatchObject({ report: "Done.", outcome: "SUCCEEDED" });
+    expect(none.result).not.toHaveProperty("branch");
     const invalid = await run([toolUse(fauxToolCall("choose_branch", { branch: "other", reason: "x" }, { id: "b" })), fauxAssistantMessage("Done.")], { payload: step({ resultContract: contract }) });
-    expect(invalid.result).toEqual({ report: "Done.", outcome: "SUCCEEDED" });
+    expect(invalid.result).toMatchObject({ report: "Done.", outcome: "SUCCEEDED" });
+    expect(invalid.result).not.toHaveProperty("branch");
   });
 });
 
@@ -575,20 +577,35 @@ describe("grounding: a report is only as good as the tool calls behind it (stagi
     expect(result?.grounding?.reasons.join("\n")).toContain("pull request #5");
   });
 
-  it("leaves a grounded run exactly as it was: the pull request and commit it cites came from the tool, and nothing extra is in the result", async () => {
+  it("sends a grounded verdict with every step, so a broker can tell a checked step from one an older worker ran", async () => {
     const { result, error } = await run([
       toolUse(fauxToolCall(TOOL, { id: "1" }, { id: "g1" })),
       fauxAssistantMessage("Healthy. PR #7 \"Retry the payment call\" (b68926a2f91) went out."),
     ], { catalogs: async () => [github] }, answer(PRS));
     expect(error).toBeUndefined();
-    expect(result).toEqual({ report: "Healthy. PR #7 \"Retry the payment call\" (b68926a2f91) went out.", outcome: "SUCCEEDED" });
+    expect(result).toEqual({ report: "Healthy. PR #7 \"Retry the payment call\" (b68926a2f91) went out.", outcome: "SUCCEEDED", grounding: { verdict: "grounded", reasons: [], tools: { calls: 1, failed: 0, failures: [] } } });
   });
 
   it("counts what the step was given as grounds: a report step may cite the pull request an earlier step found", async () => {
     const { result } = await run([fauxAssistantMessage("Verdict: unknown. The earlier step found PR #12 but could not read its checks.")], {
       payload: step({ inputs: "Request:\nDo your job.\n\nReport from Inspect:\nFound PR #12; its checks were not readable." }),
     });
-    expect(result).toEqual({ report: "Verdict: unknown. The earlier step found PR #12 but could not read its checks.", outcome: "SUCCEEDED" });
+    expect(result?.grounding).toEqual({ verdict: "grounded", reasons: [], tools: { calls: 0, failed: 0, failures: [] } });
+  });
+
+  const RUBRIC = "---\nname: triage-rules\ndescription: How we triage.\n---\n\nSee deploy-rubric/SKILL.md for the rubric.\n";
+  it("counts the step's own instructions and skill text as grounds: a PR number, a path and a sha they gave are not blamed", async () => {
+    const { result, error } = await run([fauxAssistantMessage("Checked PR #31 at 0a1b2c3d4e5f against docs/runbook/deploy.md and the rubric in deploy-rubric/SKILL.md.")], {
+      payload: step({ instructions: "Review PR #31 (head 0a1b2c3d4e5f) following docs/runbook/deploy.md." }),
+      skills: [{ ...SKILL, content: RUBRIC, digest: sha256(RUBRIC) }],
+    });
+    expect(error).toBeUndefined();
+    expect(result?.grounding?.verdict).toBe("grounded");
+  });
+
+  it("does not take a report that quotes tool-call markup in a code block for an imitation of a call", async () => {
+    const { result } = await run([fauxAssistantMessage("The template has a bug:\n```\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\nIt should be removed.")]);
+    expect(result?.grounding?.verdict).toBe("grounded");
   });
 
   it("keeps a failed file-tool call visible without condemning a step that read other things", async () => {

@@ -14,5 +14,5 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   // M1.2 to M1.4: the application plan, application and baseline rounds, AI navigation steps, replay, and the model-free time limits and model choice (mainline's worker implements each).
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
   "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
-  "model.route", "task.agentStep", "task.agentRun",
+  "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

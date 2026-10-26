@@ -20,7 +20,7 @@ import { ToolLoopGuard } from "../tool-loop-guard.js";
 import { usageForControlPlane } from "../usage.js";
 import { assistantText } from "../verification/extension.js";
 import { withStepTimeout, type AgentSkillFile } from "../agent-step.js";
-import { ToolCallRecorder, checkGrounding } from "./grounding.js";
+import { ToolCallRecorder, checkGrounding, cleanGrounding } from "./grounding.js";
 import { agentToolCatalogsSource, brokerToolCall, createConnectorBridgeTools, type ConnectorBridgeCall } from "./connector-bridge.js";
 
 export type AgentRunStepPayload = Extract<AgentStepPayload, { kind: "agent" }>;
@@ -36,7 +36,7 @@ export interface AgentStepResult {
   branch?: string;
   reason?: string;
   /**
-   * The step's report compared with the tool calls it made (`checkGrounding`), present when a tool failed or the report is not backed by what the agent did. The step still ends
+   * The step's report compared with the tool calls it made (`checkGrounding`), always present from a worker that lists `task.agentGrounding.v1` (a worker without the check sends none, and the broker then has no signal and behaves as it did). The step still ends
    * SUCCEEDED here (it ran); the broker decides: an `unverified` report never counts as a success.
    */
   grounding?: AgentStepGrounding;
@@ -214,12 +214,14 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     if (report === "") throw agentXError("OPERATION_INTERRUPTED", "the agent ended without writing a report");
     const chosen = branch?.chosen();
     const kept = shortened(redactText(report), AGENT_STEP_REPORT_MAX_BYTES);
-    const grounding = checkGrounding({ report: kept, provided: payload.inputs, calls: recorder.calls(), connectorTools, evidenceTruncated: recorder.truncated });
+    // What the step was given is evidence: the request with its trigger event and earlier reports, the step's own instructions, and the skills it could read.
+    const provided = [payload.inputs, payload.instructions, ...(input.skills ?? []).map((skill) => skill.content)].join("\n\n");
+    const grounding = checkGrounding({ report: kept, provided, calls: recorder.calls(), connectorTools }) ?? cleanGrounding(recorder.calls());
     result = {
       report: kept,
       outcome: "SUCCEEDED",
       ...(chosen === undefined ? {} : { branch: chosen.branch, reason: redactText(chosen.reason) }),
-      ...(grounding === undefined ? {} : { grounding }),
+      grounding,
     };
     outcome = "SUCCEEDED";
     await events.append("result", { status: "SUCCEEDED", conversationId: input.conversationId, agentStepResult: result });

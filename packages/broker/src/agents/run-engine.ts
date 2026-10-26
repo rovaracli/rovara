@@ -643,7 +643,7 @@ export interface AgentStepFinished {
   branch?: string;
   /**
    * The worker's comparison of the report with the tool calls the step made (`result.agentStepResult.grounding`, `AgentStepGroundingSchema`), as the worker sent it: absent from an
-   * older worker and from a clean step. Read here, so a shape the broker cannot read counts as unverified.
+   * older worker (one that does not list `task.agentGrounding.v1`). Read here, so a shape the broker cannot read counts as unverified.
    */
   grounding?: unknown;
   /** The worker's error, for a failed step. */
@@ -756,6 +756,8 @@ export async function onAgentStepFinished(deps: AgentRunEngineDependencies, inpu
       return undefined;
     });
     const grounding = groundingOf(input.grounding);
+    // A worker without `task.agentGrounding.v1` sends none: the report was not checked, and the run goes on as it always did (a worker that checks sends a verdict even for a clean step).
+    if (input.grounding === undefined) log(deps, "agent_run.step_unchecked", { taskId: task.taskId });
     const reported: AgentRunState = {
       ...run, reports: withReport(run, step, text),
       steps: withStep(run, state.id, {

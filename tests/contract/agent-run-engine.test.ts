@@ -2948,6 +2948,26 @@ describe("an unverified report", () => {
     expect(t.runItem(run.taskId)!.endReason!.startsWith(UNVERIFIED_END_PREFIX)).toBe(true);
   });
 
+  it("reads a grounding tolerantly: a field a newer worker adds is ignored, a clean verdict from a worker that checks changes nothing", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Fine.", { grounding: { verdict: "grounded", reasons: [], tools: { calls: 4, failed: 0, failures: [], newer: 1 }, checkedBy: "v2" } });
+    const item = t.runItem(run.taskId)!;
+    expect(item.state).toBe("RUNNING");
+    expect(item.steps[0]).toMatchObject({ status: "done" });
+    expect(item.steps[0]).not.toHaveProperty("tools");
+    expect(item.steps[0]).not.toHaveProperty("unverified");
+    const view = await t.view(MAYA, run.taskId);
+    expect(view.run.steps[0]).not.toHaveProperty("tools");
+  });
+
+  it("parses a view whose step carries a field this build does not know (a newer broker), and a view without tools or unverified (an older one)", () => {
+    const base = { state: "RUNNING", pendingApprovals: [] };
+    expect(DeveloperTaskRunViewSchema.parse({ ...base, steps: [{ id: "investigate", name: "Investigate", status: "done", report: "x", futureField: 1 }] }).steps[0]).toEqual({ id: "investigate", name: "Investigate", status: "done", report: "x" });
+    expect(DeveloperTaskRunViewSchema.parse({ ...base, steps: [{ id: "investigate", name: "Investigate", status: "running" }] }).steps[0]).not.toHaveProperty("tools");
+  });
+
   it("changes nothing for a step with no grounding in its result (an older worker, or a clean run)", async () => {
     const t = await setup();
     const run = await t.start("root-cause-analyst");
