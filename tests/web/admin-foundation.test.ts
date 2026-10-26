@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -126,7 +126,7 @@ it("does not claim success when the canonical role disagrees with the write rece
  await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));expect(await screen.findByText("The current role could not be verified. Close and reload before making another change.")).toBeTruthy();expect(screen.queryByText("Company role verified: Admin.")).toBeNull();f.close();
 });
 it("blocks self-demotion when the loaded company has only one owner", async () => {
- const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };const f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [self] } : f.me }) });await screen.findByText("Priya", { selector: "bdi" }).catch(() => undefined);
+ const self = { ...member, developerId: "a".repeat(64), name: "Priya", role: "owner" };const f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/members") ? { members: [self] } : f.me }) });
  fireEvent.click(await screen.findByRole("button", { name: "Change role for Priya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "member" } });expect(screen.getByText("Add another owner before changing your own role.")).toBeTruthy();expect((screen.getByRole("button", { name: "Review role change" }) as HTMLButtonElement).disabled).toBe(true);f.close();
 });
 
@@ -143,4 +143,12 @@ it("ignores an old scope's write response after the mounted org changes", async 
  f.me.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByText("New company person");
  await act(async () => { resolve({ status: 200, body: { developerId: member.developerId, role: "admin" } });await new Promise(done => setTimeout(done, 20)); });
  expect(screen.queryByText(/role verified|role changed and verified/)).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/members"))).toHaveLength(2);f.close();
+});
+it("bounds a stalled role write and never resends or claims its late result", async () => {
+ let resolve!: (value: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });const f = mount({ respond: async r => r.method === "PUT" ? pending : { status: 200, body: r.path.endsWith("/members") ? { members: [member] } : f.me } });
+ await screen.findByText("Maya");fireEvent.click(screen.getByRole("button", { name: "Change role for Maya" }));fireEvent.change(screen.getByRole("combobox", { name: "Proposed role" }), { target: { value: "admin" } });fireEvent.click(screen.getByRole("button", { name: "Review role change" }));
+ vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });try {
+  fireEvent.click(screen.getByRole("button", { name: "Confirm role change" }));await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });expect(screen.getByText("The outcome is unknown. Check the current role before making another change.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await act(async () => { resolve({ status: 200, body: { developerId: member.developerId, role: "admin" } }); });expect(screen.queryByText(/role verified|role changed and verified/)).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "PUT")).toHaveLength(1);
+ } finally { vi.useRealTimers();f.close(); }
 });
