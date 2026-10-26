@@ -388,3 +388,22 @@ for (const stage of ["CLOSED", "MERGED"] as const) it(`M3: ${stage} Code work ca
   expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
   expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
 });
+
+it("M5: widening copy links to the deployment origin", () => {
+  const w = world();
+  const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
+  const at = new Date(w.clock.now).toISOString();
+  const items = codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, randomUUID(), ARJUN, at, "Arjun", w.deps.origin);
+  const event = items.find((entry) => entry.Put?.Item?.text !== undefined)?.Put?.Item;
+  expect(event?.text).toContain(`Undo: ${w.deps.origin}/v1/app/sessions/${w.sessionId}/shares/`);
+});
+
+it("M5: requests sharing a UUID prefix do not overwrite same-millisecond owner notices", async () => {
+  const w = world();
+  const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
+  const at = new Date(w.clock.now).toISOString();
+  for (const requestId of ["11111000-0000-4000-8000-000000000001", "11111000-0000-4000-8000-000000000002"]) {
+    await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, requestId, ARJUN, at) }));
+  }
+  expect(w.notices()).toHaveLength(2);
+});
