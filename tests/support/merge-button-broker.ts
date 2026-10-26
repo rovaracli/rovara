@@ -1,13 +1,14 @@
 // Rovara Code (staging 0.4.11, Bug G): a real broker handler with a Rovara Code task waiting for its merge, so the clients that press Merge (the CLI, the web app) run against the
 // real routes and the real `json()` wrapper. Maya (the requester) is signed in; Omar approved the pull request on GitHub. GitHub is a fake that reads and merges.
 import { createHash, randomUUID } from "node:crypto";
-import { mergeTrackingDecisionDigest, mergeTrackingKey, orgMemberKey, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
+import { createCandidateManifest, mergeTrackingDecisionDigest, mergeTrackingKey, orgMemberKey, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
 import { builtinSettingsKey, codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
 import { DEV_ISSUER, MAYA, OMAR, bearerFor, createDeveloperTaskBroker } from "./developer-task-broker.js";
+import { markReady } from "./slack-broker.js";
 import { MergeGithub, pullStatus, HEAD_A, GH, LOGIN } from "./rovara-code-merge-world.js";
 import { TEST_ORG } from "./orgs.js";
 
@@ -26,6 +27,8 @@ export interface MergeButtonOptions {
 /** The harness: the task is Maya's, in `WAIT_FOR_MERGE`, with one pull request (`demo` #7) that merge tracking read as approved by Omar on the current head, with passing checks. */
 export async function mergeButtonBroker(options: MergeButtonOptions = {}) {
   const github = new MergeGithub();
+  /** What GitHub's merge observation says of the pull request (the owner merging it on GitHub sets it to merged). */
+  const observed: { state: "open" | "merged"; mergedBy?: string } = { state: "open" };
   const h = await createDeveloperTaskBroker({
     brokerExtra: {
       agents: {}, decide: {},
@@ -35,6 +38,10 @@ export async function mergeButtonBroker(options: MergeButtonOptions = {}) {
         getPullRequestStatus: (url: string, number: number) => github.getPullRequestStatus(url, number),
         getRepositoryPermission: (url: string, login: string) => github.getRepositoryPermission(url, login),
         mergePullRequest: (url: string, number: number, input: { sha: string; method: "squash" | "merge" }) => github.mergePullRequest(url, number, input),
+        getPullRequestMergeObservation: async () => ({
+          number: 7, url: "https://github.com/example/demo/pull/7", state: observed.state, headBranch: "agentx/limit", baseBranch: "main", headCommit: HEAD_A, headTreeSha: "d".repeat(40), title: "Rovara: Limit open tasks", body: "",
+          ...(observed.state === "merged" ? { mergeCommit: "e".repeat(40), ...(observed.mergedBy === undefined ? {} : { mergedBy: observed.mergedBy }) } : {}),
+        }),
       },
     },
   });
@@ -46,12 +53,23 @@ export async function mergeButtonBroker(options: MergeButtonOptions = {}) {
   const taskId = (started.body.task as { taskId: string }).taskId;
   const record = () => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; sessionId: string; workflow: Record<string, unknown> };
   const sessionId = String(record().sessionId);
+  // The task's earlier runs are over (it waits for its merge), so the task view is the full read of a waiting task.
+  for (const operation of h.db.find((item) => item.pk === `WORKSPACE#${record().workspaceId}` && item.entityType === "OPERATION")) h.db.set({ ...operation, status: "SUCCEEDED" });
+  markReady(h.db, record().workspaceId);
+  // ... the last of them a finished coding run, so the task reads as a waiting task, not one still starting.
+  const prepare = h.db.find((item) => item.pk === `WORKSPACE#${record().workspaceId}` && item.entityType === "OPERATION" && item.kind === "prepare")[0]!;
+  const coding = randomUUID();
+  h.db.set({ ...prepare, sk: `OPERATION#${coding}`, id: coding, kind: "task", workflowMode: "IMPLEMENT", status: "SUCCEEDED", createdAt: "2026-10-26T22:10:00.000Z", updatedAt: "2026-10-26T22:14:00.000Z" });
+  for (const pointer of h.db.find((item) => item.entityType === "DEVELOPER_TASK_POINTER" && item.taskId === taskId)) { const { pendingPrompt: _prompt, ...rest } = pointer; h.db.set(rest); } // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
   const url = "https://github.com/example/demo/pull/7";
-  h.db.set({ ...record(), workflow: { ...record().workflow, stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 9, pullRequests: [
-    { repositoryId: "demo", number: 7, url, candidateDigest: "c".repeat(64), required: true, state: "OPEN", headSha: HEAD_A, headTreeSha: "d".repeat(40) },
-  ] } });
-  h.db.set({ pk: `WORKSPACE#${record().workspaceId}`, sk: `PULL_REQUEST#demo#${"7".padStart(12, "0")}`, entityType: "PULL_REQUEST", baseBranch: "main", number: 7, repositoryId: "demo" });
-  h.db.set({ ...githubWorkflowPullRequestKey("example/demo", 7), entityType: "GITHUB_WORKFLOW_PR", repositoryFullName: "example/demo", repositoryId: "demo", number: 7, url, taskId, workspaceId: record().workspaceId, candidateDigest: "c".repeat(64), createdAt: NOW });
+  const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: HEAD_A, treeSha: "d".repeat(40) }]);
+  h.db.set({ ...record(), workflow: { ...record().workflow, stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 9, candidate,
+    verification: { candidateDigest: candidate.digest, producer: "broker", environmentId: "fixture", recordedAt: NOW, results: [{ checkId: "unit", status: "PASS" }] },
+    reviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: taskId, candidateDigest: candidate.digest, role, provider: "fixture", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: NOW })),
+    pullRequests: [{ repositoryId: "demo", number: 7, url, candidateDigest: candidate.digest, required: true, state: "OPEN", headSha: HEAD_A, headTreeSha: "d".repeat(40) }],
+  } });
+  h.db.set({ pk: `WORKSPACE#${record().workspaceId}`, sk: `PULL_REQUEST#demo#${"7".padStart(12, "0")}`, entityType: "PULL_REQUEST", baseBranch: "main", number: 7, repository: "demo", repositoryId: "demo", url, state: "open", expectedHeadCommit: HEAD_A });
+  h.db.set({ ...githubWorkflowPullRequestKey("example/demo", 7), entityType: "GITHUB_WORKFLOW_PR", repositoryFullName: "example/demo", repositoryId: "demo", number: 7, url, taskId, workspaceId: record().workspaceId, candidateDigest: candidate.digest, createdAt: NOW });
   github.statuses.set(7, pullStatus(7));
   for (const login of [LOGIN.arjun, LOGIN.priya]) github.permissions.set(login, "write");
   // The people's GitHub accounts: Maya (the requester) is linked; Omar approved from the account linked to him.
@@ -88,6 +106,6 @@ export async function mergeButtonBroker(options: MergeButtonOptions = {}) {
     });
     return { status: response.statusCode, body: response.body };
   };
-  return { ...h, github, taskId, sessionId, tracking, record, decide, bearer: async (who = MAYA) => bearerFor(who, await h.orgOf(who)) };
+  return { ...h, github, observed, taskId, sessionId, tracking, record, decide, bearer: async (who = MAYA) => bearerFor(who, await h.orgOf(who)) };
 }
 export type MergeButtonBroker = Awaited<ReturnType<typeof mergeButtonBroker>>;

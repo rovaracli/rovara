@@ -398,6 +398,7 @@ import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } f
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
+import { mergedStateItems } from "../rovara-code/merged-state.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
@@ -14892,6 +14893,8 @@ async function completedPullRequestUpdateItems(
   ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
   // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
   ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
+  // ... and what was kept about the pull request (its tracking row and its record) says merged too (Bug H).
+  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
   // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
   ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
