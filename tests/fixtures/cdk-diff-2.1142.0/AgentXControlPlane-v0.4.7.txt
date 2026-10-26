@@ -1,0 +1,491 @@
+AI agent detected
+Bundling asset AgentXControlPlane/Broker/Code/Stage...
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/executor/host-registry.js:29:75:
+      29 │ ...geRoot ?? join(dirname(fileURLToPath(import.meta.url)), "../.."));
+         ╵                                         ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/host/executor-seccomp.js:12:38:
+      12 │ ...oin(dirname(fileURLToPath(import.meta.url)), "../../assets/exec...
+         ╵                              ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-bootstrap.js:20:62:
+      20 │ ...{ return resolve(dirname(fileURLToPath(import.meta.url)), ".."); }
+         ╵                                           ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-cli.js:17:71:
+      17 │ ...rn resolve(dirname(fileURLToPath(import.meta.url)), "../../.."); }
+         ╵                                     ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-cli.js:281:59:
+      281 │ ...t(resolve(dirname(fileURLToPath(import.meta.url)), ".."), input);
+          ╵                                    ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-cli.js:296:47:
+      296 │ ...st root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+          ╵                                            ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+6 of 12 warnings shown (disable the message limit with --log-limit=0)
+
+  ...4de41c47896d619b68ffe1fec1bee7f68fc417eea69a7-building/index.js  11.6mb ⚠️
+  ...1c47896d619b68ffe1fec1bee7f68fc417eea69a7-building/index.js.map  45.7mb
+
+⚡ Done in 400ms
+Bundling asset AgentXControlPlane/PlanEvidence/Code/Stage...
+
+  ...dbad3ac5e2a61c3d41d4130472cb1565e7a3f5a3cb1778-building/index.js  1.4mb ⚠️
+  ...3ac5e2a61c3d41d4130472cb1565e7a3f5a3cb1778-building/index.js.map  5.4mb
+
+⚡ Done in 222ms
+Bundling asset AgentXControlPlane/OutboxPublisher/Code/Stage...
+
+  ...d1638583d7cc2d6b643478fee06e27eb6c2f2cad47948c-building/index.js  1.8mb ⚠️
+  ...8583d7cc2d6b643478fee06e27eb6c2f2cad47948c-building/index.js.map  9.1mb
+
+⚡ Done in 241ms
+Bundling asset AgentXControlPlane/Dispatcher/Code/Stage...
+
+  ...125fadfa44e735f02d475709570f65ea191cef1ffae7b2-building/index.js  1.9mb ⚠️
+  ...adfa44e735f02d475709570f65ea191cef1ffae7b2-building/index.js.map  7.1mb
+
+⚡ Done in 237ms
+Bundling asset AgentXControlPlane/SlackIngress/Code/Stage...
+
+  ...361525d09b1726b740eacd1f35ffe1d86c2412c25a5eb8-building/index.js  1.7mb ⚠️
+  ...25d09b1726b740eacd1f35ffe1d86c2412c25a5eb8-building/index.js.map  6.2mb
+
+⚡ Done in 231ms
+Bundling asset AgentXControlPlane/WebApp/Function/Code/Stage...
+
+  ...e390590c240390709d8d0e1371438072b4039b9c650720-building/index.js  465.3kb
+  ...590c240390709d8d0e1371438072b4039b9c650720-building/index.js.map    1.5mb
+
+⚡ Done in 17ms
+Bundling asset AgentXControlPlane/DeveloperSignIn/Function/Code/Stage...
+
+  ...a656aa66351532e6ba6750e86afd6f88c60ccffc0512b3-building/index.js  1.9mb ⚠️
+  ...aa66351532e6ba6750e86afd6f88c60ccffc0512b3-building/index.js.map  6.9mb
+
+⚡ Done in 222ms
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+Bundling asset AgentXControlPlane/Realtime/Authorizer/Code/Stage...
+
+  ...14c00e370f65ea398e6300ba492f0f086691c7ca29aedc-building/index.js  1.4mb ⚠️
+  ...0e370f65ea398e6300ba492f0f086691c7ca29aedc-building/index.js.map  4.9mb
+
+⚡ Done in 225ms
+Bundling asset AgentXControlPlane/DeveloperTaskNotifier/Function/Code/Stage...
+
+  ...59261fd9b99f3cb2796664fbf8725805b319e204a55851-building/index.js  1.8mb ⚠️
+  ...1fd9b99f3cb2796664fbf8725805b319e204a55851-building/index.js.map  7.0mb
+
+⚡ Done in 236ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditExport/Code/Stage...
+
+  ...88646c269565c0ee8b1703114be82cb82133ad2b6df240-building/index.js  1.6mb ⚠️
+  ...6c269565c0ee8b1703114be82cb82133ad2b6df240-building/index.js.map  5.7mb
+
+⚡ Done in 212ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditAppender/Code/Stage...
+
+  ...354c713e6752d6090e877c0155a42ea9c30c7f6af1da1f-building/index.js  1.0mb ⚠️
+  ...713e6752d6090e877c0155a42ea9c30c7f6af1da1f-building/index.js.map  3.7mb
+
+⚡ Done in 218ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditAnchor/Code/Stage...
+
+  ...c78440bee72a8f6518efece76780c587d13a8bc3d25a30-building/index.js  1.4mb ⚠️
+  ...40bee72a8f6518efece76780c587d13a8bc3d25a30-building/index.js.map  5.0mb
+
+⚡ Done in 227ms
+Bundling asset AgentXControlPlane/Sessions/Steps/Code/Stage...
+
+  ...9e32b13cf2f9bfcc550ca1758c7829f4bb193b329df850-building/index.js  1.6mb ⚠️
+  ...b13cf2f9bfcc550ca1758c7829f4bb193b329df850-building/index.js.map  5.7mb
+
+⚡ Done in 228ms
+Bundling asset AgentXControlPlane/Sessions/Reaper/Code/Stage...
+
+  ...d276172db80fe824357d265e7a11f193f7b890c8c862e8-building/index.js  2.4mb ⚠️
+  ...172db80fe824357d265e7a11f193f7b890c8c862e8-building/index.js.map  8.5mb
+
+⚡ Done in 239ms
+Bundling asset AgentXControlPlane/Sessions/Reconciler/Code/Stage...
+
+  ...9491d095cf38a75bd3e5fe842fe3dca759ac33a76536a1-building/index.js  2.5mb ⚠️
+  ...d095cf38a75bd3e5fe842fe3dca759ac33a76536a1-building/index.js.map  9.6mb
+
+⚡ Done in 241ms
+Bundling asset AgentXControlPlane/ModelAccessFunction/Code/Stage...
+
+  ...9b002a633bd6e69a7b2bea1fde152b763b98c24812c59-building/index.js   1.9mb ⚠️
+  ...2a633bd6e69a7b2bea1fde152b763b98c24812c59-building/index.js.map  10.5mb
+
+⚡ Done in 242ms
+Bundling asset AgentXControlPlane/EvalBatchTick/Code/Stage...
+
+  ...70c5be8c3c481c6a7552784e28c812bfa03c0891b2713b-building/index.js  2.8mb ⚠️
+  ...be8c3c481c6a7552784e28c812bfa03c0891b2713b-building/index.js.map  9.7mb
+
+⚡ Done in 247ms
+[Warning] Template validation found issues in your templates (reported as warnings).
+Set feature flag "@aws-cdk/core:validateAgainstDefaultRules" to true to turn these into errors.
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/cloud-identity.js:99:22
+WARNING PermissionsBoundary: length 0 is below minimum 20 (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/UserPool/Resource (DeveloperSignInCloudIdentityUserPoolAEDBF8D7) aws-cdk-lib.aws_cognito.CfnUserPool
+   Acknowledge with 'CloudFormation-Validate::F3033'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/cloud-identity.js:99:22
+WARNING EmailConfiguration.SourceArn: '' does not match pattern '^arn:[\w+=/,.@-]+:[\w+=/,.@-]+:([\w+=/,.@-]*)?:[0-9]+:[\w+=/,.@-]+(:[\w+=/,.@-]+)?(:[\w+=/,.@-]+)?$' (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/UserPool/Resource (DeveloperSignInCloudIdentityUserPoolAEDBF8D7) aws-cdk-lib.aws_cognito.CfnUserPool
+   Acknowledge with 'CloudFormation-Validate::F3031'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/cloud-identity.js:127:24
+WARNING ProviderDetails.client_secret.Fn::If.2: ['Fn::If', 2] is not reachable. When setting condition 'GoogleSignInEnabled' to False from current status True (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/Google/Resource (DeveloperSignInCloudIdentityGoogleD308A774) aws-cdk-lib.aws_cognito.CfnUserPoolIdentityProvider
+   Acknowledge with 'CloudFormation-Validate::W1028'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///Users/abhishekgarg/web/Rovara-staging-clone/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+Stack AgentXControlPlane (agentx-staging-control-plane) (aws://944937319445/us-west-2)
+IAM Statement Changes
+┌───┬──────────────────────────────────────────────────────────────────────────────────────────────────┬────────┬────────────────────────────┬────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   │ Resource                                                                                         │ Effect │ Action                     │ Principal                                                                      │ Condition                                                                                                       │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${Broker.Arn}                                                                                    │ Allow  │ lambda:InvokeFunction      │ Service:apigateway.amazonaws.com                                               │ "ArnLike": {                                                                                                    │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/v1/web/*" │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole.Arn}                   │ Allow  │ sts:AssumeRole             │ Service:lambda.amazonaws.com                                                   │                                                                                                                 │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${WebApp/Assets.Arn}                                                                             │ Deny   │ s3:*                       │ AWS:*                                                                          │ "Bool": {                                                                                                       │
+│   │ ${WebApp/Assets.Arn}/*                                                                           │        │                            │                                                                                │   "aws:SecureTransport": "false"                                                                                │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+│ + │ ${WebApp/Assets.Arn}                                                                             │ Allow  │ s3:Abort*                  │ AWS:${Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole} │                                                                                                                 │
+│   │ ${WebApp/Assets.Arn}/*                                                                           │        │ s3:DeleteObject*           │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:GetBucket*              │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:GetObject*              │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:List*                   │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:PutObject               │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:PutObjectLegalHold      │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:PutObjectRetention      │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:PutObjectTagging        │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:PutObjectVersionTagging │                                                                                │                                                                                                                 │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${WebApp/Assets.Arn}/*                                                                           │ Allow  │ s3:GetObject               │ Service:cloudfront.amazonaws.com                                               │ "StringEquals": {                                                                                               │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebApp/Distribution}"    │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${WebApp/Function.Arn}                                                                           │ Allow  │ lambda:InvokeFunction      │ Service:apigateway.amazonaws.com                                               │ "ArnLike": {                                                                                                    │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/GET/app"    │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+│ + │ ${WebApp/Function.Arn}                                                                           │ Allow  │ lambda:InvokeFunction      │ Service:apigateway.amazonaws.com                                               │ "ArnLike": {                                                                                                    │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/GET/app/"   │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+│ + │ ${WebApp/Function.Arn}                                                                           │ Allow  │ lambda:InvokeFunction      │ Service:apigateway.amazonaws.com                                               │ "ArnLike": {                                                                                                    │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/GET/app/*"  │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+│ + │ ${WebApp/Function.Arn}                                                                           │ Allow  │ lambda:InvokeFunction      │ Service:apigateway.amazonaws.com                                               │ "ArnLike": {                                                                                                    │
+│   │                                                                                                  │        │                            │                                                                                │   "AWS:SourceArn": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/GET/s/*"    │
+│   │                                                                                                  │        │                            │                                                                                │ }                                                                                                               │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${WebApp/Function/ServiceRole.Arn}                                                               │ Allow  │ sts:AssumeRole             │ Service:lambda.amazonaws.com                                                   │                                                                                                                 │
+├───┼──────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ + │ arn:${AWS::Partition}:s3:::{"Fn::Sub":"cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"}   │ Allow  │ s3:GetBucket*              │ AWS:${Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole} │                                                                                                                 │
+│   │ arn:${AWS::Partition}:s3:::{"Fn::Sub":"cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"}/* │        │ s3:GetObject*              │                                                                                │                                                                                                                 │
+│   │                                                                                                  │        │ s3:List*                   │                                                                                │                                                                                                                 │
+└───┴──────────────────────────────────────────────────────────────────────────────────────────────────┴────────┴────────────────────────────┴────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+IAM Policy Changes
+┌───┬────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────┐
+│   │ Resource                                                                   │ Managed Policy ARN                                                             │
+├───┼────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole} │ arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole │
+├───┼────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ + │ ${WebApp/Function/ServiceRole}                                             │ arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole │
+└───┴────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────┘
+(NOTE: There may be security-related changes not in this list. See https://github.com/aws/aws-cdk/issues/1299)
+
+Resources
+[+] AWS::Lambda::Permission Broker/WebApiInvoke BrokerWebApiInvoke5544CA63
+[+] AWS::S3::Bucket WebApp/Assets WebAppAssetsD11F49C2
+[+] AWS::S3::BucketPolicy WebApp/Assets/Policy WebAppAssetsPolicy0C091E3A
+[+] AWS::CloudFront::ResponseHeadersPolicy WebApp/AssetHeaders WebAppAssetHeaders5FBFFD13
+[+] AWS::CloudFront::OriginAccessControl WebApp/AssetAccess WebAppAssetAccess44D7FD6A
+[+] AWS::CloudFront::Distribution WebApp/Distribution WebAppDistributionCE585001
+[+] AWS::Lambda::LayerVersion WebApp/Upload/AwsCliLayer WebAppUploadAwsCliLayer2F180912
+[+] Custom::CDKBucketDeployment WebApp/Upload/CustomResource WebAppUploadCustomResourceC5294313
+[+] AWS::Logs::LogGroup WebApp/FunctionLogs WebAppFunctionLogsC7F3963C
+[+] AWS::IAM::Role WebApp/Function/ServiceRole WebAppFunctionServiceRole9F730320
+[+] AWS::Lambda::Function WebApp/Function WebAppFunction611CC907
+[+] AWS::Lambda::Permission WebApp/Function/AppInvoke WebAppFunctionAppInvoke4817599B
+[+] AWS::Lambda::Permission WebApp/Function/AppSlashInvoke WebAppFunctionAppSlashInvokeD2F573B1
+[+] AWS::Lambda::Permission WebApp/Function/AppPathInvoke WebAppFunctionAppPathInvoke4A185FE1
+[+] AWS::Lambda::Permission WebApp/Function/SessionInvoke WebAppFunctionSessionInvoke212B1438
+[+] AWS::ApiGatewayV2::Integration WebApp/Integration WebAppIntegration5E3F10BA
+[+] AWS::ApiGatewayV2::Route WebApp/AppRoute WebAppAppRoute46037100
+[+] AWS::ApiGatewayV2::Route WebApp/AppSlashRoute WebAppAppSlashRoute627ECA8E
+[+] AWS::ApiGatewayV2::Route WebApp/AppPathRoute WebAppAppPathRouteC44AC6EE
+[+] AWS::ApiGatewayV2::Route WebApp/SessionRoute WebAppSessionRouteA44E7FCE
+[+] AWS::IAM::Role Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265
+[+] AWS::IAM::Policy Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/DefaultPolicy CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF
+[+] AWS::Lambda::Function Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536
+[+] AWS::ApiGatewayV2::Route DeveloperSignIn/WebRoute DeveloperSignInWebRoute253F2267
+[~] AWS::Lambda::Function Broker BrokerE1355FD6
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] b853e78596a7934b983fe04b07df4f18a7bac2de8efe57fb44251c8dd9a1ac0d.zip
+ │       └─ [+] a11308a8a10f32e880501056d56ecd001b6d3ade89f0b85acdc7951ddc30f521.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.b853e78596a7934b983fe04b07df4f18a7bac2de8efe57fb44251c8dd9a1ac0d
+         └─ [+] asset.a11308a8a10f32e880501056d56ecd001b6d3ade89f0b85acdc7951ddc30f521
+[~] AWS::Lambda::Function PlanEvidence PlanEvidence3615C4CB
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 01251f3c4a6afc4d2d5bfad0f1a2b82413a9e30656290c6e0c8c402200e40e01.zip
+ │       └─ [+] 6c514f739bc72d89e0b3f5168dd94f59853969efc6e2c40d0f6d6e117cc1df33.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.01251f3c4a6afc4d2d5bfad0f1a2b82413a9e30656290c6e0c8c402200e40e01
+         └─ [+] asset.6c514f739bc72d89e0b3f5168dd94f59853969efc6e2c40d0f6d6e117cc1df33
+[~] AWS::Lambda::Function OutboxPublisher OutboxPublisherD572F72E
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] d8fb04c176b46ef80b527b52f1a47efb70499efa34d65df88eb4391f8dfd71bd.zip
+ │       └─ [+] 88e45817de5044a097327eeb9c1ccd964a0e6d7fdfbe002f9f7a8b47e264c9be.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.d8fb04c176b46ef80b527b52f1a47efb70499efa34d65df88eb4391f8dfd71bd
+         └─ [+] asset.88e45817de5044a097327eeb9c1ccd964a0e6d7fdfbe002f9f7a8b47e264c9be
+[~] AWS::Lambda::Function Dispatcher DispatcherD4A12972
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 8522badfa5ecd2ab2ad3755ae1eaa9df30767bd5c585dd1674174d66dd0b9f9b.zip
+ │       └─ [+] d3be51439e2ed91259949661bcb1ef38399e37cf40de18c97a3c796992d80b42.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.8522badfa5ecd2ab2ad3755ae1eaa9df30767bd5c585dd1674174d66dd0b9f9b
+         └─ [+] asset.d3be51439e2ed91259949661bcb1ef38399e37cf40de18c97a3c796992d80b42
+[~] AWS::Lambda::Function SlackIngress SlackIngress5C88FFA0
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 87083c1e5e0f706e831241be314be818af5c50468855ab39aa6e0d50978ba8c0.zip
+ │       └─ [+] b22784ca98691a18d616a6ef15ba714fbce9300fe6f6df740a82d3fb4fd737dd.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.87083c1e5e0f706e831241be314be818af5c50468855ab39aa6e0d50978ba8c0
+         └─ [+] asset.b22784ca98691a18d616a6ef15ba714fbce9300fe6f6df740a82d3fb4fd737dd
+[~] AWS::ApiGatewayV2::Stage DefaultStage DefaultStage
+ ├─ [~] RouteSettings
+ │   ├─ [+] Added: .ANY /v1/web/{proxy+}
+ │   ├─ [+] Added: .GET /app
+ │   ├─ [+] Added: .GET /app/
+ │   ├─ [+] Added: .GET /app/{proxy+}
+ │   └─ [+] Added: .GET /s/{sessionId}
+ └─ [~] DependsOn
+     └─ @@ -4,7 +4,12 @@
+        [ ]   "DeveloperSignInDevRoute4BB932E2",
+        [ ]   "DeveloperSignInFeedbackReviewRoute881C7CFE",
+        [ ]   "DeveloperSignInSessionLinkRoute06DE5874",
+        [+]   "DeveloperSignInWebRoute253F2267",
+        [ ]   "EventHookRoute",
+        [ ]   "GithubInstallCallbackRoute",
+        [-]   "GithubInstallConfirmRoute"
+        [+]   "GithubInstallConfirmRoute",
+        [+]   "WebAppAppPathRouteC44AC6EE",
+        [+]   "WebAppAppRoute46037100",
+        [+]   "WebAppAppSlashRoute627ECA8E",
+        [+]   "WebAppSessionRouteA44E7FCE"
+        [ ] ]
+[~] AWS::Lambda::Function DeveloperSignIn/Function DeveloperSignInFunction10B62B05
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] f3f547d7244c4ffff2a67ba5f0689748a48383630dd1f2fe1987cbd137b9faba.zip
+ │       └─ [+] b0240a2d7b76f3e3871e5a96ea947f92607555d624289d9ee999d8284aa3b72e.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.f3f547d7244c4ffff2a67ba5f0689748a48383630dd1f2fe1987cbd137b9faba
+         └─ [+] asset.b0240a2d7b76f3e3871e5a96ea947f92607555d624289d9ee999d8284aa3b72e
+[~] AWS::Lambda::Function Realtime/Authorizer RealtimeAuthorizer74F9F06D
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 8d97979fea6838072271d91e0db3781784923ce43c2c51c69060a7cb9a314ef3.zip
+ │       └─ [+] f144af271f85593db57e4787cc58b90b1a4eb76ff9a52ffa69ebab3fb0f95dd0.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.8d97979fea6838072271d91e0db3781784923ce43c2c51c69060a7cb9a314ef3
+         └─ [+] asset.f144af271f85593db57e4787cc58b90b1a4eb76ff9a52ffa69ebab3fb0f95dd0
+[~] AWS::Lambda::Function DeveloperTaskNotifier/Function DeveloperTaskNotifierFunction551419CC
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 3d0c7117fb66e3af7cbd94268ecd6a84b785044297b73cb77d836a8c3335aa0e.zip
+ │       └─ [+] dbe399fb03e78cdfec784d5d6c84a611542250ad587efaf305b66a13ce4a87d1.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.3d0c7117fb66e3af7cbd94268ecd6a84b785044297b73cb77d836a8c3335aa0e
+         └─ [+] asset.dbe399fb03e78cdfec784d5d6c84a611542250ad587efaf305b66a13ce4a87d1
+[~] AWS::Lambda::Function AuditLedger/AuditExport AuditLedgerAuditExportED90D71C
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] aca6a05eb3489e53754748cfc3e5357ee866157f4040ab92b1e2760068a27bd3.zip
+ │       └─ [+] 016252c4e521cc45841f0aedad45bb41ef15a04a37d57a5cf6301baee6030b3d.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.aca6a05eb3489e53754748cfc3e5357ee866157f4040ab92b1e2760068a27bd3
+         └─ [+] asset.016252c4e521cc45841f0aedad45bb41ef15a04a37d57a5cf6301baee6030b3d
+[~] AWS::Lambda::Function AuditLedger/AuditAppender AuditLedgerAuditAppender4120E8F4
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 8e6072613b7711820cd43b1207eed08b9f8ab37cc37029e46450e99a06a934f7.zip
+ │       └─ [+] 751615f18ceb156cac57b73d8296d432d63f40b57c357e1545c58fde4beeeb25.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.8e6072613b7711820cd43b1207eed08b9f8ab37cc37029e46450e99a06a934f7
+         └─ [+] asset.751615f18ceb156cac57b73d8296d432d63f40b57c357e1545c58fde4beeeb25
+[~] AWS::Lambda::Function AuditLedger/AuditAnchor AuditLedgerAuditAnchorA02AF164
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] bd6ec726f0682f1d2614d5912dc0079449f0b3c13efd2aae1d4952dbb4b07663.zip
+ │       └─ [+] 51e8d59da3b7c0bda05b1c97a898c43c0754631e86cccd6d761ad44f0aa10202.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.bd6ec726f0682f1d2614d5912dc0079449f0b3c13efd2aae1d4952dbb4b07663
+         └─ [+] asset.51e8d59da3b7c0bda05b1c97a898c43c0754631e86cccd6d761ad44f0aa10202
+[~] AWS::Lambda::Function Sessions/Steps SessionsSteps3B98DD2B
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] f39040df794dcd36048256f58c3a9193f57f01d315015d98cf440316312328ad.zip
+ │       └─ [+] 5b560712e68108234018d62c71d33b979899aa1e1eb825cc793eeb51113b006d.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.f39040df794dcd36048256f58c3a9193f57f01d315015d98cf440316312328ad
+         └─ [+] asset.5b560712e68108234018d62c71d33b979899aa1e1eb825cc793eeb51113b006d
+[~] AWS::Lambda::Function Sessions/Reaper SessionsReaper8FEF958E
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 5ce777aa95ce8722ffb55230e2bf91895da17db33f6a22499e33f1313a365b2a.zip
+ │       └─ [+] a7eb23827610f53284356f4336d73edce6565fee3ee863a3a535bdf3c220a987.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.5ce777aa95ce8722ffb55230e2bf91895da17db33f6a22499e33f1313a365b2a
+         └─ [+] asset.a7eb23827610f53284356f4336d73edce6565fee3ee863a3a535bdf3c220a987
+[~] AWS::Lambda::Function Sessions/Reconciler SessionsReconciler4316A0A2
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] a205af0d861d57b8cbd332a25ae3e2e4bdda10bad1278cc5b18ff1e77a383392.zip
+ │       └─ [+] 37859cfd23c3e9e55eb41bcab71828e4f0cb909d4fd0cd8fb0b7125538e64dcb.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.a205af0d861d57b8cbd332a25ae3e2e4bdda10bad1278cc5b18ff1e77a383392
+         └─ [+] asset.37859cfd23c3e9e55eb41bcab71828e4f0cb909d4fd0cd8fb0b7125538e64dcb
+[~] AWS::Lambda::Function ModelAccessFunction ModelAccessFunction1B50ECC9
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 465d507333dccc55d7804136f336f332b3fd1e185fee97db0f546def9235ba1d.zip
+ │       └─ [+] 5dc0df30c5633eb3c0b37104c6ff9b9932366494a84208da171248893ac58193.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.465d507333dccc55d7804136f336f332b3fd1e185fee97db0f546def9235ba1d
+         └─ [+] asset.5dc0df30c5633eb3c0b37104c6ff9b9932366494a84208da171248893ac58193
+[~] AWS::Lambda::Function EvalBatchTick EvalBatchTickA4585B04
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 1dd773d64a57af2dbe4eb9ecf5f060bd185851ddd51bbc3a29432ea9d1b99156.zip
+ │       └─ [+] 3884d37e006740ccffec1892449b3bdd37209c553228c3c501a44682df0fc303.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.1dd773d64a57af2dbe4eb9ecf5f060bd185851ddd51bbc3a29432ea9d1b99156
+         └─ [+] asset.3884d37e006740ccffec1892449b3bdd37209c553228c3c501a44682df0fc303
+
+
+
+✨  Number of stacks with differences: 1
+

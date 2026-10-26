@@ -466,3 +466,56 @@ describe("reading aws-cdk 2.1142.0's real cdk diff output", () => {
     expect(cdkDiffRisks(`Stack s\nParameters\n${NEW_NO_DIFFERENCES}`).data).toEqual(unclear);
   });
 });
+
+describe("custom resources in cdk diff (the v0.4.7 staging diff)", () => {
+  const CUSTOM_LINE = "[+] Custom::CDKBucketDeployment WebApp/Upload/CustomResource WebAppUploadCustomResourceC5294313";
+  const stack = (...lines: string[]) => ["Stack AgentXControlPlane (agentx-staging-control-plane)", "Resources", ...lines].join("\n");
+
+  it("reads the control plane's real v0.4.7 diff, with its BucketDeployment addition, as 0 unclear", () => {
+    const text = realDiff("AgentXControlPlane-v0.4.7");
+    expect(text).toContain(CUSTOM_LINE);
+    expect(cdkDiffRisks(text)).toEqual({ iam: true, data: [] });
+  });
+
+  it("treats adding a custom resource as safe, and reads its logical id", () => {
+    expect(cdkDiffRisks(stack(CUSTOM_LINE))).toEqual({ iam: false, data: [] });
+    expect(cdkDiffRisks(stack("[+] Custom::Anything_Else@1-2 Some/Path SomeThing123"))).toEqual({ iam: false, data: [] });
+    expect(cdkDiffRisks(stack("[←] Custom::Anything Some/Path SomeThing123"))).toEqual({ iam: false, data: [] });
+  });
+
+  it("stops on removing a custom resource, the BucketDeployment included, and --allow-replace can name it", () => {
+    for (const type of ["Custom::CDKBucketDeployment", "Custom::Other"]) {
+      const line = `[-] ${type} WebApp/Upload/CustomResource WebAppUploadCustomResourceC5294313 destroy`;
+      expect(cdkDiffRisks(stack(line)).data).toEqual([{ logicalId: "WebAppUploadCustomResourceC5294313", type, verb: "unclear", line }]);
+    }
+  });
+
+  it("stops on replacing a custom resource unless it is on the replace list", () => {
+    for (const impact of ["replace", "may be replaced"]) {
+      const other = `[~] Custom::Other Path/To PathToABC123 ${impact}`;
+      expect(cdkDiffRisks(stack(other, " └─ [~] Prop (requires replacement)")).data, impact).toEqual([{ logicalId: "PathToABC123", type: "Custom::Other", verb: "unclear", line: other }]);
+    }
+    const bucket = "[~] Custom::CDKBucketDeployment WebApp/Upload/CustomResource WebAppUploadCustomResourceC5294313 replace";
+    expect(cdkDiffRisks(stack(bucket, " └─ [~] DestinationBucketName (requires replacement)")).data).toEqual([]);
+    // A replace line with no property lines under it may be a type change: unclear whatever the type.
+    expect(cdkDiffRisks(stack(bucket)).data).toEqual([{ logicalId: "WebAppUploadCustomResourceC5294313", type: "Custom::CDKBucketDeployment", verb: "unclear", line: bucket }]);
+    // A change in place is not a replacement; one that turns out to replace on a property line is read from there.
+    expect(cdkDiffRisks(stack("[~] Custom::Other Path/To PathToABC123", " └─ [~] Prop")).data).toEqual([]);
+    const inPlace = "[~] Custom::Other Path/To PathToABC123";
+    expect(cdkDiffRisks(stack(inPlace, " └─ [~] Prop (requires replacement)")).data).toEqual([{ logicalId: "PathToABC123", type: "Custom::Other", verb: "unclear", line: inPlace }]);
+  });
+
+  it("reviews a change set's custom resources the same way", () => {
+    expect(reviewChanges([change("Add", "Upload", "Custom::CDKBucketDeployment", "")]).data).toEqual([]);
+    expect(reviewChanges([change("Modify", "Upload", "Custom::Other", "False")]).data).toEqual([]);
+    expect(reviewChanges([change("Modify", "Upload", "Custom::CDKBucketDeployment", "True")]).data).toEqual([]);
+    expect(reviewChanges([change("Modify", "Upload", "Custom::Other", "True")]).data.map((entry) => entry.verb)).toEqual(["unclear"]);
+    expect(reviewChanges([change("Remove", "Upload", "Custom::CDKBucketDeployment", "")]).data.map((entry) => entry.verb)).toEqual(["unclear"]);
+  });
+
+  it("still stops on a data store replaced alongside the custom resource", () => {
+    const text = realDiff("AgentXControlPlane-v0.4.7").replace(/^\[\+\] AWS::Logs::LogGroup WebApp\/FunctionLogs .*$/m, "[~] AWS::DynamoDB::Table State StateABC123 replace\n └─ [~] KeySchema (requires replacement)");
+    expect(cdkDiffRisks(text).data).toEqual([{ logicalId: "StateABC123", type: "AWS::DynamoDB::Table", verb: "replace" }]);
+    expect(cdkDiffRisks(text).data[0]).toMatchObject({ logicalId: "StateABC123", verb: "replace" });
+  });
+});

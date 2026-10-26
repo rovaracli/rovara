@@ -224,7 +224,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Action": [
                     "apigateway:*",
                     "cloudformation:*",
-                    "cloudfront:*",
                     "cloudwatch:*",
                     "cognito-idp:*",
                     "dynamodb:*",
@@ -310,6 +309,175 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Effect": "Allow",
                   "Resource": "*",
                   "Sid": "AppSyncEventsCreate",
+                },
+                {
+                  "Action": [
+                    "cloudfront:CreateDistribution",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontDistributionCreate",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontDistributionTag",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                    "cloudfront:GetDistribution",
+                    "cloudfront:GetDistributionConfig",
+                    "cloudfront:UpdateDistribution",
+                    "cloudfront:DeleteDistribution",
+                    "cloudfront:ListTagsForResource",
+                    "cloudfront:UntagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontDistributions",
+                },
+                {
+                  "Action": [
+                    "cloudfront:GetOriginAccessControl",
+                    "cloudfront:GetOriginAccessControlConfig",
+                    "cloudfront:UpdateOriginAccessControl",
+                    "cloudfront:DeleteOriginAccessControl",
+                    "cloudfront:GetResponseHeadersPolicy",
+                    "cloudfront:GetResponseHeadersPolicyConfig",
+                    "cloudfront:UpdateResponseHeadersPolicy",
+                    "cloudfront:DeleteResponseHeadersPolicy",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":origin-access-control/*",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":response-headers-policy/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "CloudFrontPolicies",
+                },
+                {
+                  "Action": [
+                    "cloudfront:CreateOriginAccessControl",
+                    "cloudfront:CreateResponseHeadersPolicy",
+                    "cloudfront:GetCachePolicy",
+                    "cloudfront:ListCachePolicies",
+                    "cloudfront:ListDistributions",
+                    "cloudfront:ListOriginAccessControls",
+                    "cloudfront:ListResponseHeadersPolicies",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontUnscoped",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "Null": {
+                      "aws:ResourceTag/agentx:env": "false",
+                    },
+                    "StringNotEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontKeepEnvironmentTag",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "Null": {
+                      "aws:RequestTag/agentx:env": "false",
+                    },
+                    "StringNotEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "CloudFrontOnlyOwnEnvironmentTag",
                 },
                 {
                   "Action": [
@@ -733,7 +901,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Action": [
                 "apigateway:*",
                 "cloudformation:*",
-                "cloudfront:*",
                 "cloudwatch:*",
                 "cognito-idp:*",
                 "dynamodb:*",
@@ -758,10 +925,13 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "codebuild:*",
                 "execute-api:*",
                 "xray:*",
+                "cloudfront:*Distribution*",
+                "cloudfront:*OriginAccessControl*",
+                "cloudfront:*Polic*",
+                "cloudfront:*Tag*",
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "Services",
             },
             {
               "Action": [
@@ -771,7 +941,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Resource": {
                 "Fn::Sub": "arn:\${AWS::Partition}:events:\${AWS::Region}:\${AWS::AccountId}:rule/agentx-staging-*-service-failures",
               },
-              "Sid": "EcsFailureEventsRule",
             },
             {
               "Action": [
@@ -807,7 +976,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AppSyncEvents",
             },
             {
               "Action": [
@@ -823,7 +991,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               },
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "AppSyncEventsCreate",
             },
             {
               "Action": [
@@ -850,7 +1017,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AppSyncEventsPublish",
             },
             {
               "Action": [
@@ -858,7 +1024,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "CallerIdentity",
             },
             {
               "Action": [
@@ -881,7 +1046,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "SesSendNotice",
             },
             {
               "Action": [
@@ -905,7 +1069,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "ConnectorSecretsRole",
             },
             {
               "Action": [
@@ -986,7 +1149,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "AssumeOrgRoles",
             },
             {
               "Action": [
@@ -994,7 +1156,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "Quotas",
             },
             {
               "Action": [
@@ -1032,7 +1193,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamRoles",
             },
             {
               "Action": [
@@ -1127,7 +1287,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 },
               ],
-              "Sid": "IamFixedNameRolesNotYetCreated",
             },
             {
               "Action": [
@@ -1156,7 +1315,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamInstanceProfiles",
             },
             {
               "Action": [
@@ -1188,7 +1346,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "IamManagedPolicies",
             },
             {
               "Action": [
@@ -1229,7 +1386,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 },
               ],
-              "Sid": "PassRoles",
             },
             {
               "Action": [
@@ -1262,7 +1418,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "ServiceLinkedRoles",
             },
             {
               "Action": [
@@ -1290,7 +1445,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "CognitoEmailServiceLinkedRole",
             },
             {
               "Action": [
@@ -1317,7 +1471,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "SesIdentityCheck",
             },
             {
               "Action": [
@@ -1332,7 +1485,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               },
               "Effect": "Allow",
               "Resource": "*",
-              "Sid": "SesAccountCheck",
             },
             {
               "Action": [
@@ -1341,7 +1493,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Deny",
               "Resource": "*",
-              "Sid": "DenyAccountChanges",
             },
             {
               "Action": [
@@ -1350,7 +1501,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               ],
               "Effect": "Deny",
               "Resource": "*",
-              "Sid": "DenyUsersAndGroups",
             },
             {
               "Action": [
@@ -1376,7 +1526,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "DenyPolicyManagement",
             },
             {
               "Action": [
@@ -1399,7 +1548,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-              "Sid": "DenyBoundaryChanges",
             },
           ],
           "Version": "2012-10-17",

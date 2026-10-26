@@ -6,6 +6,7 @@
 // unchanged.
 export {
   BOUNDARY_SERVICES,
+  CLOUDFRONT_BOUNDARY_ACTIONS,
   MANAGED_POLICY_ACTIONS,
   SERVICE_LINKED_ROLE_SERVICES,
   SERVICE_ROLE_SERVICES,
@@ -18,6 +19,7 @@ export {
   taskPersonProofRoleName,
   operatorRoleStatements,
   serviceRoleStatements,
+  withoutSids,
   type PolicyScope,
   type PolicyStatementJson,
 } from "@agentx/contracts";

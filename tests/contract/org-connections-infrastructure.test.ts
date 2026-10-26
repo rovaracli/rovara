@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultBoundaryStatements } from "../../packages/contracts/src/access-policies.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { boundaryWithSids } from "../support/deployed-boundary.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -268,7 +269,7 @@ describe("the access stack's boundary takes Rovara's AWS Organization id from co
     const app = buildAgentXApp({ agentxEnv: "staging", ...context });
     const access = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXAccess")!;
     const policy = Object.values(Template.fromStack(access).toJSON().Resources as Resources).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === "agentx-staging-boundary")!;
-    return policy.Properties.PolicyDocument!.Statement.find((statement) => statement.Sid === "AssumeOrgRoles")!;
+    return boundaryWithSids(policy.Properties.PolicyDocument!.Statement).find((statement) => statement.Sid === "AssumeOrgRoles")!;
   };
 
   it("with no organization id configured, keeps the account-only exclusion", () => {

@@ -3,7 +3,7 @@ import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
-import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements } from "./access-policies.js";
+import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
 import type { AgentXNaming } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 
@@ -46,8 +46,9 @@ export class AccessStack extends Stack {
           description: `Default permission boundary for every agentx-${env} role`,
           policyDocument: {
             Version: "2012-10-17",
-            Statement: defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })
-              .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement),
+            Statement: withoutSids(defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })
+              // withoutSids: the deployed boundary is capped at 6,144 characters; the tests find statements by Sid in defaultBoundaryStatements.
+              .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)),
           },
         });
         policy.cfnOptions.condition = useDefaultBoundary;

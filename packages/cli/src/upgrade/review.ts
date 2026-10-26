@@ -14,6 +14,12 @@ export const DATA_RESOURCE_TYPES: ReadonlySet<string> = new Set(["AWS::DynamoDB:
 const POLICY_RESOURCE_TYPES: ReadonlySet<string> = new Set(["AWS::S3::BucketPolicy", "AWS::Lambda::Permission", "AWS::SQS::QueuePolicy", "AWS::SNS::TopicPolicy", "AWS::SecretsManager::ResourcePolicy"]);
 const isIamType = (type: string) => type.startsWith("AWS::IAM::") || POLICY_RESOURCE_TYPES.has(type);
 
+/** A custom resource's type, as CloudFormation names it: `Custom::` and up to 60 letters, digits and `_@-`. Its handler can do anything, so what it replaces or deletes cannot be read from its type. */
+const isCustomType = (type: string) => type.startsWith("Custom::");
+/** The only custom types whose replacement is not treated as losing data: CDK's BucketDeployment, which only copies this build's files (regenerable) into the web assets bucket, with prune off and the files
+ * retained when the deployment is deleted. Its DELETE is never on this list: the diff does not show whether the deployment prunes or retains, so removing one stops like any other custom resource. */
+export const REPLACEABLE_CUSTOM_TYPES: ReadonlySet<string> = new Set(["Custom::CDKBucketDeployment"]);
+
 /** "orphan": cdk diff says a retained resource leaves the stack (its data stays, unmanaged).
  * "unclear": cdk diff output this code could not read; `line` holds it, and logicalId and type are ""
  * when they could not be read either. */
@@ -29,6 +35,9 @@ export function reviewChanges(changes: ChangeSetChange[]): ReviewedChanges {
   for (const change of changes) {
     if (DATA_RESOURCE_TYPES.has(change.type) && !keepsData(change)) {
       reviewed.data.push({ logicalId: change.logicalId, type: change.type, verb: change.action === "Remove" ? "delete" : "replace" });
+    } else if (isCustomType(change.type) && !keepsData(change) && !(change.action === "Modify" && REPLACEABLE_CUSTOM_TYPES.has(change.type))) {
+      // Adding one, or changing it in place, loses nothing; replacing or removing a custom resource runs its delete handler, which may remove data.
+      reviewed.data.push({ logicalId: change.logicalId, type: change.type, verb: "unclear", line: `${change.action} ${change.logicalId} (${change.type})${change.replacement === "" ? "" : `, replacement ${change.replacement}`}` });
     } else if (isIamType(change.type) || (change.type === "AWS::KMS::Key" && change.action === "Modify")) {
       // A change set does not say which property changed, so a KMS key's modification may be its KeyPolicy.
       reviewed.iam.push(change);
@@ -141,7 +150,7 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
 // to a resource whose template did not change; nor a Conditions or Mappings change that adds or
 // removes a conditional resource. The templates engine's change set does see those.
 const MARK = /^\[([^\]]{1,2})\]\s+(.*)$/;
-const RESOURCE_TYPE = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+(?:::[A-Za-z0-9]+)*)(?:\s+(.*))?$/;
+const RESOURCE_TYPE = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+(?:::[A-Za-z0-9]+)*|Custom::[A-Za-z0-9_@-]+)(?:\s+(.*))?$/;
 const IMPACT = /\s*\b(may be replaced|replace|destroy|orphan|import)$/;
 const MOVE = /\s*\(OR move .*\)$/;
 const LOGICAL_ID = /^[A-Za-z0-9]+$/;
@@ -255,6 +264,17 @@ export function cdkDiffRisks(text: string): { data: DataChange[]; iam: boolean }
         } else pending = { ...change, verb: "replace" };
       }
       // "+" adds and "←" imports: nothing is lost.
+    }
+    if (isCustomType(parsed.type)) {
+      // "+" adds and "←" imports: nothing is lost. A change in place runs the handler's update, which this code cannot read either way, so it is as safe as any other in-place change.
+      // A replacement or a removal runs the old resource's delete handler: unclear (so --allow-replace can name it), unless the type is on the replace list.
+      const replaces = parsed.impact === "replace" || parsed.impact === "may be replaced";
+      if (parsed.mark === "-") unclear(line, parsed);
+      else if (parsed.mark === "~" && !REPLACEABLE_CUSTOM_TYPES.has(parsed.type)) {
+        if (replaces) entry = { logicalId: parsed.logicalId, type: parsed.type, verb: "unclear", line };
+        else pending = { logicalId: parsed.logicalId, type: parsed.type, verb: "unclear", line };
+        if (entry !== undefined) data.push(entry);
+      }
     }
     if (parsed.mark === "~" && parsed.impact === "replace") bare = { line, parsed, entry };
   }
