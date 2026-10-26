@@ -46,6 +46,37 @@ describe("what a change does to the tests it touches", () => {
     expect(parseChangedFiles(section(hunk("src/a.ts", ["+it.skip('x')"]))).files[0]?.testsSkipped).toBeUndefined();
   });
 
+  it("a test renamed out of the test paths is a test removed (nothing is left for CI to run), and a test renamed within them is not", () => {
+    const rename = (from: string, to: string) => section([`diff --git a/${from} b/${to}`, "similarity index 100%", `rename from ${from}`, `rename to ${to}`]);
+    for (const [from, to] of [["src/a.test.ts", "src/a.test.ts.off"], ["tests/x.ts", "fixtures/x.ts"], ["src/billing.spec.ts", "src/billing.ts.bak"]] as const) {
+      expect(parseChangedFiles(rename(from, to)).files[0], `${from} -> ${to}`).toMatchObject({ path: to, renamedFrom: from, testsRemoved: true });
+    }
+    expect(parseChangedFiles(rename("src/a.test.ts", "src/b.test.ts")).files[0]?.testsRemoved).toBeUndefined();
+    expect(parseChangedFiles(rename("src/a.ts", "src/b.ts")).files[0]?.testsRemoved).toBeUndefined();
+  });
+
+  it("a test gutted with a line added is a test removed: it loses more lines than it gains", () => {
+    const gutted = parseChangedFiles(section(hunk("tests/a.test.ts", ["-expect(a).toBe(1);", "-expect(b).toBe(2);", "-expect(c).toBe(3);", "+// TODO", " keep"]))).files[0];
+    expect(gutted).toMatchObject({ added: 1, removed: 3, testsRemoved: true });
+    // A test that gains as many lines as it loses is a rewrite, not a removal.
+    expect(parseChangedFiles(section(hunk("tests/a.test.ts", ["-expect(a).toBe(1);", "+expect(a).toBe(2);", " keep"]))).files[0]?.testsRemoved).toBeUndefined();
+  });
+
+  it("focusing one test switches the rest off: .only, fit, fdescribe, a Rust #[ignore], a skipIf and a fixme all count as skipped", () => {
+    for (const line of ["+it.only('x', () => {})", "+describe.only('x', () => {})", "+fit('x', () => {})", "+  fdescribe('x', () => {})", "+#[ignore]", "+test.skipIf(true)('x', () => {})", "+test.fixme('x', () => {})", "+  it.concurrent.skip('x', () => {})"]) {
+      expect(parseChangedFiles(section(hunk("tests/a.test.ts", [line, " keep"]))).files[0]?.testsSkipped, line).toBe(true);
+    }
+    expect(parseChangedFiles(section(hunk("tests/a.test.ts", ["+const only = 1;", "+const fits = 2;", " keep"]))).files[0]?.testsSkipped).toBeUndefined();
+  });
+
+  it("a change to the test command in package.json is seen, and an ordinary dependency change is not", () => {
+    const test = (line: string) => parseChangedFiles(section(["diff --git a/package.json b/package.json", "--- a/package.json", "+++ b/package.json", "@@ -1,3 +1,3 @@", line, " keep"])).files[0];
+    for (const line of ['-    "test": "vitest run",', '+    "test": "echo skipped",', '+    "test:unit": "true",']) expect(test(line)?.testCommandChanged, line).toBe(true);
+    for (const line of ['+    "lodash": "^4.17.21",', '+    "pretest": "x",', '+    "testing-library": "1.0.0",']) expect(test(line)?.testCommandChanged, line).toBeUndefined();
+    // Only package.json carries the test command: the same text elsewhere is not it.
+    expect(parseChangedFiles(section(hunk("src/a.json", ['+    "test": "x",', " keep"]))).files[0]?.testCommandChanged).toBeUndefined();
+  });
+
   it("a renamed test file is still a test", () => {
     const text = section(["diff --git a/tests/old.test.ts b/src/legacy.ts", "similarity index 90%", "rename from tests/old.test.ts", "rename to src/legacy.ts", "--- a/tests/old.test.ts", "+++ b/src/legacy.ts", "@@ -1 +0,0 @@", "-it('a')"]);
     expect(parseChangedFiles(text).files[0]).toMatchObject({ path: "src/legacy.ts", renamedFrom: "tests/old.test.ts", testsRemoved: true });
@@ -65,6 +96,20 @@ describe("the risk of a fix", () => {
 
   it("a fix that skips a test is high risk", () => {
     expect(assessRisk(input({ fix: true, changedFiles: [skipped] })).level).toBe("high");
+  });
+
+  it("a fix that changes what CI runs from beside the usual files is high risk: composite actions, GitLab includes, test-runner configs, the test command", () => {
+    for (const path of [".github/actions/setup/action.yml", ".gitlab/ci/test.yml", "vitest.config.ts", "packages/api/jest.config.js", "pytest.ini", "tests/conftest.py", "playwright.config.ts", "tox.ini", ".mocharc.json", "karma.conf.js"]) {
+      const risk = assessRisk(input({ fix: true, changedFiles: [{ repository: "payments", path, added: 1, removed: 1 }] }));
+      expect(risk.level, path).toBe("high");
+      expect(risk.reasons.some((reason) => reason.startsWith("A fix changes CI configuration")), path).toBe(true);
+    }
+    const command = assessRisk(input({ fix: true, changedFiles: [{ repository: "payments", path: "package.json", added: 1, removed: 1, testCommandChanged: true }] }));
+    expect(command.level).toBe("high");
+    expect(command.reasons).toContain("A fix changes the command that runs the tests (package.json), so a check may pass because the tests no longer run.");
+    // The same files in an ordinary change are judged as before.
+    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: "vitest.config.ts", added: 1, removed: 1 }] })).level).toBe("low");
+    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: "package.json", added: 1, removed: 1, testCommandChanged: true }] })).level).toBe("medium");
   });
 
   it("a fix that changes CI configuration is high risk, whichever CI it is", () => {
