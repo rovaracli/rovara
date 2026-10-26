@@ -25,6 +25,8 @@ import { handoffSession, type HandoffRuntime } from "./handoff.js";
 import { retrySession } from "./retry.js";
 import { answerIntentOnSession } from "../rovara-code/questions.js";
 import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
+import { pressMerge, registerMergeApprovals } from "../rovara-code/merge.js";
+import { registerCodeSettingsApprovals } from "../rovara-code/code-settings.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { linkLinearOnSession, unlinkLinearOnSession } from "../rovara-code/link-linear.js";
@@ -52,7 +54,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway|merge))?)?$/;
 const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
 const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
 /** Plan 6 Task 20: `POST …/bindings` links a session to a Linear issue and `DELETE …/bindings/linear` lets it go (a path of its own, beside the local-session ones). */
@@ -256,6 +258,11 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
       return handoffSession({ ...read, handoff: deps.handoff, projectRepositories: approvals?.projectRepositories }, caller, sessionId, jsonBody(request));
     }
     if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
+    // Rovara Code: a person presses Merge. It answers 202 with the link where they confirm it; only that confirmation merges (Plan 6 Task 19).
+    if (control === "merge") {
+      const reply = await pressMerge(read, caller, sessionId, jsonBody(request), deps.approvals);
+      return new StatusReply(reply.status, reply.body);
+    }
     // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).
     if (control === "change-anyway") return new StatusReply(202, await changeAnywayOnSession(read, caller, sessionId, jsonBody(request)));
     return control === "stop" ? stopSession(read, caller, sessionId, jsonBody(request)) : retrySession(read, caller, sessionId, jsonBody(request));
@@ -317,3 +324,6 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
 // Loading this module registers the company-wide share's approver rule and handler, as the agent routes register theirs.
 registerSessionShareApprovals();
 registerSessionTakeOverApprovals();
+// Rovara Code (Plan 6 Task 19): the merge change (decided only by the person who pressed Merge) and the code-settings change (decided by an organization owner or admin).
+registerMergeApprovals();
+registerCodeSettingsApprovals();

@@ -423,6 +423,59 @@ export type CodeSettings = z.infer<typeof CodeSettingsSchema>;
 
 export const DEFAULT_CODE_SETTINGS: CodeSettings = { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: [], revision: 0 };
 
+/**
+ * `PUT /v1/app/projects/{p}/code-settings` (Plan 6 Task 19): the revision the caller read and the settings to change. Everything but turning `allowSelfApproval` on applies at once; turning it on
+ * answers `202 NEEDS_CONFIRMATION` and an organization owner or admin decides it on the confirmation page.
+ */
+export const CodeSettingsBodySchema = z
+  .object({
+    requestId: z.string().uuid(),
+    expectedRevision: CountSchema,
+    allowSelfApproval: z.boolean().optional(),
+    mergeMethod: z.enum(["squash", "merge"]).optional(),
+    codeReviewers: z.array(ReviewerNameSchema).max(CODE_REVIEWERS_MAX).refine((names) => new Set(names.map((name) => name.toLowerCase())).size === names.length, "names the same reviewer twice").optional(),
+  })
+  .strict();
+export type CodeSettingsBody = z.infer<typeof CodeSettingsBodySchema>;
+
+/** `GET` and an applied `PUT` of a project's code settings. */
+export const CodeSettingsResponseSchema = z.object({ settings: CodeSettingsSchema }).strict();
+export type CodeSettingsResponse = z.infer<typeof CodeSettingsResponseSchema>;
+
+/** What a stale `PUT` hears. */
+export const CODE_SETTINGS_STALE_MESSAGE = "Someone changed these settings. Reload and try again.";
+
+// ---- merging (Plan 6 Task 19)
+
+/** The task view's `merge` (version 2 only): whether the viewer pressing Merge now would be allowed to, and if not, in words, why. */
+export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(500).optional() }).strict();
+export type MergeView = z.infer<typeof MergeViewSchema>;
+
+/** The exact texts of `MERGE_NOT_READY` (409). Words for a person: nothing here carries a title, a comment or a log. */
+export const MERGE_NOT_READY_MESSAGES = {
+  needsOtherApproval: (requester: string): string => `This pull request needs an approval from someone other than ${requester}.`,
+  needsWriteApproval: (repository: string): string => `This pull request needs an approval on GitHub from someone who can write to ${repository}.`,
+  linkGithub: "Link your GitHub account so Rovara can tell your approval from a reviewer's.",
+  presserApproved: "You approved this pull request, so someone else must press Merge.",
+  checks: "Checks haven't passed on the latest code.",
+  conflicted: (base: string): string => `The branch conflicts with ${base}. I'm resolving it.`,
+  baseChanged: (branch: string): string => `The pull request's base changed to ${branch}. Change it back or close the task.`,
+  draft: "The pull request is still a draft.",
+  notOpen: "The pull request isn't open.",
+  changing: "I'm still changing this pull request.",
+  repository: (repository: string, reason: string): string => `${repository}'s pull request isn't ready yet: ${reason}`,
+  // Not in the plan's list; the plan has no word for these states.
+  changesRequested: "A reviewer asked for changes on this pull request.",
+  staleApproval: "The approval was for earlier code. This pull request needs a new approval.",
+  behind: (base: string): string => `The branch is behind ${base}, and GitHub needs it up to date. I'm bringing it up to date; press Merge again when that is done.`,
+  taskClosed: "This task is closed.",
+  presserLostRight: "You can no longer merge this task, so nothing was merged.",
+  notTrackedYet: "I haven't finished reading this pull request from GitHub yet. Try again in a minute.",
+  notMerged: (repository: string, reason: string): string => `${repository} didn't merge: ${reason}. Check it on GitHub, then press Merge again.`,
+  changedAfterConfirm: "The pull request changed after you confirmed. Check it and press Merge again.",
+  halfMerged: (merged: string, failed: string, reason: string): string => `${merged} merged, but ${failed} didn't: ${reason}. Merge it on GitHub or press Merge again.`,
+} as const;
+
 // ---- reports and drafts
 
 export const VerificationReportSchema = z

@@ -305,7 +305,7 @@ import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type Ag
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
 import { understandPrompt } from "../rovara-code/understand.js";
-import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
+import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal, type MergeTrackingItem, type MergeView } from "@agentx/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../rovara-code/question-answers.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
@@ -399,6 +399,10 @@ export interface DeveloperTaskRouteDependencies {
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
    */
   agentRuns?: AgentRunDependencies;
+  /**
+   * Plan 6 Task 19: whether the viewer pressing Merge now would be allowed to, from the tracking items the view just read (the broker binds the viewer). Without it a task view has no `merge`.
+   */
+  mergeView?: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => Promise<MergeView | undefined>;
   /** Plan 5 Task 12a review (M-3): a developer id read as the member it was merged into (the end of its `mergedInto` chain). A taker merged away since is the owner as the member they became. */
   resolveMember?: (developerId: string) => Promise<string>;
   /**
@@ -1582,6 +1586,8 @@ export async function taskView(
   // Plan 6, Task 14: what merge tracking read from GitHub for each pull request (without the merge claim), and the checks basis it found, which the report says.
   const tracked = rovaraCodeV2 && options.details && task.orgId !== undefined && (task.workflow?.pullRequests ?? []).length > 0 ? await readMergeTracking(deps, task.taskId, task.orgId) : [];
   const ciBasis = tracked.some((item) => item.ciBasis === "all_checks") ? "all_checks" as const : tracked.length > 0 ? "required" as const : undefined;
+  // Plan 6, Task 19: whether the viewer pressing Merge now would be allowed to. Advisory (the press re-reads GitHub), so a failure to say leaves it out.
+  const merge = tracked.length > 0 && deps.mergeView !== undefined ? await deps.mergeView(task, tracked).catch(() => undefined) : undefined;
   // MERGE-DECISION (Task 12 review and Task 14, the stricter guard): not while the code is being rewritten (the old candidate and its results stay until the next candidate replaces them), and not when the changed files were not
   // loaded (the full read skips them while the task runs), where "no tests added" would be a guess.
   const detailsLoaded = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING";
@@ -1597,6 +1603,7 @@ export async function taskView(
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
+    ...(merge === undefined ? {} : { merge }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
