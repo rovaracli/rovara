@@ -60,7 +60,7 @@ export const BuilderSkillsReaderSchema = forwardReader(z.object({skills:z.array(
 
 export const AgentPublishBodySchema = z.object({requestId:z.string().uuid(),expectedRevision:Version,note:z.string().trim().min(1).max(200).optional()}).strict();
 export const AgentRollbackBodySchema = z.object({requestId:z.string().uuid(),version:Version}).strict();
-export const AgentBudgetBodySchema = z.object({requestId:z.string().uuid(),monthlyUsd:z.number().min(0).max(1_000_000).nullable().optional(),maxPerRunUsd:z.number().min(0).max(1_000_000).nullable().optional()}).strict();
+export const AgentBudgetBodySchema = z.object({requestId:z.string().uuid(),monthlyUsd:z.number().finite().nullable().optional(),maxPerRunUsd:z.number().finite().nullable().optional()}).strict();
 export const AgentRunBodySchema = z.object({requestId:z.string().uuid(),project:z.string().min(1).max(200),version:z.union([Version,z.literal("draft")]).optional(),input:RunInputSchema}).strict();
 export const AgentPublishResponseSchema = AgentWriteResponseSchema.extend({version:AgentVersionViewSchema});
 export const AgentPublishResponseReaderSchema = forwardReader(AgentPublishResponseSchema);
