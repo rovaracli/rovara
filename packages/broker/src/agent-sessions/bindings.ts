@@ -114,7 +114,8 @@ export async function bindSessionSurface(
   if (!parsedBinding.success || !parsedId.success) throw agentXError("CONFIG_INVALID", "This link can't be bound to a session.");
   const binding = parsedBinding.data;
   const sessionId = parsedId.data;
-  // Refuse foreign/missing ids before attempting any write; keep the transaction's check for races.
+  // Refuse foreign/missing ids before this helper attempts a write; keep its transaction check for races.
+  // Production notifier calls bindingItemsForOpenSession directly, using the task's checked org; it does not run this precheck.
   const meta = await getItem(table, agentSessionKey(input.orgId, sessionId, "META"));
   if (meta === undefined || meta["orgId"] !== input.orgId) throw agentXError("NOT_FOUND", "session not found");
   for (let attempt = 1; ; attempt += 1) {
