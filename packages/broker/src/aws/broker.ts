@@ -57,7 +57,7 @@ import {
   type StandingFailure,
   submitWorkflowArtifact,
   parsePlanDocument,
-  planMissingParts,
+  planAnswerMissingParts,
   parseCommentAnswers,
   commentRefInAuthor,
   commentIdInAuthor,
@@ -14817,7 +14817,7 @@ async function storePlanAnswer(
   if (!parsed.ok) return unreadable(parsed.errors);
   // Plan 6 Task 7: a version 2 coding plan names what changes, which files and how it is tested. The worker asked once more when a part was missing; a plan still missing one is unreadable.
   if (workflow.definitionVersion === "1.1.0" && artifactType === "plan") {
-    const missing = planMissingParts(parsed.plan);
+    const missing = planAnswerMissingParts(content, parsed.plan);
     if (missing.length > 0) return unreadable(missing);
   }
   // Defense in depth with the worker's own check: a version 2 intent is stored only from a run that negotiated it.

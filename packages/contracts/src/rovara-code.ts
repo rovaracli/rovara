@@ -278,8 +278,16 @@ export type CodeMilestone = z.infer<typeof CodeMilestoneSchema>;
 
 // ---- time
 
-/** A time range for a person: `about 20–45 minutes` below 90 minutes, else whole hours (`about 1–3 hours`), with an en dash. */
+/**
+ * A time range for a person, with an en dash: `about 20–45 minutes` while the high end is below 90 minutes, else hours (`about 1–3 hours`). A low end below an hour stays in minutes
+ * (`about 5 minutes to 2 hours`), and equal ends are one value (`about 20 minutes`, `about 2 hours`), never `20–20`.
+ */
 export function formatMinutes(low: number, high: number): string {
-  if (high < 90) return `about ${String(Math.round(low))}–${String(Math.round(high))} minutes`;
-  return `about ${String(Math.max(1, Math.round(low / 60)))}–${String(Math.max(1, Math.round(high / 60)))} hours`;
+  const lo = Math.round(low);
+  const hi = Math.round(high);
+  if (hi < 90) return lo === hi ? `about ${String(lo)} minutes` : `about ${String(lo)}–${String(hi)} minutes`;
+  const hours = (minutes: number): number => Math.max(1, Math.round(minutes / 60));
+  const unit = (count: number): string => (count === 1 ? "hour" : "hours");
+  if (lo < 60) return `about ${String(lo)} minutes to ${String(hours(hi))} ${unit(hours(hi))}`;
+  return hours(lo) === hours(hi) ? `about ${String(hours(hi))} ${unit(hours(hi))}` : `about ${String(hours(lo))}–${String(hours(hi))} hours`;
 }

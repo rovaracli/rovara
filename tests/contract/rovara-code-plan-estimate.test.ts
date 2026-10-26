@@ -11,7 +11,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { estimateDuration, noteDurationAtPullRequest, noteFinishedTaskDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import {
-  PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, type PlanDocument,
+  PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, type PlanDocument,
 } from "../../packages/contracts/src/workflow-plan-document.js";
 import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
@@ -146,6 +146,28 @@ describe("the time line", () => {
   it("is the range from formatMinutes", () => {
     expect(formatMinutes(20, 45)).toBe("about 20–45 minutes");
     expect(formatMinutes(60, 180)).toBe("about 1–3 hours");
+  });
+
+  it("shows one value when the bounds are equal, never 20–20", () => {
+    expect(formatMinutes(20, 20)).toBe("about 20 minutes");
+    expect(formatMinutes(120, 120)).toBe("about 2 hours");
+    expect(formatMinutes(60, 60)).toBe("about 60 minutes");
+    expect(formatMinutes(60, 80)).toBe("about 60–80 minutes");
+    expect(formatMinutes(95, 100)).toBe("about 2 hours");
+  });
+
+  it("keeps a low end below an hour in minutes, across the 5 to 100 minute range", () => {
+    expect(formatMinutes(5, 100)).toBe("about 5 minutes to 2 hours");
+    expect(formatMinutes(30, 90)).toBe("about 30 minutes to 2 hours");
+    expect(formatMinutes(60, 100)).toBe("about 1–2 hours");
+    expect(formatMinutes(5, 89)).toBe("about 5–89 minutes");
+    for (let low = 5; low <= 100; low += 5) {
+      for (let high = low; high <= 100; high += 5) {
+        const text = formatMinutes(low, high);
+        expect(text, `${String(low)}-${String(high)}`).not.toMatch(/(\d+)[–]\1\b/u);
+        expect(text.startsWith("about ")).toBe(true);
+      }
+    }
   });
 });
 
@@ -424,8 +446,8 @@ describe("planMissingParts", () => {
     expect(PLAN_MISSING_TESTS).toBe("The plan must say how the change will be tested.");
   });
 
-  it("counts a claim that says test, anywhere in the tree, in any case", () => {
-    for (const text of ["Unit tests cover the retry.", "TESTING: retry is asserted.", "The spec for charge is extended.", "Coverage of the timeout path is added."]) {
+  it("counts a claim that names a test, anywhere in the tree, in any case", () => {
+    for (const text of ["Unit tests cover the retry.", "TESTING: retry is asserted.", "Coverage of the timeout path is added.", "charge.spec.ts is extended with a timeout case.", "A test proves a timed-out payment is retried once and never charged twice."]) {
       expect(planMissingParts(planWith([{ ...claim("1", "Timeouts are retried.", CODE), children: [claim("1.1", text)] }])), text).toEqual([]);
     }
     for (const text of ["The latest change is shipped.", "Contest mode is added.", "Attestation is stored."]) {
@@ -433,18 +455,42 @@ describe("planMissingParts", () => {
     }
   });
 
-  it("counts a proposed check as how the change is tested", () => {
-    const check = { id: "required-1", label: "npm test", command: { cwd: "payments", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
-    const plan = planWith([claim("1", "Timeouts are retried.", CODE)], { checks: { proposed: [check], proves: { "required-1": ["1"] } } });
-    expect(planMissingParts(plan)).toEqual([]);
-    expect(planMissingParts({ ...plan, checks: { proposed: [], noneReason: "No tests exist here.", proves: {} } })).toEqual([PLAN_MISSING_TESTS]);
+  it("does not count a claim that says there is no test, or that only mentions a spec", () => {
+    for (const text of ["No test needed.", "No tests are needed for this change.", "Existing tests are not touched.", "Tests aren't required here.", "This ships without tests.", "We never test this path.",
+      "The spec says so.", "Nothing to test.", "The code is untested.", "Skip the tests."]) {
+      expect(planMissingParts(planWith([claim("1", "Timeouts are retried.", CODE), claim("2", text)])), text).toEqual([PLAN_MISSING_TESTS]);
+    }
+    // A negation in another sentence of the claim doesn't cancel a test named in this one.
+    expect(planMissingParts(planWith([claim("1", "Timeouts are retried.", CODE), claim("2", "No schema change. A test proves the retry.")]))).toEqual([]);
   });
 
-  it("asks for the files when no claim cites or names one", () => {
+  it("counts a proposed check as how the change is tested, as the worker and the broker both read it from the planner's answer", () => {
+    const plan = planWith([claim("1", "Timeouts are retried.", CODE)]);
+    const withChecks = planAnswer(plan, { checks: { checks: [{ label: "Unit", cwd: "payments", executable: "npm", args: ["test"], proves: ["1"] }] } });
+    const none = planAnswer(plan, { checks: { checks: [], none_reason: "No tests exist here." } });
+    expect(planAnswerMissingParts(withChecks, plan)).toEqual([]);
+    expect(planAnswerMissingParts(none, plan)).toEqual([PLAN_MISSING_TESTS]);
+    expect(planAnswerMissingParts(planAnswer(plan), plan)).toEqual([PLAN_MISSING_TESTS]);
+  });
+
+  it("asks for the files when no claim cites a real file or names one", () => {
     expect(planMissingParts(planWith([claim("1", "Timeouts are retried."), claim("2", "A test proves it.")]))).toEqual([PLAN_MISSING_FILES]);
-    expect(planMissingParts(planWith([claim("1", "Timeouts are retried in src/charge.ts."), claim("2", "A test proves it.")]))).toEqual([]);
-    expect(planMissingParts(planWith([claim("1", "Add a retry to charge.ts."), claim("2", "A test proves it.")]))).toEqual([]);
-    expect(planMissingParts(planWith([claim("1", "Add a helper.", [{ kind: "sketch", language: "ts", code: "export const x = 1;" }]), claim("2", "A test proves it.")]))).toEqual([]);
+    for (const text of ["Timeouts are retried in src/charge.ts.", "Add a retry to charge.ts.", "Edit ./scripts/run.sh to retry.", "Bump the version in package.json.", "Change the Dockerfile base image.", "Add a Makefile target.", "Edit packages/api/src/handlers/charge.test.tsx."]) {
+      expect(planMissingParts(planWith([claim("1", text), claim("2", "A test proves it.")])), text).toEqual([]);
+    }
+  });
+
+  it("does not take a word pair with a slash, a fraction or a link for a file", () => {
+    for (const text of ["Retries are decided by the client/server handshake.", "The charge succeeds and/or fails.", "3/4 of the calls are retried.", "See https://example.com/a for the rule.", "See https://example.com/a/b.json for the rule.",
+      "Use read/write access.", "Mention e.g. the gateway.", "The app is built on Node.js."]) {
+      expect(planMissingParts(planWith([claim("1", text), claim("2", "A test proves it.")])), text).toEqual([PLAN_MISSING_FILES]);
+    }
+  });
+
+  it("counts a cited `code` item as the files, but a sketch alone names none", () => {
+    expect(planMissingParts(planWith([claim("1", "Add a helper.", [{ kind: "sketch", language: "ts", code: "export const x = 1;" }]), claim("2", "A test proves it.")]))).toEqual([PLAN_MISSING_FILES]);
+    expect(planMissingParts(planWith([claim("1", "Add a helper in src/helper.ts.", [{ kind: "sketch", language: "ts", code: "export const x = 1;" }]), claim("2", "A test proves it.")]))).toEqual([]);
+    expect(planMissingParts(planWith([claim("1", "Retry.", CODE), claim("2", "A test proves it.")]))).toEqual([]);
   });
 
   it("names the change when there are no claims, and every missing part together", () => {
@@ -465,21 +511,17 @@ describe("planMissingParts", () => {
   });
 
   it("lets the worker count the checks a planner's answer proposes, without validating them", () => {
-    const withChecks = planAnswer(planWith([claim("1", "Timeouts are retried.", CODE)]), { checks: { checks: [{ label: "Unit", cwd: "payments", executable: "npm", args: ["test"], proves: ["1"] }] } });
-    const withNone = planAnswer(planWith([claim("1", "Timeouts are retried.", CODE)]), { checks: { checks: [], none_reason: "No tests exist." } });
-    expect(planAnswerProposesChecks(withChecks)).toBe(true);
-    expect(planAnswerProposesChecks(withNone)).toBe(false);
-    expect(planAnswerProposesChecks(planAnswer(planWith([claim("1", "Timeouts are retried.", CODE)])))).toBe(false);
-    expect(planAnswerProposesChecks("no block at all")).toBe(false);
     const plan = planWith([claim("1", "Timeouts are retried.", CODE)]);
-    expect(planMissingParts(plan, { checksProposed: true })).toEqual([]);
-    expect(planMissingParts(plan)).toEqual([PLAN_MISSING_TESTS]);
+    expect(planAnswerProposesChecks(planAnswer(plan, { checks: { checks: [{ label: "Unit", cwd: "payments", executable: "npm", args: ["test"], proves: ["1"] }] } }))).toBe(true);
+    expect(planAnswerProposesChecks(planAnswer(plan, { checks: { checks: [], none_reason: "No tests exist." } }))).toBe(false);
+    expect(planAnswerProposesChecks(planAnswer(plan))).toBe(false);
+    expect(planAnswerProposesChecks("no block at all")).toBe(false);
   });
 
   it("reads the answer of a plan that has all three parts", () => {
     const answer = planAnswer(planWith([claim("1", "Timeouts are retried.", CODE), claim("2", "A test proves a timed-out charge is retried once.")]));
     const parsed = parsePlanDocument(answer, { kind: "plan" });
-    expect(parsed.ok && planMissingParts(parsed.plan)).toEqual([]);
+    expect(parsed.ok && planAnswerMissingParts(answer, parsed.plan)).toEqual([]);
   });
 });
 
@@ -614,6 +656,18 @@ describe("a version 2 plan that reaches review", () => {
     expect(record.workflow.artifacts).toHaveLength(0);
     expect(record.planUnreadable?.errors).toEqual([PLAN_MISSING_TESTS]);
     expect(record.runEstimate).toBeUndefined();
+  });
+
+  it("reads a proposed check the way the worker does, so a plan the worker let through is never blocked for its tests", async () => {
+    const t = await world({ v2: true });
+    const { taskId, workspaceId } = await t.start("QUICK");
+    await t.finishPrepare(workspaceId);
+    const operationId = String(t.planOperation(workspaceId).id);
+    const plan = planDocument({ claims: [{ id: "1", text: "Timeouts are retried.", evidence: [{ kind: "code", path: "payments/src/charge.ts", startLine: 10, endLine: 24 }] }] });
+    // The only test coverage is a check whose directory the project doesn't have: the worker counts it as proposed, and so does the broker.
+    await t.h.artifact(workspaceId, operationId, "plan.md", planAnswer(plan, { checks: { checks: [{ label: "Unit", cwd: "nowhere", executable: "npm", args: ["test"], proves: ["1"] }] } }));
+    await t.h.finish(workspaceId, operationId, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    expect(t.meta(taskId).planUnreadable?.errors ?? []).not.toContain(PLAN_MISSING_TESTS);
   });
 
   it("blocks a plan with no file, naming it", async () => {
