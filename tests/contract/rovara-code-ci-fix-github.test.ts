@@ -5,7 +5,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES } from "@agentx/contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
-import { LOG_DOWNLOAD_BYTES_MAX, isAllowedLogAddress, logTail } from "../../packages/broker/src/github-job-log.js";
+import { LOG_DOWNLOAD_BYTES_MAX, isAllowedLogAddress, logTail, readLogEnd } from "../../packages/broker/src/github-job-log.js";
 
 const NOW = Date.parse("2026-10-25T12:00:00.000Z");
 const REPO = "https://github.com/acme/payments.git";
@@ -150,6 +150,15 @@ describe("the end of a log", () => {
     expect(tail.endsWith("-END")).toBe(true);
     expect(tail).not.toContain("�");
     expect(logTail("", {})).toBe("");
+  });
+
+  it("keeps only the end of what it reads: the memory held is bounded however long the log", async () => {
+    const chunk = new TextEncoder().encode(`${lines(500, 100)}\n`);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({ pull(controller) { pulled += 1; if (pulled > 20) controller.close(); else controller.enqueue(chunk); } });
+    const end = await readLogEnd(new Response(stream));
+    expect(Buffer.byteLength(end, "utf8")).toBeLessThanOrEqual(CI_LOG_BYTES_MAX * 2);
+    expect(end.trimEnd().endsWith("x".repeat(100))).toBe(true);
   });
 
   it("allows GitHub's log hosts and nothing else", () => {
