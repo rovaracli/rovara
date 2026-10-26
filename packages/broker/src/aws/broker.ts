@@ -4245,7 +4245,11 @@ async function slackServiceIdentity(
   if (dependencies.developer === undefined) throw agentXError("FORBIDDEN", "developer task workflows are not configured");
   let access: TaskAccess;
   try { ({ access } = await slackTaskAccess(dependencies, developerTaskActions(dependencies), shared.taskId, context.requester.userId, "comment")); }
-  catch { throw agentXError("FORBIDDEN", "this Slack member cannot continue the task"); }
+  catch {
+    // A person the task's rules still let read it (their role was lowered to viewer) is told what the thread's notice says: they have view-only access. Anyone else gets the plain refusal.
+    const mayRead = await slackTaskAccess(dependencies, developerTaskActions(dependencies), shared.taskId, context.requester.userId, "read").then(() => true, () => false);
+    throw agentXError("FORBIDDEN", mayRead ? "you have view-only access to this task, so this Slack member cannot continue it" : "this Slack member cannot continue the task");
+  }
   if (access.task.share?.teamId !== context.thread.teamId || access.task.share.channelId !== context.thread.channelId
     || access.task.share.threadTs !== context.thread.threadTs) throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   const authorizedSharedTask = { ...sharedTask, state: "continue" as const, peopleAccessBound: true as const, peopleRevision: access.peopleRevision };

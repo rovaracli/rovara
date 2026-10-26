@@ -301,6 +301,24 @@ describe("a thread that is not open to the channel (C11, Review Focus 2)", () =>
   });
 });
 
+describe("a person whose task role was lowered to viewer (C43 d, owner-approved consistency)", () => {
+  it("is told they have view-only access, as the thread notice says, when they try to drive a continue thread", async () => {
+    const h = await continueThread("continue", "current");
+    h.seedPeople("viewer");
+    const refused = (await h.ensure(OLDER_REQUEST)).body.error as { code: string; message: string };
+    expect(refused.code).toBe("FORBIDDEN");
+    expect(refused.message).toMatch(/view-only access/);
+    expect(h.workspaces()).toBe(1);
+  });
+  it("keeps the plain refusal for a person the task's rules do not let see it at all", async () => {
+    const h = await continueThread("continue", "current");
+    h.seedPeople("denied");
+    const refused = (await h.ensure(OLDER_REQUEST)).body.error as { code: string; message: string };
+    expect(refused.code).toBe("FORBIDDEN");
+    expect(refused.message).not.toMatch(/view-only/);
+  });
+});
+
 describe("stop in a shared thread (Q8)", () => {
   it("cancels the running task operation from a continue thread, and nothing from a view-only one", async () => {
     const h = await continueThread();
