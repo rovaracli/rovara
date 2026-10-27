@@ -4956,7 +4956,7 @@ function automaticRetryDecision(workflow: WorkflowSnapshot, stage: "VERIFY" | "R
  * The caller Rovara's own actions use to reach the task's routes: the task's effective owner, in the task's own org, with the plain member role (nothing elevated), never a person's session.
  * Decisions it records are AGENTX's, not the owner's (mainline #408 sync: the caller gains the org and role the org-scoped routes need; owner ruling pending).
  */
-function automaticCaller(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): DeveloperCaller {
+export function automaticCaller(deps: Pick<DeveloperTaskRouteDependencies, "orgId">, task: DeveloperTaskRecord): DeveloperCaller {
   const owner = effectiveTaskOwner(task);
   return {
     developerId: owner.developerId, sessionId: "workflow-autofix", amr: owner.provider, name: owner.name, orgId: deps.orgId, orgRole: "member",
@@ -4976,6 +4976,8 @@ export async function autoSendBackToCodingFromSystem(
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined) return "STALE";
+  // MONEY (mainline #408 sync): a task paused for an approval of more spend is not gone on with by Rovara itself; the caller then asks the owner ("needs-a-person").
+  if (task.budgetPause !== undefined) return "STALE";
   const requestId = workflowAutoActionRequestId(taskId, input.expectedRevision, "AUTO_FIX");
   if (workflow.decisions.some((decision) => decision.requestId === requestId)) return "DUPLICATE";
   if (workflow.revision !== input.expectedRevision) return "STALE";
@@ -5019,6 +5021,8 @@ export async function autoRetryChecksFromSystem(deps: DeveloperTaskRouteDependen
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined) return "STALE";
+  // MONEY (mainline #408 sync): a task paused for an approval of more spend is not gone on with by Rovara itself; the caller then asks the owner ("needs-a-person").
+  if (task.budgetPause !== undefined) return "STALE";
   const requestId = workflowAutoActionRequestId(taskId, input.expectedRevision, "AUTO_RETRY");
   if (workflow.decisions.some((decision) => decision.requestId === requestId)) return "DUPLICATE";
   if (workflow.revision !== input.expectedRevision || workflow.stage !== "VERIFY" || workflow.state !== "BLOCKED") return "STALE";
@@ -5036,6 +5040,8 @@ export async function autoRetryReviewsFromSystem(deps: DeveloperTaskRouteDepende
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined) return "STALE";
+  // MONEY (mainline #408 sync): a task paused for an approval of more spend is not gone on with by Rovara itself; the caller then asks the owner ("needs-a-person").
+  if (task.budgetPause !== undefined) return "STALE";
   const requestId = workflowAutoActionRequestId(taskId, input.expectedRevision, "AUTO_RETRY");
   if (workflow.decisions.some((decision) => decision.requestId === requestId)) return "DUPLICATE";
   if (workflow.revision !== input.expectedRevision || workflow.stage !== "REVIEW" || workflow.state !== "BLOCKED" || workflow.candidate === undefined
