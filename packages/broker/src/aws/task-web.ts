@@ -4,7 +4,7 @@ import { serverPageCss } from "@agentx/design-tokens";
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { SessionIdSchema, redactText, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
@@ -508,7 +508,9 @@ const NO_ACCESS = "You don't have access to this task.";
 /** A person's name as it reads inside a sentence: one line, redacted, cut short. messagePage escapes it. */
 export function plainName(name: unknown): string | undefined {
   if (typeof name !== "string") return undefined;
-  const characters = Array.from(redactText(name).replace(/[\p{Cc}\s]+/gu, " ").trim());
+  const cleaned = redactText(name).replace(/[\p{Cc}\s]+/gu, " ").trim();
+  // Release 0.4.16: an email address is never part of a name shown to others. A name without one is left exactly as it was.
+  const characters = Array.from(containsEmailAddress(cleaned) ? withoutEmailAddresses(cleaned) : cleaned);
   if (characters.length === 0) return undefined;
   return characters.length <= 80 ? characters.join("") : `${characters.slice(0, 79).join("")}…`;
 }

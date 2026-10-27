@@ -22,7 +22,7 @@ export type { OrgId } from "./org.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 export { SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema } from "./session-views.js";
 export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInput, type SessionAnchorRef } from "./agent-sessions.js";
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
@@ -44,3 +44,4 @@ export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessi
 export * from "./onboarding.js";
 
 export { ChainRunViewReaderSchema } from "./chain-session.js";
+export { isPlaceholderDisplayName } from "./display-name.js";

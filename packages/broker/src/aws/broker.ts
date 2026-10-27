@@ -235,6 +235,7 @@ import {
   WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT,
   WorkflowFeedbackReviewRefSchema,
   cleanDisplayName,
+  emailSafeName,
   redactAndCap,
   redactText,
   DISPLAY_NAME_MAX_ENCODED_LENGTH,
@@ -388,6 +389,7 @@ import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type C
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import {
   applyInstallationLifecycle, disconnectGithubInstallation, installationBindingCheck, listGithubInstallations, listInstallationRepositories, requireRepositoriesConnected, requireRepositoryConnected, startGithubConnect,
   type GithubConnectionDependencies, type RepositoryGateDependencies,
@@ -1426,7 +1428,7 @@ async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "d
   const table = dependencies.developer?.signInTableName;
   if (table === undefined) return undefined;
   const out = await dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as { Item?: { displayName?: unknown } };
-  return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
+  return typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined;
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
@@ -4274,7 +4276,7 @@ async function slackServiceIdentity(
   };
   const shared = await sharedThread(dependencies, context.thread);
   if (shared === undefined) return own;
-  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: shared.developerName };
+  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: emailSafeName(shared.developerName) ?? "a member" };
   // C11: open only while continue, not closed, and the channel still serves the task's project.
   // A Slack-started task's own thread is driven by its owner's buttons, never by the channel's chat agent: closed to it.
   if (!sharedThreadOpen(shared, binding)) {
@@ -5472,7 +5474,7 @@ async function sharedThreadWorkspace(
     ...(include.recoverableOperations ? { recoverableOperations: [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: settings.definition.revision } : {}),
     ...(include.actionPolicy && settings.definition.actionPolicy ? { actionPolicy: settings.definition.actionPolicy } : {}),
-    ...(includeSharedTask ? { sharedTask: { taskId: shared.taskId, developerName: shared.developerName } } : {}),
+    ...(includeSharedTask ? { sharedTask: { taskId: shared.taskId, developerName: emailSafeName(shared.developerName) ?? "a member" } } : {}),
     ...(includeSharedTask && active.developer ? { activeOperation: "developer" as const } : {}),
   };
 }

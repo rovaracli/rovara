@@ -51,6 +51,8 @@ import {
   type DeveloperTaskView,
   type RunInput,
   type AppMeResponse,
+  SetMyNameBodySchema,
+  type SetMyNameResponse,
   type AppProjectDetail,
   type AppProjectSummary,
   type AppProjectsResponse,
@@ -126,6 +128,7 @@ import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { developerTaskIdentity, type DeveloperTaskRecord, type WorkspaceCharge } from "../developer/task-records.js";
@@ -320,7 +323,8 @@ export { StatusReply };
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
 export { effectiveProjectRole, requireNewWorkAllowed };
-export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true }
+export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true;
+  /** Release 0.4.16: true once the person chose their own display name (`PUT /v1/app/me/name`). Set by the session read; absent on a caller built another way. */ nameChosen?: boolean }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
@@ -650,7 +654,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
   }
-  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`);
+  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "displayNameChosen" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`);
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
@@ -670,7 +674,9 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     amr: token.amr,
     orgId: membership.orgId,
     orgRole: membership.role,
-    name: developer.displayName,
+    // Release 0.4.16: the caller's name is everywhere a task, a session or a comment names them, so it is never an email address.
+    name: safeDisplayName(developer.displayName, token.developerId),
+    nameChosen: developer.displayNameChosen === true,
     ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
     ...(developer.email === undefined ? {} : { email: developer.email }),
   };
@@ -1238,16 +1244,20 @@ async function getProjectMembers(deps: DeveloperRouteDependencies, caller: Devel
   // Who added a person is shown as the developer they have since been merged into, if any.
   const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
     ? { ...row, grantedBy: { developerId: await survivorOf(merge, row.grantedBy.developerId) } } : row));
-  return buildProjectMembersResponse(deps, await Promise.all(rows));
+  return buildProjectMembersResponse(deps, await Promise.all(rows), isOrgAdmin(caller));
 }
 
-async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>): Promise<ProjectMembersResponse> {
+/** Whether the caller is an owner or admin of the org: the people who may see other people's emails, join dates and sign-in methods (release 0.4.16, owner decision "option A"). */
+const isOrgAdmin = (caller: Pick<DeveloperCaller, "orgRole">): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
+
+/** The project's people. Names are email-safe for everyone; an email is shown to an owner or admin only (`showEmails`). */
+async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>, showEmails: boolean): Promise<ProjectMembersResponse> {
   const store = signInStoreOf(deps);
   const cards = new Map<string, { name: string; email?: string }>();
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
   await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
     const [record, identities] = await Promise.all([store.getDeveloper(id), store.identitiesOf(id)]);
-    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    const email = showEmails ? record?.email ?? identities.find((identity) => identity.email !== undefined)?.email : undefined;
     cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
   });
   const members: ProjectMember[] = rows.map((row) => {
@@ -1485,7 +1495,7 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
       const membership = await deps.orgs?.orgForDeveloper(developerId);
       if (developer === undefined || developer.revoked || membership === undefined || membership.orgId !== orgId) return undefined;
       return {
-        developerId, sessionId: "agent-run", amr: developer.provider, name: developer.displayName, orgId, orgRole: membership.role,
+        developerId, sessionId: "agent-run", amr: developer.provider, name: safeDisplayName(developer.displayName, developerId), orgId, orgRole: membership.role,
         ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
         ...(developer.email === undefined ? {} : { email: developer.email }),
       };
@@ -1990,6 +2000,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
+  if (request.method === "PUT" && url.pathname === "/v1/app/me/name") return setMyName(deps, caller, jsonBody(request));
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
@@ -2078,10 +2089,23 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
   return {
-    developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole },
+    developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole, nameChosen: caller.nameChosen === true },
     org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
   };
+}
+
+/**
+ * `PUT /v1/app/me/name` (release 0.4.16): the signed-in person chooses the name teammates see. The person is the verified session's (`caller.developerId`), never anything the
+ * body carries, and the body is the name alone. A sign-in leaves a chosen name alone. Written with a `member.renamed` audit record (no name in it).
+ */
+async function setMyName(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<SetMyNameResponse> {
+  const parsed = SetMyNameBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+  const record = await store.setChosenDisplayName({ developerId: caller.developerId, orgId: caller.orgId, name: parsed.data.name });
+  logDeveloperEvent({ event: "developer.name_chosen" });
+  return { name: record.displayName, nameChosen: true };
 }
 
 /**
@@ -2165,12 +2189,20 @@ const bodyError = (error: z.ZodError) => {
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
-/** `GET /v1/app/org/members`: any member may list the org's people. Names, emails and sign-in methods come from the sign-in table. */
-async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ members: Array<{ developerId: string; name: string; email?: string; role: OrgRole; joinedAt: string; identities: DeveloperSignInMethod[] }> }> {
+/**
+ * `GET /v1/app/org/members`: any member may list the org's people, by name and role. Names are email-safe (the sign-in table reads them so). Emails, join dates and
+ * sign-in methods are for owners and admins only (release 0.4.16, owner decision "option A"): a member's answer leaves them out.
+ */
+async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ members: Array<{ developerId: string; name: string; email?: string; role: OrgRole; joinedAt?: string; identities?: DeveloperSignInMethod[] }> }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   const store = signInStoreOf(deps);
+  const admin = isOrgAdmin(caller);
   const members = await deps.orgs.listMembers(caller.orgId);
   const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
+    if (!admin) {
+      const record = await store.getDeveloper(member.developerId);
+      return { developerId: member.developerId, name: record?.displayName ?? "Unknown", role: member.role, joinedAt: member.joinedAt };
+    }
     const [record, identities] = await Promise.all([store.getDeveloper(member.developerId), store.identitiesOf(member.developerId)]);
     const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
     // A person from before sign-in methods were linked has no IDENTITY rows: their record's own provider is the method they signed in with.
@@ -2180,7 +2212,8 @@ async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller:
       identities: [...new Set(methods)],
     };
   });
-  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
+  // The join date orders the list for everyone; only an owner or admin is shown it.
+  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)).map(({ joinedAt, ...rest }) => (admin ? { ...rest, joinedAt } : rest)) };
 }
 
 const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();

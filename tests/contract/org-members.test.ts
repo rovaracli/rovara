@@ -55,7 +55,7 @@ function person(harness: Harness, name: string, role: OrgRole, email = `${name.t
 const roleOf = (harness: Harness, who: Developer) => (harness.db.get(orgMemberKey(TEST_ORG, who.developerId)) as { role?: string } | undefined)?.role;
 
 describe("GET /v1/app/org/members", () => {
-  it("lists every member for any member, with names, emails, roles and sign-in methods (a linked person lists cloud and github)", async () => {
+  it("lists every member for any member, by name and role; an owner or admin also sees emails, join dates and sign-in methods (a linked person lists cloud and github)", async () => {
     const harness = await org();
     const { dev, db } = harness;
     const bea = person(harness, "Bea", "admin", "bea@example.com");
@@ -65,12 +65,21 @@ describe("GET /v1/app/org/members", () => {
     link("cloud", "k1", "2026-10-01T00:00:00.000Z");
     link("github", "k2", "2026-10-02T00:00:00.000Z");
 
+    // Release 0.4.16 (owner decision "option A"): a plain member is shown names and roles, nothing more.
     const listed = await dev(MAYA, "GET", "/v1/app/org/members");
     expect(listed.status).toBe(200);
-    const members = listed.body.members as Array<Record<string, unknown>>;
+    const seenByMember = listed.body.members as Array<Record<string, unknown>>;
+    expect(seenByMember.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);
+    expect(seenByMember.find((member) => member.name === "Bea")).toEqual({ developerId: bea.developerId, name: "Bea", role: "admin" });
+    expect(JSON.stringify(seenByMember)).not.toMatch(/@|joinedAt|identities/);
+
+    const forOwner = await dev(OMAR, "GET", "/v1/app/org/members");
+    expect(forOwner.status).toBe(200);
+    const members = forOwner.body.members as Array<Record<string, unknown>>;
     expect(members.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);
     expect(members.find((member) => member.name === "Bea")).toMatchObject({ developerId: bea.developerId, email: "bea@example.com", role: "admin", identities: ["cloud", "github"] });
     expect(members.find((member) => member.developerId === OMAR.developerId)).toMatchObject({ name: "Omar Diaz", role: "owner", identities: ["oidc"] });
+    expect(members.every((member) => typeof member.joinedAt === "string")).toBe(true);
     expect(JSON.stringify(members)).not.toMatch(/issuer|subject|https:\/\/github\.example/);
   });
 

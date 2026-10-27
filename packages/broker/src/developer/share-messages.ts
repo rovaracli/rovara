@@ -1,6 +1,6 @@
 // Spec 025 FR-032, C8: what the notifier posts in a shared thread. Every value from a record is
 // escaped; free text from the worker is redacted and capped first. No em dashes.
-import { DEVELOPER_SHARE_SUMMARY_MAX, redactAndCap, redactText } from "@agentx/contracts";
+import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, redactAndCap, redactText } from "@agentx/contracts";
 import { escapeSlack, fitEscaped } from "../aws/slack-details-view.js";
 
 export interface StartMessageInput {
@@ -15,7 +15,7 @@ export interface StartMessageInput {
 }
 
 const who = (input: Pick<StartMessageInput, "developerName" | "slackUserId">) =>
-  input.slackUserId !== undefined ? `<@${input.slackUserId}>` : escapeSlack(input.developerName);
+  input.slackUserId !== undefined ? `<@${input.slackUserId}>` : escapeSlack(emailSafeName(input.developerName) ?? "a member");
 
 const MODE_SENTENCE = {
   view: (name: string) => `View only: follow-ups happen in ${name}'s AI tool, and I post each update here.`,

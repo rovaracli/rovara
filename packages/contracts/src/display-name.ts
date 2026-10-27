@@ -34,3 +34,38 @@ export function inertName(name: string): string {
   const pad = name.startsWith("`") || name.endsWith("`") ? " " : "";
   return `${fence}${pad}${name}${pad}${fence}`;
 }
+
+/**
+ * An email address anywhere in a text: a local part, an @, a domain with a dot. Deliberately wide: a false match only removes a word from a name.
+ * The source is shared (the broker's pull request texts build their global matcher from it) so the two rules cannot drift apart.
+ */
+export const EMAIL_ADDRESS_SOURCE = "[^\\s@<>()[\\]{},;:\"'`]+@[^\\s@<>()[\\]{},;:\"'`]+\\.[^\\s@<>()[\\]{},;:\"'`]+";
+
+/** Whether the text holds an email address. */
+export function containsEmailAddress(text: string): boolean {
+  return new RegExp(EMAIL_ADDRESS_SOURCE, "u").test(text);
+}
+
+/** The text with every email address taken out, and the empty brackets and spaces they leave tidied away. */
+export function withoutEmailAddresses(text: string): string {
+  return text.replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), " ").replace(/<\s*>|\(\s*\)|\[\s*\]/gu, " ").replace(/<\s*|\s*>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * A person's name as others may see it (release 0.4.16): `cleanDisplayName`, and when the name holds an email address, the name without it; undefined when
+ * nothing with a letter or a number is left (the sign-in email-code names a person by their address). Callers show a placeholder for undefined.
+ */
+export function emailSafeName(name: string): string | undefined {
+  const cleaned = cleanDisplayName(name);
+  if (cleaned === undefined || !containsEmailAddress(cleaned)) return cleaned;
+  const stripped = withoutEmailAddresses(cleaned);
+  return /[\p{L}\p{N}]/u.test(stripped) ? cleanDisplayName(stripped) : undefined;
+}
+
+/** The placeholder name of a person with no real name: "Member" and four characters of a hash of their id (the broker makes it; `isPlaceholderDisplayName` knows its shape). */
+const PLACEHOLDER_DISPLAY_NAME = /^Member [0-9a-f]{4}$/u;
+
+/** Whether the name is a placeholder, not a name a person or a sign-in provider gave. */
+export function isPlaceholderDisplayName(name: string): boolean {
+  return PLACEHOLDER_DISPLAY_NAME.test(name);
+}

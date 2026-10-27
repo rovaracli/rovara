@@ -6,7 +6,7 @@ import {
   TaskPersonProofRequestSchema,
   TaskPersonProofResponseSchema,
   agentXError,
-  cleanDisplayName,
+  emailSafeName,
   redactAndCap,
   type TaskPersonProofRequest,
   type TaskPersonProofResponse,
@@ -75,7 +75,7 @@ const taskPk = (taskId: string) => `DEVTASK#${taskId}`;
 const personSk = (personId: string) => `PERSON#${personId}`;
 const subjectSk = (developerId: string) => `PERSON_SUBJECT#${developerId}`;
 
-const safeName = (name: string, fallback: string): string => cleanDisplayName(redactAndCap(name, 80).text) ?? fallback;
+const safeName = (name: string, fallback: string): string => emailSafeName(redactAndCap(name, 80).text) ?? fallback;
 
 async function getItem(deps: TaskPersonIdentityDependencies, pk: string, sk: string): Promise<Record<string, unknown> | undefined> {
   const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk, sk }, ConsistentRead: true })) as { Item?: unknown };

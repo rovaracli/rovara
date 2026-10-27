@@ -216,6 +216,11 @@ export function auditOrgRenamed(input: AuditBuilderBase): AuditEventInput {
   return build("org.renamed", input, { kind: "org", id: input.orgId }, {});
 }
 
+/** A person chose their own display name (release 0.4.16). `occurrence`: `auditOccurrence(developerId, time of the change)`. The name never enters the record. */
+export function auditMemberRenamed(input: AuditBuilderBase & { memberId: string }): AuditEventInput {
+  return build("member.renamed", input, { kind: "member", id: input.memberId }, {});
+}
+
 /** `occurrence`: `closedAt`. */
 export function auditOrgClosed(input: AuditBuilderBase & { plan: string }): AuditEventInput {
   return build("org.closed", input, { kind: "org", id: input.orgId }, { plan: input.plan });

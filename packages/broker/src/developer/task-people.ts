@@ -2,7 +2,7 @@ import { requireSessionLevel, type SessionAccessDependencies } from "../agent-se
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
+import { SlackThreadSchema, SlackUserIdSchema, agentXError, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
@@ -87,7 +87,7 @@ const personKey = (taskId: string, personId: string) => ({ pk: taskPk(taskId), s
 const subjectKey = (taskId: string, developerId: string) => ({ pk: taskPk(taskId), sk: `PERSON_SUBJECT#${developerId}` });
 const requestKey = (taskId: string, requestId: string) => ({ pk: taskPk(taskId), sk: `PEOPLE_REQUEST#${requestId}` });
 const eventKey = (taskId: string, requestId: string) => ({ pk: taskPk(taskId), sk: `PEOPLE_EVENT#${requestId}` });
-const safeName = (value: string, fallback: string) => cleanDisplayName(redactAndCap(value, 80).text) ?? fallback;
+const safeName = (value: string, fallback: string) => emailSafeName(redactAndCap(value, 80).text) ?? fallback;
 const enabled = (deps: TaskPeopleDependencies) => deps.taskPeopleConfiguration?.peopleChangesEnabled === true;
 const open = (task: DeveloperTaskRecord) => task.closedAt === undefined && task.workflow?.stage !== "CLOSED" && task.workflow?.stage !== "MERGED";
 const conditional = (error: unknown) => error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");

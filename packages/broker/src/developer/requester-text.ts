@@ -1,14 +1,14 @@
 // C55 (staging 0.4.11): whatever Rovara writes on GitHub (a pull request's footer, a connector's footer) names a person by their display name, or by their linked GitHub login when
 // the display name is an email address (the sign-in provider falls back to the address when it has no name for someone), and never by an email address.
+import { withoutEmailAddresses } from "@agentx/contracts";
+import { isPlaceholderDisplayName } from "./person-name.js";
 
-/** An email address anywhere in a text: a local part, an @, a domain with a dot. Deliberately wide: a false match only removes a word from a name. */
-const EMAIL = /[^\s@<>()[\]{},;:"'`]+@[^\s@<>()[\]{},;:"'`]+\.[^\s@<>()[\]{},;:"'`]+/gu;
 /** What GitHub issues as a login: letters, digits and single hyphens, at most 39 characters. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/u;
 
 /** The text with every email address taken out, and the empty brackets and spaces they leave tidied away. */
 export function withoutEmails(text: string): string {
-  return text.replace(EMAIL, " ").replace(/<\s*>|\(\s*\)|\[\s*\]/gu, " ").replace(/<\s*|\s*>/gu, " ").replace(/\s+/gu, " ").trim();
+  return withoutEmailAddresses(text);
 }
 
 /**
@@ -17,7 +17,8 @@ export function withoutEmails(text: string): string {
  */
 export function personNameForText(displayName: string, githubLogin?: string): string | undefined {
   const name = withoutEmails(displayName);
-  if (name !== "" && /[\p{L}\p{N}]/u.test(name)) return name;
+  // The placeholder ("Member 3fa9") stands for a person with no real name, so a text names their GitHub login instead, as it did for an email.
+  if (name !== "" && /[\p{L}\p{N}]/u.test(name) && !isPlaceholderDisplayName(name)) return name;
   return githubLogin !== undefined && GITHUB_LOGIN.test(githubLogin) ? githubLogin : undefined;
 }
 

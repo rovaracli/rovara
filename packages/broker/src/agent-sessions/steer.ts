@@ -34,6 +34,7 @@ import { openQuestions } from "../rovara-code/question-answers.js";
 import { commandableDevice } from "../devices/local-facts.js";
 import { onlyTheEventCancelled } from "./events.js";
 import type { SessionAccessDependencies } from "./access.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 /** What the agent's name is when a session has none. */
@@ -87,7 +88,10 @@ const messageKey = (session: { orgId: OrgId; sessionId: string }, messageId: str
 function messageOf(item: Item | undefined, session: { orgId: OrgId; sessionId: string }): SessionMessage | undefined {
   if (item === undefined || item["orgId"] !== session.orgId || item["sessionId"] !== session.sessionId) return undefined;
   const parsed = SessionMessageSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([key]) => !HOUSEKEEPING.has(key))));
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+  // Release 0.4.16: an author stored under their email reads under the placeholder.
+  const name = safeDisplayName(parsed.data.author.name, parsed.data.author.developerId);
+  return name === parsed.data.author.name ? parsed.data : { ...parsed.data, author: { ...parsed.data.author, name } };
 }
 
 const agentName = (session: AgentSessionRecord): string | undefined => session.agent?.name;

@@ -6,7 +6,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@
 import {
   AGENTX_ANSWER_MAX_CHARS, AGENTX_ASK_RATE, ANSWER_STALE_MS, COMMENT_RATE, COMMENT_THREAD_REPLIES_MAX, NUDGE_WINDOW_MS, SlackPageCommentMessageSchema, TASK_COMMENT_ITEMS_MAX, TaskCommentSchema,
   TaskSuggestionSchema, agentXError, agentxAnswerCommentId, cleanCommentText, diffPlanDocuments, pageCommentAttributes, pageCommentEventId, pageCommentId,
-  planClaimIds, plannerReplyCommentId, redactText, sharedTaskKey,
+  containsEmailAddress, planClaimIds, plannerReplyCommentId, redactText, sharedTaskKey,
   type AgentXError, type AgentXErrorCode, type CommentAnswer, type CommentDocument, type CommentTarget, type PlanDocument, type TaskComment,
   type TaskSuggestion, type WorkflowDecisionDetail, type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -14,6 +14,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { isConditional } from "../aws/broker-shared.js";
 import { plainName } from "../aws/task-web.js";
+import { safeDisplayName } from "./person-name.js";
 import { loadWorkflowDocument, type LoadedDocument } from "./plan-artifacts.js";
 import { can, taskOpen, type TaskAccess } from "./task-access.js";
 import { taskAccessFence } from "./task-people.js";
@@ -97,7 +98,13 @@ async function getComment(deps: TableDependencies, taskId: string, commentId: st
   const item = await getItem(deps, commentKey(taskId, commentId));
   if (item === undefined) return undefined;
   const parsed = TaskCommentSchema.safeParse(withoutKeys(item));
-  return parsed.success ? parsed.data : undefined;
+  return parsed.success ? readableTaskComment(parsed.data) : undefined;
+}
+
+/** A comment as it is shown: an author stored under their email (a comment written before release 0.4.16) reads under the placeholder name. Any other comment is as stored. */
+export function readableTaskComment(comment: TaskComment): TaskComment {
+  if (comment.author.kind !== "person" || !containsEmailAddress(comment.author.name)) return comment;
+  return { ...comment, author: { ...comment.author, name: safeDisplayName(comment.author.name, comment.author.developerId) } };
 }
 
 async function pageTaskStillCurrent(deps: TableDependencies, task: DeveloperTaskRecord): Promise<boolean> {
@@ -133,7 +140,7 @@ export async function listTaskComments(deps: TableDependencies & Pick<DeveloperT
   const comments: TaskComment[] = [];
   for (const item of await queryPrefix(deps, taskId, "COMMENT#", TASK_COMMENT_ITEMS_MAX)) {
     const parsed = TaskCommentSchema.safeParse(withoutKeys(item));
-    if (parsed.success) comments.push(parsed.data);
+    if (parsed.success) comments.push(readableTaskComment(parsed.data));
     else log(deps, { event: "developer.task_comment_unreadable", taskId });
   }
   return comments.sort(byTime);

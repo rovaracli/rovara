@@ -31,6 +31,7 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
@@ -132,7 +133,7 @@ async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecor
   // Plan 4: a chain that pays for the runs its triggers start. The chain's own name is not on the session header, so the view names the chain by its id.
   if (payer.kind === "chain") return { kind: "chain", name: payer.chainId };
   if (payer.kind === "agent") return { kind: "agent", name: session.agent?.agentId === payer.agentId ? session.agent.name : payer.agentId };
-  return { kind: "member", name: payer.developerId === session.owner.developerId ? session.owner.name : await nameOf(deps, payer.developerId) ?? "A teammate" };
+  return { kind: "member", name: payer.developerId === session.owner.developerId ? safeDisplayName(session.owner.name, session.owner.developerId) : await nameOf(deps, payer.developerId) ?? "A teammate" };
 }
 
 function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; url: string } {

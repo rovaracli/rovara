@@ -14,8 +14,9 @@ const MemberSchema = z.object({
   name: z.string(),
   email: z.string().optional(),
   role: OrgRoleSchema,
-  joinedAt: z.string(),
-  identities: z.array(DeveloperSignInMethodSchema),
+  // Owners and admins only (release 0.4.16): a plain member's list has names and roles, no emails, join dates or sign-in methods.
+  joinedAt: z.string().optional(),
+  identities: z.array(DeveloperSignInMethodSchema).default([]),
 });
 const MembersResponseSchema = z.object({ members: z.array(MemberSchema) });
 const RoleResponseSchema = z.object({ developerId: z.string(), role: OrgRoleSchema });

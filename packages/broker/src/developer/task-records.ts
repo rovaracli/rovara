@@ -47,6 +47,7 @@ import type { AuthenticatedIdentity } from "../auth.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import { isHeartbeat, modelCallView } from "./model-call-view.js";
 import { personNameForText } from "./requester-text.js";
+import { safeDisplayName } from "./person-name.js";
 import type { ShareDecision } from "./share.js";
 import type { PlanGroundingHold, PlanSelfCheckState } from "./plan-self-check.js";
 import type { PlanUnreadableCategory } from "./plan-check-summary.js";
@@ -374,10 +375,12 @@ export function effectiveTaskOwner(task: TaskOwnerSource): TaskOwner {
     const taker = readCurrentOwner(task.currentOwner);
     if (taker === undefined) throw unreadableOwner();
     const { since: _since, ...owner } = taker; // eslint-disable-line @typescript-eslint/no-unused-vars
-    return owner;
+    // Release 0.4.16: a taker stored under their email is named without it.
+    return { ...owner, name: safeDisplayName(owner.name, owner.developerId) };
   }
   if (!present(task.developerId) || typeof task.developerName !== "string") throw unreadableOwner();
-  return { developerId: task.developerId, name: task.developerName, provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
+  // Release 0.4.16: a task started while the creator's name was their email names them without it.
+  return { developerId: task.developerId, name: safeDisplayName(task.developerName, task.developerId), provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
 }
 
 /**
@@ -462,7 +465,7 @@ export function ownerActorIdOf(task: TaskOwnerSource): string {
  * decision made before a take-over still reads as the creator's. `undefined` for any other actor.
  */
 export function ownerNameOfActor(task: TaskOwnerSource, actorId: string): string | undefined {
-  if (actorId === taskOwnerKey(task.developerId, task.taskId)) return task.developerName;
+  if (actorId === taskOwnerKey(task.developerId, task.taskId)) return safeDisplayName(task.developerName, task.developerId);
   return tryEffectiveTaskOwner(task) !== undefined && actorId === ownerActorIdOf(task) ? effectiveTaskOwner(task).name : undefined;
 }
 
