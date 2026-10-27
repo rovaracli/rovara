@@ -33,7 +33,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
   // Plan 6 Task 11: how many parts of an approved plan may build at once is the room left in the creator's and the organization's workspace counts (the creator's own charge keys), so it reads the creator like the other money reads; it never grants authority
   ["aws/developer-tasks.ts", "partsSettingOf", "money", ".developerId", ".slackUserId"],
-  ["rovara-code/parallel-parts.ts", "parallelPartsForTask", "money", ".developerId", ".slackUserId"],
+  ["aws/developer-tasks.ts", "partsDecisionOf", "money", ".developerId", ".slackUserId"],
+  ["rovara-code/parallel-parts.ts", "parallelPartsDecision", "money", ".developerId", ".slackUserId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
   // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
@@ -127,7 +128,10 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "completedWorkflowItems", "principal", ".ownerKey"],
   // Plan 6 Task 4: an Understand that chose the Full path is admitted as a Full start is, against the budget of whoever pays for the task (the recorded payer, else the creator; a test run's starter): money, read as `paymentOfTask` reads it
   ["aws/broker.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
-  ["aws/broker.ts", "storePlanAnswer", "principal", ".ownerKey"],
+  ["aws/broker.ts", "storePlanAnswer", "principal", ".ownerKey*2"],
+  // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes
+  ["aws/broker.ts", "runGroundingStep", "principal", ".ownerKey"],
+  ["aws/task-plan-document.ts", "readTaskPlanDocument", "principal", ".ownerKey"],
   ["aws/activity-index.ts", "contextOf", "history", ".developerName"],
   ["aws/activity-index.ts", "contextOf", "principal", ".ownerKey"],
   ["aws/slack-interactivity.ts", "workflowSlackHandlers>requireOwnerAction", "authority", ".slackUserId"],

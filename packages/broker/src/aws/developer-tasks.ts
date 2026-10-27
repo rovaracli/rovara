@@ -3272,6 +3272,7 @@ export async function startTaskWorkflowPlanRevisionFromSystem(
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined
     || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN" || workflow.state !== "RUNNING") return "STALE";
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED" || workspace.status === "CLOSING") return "STALE";
@@ -5206,6 +5207,7 @@ export async function startTaskWorkflowE2EGroundingFromSystem(
     || admission.purpose !== "grounding" || admission.baseCommitSha === undefined || admission.attempt === undefined || admission.planArtifactSha256 !== expected.planArtifactSha256
     || admission.taskId !== taskId || admission.workflowRevision !== workflow.revision || admission.roundId.length === 0
     || admission.groupRunIds.length === 0 || new Set(admission.groupRunIds).size !== admission.groupRunIds.length) return "STALE";
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";

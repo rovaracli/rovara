@@ -17,7 +17,7 @@ import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { OIDC_ISSUER, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -34,7 +34,7 @@ const errorOf = (answer: { body: Record<string, unknown> }) => answer.body.error
 /** The broker with Omar an owner and Maya a member of the install's org; sessions end through a spy. */
 async function org(options: Parameters<typeof createDeveloperTaskBroker>[0] = {}) {
   const endDeveloperSessions = vi.fn(async () => ({ ok: true as const }));
-  const harness = await createDeveloperTaskBroker({ ...options, developerExtra: { endDeveloperSessions, ...options.developerExtra } });
+  const harness = await createSingleAnswerPlanBroker({ ...options, developerExtra: { endDeveloperSessions, ...options.developerExtra } });
   seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
   const remove = (by: Developer, who: Developer) => harness.dev(by, "DELETE", `/v1/app/org/members/${who.developerId}`);
   return { ...harness, endDeveloperSessions, remove };
@@ -261,7 +261,7 @@ describe("POST /v1/app/org/leave", () => {
     const orgA = `org_${"a".repeat(20)}`;
     const orgB = `org_${"b".repeat(20)}`;
     const zed: Developer = { developerId: createHash("sha256").update("zed").digest("hex"), name: "Zed Yu", provider: "oidc", sessionId: "s-zed" };
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       brokerExtra: { cloud: true },
       orgResolver: async ({ developerId }) => (developerId === zed.developerId ? orgA : TEST_ORG),
       developerExtra: { endDeveloperSessions: async () => ({ ok: true as const }) },
@@ -815,14 +815,15 @@ describe("every task launch checks that the creator is still a member (ruling R6
   // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
   const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound"];
 
-  it("finds the nineteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the twenty-one acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
     // limit was approved (`resumeAfterRunLimitApproval`), which checks the creator first.
     // Plan 6 adds four, each checked first like the rest: the Understand step and the plan step after it (Task 4), the plan check and the plan's one revision (Task 8).
     // The nineteenth is Task 16's automatic feedback round (`startAutomaticFeedbackRound`), checked by its only caller.
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(19);
+    // Mainline #408 adds two, both checked first: the grounding of the plan against the current app (`startTaskWorkflowE2EGroundingFromSystem`) and the planner's one revision after the plan self-check (`startTaskWorkflowPlanRevisionFromSystem`).
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(21);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;
