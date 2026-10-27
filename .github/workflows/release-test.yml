@@ -65,7 +65,7 @@ env:
 
 jobs:
   images:
-    if: vars.AGENTX_ENABLE_RELEASE_TEST == 'true'
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_ENABLE_RELEASE_TEST == 'true')
     runs-on: ubuntu-24.04-arm
     outputs:
       worker: ${{ steps.push.outputs.worker }}
@@ -92,6 +92,8 @@ jobs:
           done
 
   lane:
+    # Public repository only: never on the private PrepLabsAI/Rovara-cloud.
+    if: github.repository == 'PrepLabsAI/Rovara'
     needs: images
     runs-on: ubuntu-latest
     strategy:
@@ -193,7 +195,7 @@ jobs:
   export:
     # After both lanes, whether they passed or not, so the installs run one after another.
     needs: [images, lane]
-    if: ${{ !cancelled() && needs.images.result == 'success' }}
+    if: github.repository == 'PrepLabsAI/Rovara' && (!cancelled() && needs.images.result == 'success')
     runs-on: ubuntu-latest
     env:
       AGENTX_ENV: rt${{ github.run_number }}x
@@ -258,7 +260,7 @@ jobs:
   teardown:
     # A last sweep, whatever happened above: every environment this run could have made.
     needs: [lane, export]
-    if: always()
+    if: github.repository == 'PrepLabsAI/Rovara' && (always())
     runs-on: ubuntu-latest
     steps:
       - if: vars.AGENTX_ENABLE_RELEASE_TEST == 'true'

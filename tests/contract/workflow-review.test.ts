@@ -459,7 +459,7 @@ describe("workflow reviews of the base-to-candidate change", () => {
       const candidate = await readCandidateRepositories([{ ...repositories[0]!, baseCommitSha: base }]);
       const run = async (reviewers?: Array<"CRITIC" | "SECURITY">) => {
         const prompts: string[] = [];
-        const reports = await runWorkflowReviews({ operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+        const reports = await runWorkflowReviews({ ruleFileBaseCommits: [], operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
           ...(reviewers === undefined ? {} : { reviewers }), piAdapter: reviewerAdapter(async (_input, text) => { prompts.push(text); }) });
         return { roles: reports.map((report) => report.role), prompts };
       };
@@ -471,7 +471,7 @@ describe("workflow reviews of the base-to-candidate change", () => {
       expect((await run(["SECURITY", "CRITIC"])).roles).toEqual(["CRITIC", "SECURITY"]);
       expect((await run()).roles).toEqual(["CRITIC", "SECURITY"]);
       // A review with no base to judge from says so for the reviews asked for, and for no other.
-      const unbased = await runWorkflowReviews({ operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, reviewers: ["SECURITY"],
+      const unbased = await runWorkflowReviews({ ruleFileBaseCommits: [], operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, reviewers: ["SECURITY"],
         candidate: candidate.map((entry) => ({ ...entry, baseCommitSha: undefined as never })), repositories, piAdapter: reviewerAdapter(async () => undefined) });
       expect(unbased.map((report) => [report.role, report.status, report.failureReason])).toEqual([["SECURITY", "UNKNOWN", "BASE_UNAVAILABLE"]]);
     } finally { await rm(rootPath, { recursive: true, force: true }); }
