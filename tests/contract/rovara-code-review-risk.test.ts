@@ -48,6 +48,10 @@ describe("a reviewer's answer with a risk level", () => {
 
   it("the asked-for shape names the three words for the code review only, and the default shape is unchanged", () => {
     expect(reviewJsonShape("CRITIC", { risk: true })).toContain('"risk":"low"|"medium"|"high"');
+    // Blind test 02: a changed response shape was rated "Low" with no word about it. The reviewer is told to count it, and to say so.
+    expect(reviewJsonShape("CRITIC", { risk: true })).toMatch(/public API route or the shape of a response that existing callers read/);
+    expect(reviewJsonShape("CRITIC", { risk: true })).toMatch(/response shape is at least "medium" even when the plan did not mention it/);
+    expect(reviewJsonShape("CRITIC")).not.toMatch(/public API/);
     expect(reviewJsonShape("CRITIC", { risk: true })).toMatch(/risk/i);
     expect(reviewJsonShape("SECURITY", { risk: true })).toBe(reviewJsonShape("SECURITY"));
     expect(reviewJsonShape("CRITIC")).not.toMatch(/risk/i);
