@@ -731,3 +731,113 @@ describe("DISPATCHEXHAUST policy: a cause is the whole classification of the blo
     expect(autoFixCardLines({ decisions: [], revision: 4 }, oldAsk).join("\n")).not.toContain("What failed");
   });
 });
+
+// Cloud (Plan 6): a block inside one of Plan 6's fix rounds (fixSource set), or once a pull request exists, is Plan 6's to word. #411's new writers (the dispatch give-up, the lost run, the
+// owner's stop on every path) all build their row with autofixBlockRows, which holds that guard; removing it there must fail these.
+describe("Cloud guard: #411's new AUTOFIX writers stay out of Plan 6's fix rounds and out of tasks with a pull request", () => {
+  type Shape = "fix-round" | "pull-request";
+  const SHAPES: readonly Shape[] = ["fix-round", "pull-request"];
+  /** Puts the task inside a Plan 6 fix round, or gives it an open pull request, without moving its revision. */
+  const mark = (harness: Harness, ctx: Awaited<ReturnType<typeof workflowAtVerification>>, shape: Shape) => {
+    const task = taskOf(harness, ctx.taskId);
+    const workflow = shape === "fix-round" ? { ...task.workflow, fixSource: "ci" }
+      : { ...task.workflow, pullRequests: [{ repositoryId: ctx.candidate.repositories[0]!.repositoryId, number: 7, url: "https://github.com/acme/demo/pull/7", candidateDigest: ctx.candidate.digest, required: true, state: "OPEN" }] };
+    expect(WorkflowSnapshotSchema.safeParse(workflow).success).toBe(true);
+    harness.db.set({ ...task, workflow });
+  };
+  /** The step blocked, with no AUTOFIX row, no automatic move and no ask. */
+  const untouched = async (harness: Harness, ctx: Awaited<ReturnType<typeof workflowAtVerification>>, stage: "VERIFY" | "REVIEW") => {
+    expect(workflowOf(harness, ctx.taskId)).toMatchObject({ stage, state: "BLOCKED" });
+    expect(dispatchRows(harness).filter((row) => row.kind === "AUTOFIX")).toEqual([]);
+    await sweep(harness);
+    expect(automatic(harness, ctx.taskId)).toEqual([]);
+    expect(taskOf(harness, ctx.taskId).autofixAsk).toBeUndefined();
+  };
+
+  it("the row builders write nothing for a fix round or a pull request, whatever the cause", () => {
+    const at = new Date().toISOString();
+    const base = { taskId: "t", revision: 7, stage: "REVIEW" as const, candidate: undefined };
+    const steps = [{ ...base, fixSource: "ci" as const }, { ...base, pullRequests: [{}] as unknown as WorkflowSnapshot["pullRequests"] }];
+    for (const step of steps) {
+      for (const cause of [undefined, "dispatch-exhausted", "run-lost", "owner-stopped"] as const) expect(autofixBlockRows("state", { ...step, revision: 8 }, cause, at)).toEqual([]);
+      expect(dispatchExhaustRows({ tableName: "state", autofix: { enabled: true } }, { kind: "REVIEW" }, step, undefined, at)).toEqual([]);
+      expect(ownerStopRows({ tableName: "state", autofix: { enabled: true } }, step, at)).toEqual([]);
+      expect(endedRunRows("state", step, "run-lost", at, {})).toEqual([]);
+      expect(endedRunRows("state", step, "owner-stopped", at, {})).toEqual([]);
+    }
+    // The same step outside a fix round and with no pull request does get its row (so the cases above are the guard, not something else).
+    expect(endedRunRows("state", base, "run-lost", at, {})).toHaveLength(1);
+  });
+
+  for (const shape of SHAPES) {
+    it(`${shape}: the review start's spent budget (recordWorkflowDispatchFailure) blocks with no AUTOFIX row`, async () => {
+      const harness = await broker();
+      const ctx = await workflowAtVerification(harness);
+      busyReviewStart(harness);
+      await ctx.finishImplementation();
+      const [row] = dispatchRows(harness);
+      expect(row).toMatchObject({ kind: "REVIEW", attempts: 1 });
+      mark(harness, ctx, shape);
+      elapse(harness, { ...row!, attempts: 9 });
+      busyReviewStart(harness);
+      await sweep(harness);
+      await untouched(harness, ctx, "REVIEW");
+    });
+
+    it(`${shape}: a lost review run (failActiveOperation, run-lost) blocks with no AUTOFIX row`, async () => {
+      const harness = await broker();
+      const ctx = await workflowAtVerification(harness);
+      await ctx.finishImplementation();
+      expect(workflowOf(harness, ctx.taskId)).toMatchObject({ stage: "REVIEW", state: "RUNNING" });
+      mark(harness, ctx, shape);
+      await failActiveOperation(harness.db as never, "state", ctx.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost; retry the request");
+      await untouched(harness, ctx, "REVIEW");
+      expect(reviewRuns(harness, ctx.workspaceId)).toHaveLength(1);
+    });
+
+    it(`${shape}: a lost run the owner asked to stop (failActiveOperation, owner-stopped) blocks with no AUTOFIX row`, async () => {
+      const harness = await broker();
+      const ctx = await workflowAtVerification(harness);
+      await ctx.finishImplementation();
+      const run = reviewRuns(harness, ctx.workspaceId)[0]!;
+      await harness.events(ctx.workspaceId, String(run.id), [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${ctx.taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+      expect(operations(harness, ctx.workspaceId).find((item) => item.id === run.id)).toMatchObject({ status: "CANCEL_REQUESTED" });
+      mark(harness, ctx, shape);
+      await failActiveOperation(harness.db as never, "state", ctx.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost; retry the request");
+      await untouched(harness, ctx, "REVIEW");
+    });
+
+    it(`${shape}: a failed stop released by the reconciler (blockStoppedWorkflowRun, owner-stopped) blocks with no AUTOFIX row`, async () => {
+      const harness = await broker();
+      const ctx = await workflowAtVerification(harness);
+      await ctx.finishImplementation();
+      const run = reviewRuns(harness, ctx.workspaceId)[0]!;
+      await harness.events(ctx.workspaceId, String(run.id), [{ type: "lifecycle", payload: { status: "RUNNING" } }]);
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${ctx.taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+      const cancel = operations(harness, ctx.workspaceId).find((item) => item.kind === "cancel" && item.targetOperationId === run.id)!;
+      await harness.finish(ctx.workspaceId, String(cancel.id), "FAILED");
+      mark(harness, ctx, shape);
+      expect((await sweepStuckCancels({ client: harness.db, tableName: "state" }, [{ workspaceId: ctx.workspaceId, compute: "gone" }], new Date())).interrupted).toEqual([run.id]);
+      await untouched(harness, ctx, "REVIEW");
+    });
+
+    for (const mode of ["idle", "active"] as const) {
+      it(`${shape}: the owner's stop of the ${mode} readiness warm-up (ownerStopRows) blocks with no AUTOFIX row`, async () => {
+        const harness = await broker();
+        const ctx = await workflowAtVerification(harness);
+        await ctx.finishImplementation();
+        await harness.finish(ctx.workspaceId, String(reviewRuns(harness, ctx.workspaceId)[0]!.id), "FAILED", { error: "stopped" });
+        for (const row of dispatchRows(harness)) harness.db.delete(String(row.pk), String(row.sk));
+        // The setup's failed reviews were looked at and asked about; that ask is not this stop's.
+        const { autofixAsk: _earlier, ...cleared } = taskOf(harness, ctx.taskId);
+        void _earlier;
+        harness.db.set(cleared);
+        await readinessInFlight(harness, ctx, mode);
+        mark(harness, ctx, shape);
+        expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${ctx.taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+        await untouched(harness, ctx, "VERIFY");
+      });
+    }
+  }
+});
