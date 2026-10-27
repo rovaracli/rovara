@@ -289,6 +289,55 @@ describe("readiness with a code owner", () => {
   });
 });
 
+describe("the merge claim after GitHub says no", () => {
+  const claimOf = (w: MergeWorld) => w.trackingOf({ repositoryId: "payments", number: 7 })?.mergeClaim;
+
+  it("is released at once when GitHub refuses, so the next press does not wait for the claim to age", async () => {
+    const w = await ready();
+    w.github.results.set(7, { outcome: "refused", reason: "not_mergeable", githubMessage: "Required status check \"build\" is expected." });
+    expect((await codeOf(webPress(w)))?.code).toBe("MERGE_NOT_READY");
+    expect(claimOf(w)).toBeUndefined();
+    w.github.results.delete(7);
+    expect((await webPress(w)).status).toBe(200);
+    expect(w.github.mergeCalls).toHaveLength(2);
+  });
+
+  it("is released when the head moved under the press, and for a refusal in the confirmation path too", async () => {
+    const moved = await ready();
+    moved.github.results.set(7, { outcome: "refused", reason: "head_changed" });
+    await codeOf(webPress(moved));
+    expect(claimOf(moved)).toBeUndefined();
+    const confirm = await ready();
+    confirm.github.results.set(7, { outcome: "refused", reason: "forbidden" });
+    const body = NeedsConfirmationSchema.parse((await tokenPress(confirm)).body);
+    await confirm.decide(confirm.approvalIdOf(body.confirmUrl), await confirm.browser(PRIYA, confirm.approvalIdOf(body.confirmUrl)));
+    expect(claimOf(confirm)).toBeUndefined();
+  });
+
+  it("is kept when the outcome is unknown (GitHub failed or timed out): the next run reads the pull request and finds out", async () => {
+    const w = await ready();
+    w.github.results.set(7, new Error("GitHub is down"));
+    await codeOf(webPress(w));
+    expect(claimOf(w)).toMatchObject({ by: PRIYA, headSha: HEAD_A });
+  });
+
+  it("never removes a claim somebody else took in the meantime", async () => {
+    const w = await ready();
+    w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
+    w.github.onMerge = async () => {
+      w.db.set({ ...w.trackingOf({ repositoryId: "payments", number: 7 })!, mergeClaim: { headSha: HEAD_A, by: ARJUN, at: new Date(w.clock.now + 1000).toISOString() } });
+    };
+    await codeOf(webPress(w));
+    expect(claimOf(w)).toMatchObject({ by: ARJUN });
+  });
+
+  it("is kept after a merge (a retry after a crash finds the pull request merged)", async () => {
+    const w = await ready();
+    await webPress(w);
+    expect(claimOf(w)).toMatchObject({ by: PRIYA });
+  });
+});
+
 describe("no machine merges", () => {
   it("a token press never merges: it gets the confirmation link and GitHub is not called", async () => {
     const w = await ready();

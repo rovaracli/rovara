@@ -23,7 +23,24 @@ describe("the risk tiers", () => {
     { name: "a security folder", files: [file("src/security/policy.ts")], level: "high", reason: /sensitive paths/u },
     { name: "an oauth folder", files: [file("src/oauth/callback.ts")], level: "high", reason: /sensitive paths/u },
     { name: "a permissions folder", files: [file("api/permissions/roles.ts")], level: "high", reason: /sensitive paths/u },
-    { name: "a name that only contains auth", files: [file("src/author.ts"), file("src/security-notes.md")], level: "low" },
+    { name: "a name that only contains auth", files: [file("src/author.ts"), file("src/security-notes.md"), file("docs/auth.md"), file("src/secretsanta.ts")], level: "low" },
+    { name: "a file named after a security topic", files: [file("src/jwt.ts")], level: "high", reason: /sensitive paths/u },
+    { name: "permissions.ts", files: [file("src/permissions.ts")], level: "high", reason: /sensitive paths/u },
+    { name: "auth.ts", files: [file("src/auth.ts")], level: "high", reason: /sensitive paths/u },
+    { name: "oauth.py", files: [file("lib/oauth.py")], level: "high", reason: /sensitive paths/u },
+    { name: "security.rb", files: [file("app/security.rb")], level: "high", reason: /sensitive paths/u },
+    { name: "crypto.go in any case", files: [file("pkg/Crypto.GO")], level: "high", reason: /sensitive paths/u },
+    { name: "a name that joins a topic to another word", files: [file("src/user-auth.ts"), file("src/jwt_helper.py")], level: "high", reason: /sensitive paths/u },
+    { name: "CODEOWNERS", files: [file(".github/CODEOWNERS")], level: "high", reason: /sensitive paths/u },
+    { name: "CODEOWNERS at the root, in any case", files: [file("codeowners")], level: "high", reason: /sensitive paths/u },
+    { name: "CODEOWNERS in docs", files: [file("docs/CODEOWNERS")], level: "high", reason: /sensitive paths/u },
+    { name: "branch protection as code", files: [file(".github/settings.yml")], level: "high", reason: /sensitive paths/u },
+    { name: "dependabot config", files: [file(".github/dependabot.yml")], level: "high", reason: /^Changes CI configuration/u },
+    { name: "a jest json config", files: [file("jest.config.json")], level: "high", reason: /^Changes CI configuration/u },
+    { name: "a vitest workspace", files: [file("vitest.workspace.ts")], level: "high", reason: /^Changes CI configuration/u },
+    { name: "a top-level Makefile", files: [file("Makefile")], level: "high", reason: /^Changes CI configuration/u },
+    { name: "turbo.json", files: [file("turbo.json")], level: "high", reason: /^Changes CI configuration/u },
+    { name: "a Makefile deeper in the tree", files: [file("examples/demo/Makefile")], level: "low" },
     { name: "a public route", files: [file("src/routes.ts", { apiShapeChanged: true })], level: "medium", reason: /public API route or response shape/u },
     { name: "a schema file", files: [file("api/openapi.yaml", { apiShapeChanged: true })], level: "medium", reason: /public API route or response shape/u },
     { name: "a deleted test", files: [file("tests/a.test.ts", { added: 0, removed: 20, testsRemoved: true })], level: "medium", reason: /^Removes or skips tests/u },
@@ -51,6 +68,10 @@ describe("the risk tiers", () => {
     expect(result.level).toBe("high");
     expect(result.reasons.some((reason) => reason.startsWith("A fix removes or skips tests"))).toBe(true);
     expect(result.reasons.some((reason) => reason.startsWith("Removes or skips tests"))).toBe(false);
+  });
+
+  it("a file renamed out of a security name counts under its old name", () => {
+    expect(risk([file("src/token.ts", { renamedFrom: "src/jwt.ts" })]).level).toBe("high");
   });
 
   it("a renamed file counts under both names", () => {
