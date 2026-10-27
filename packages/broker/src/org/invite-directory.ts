@@ -34,15 +34,22 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
   const rows = page.Items ?? [];if (rows.length > limit) throw unavailable();
   const invites: z.infer<typeof AppOrgInvitesResponseSchema>["invites"] = [];
   const nowMs = deps.now(), now = new Date(nowMs).toISOString();let unavailableCount = 0;
-  const badEntry = () => { unavailableCount++;return undefined; };
+  const badEntry = (row: Record<string, unknown>, reason: "reference_invalid" | "reference_org_mismatch" | "reference_key_mismatch" | "canonical_missing" | "canonical_invalid" | "canonical_org_mismatch" | "canonical_reference_mismatch") => {
+   unavailableCount++;const keyId = id.safeParse(row.pk === orgPk(caller.orgId) && typeof row.sk === "string" && row.sk.startsWith("INVITE_DIRECTORY#") ? row.sk.slice("INVITE_DIRECTORY#".length) : undefined);
+   const publicId = keyId.success ? keyId : id.safeParse(row.inviteId), requestOrg = OrgIdSchema.safeParse(caller.orgId);
+   try { console.warn(JSON.stringify({ component: "broker", event: "org.invite_directory_entry_unavailable", level: "warn", ...(requestOrg.success ? { orgId: requestOrg.data } : {}), ...(publicId.success ? { inviteId: publicId.data } : {}), reason })); } catch { /* A warning sink must not make partial reads fail. */ }
+   return undefined;
+  };
   // Bound fanout as well as each page. Index rows contain no email or raw token.
   for (let at = 0; at < rows.length; at += 8) {
    const batch = await Promise.all(rows.slice(at, at + 8).map(async row => {
-    const parsed = referenceSchema.safeParse(row);if (!parsed.success) return badEntry();const ref = parsed.data, key = orgInviteDirectoryKey(caller.orgId, ref.inviteId);
-    if (ref.orgId !== caller.orgId || ref.pk !== key.pk || ref.sk !== key.sk) return badEntry();
-    const record = await get(deps, orgInviteKey(ref.tokenHash));if (record === undefined) return badEntry();
-    const canonical = canonicalSchema.safeParse(record);if (!canonical.success) return badEntry();const invite = canonical.data;
-    if (invite.orgId !== caller.orgId || invite.inviteId !== ref.inviteId || invite.tokenHash !== ref.tokenHash) return badEntry();
+    const parsed = referenceSchema.safeParse(row);if (!parsed.success) return badEntry(row, "reference_invalid");const ref = parsed.data, key = orgInviteDirectoryKey(caller.orgId, ref.inviteId);
+    if (ref.orgId !== caller.orgId) return badEntry(row, "reference_org_mismatch");
+    if (ref.pk !== key.pk || ref.sk !== key.sk) return badEntry(row, "reference_key_mismatch");
+    const record = await get(deps, orgInviteKey(ref.tokenHash));if (record === undefined) return badEntry(row, "canonical_missing");
+    const canonical = canonicalSchema.safeParse(record);if (!canonical.success) return badEntry(row, "canonical_invalid");const invite = canonical.data;
+    if (invite.orgId !== caller.orgId) return badEntry(row, "canonical_org_mismatch");
+    if (invite.inviteId !== ref.inviteId || invite.tokenHash !== ref.tokenHash) return badEntry(row, "canonical_reference_mismatch");
     if (invite.acceptedAt !== undefined || Date.parse(invite.expiresAt) <= nowMs) return undefined;
     return { inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, createdBy: invite.createdBy, destination: invite.email === undefined ? { kind: "link" as const } : { kind: "email" as const, label: `***@${invite.email.slice(invite.email.lastIndexOf("@") + 1)}` } };
    }));for (const invite of batch) if (invite !== undefined) invites.push(invite);

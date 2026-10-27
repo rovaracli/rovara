@@ -8,6 +8,7 @@ import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteComma
 import {
   MEMBER_GRANT_SK_PREFIX,
   AgentXError,
+  AuditEventInputSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
@@ -44,9 +45,9 @@ import {
   type OrgRole,
 } from "@agentx/contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
-import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed } from "../audit/events.js";
+import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditPendingItem, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
@@ -81,7 +82,7 @@ export interface OrgStoreInput {
   rovaraCodeV2ForNewOrgs?: boolean;
   /** Where a removed member's agents go (Task 11). Absent on an install with no agents: no marker is written and nothing is called. */
   memberRemoval?: MemberRemovalHook;
-  /** The Audit Ledger's outbox (Task 18). Absent on a legacy install: nothing is recorded and no pending item is written. */
+  /** Ledger delivery runtime. Invite creation always persists its outbox item; other legacy hooks may no-op without this runtime. */
   audit?: AuditRuntime;
 }
 
@@ -270,7 +271,7 @@ export class OrgStore {
       const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
       const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
-      if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || org.closedAt !== undefined) throw forbidden();
+      if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
       const token = randomBytes(32).toString("base64url");
       const tokenHash = sha256Hex(token), inviteId = randomUUID();
       const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
@@ -294,9 +295,17 @@ export class OrgStore {
       items.push(
         { ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(input.orgId, input.createdBy), ConditionExpression: "orgId = :org AND developerId = :person AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":person": input.createdBy, ":role": actor.role } } },
         { ConditionCheck: { TableName: this.input.tableName, Key: developerOrgKey(input.createdBy), ConditionExpression: "orgId = :org AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":role": actor.role } } },
-        { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "orgId = :org AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":org": input.orgId } } },
+        { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "orgId = :org AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":org": input.orgId } } },
       );
-      await this.transact(items, failed => [...failed].some(index => index >= authorityAt) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
+      const authorityEnd = items.length;
+      if (this.input.audit !== undefined && this.input.audit.tableName !== this.input.tableName) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
+      const parsedEvent = AuditEventInputSchema.safeParse(auditOrgInviteCreated({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-created", input.orgId, inviteId), inviteId, role: input.role, targeted: input.email !== undefined }));
+      if (!parsedEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
+      const event = parsedEvent.data;
+      // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
+      items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
+      await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
+      await this.flush(event);
       return { token };
     } catch (error) { if (error instanceof AgentXError) throw error;throw coded("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Reload before trying again."); }
   }

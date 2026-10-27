@@ -124,7 +124,7 @@ describe("the event catalog", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
       "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "pull_request.opened",
-      "pull_request.merged", "member.joined", "member.role_changed", "member.removed", "member.left", "org.closed", "org.renamed", "project_member.changed",
+      "pull_request.merged", "member.joined", "member.role_changed", "member.removed", "member.left", "org.closed", "org.renamed", "org.invite_created", "project_member.changed",
       "project_member.removed", "identity.linked", "identity.unlinked", "agent.owner_changed", "chain.owner_changed", "session.owner_changed", "session.stopped", "session.retried", "session.shared",
       "connection.saved", "connection.removed", "project_connector.changed", "guardrails.changed", "local_agents.policy_changed",
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
@@ -136,9 +136,9 @@ describe("the event catalog", () => {
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
 
-  it("lists the target kinds: the original list plus spend_policy, model_source and session", () => {
+  it("lists all target kinds including the opaque invite target", () => {
     expect([...AUDIT_TARGET_KINDS]).toEqual([
-      "approval", "spend_request", "task", "pull_request", "org", "member", "project", "agent", "chain", "session", "trigger",
+      "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
       "spend_policy", "model_source",
     ]);

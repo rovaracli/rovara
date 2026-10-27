@@ -208,6 +208,11 @@ export function auditOrgRenamed(input: AuditBuilderBase): AuditEventInput {
   return build("org.renamed", input, { kind: "org", id: input.orgId }, {});
 }
 
+/** `occurrence`: the org and independent public invite UUID; never token/hash/address material. */
+export function auditOrgInviteCreated(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member"; targeted: boolean }): AuditEventInput {
+  return build("org.invite_created", input, { kind: "invite", id: input.inviteId }, { role: input.role, targeted: input.targeted });
+}
+
 /** `occurrence`: `closedAt`. */
 export function auditOrgClosed(input: AuditBuilderBase & { plan: string }): AuditEventInput {
   return build("org.closed", input, { kind: "org", id: input.orgId }, { plan: input.plan });

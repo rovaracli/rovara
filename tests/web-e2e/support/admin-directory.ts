@@ -24,6 +24,7 @@ export function createAdminDirectory() {
   return expression.split(/\s+AND\s+/).every(part => {
    if (part === "attribute_not_exists(pk)") return row === undefined;
    if (part === "attribute_exists(pk)") return row !== undefined;
+   if (part === "attribute_not_exists(closingAt)") return row?.closingAt === undefined;
    if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
    const equal = /^(#[A-Za-z]+|[A-Za-z]+) = (:[A-Za-z]+)$/.exec(part);
    if (equal === null) throw new Error("Unsupported fixture condition.");
