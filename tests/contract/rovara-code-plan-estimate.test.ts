@@ -19,6 +19,7 @@ import type { OrgId } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, durationHistoryKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "../../packages/contracts/src/rovara-code.js";
 import { RUN_MINUTES_MAX, RunEstimateSchema, type RunEstimate } from "../../packages/contracts/src/spend.js";
+import { DeveloperTaskResponseSchema } from "../../packages/contracts/src/index.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -839,3 +840,24 @@ async function publishedTask(t: Awaited<ReturnType<typeof world>>) {
   return started;
 }
 
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the task view of a plan with an estimate, as the broker sends it", () => {
+  it("is read by the clients' task schema, with the time range for a version 2 client and without it for one that sends no header", async () => {
+    const t = await world({ v2: true });
+    const { taskId } = await t.planned("QUICK");
+    expect(t.meta(taskId).runEstimate?.minutes).toBeDefined();
+    const full = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`, undefined, { "x-agentx-task-view": "2" });
+    const old = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`);
+    for (const reply of [full, old]) {
+      expect(reply.status).toBe(200);
+      expect(typeof reply.body.requestId).toBe("string");
+      const parsed = DeveloperTaskResponseSchema.safeParse(reply.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+    expect((full.body.task as { runEstimate: RunEstimate }).runEstimate.minutes).toMatchObject({ low: 20, high: 45 });
+    // A client that sends no header has a strict estimate with no place for the time range: it is never sent one.
+    expect((old.body.task as { runEstimate: RunEstimate }).runEstimate).not.toHaveProperty("minutes");
+    expect(RunEstimateSchema.safeParse((full.body.task as { runEstimate: unknown }).runEstimate).success).toBe(true);
+  });
+});

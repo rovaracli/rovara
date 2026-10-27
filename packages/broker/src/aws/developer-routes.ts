@@ -105,6 +105,7 @@ import {
   SESSION_PROJECT_BINDINGS_MAX,
   workflowAnswer,
   type MergeTrackingItem,
+  type MergeView,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -223,6 +224,8 @@ export interface DeveloperRouteDependencies {
   now: () => number;
   /** The developer task routes' broker actions; without them /v1/dev/tasks* answers NOT_FOUND. */
   tasks?: DeveloperTaskActions;
+  /** Rovara Code (Bug G): whether the viewer may press Merge now, for the words of a task page (the browser pages carry no `agents`, so they carry this instead). */
+  codeMergeView?: (task: DeveloperTaskRecord, items: MergeTrackingItem[], viewerDeveloperId: string) => Promise<MergeView | undefined>;
   /** Reconciles all already-linked PRs using GitHub's current API state before owner decisions. */
   refreshTaskFeedback?(taskId: string): Promise<void>;
   /** Builds E2E projections only from the task's current server-owned admission and evidence references. */
@@ -1762,7 +1765,8 @@ export function developerTaskRouteDependencies(
     ...(deps.validateWorkflowE2EApplicationPlan === undefined ? {} : { validateWorkflowE2EApplicationPlan: deps.validateWorkflowE2EApplicationPlan }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
-    ...(agents?.codeMerge === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }),
+    ...(agents?.codeMerge !== undefined ? { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }
+      : deps.codeMergeView === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => deps.codeMergeView!(task, items, caller.developerId) }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),

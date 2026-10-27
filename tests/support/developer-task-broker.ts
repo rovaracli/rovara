@@ -92,7 +92,7 @@ type DeveloperTaskBrokerHarness = ReturnType<typeof createBroker> & {
   s3: ReturnType<typeof memoryS3>;
   channelMembers: Mock<(request: ChannelMembersRequest) => Promise<ChannelMembersResponse>>;
   channelInfo: Mock<(request: ChannelInfoRequest) => Promise<ChannelInfoResponse>>;
-  dev: (who: Developer, method: string, path: string, body?: unknown) => Promise<{ status: number; body: Record<string, unknown> }>;
+  dev: (who: Developer, method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<{ status: number; body: Record<string, unknown> }>;
   callback: (workspaceId: string, operationId: string, action: string, body: unknown) => Promise<Record<string, unknown>>;
   finish: (workspaceId: string, operationId: string, status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED", detail?: { result?: unknown; error?: string }) => Promise<Record<string, unknown>>;
   events: (workspaceId: string, operationId: string, events: Array<{ type: string; payload: unknown }>) => Promise<Record<string, unknown>>;
@@ -185,10 +185,10 @@ export async function createDeveloperTaskBroker(options: {
   }
   if (options.register !== false) await registerSlackProject(handler);
 
-  const dev = async (who: Developer, method: string, path: string, body?: unknown) => {
+  const dev = async (who: Developer, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
     const response = await handler({
       version: "2.0", rawPath: path.split("?")[0], rawQueryString: path.split("?")[1] ?? "",
-      headers: { authorization: await bearer(who, await orgOf(who)) },
+      headers: { authorization: await bearer(who, await orgOf(who)), ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       requestContext: { requestId: randomUUID(), http: { method } },
     });

@@ -75,8 +75,12 @@ function allowed(limits: CriticModelLimits, model: ModelIdentifier): boolean {
 /** Whether an earlier plan check already found `model` unusable for this account. */
 const triedAndFailed = (limits: CriticModelLimits, model: ModelIdentifier): boolean => (limits.unusable ?? []).some((other) => sameModel(other, model));
 
-/** The most models one plan check tries, one attempt each (a failed attempt costs nothing: the model refuses before it answers). */
-export const CRITIC_MODEL_ATTEMPTS_MAX = 4;
+/**
+ * The most models one plan check tries, one attempt each (a failed attempt costs nothing: the model refuses before it answers). Staging 0.4.11: four tries all went to models this account had not
+ * enabled (the two newest fable and the two newest opus), so the plan check was unavailable although the account's sonnet and haiku answer. Six tries cover every capability tier once, and the
+ * last of them is the model that wrote the plan.
+ */
+export const CRITIC_MODEL_ATTEMPTS_MAX = 6;
 
 /** Thrown where a plan check is about to start and no model is left that the account could use. It is not a refusal of anyone's choice: the plan goes to the person, shown as not checked. */
 export class PlanCheckUnavailableError extends AgentXError {
@@ -106,7 +110,18 @@ export function criticModelUnusable(error: string | undefined): boolean {
  */
 function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
   const pool = sources.length > 0 ? sources : limits.approved ?? [];
-  return rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))));
+  const ranked = rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))));
+  return failedTiersLast(limits, ranked);
+}
+
+/**
+ * A model the account could not use says its capability tier is likely out of reach (an account enables models by generation: staging 0.4.11 refused fable-5-1, fable-5, opus-5-5 and opus-5 in a row),
+ * so after a failure the next try is a tier that has not failed yet, strongest first. A tier that failed once gets another model only when every other tier has also failed. Nothing failed: unchanged.
+ */
+function failedTiersLast(limits: CriticModelLimits, ranked: readonly ModelIdentifier[]): ModelIdentifier[] {
+  const failedTiers = new Set((limits.unusable ?? []).map(criticCapabilityTier));
+  if (failedTiers.size === 0) return [...ranked];
+  return [...ranked.filter((model) => !failedTiers.has(criticCapabilityTier(model))), ...ranked.filter((model) => failedTiers.has(criticCapabilityTier(model)))];
 }
 
 /**
@@ -135,6 +150,11 @@ export interface CriticModelInput {
   sources: readonly ModelIdentifier[];
   /** Models this task's earlier plan checks tried and the account could not use. The next check takes the next-ranked model; with none left the check is unavailable. */
   unusable?: readonly ModelIdentifier[] | undefined;
+  /**
+   * This is the last try the plan check gets (`CRITIC_MODEL_ATTEMPTS_MAX`). The model that wrote the plan answered this account a moment ago, so when the policy allows it and it has not failed as a
+   * check, it is the choice: a plan check that ran on the planner's own model (and says so) beats none.
+   */
+  lastAttempt?: boolean | undefined;
 }
 
 export type CriticModel =
@@ -167,6 +187,9 @@ export function criticModelFor(input: CriticModelInput): CriticModel {
     // Policy allowed a model, the account could not use it: the check is unavailable. Policy allowed none: Plan 3's refusal.
     if (allowed(limits, own) || (fallback !== undefined && allowed(limits, fallback))) return { unavailable: true };
     return { refuse: agentXError("MODEL_NOT_ALLOWED", modelNotAllowedText(subject, own, input.project.name)) };
+  }
+  if (input.lastAttempt === true && input.planModel !== undefined && allowed(failed, input.planModel) && !triedAndFailed(failed, input.planModel)) {
+    return { model: selectionOf(input.planModel), sameModelAsPlanner: true, chosenBy: "rovara" };
   }
   const recommended = recommendCriticModel(failed, input.planModel, input.sources);
   if (recommended !== undefined) return { model: selectionOf(recommended.model), sameModelAsPlanner: recommended.sameModelAsPlanner, chosenBy: "rovara" };

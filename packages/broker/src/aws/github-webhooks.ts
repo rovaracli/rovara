@@ -13,6 +13,7 @@ import type { InstallationCreatedPayload } from "../org/github-install-requests.
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
+import { mergedStateItems } from "../rovara-code/merged-state.js";
 
 const DELIVERY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GitHubWebhookPayloadSchema = z.object({
@@ -325,6 +326,11 @@ function mergedPullRequestEvents(
   });
 }
 
+/** Who GitHub says merged each pull request that was read (a merged one only). */
+function observedMerges(reads: ReadonlyArray<{ pr: { repositoryId: string; number: number }; feedback: GitHubPullRequestFeedback }>): Array<{ repositoryId: string; number: number; mergedBy?: string | undefined }> {
+  return reads.map(({ pr, feedback }) => ({ repositoryId: pr.repositoryId, number: pr.number, mergedBy: feedback.pullRequest.mergedBy }));
+}
+
 /** How many times a save that lost only to another transaction on the same items (a hot item such as the project's month count) is tried again before it fails. */
 export const WORKFLOW_SAVE_CONFLICT_RETRIES = 3;
 
@@ -406,7 +412,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
         const items = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads),
-          ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now)];
+          ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now),
+          ...await mergedStateItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId, workspaceId: linked.workspaceId }, current, next, input.now, observedMerges(reads))];
         await saveRetryingConflicts(() => input.saveWorkflow(linked.taskId, current.revision, next, items));
         await flushAuditEvents(input, events);
         return true;
@@ -612,7 +619,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     if (headTrees.length > 0) next = recordWorkflowPullRequestHeadTrees(next, headTrees, input.now);
     const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
     const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads),
-      ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now)];
+      ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now),
+      ...await mergedStateItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId, workspaceId: linked.workspaceId }, current, next, input.now, observedMerges(reads))];
     try {
       await saveRetryingConflicts(() => recordedPushes.length > 0
         ? input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems)

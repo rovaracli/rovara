@@ -402,6 +402,7 @@ import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } f
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
+import { mergedStateItems } from "../rovara-code/merged-state.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
@@ -525,9 +526,10 @@ import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
-import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, ownerGithubLoginOf, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
+import { githubLoginOf, personNameForText, withoutEmails } from "../developer/requester-text.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
 import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
@@ -538,7 +540,8 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { developerReply, json } from "./json-reply.js";
+import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -551,12 +554,13 @@ import { PLAN_AUTO_REVISIONS_MAX, PlanSelfCheckRecordSchema, autoRevisableFindin
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, wakeTrackingRow, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
-import type { CodeMergeHost } from "../rovara-code/merge.js";
+import { mergeViewOf, type CodeMergeHost } from "../rovara-code/merge.js";
+import type { MergeTrackingItem } from "@agentx/contracts";
 import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../rovara-code/ci-fix.js";
 import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
 import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
-import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, wakeFromPullRequestEvent, wakesTrackingRow, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -2165,6 +2169,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...(agents?.agentSessions === undefined ? {} : { agentSessions: agents.agentSessions }),
+          // The task page says to press Merge in Rovara when it may be pressed (Bug G); this page carries no agent routes, so it carries the merge view alone.
+          ...(agents?.codeMerge === undefined ? {} : { codeMergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[], viewer: string) => mergeViewOf(agents, task, items, viewer) }),
           ...workflowApplicationRouteDependencies(dependencies) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -2441,7 +2447,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
         }
         const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
-        return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
+        return developerReply(answer, request.requestId);
       }
 
       const claimed = identityFromJwtClaims(request.jwtClaims, {
@@ -3079,7 +3085,8 @@ function withoutDeploymentAttribution(dependencies: GitHubMcpDependencies): Omit
 
 function attributionText(identity: AuthenticatedIdentity, connector: Pick<ResolvedConnector, "attribution">): string | undefined {
   if (!connector.attribution || !identity.slack) return undefined;
-  const name = identity.slack.requesterName;
+  // C55: a Slack display name that is an address is not written on GitHub.
+  const name = identity.slack.requesterName === undefined ? undefined : personNameForText(identity.slack.requesterName);
   const who = inertName(name ?? `Slack member ${identity.slack.requester.userId}`);
   return `Requested by ${who} via AgentX · ${slackThreadUrl(identity.slack.thread)}`;
 }
@@ -5670,6 +5677,13 @@ async function recordThreadRequester(
   }));
 }
 
+/** The login of the GitHub account a developer linked (C55: the name a pull request footer uses when the display name is an email address). */
+async function githubLoginOfDeveloper(dependencies: AwsBrokerDependencies, developerId: string): Promise<string | undefined> {
+  const developer = dependencies.developer;
+  if (developer === undefined) return undefined;
+  return githubLoginOf(new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }), developerId);
+}
+
 /** A pull request body with who asked for it: the developer footer (FR-023) or the Slack thread. */
 async function attributedBody(
   dependencies: AwsBrokerDependencies,
@@ -5678,7 +5692,9 @@ async function attributedBody(
 ): Promise<string | undefined> {
   if (identity.developer) {
     // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
-    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX");
+    // C55: never the requester's email address: their display name, else their linked GitHub login (read only when the name is an address), else "the task owner".
+    const login = withoutEmails(identity.developer.name) === identity.developer.name.trim() ? undefined : await githubLoginOfDeveloper(dependencies, identity.developer.developerId);
+    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX", login);
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
   }
@@ -5977,6 +5993,7 @@ async function criticModelOfStep(
     project: { name: workspace.projectName, approved }, guardrails,
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
     unusable: history.models,
+    lastAttempt: history.sinceLatestPlan + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
   });
   if ("refuse" in chosen) throw chosen.refuse;
   if ("unavailable" in chosen) throw new PlanCheckUnavailableError();
@@ -6657,6 +6674,7 @@ function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDep
         github.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
     }),
     gate,
+    githubLoginOf: (developerId) => githubLoginOfDeveloper(dependencies, developerId),
   };
   return base;
 }
@@ -6791,7 +6809,7 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
           catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
           // Every approved call is claimed and recorded in the ledger, whatever access the project gave the tool: a retry replays it instead of sending it again.
           durable: true,
-          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName) } : {}),
+          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName, await ownerGithubLoginOf(t, task)) } : {}),
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
@@ -12889,6 +12907,13 @@ export async function processGithubWorkflowEvent(
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
   }
+  // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
+  // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
+  if (options === undefined && wakesTrackingRow(event)) {
+    await wakeFromPullRequestEvent(headEventDependencies(dependencies), event).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "tracking.wake_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   const getFeedback = options === undefined
     ? dependencies.githubPullRequests.getPullRequestFeedback
     : dependencies.githubPullRequests.getPullRequestMergeObservation;
@@ -15460,6 +15485,8 @@ async function completedPullRequestUpdateItems(
   ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
   // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
   ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
+  // ... and what was kept about the pull request (its tracking row and its record) says merged too (Bug H).
+  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
   // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
   ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
@@ -18424,19 +18451,6 @@ function hookMemoryOf(dependencies: AwsBrokerDependencies): HookIngressMemory {
 /** A hook's answer exactly as ingress made it: the uniform refusal carries nothing but its fixed body, not even a request id. */
 function hookReply(answer: { status: number; body: Record<string, unknown> }): { statusCode: number; headers: Record<string, string>; body: string } {
   return { statusCode: answer.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(answer.body) };
-}
-
-function json(
-  value: unknown,
-  requestId: string,
-  statusCode = 200,
-): { statusCode: number; headers: Record<string, string>; body: string } {
-  const body = value && typeof value === "object" ? { ...value, requestId } : { data: value, requestId };
-  return {
-    statusCode,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-    body: JSON.stringify(body),
-  };
 }
 
 const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };

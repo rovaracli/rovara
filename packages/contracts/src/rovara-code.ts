@@ -3,6 +3,7 @@
 // digest) lives in `rovara-code-node.ts`.
 import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
+import { forwardReader } from "./forward-reader.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
 
@@ -477,13 +478,21 @@ export type CodeSettingsBody = z.infer<typeof CodeSettingsBodySchema>;
 export const CodeSettingsResponseSchema = z.object({ settings: CodeSettingsSchema }).strict();
 export type CodeSettingsResponse = z.infer<typeof CodeSettingsResponseSchema>;
 
+/**
+ * How a client reads that answer. The broker puts the gateway's `requestId` beside the fields of every answer it sends, so a client that read it with the strict schema above rejected
+ * the control plane's real answer (bug E, staging 0.4.11). Clients read it through this, as they read every other strict app answer: unknown fields are kept and not refused.
+ */
+export const CodeSettingsResponseReaderSchema = forwardReader(CodeSettingsResponseSchema);
+export type CodeSettingsResponseRead = z.output<typeof CodeSettingsResponseReaderSchema>;
+
 /** What a stale `PUT` hears. */
 export const CODE_SETTINGS_STALE_MESSAGE = "Someone changed these settings. Reload and try again.";
 
 // ---- merging (Plan 6 Task 19)
 
 /** The task view's `merge` (version 2 only): whether the viewer pressing Merge now would be allowed to, and if not, in words, why. */
-export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(500).optional() }).strict();
+export const MERGE_VIEW_MESSAGE_MAX = 500;
+export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(MERGE_VIEW_MESSAGE_MAX).optional() }).strict();
 export type MergeView = z.infer<typeof MergeViewSchema>;
 
 /** The exact texts of `MERGE_NOT_READY` (409). Words for a person: nothing here carries a title, a comment or a log. */
@@ -563,6 +572,9 @@ export const SetupDraftResponseSchema = z
   })
   .strict();
 export type SetupDraftResponse = z.infer<typeof SetupDraftResponseSchema>;
+
+/** How a client reads `GET`/`POST …/setup-draft`: with the gateway's `requestId` kept and not refused (see `CodeSettingsResponseReaderSchema`). */
+export const SetupDraftResponseReaderSchema = forwardReader(SetupDraftResponseSchema);
 
 /**
  * `POST …/setup-draft/apply`: what of the draft the person applies. Nothing is applied that is not named: a field left out or `false` is not applied. The

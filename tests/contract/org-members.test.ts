@@ -812,15 +812,17 @@ describe("every task launch checks that the creator is still a member (ruling R6
   const source = readFileSync(join(import.meta.dirname, "../../packages/broker/src/aws/developer-tasks.ts"), "utf8");
   const functions = source.split(/^(?=(?:export )?(?:async )?function )/m);
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
-  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate"];
+  // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
+  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound"];
 
-  it("finds the eighteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the nineteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
     // limit was approved (`resumeAfterRunLimitApproval`), which checks the creator first.
     // Plan 6 adds four, each checked first like the rest: the Understand step and the plan step after it (Task 4), the plan check and the plan's one revision (Task 8).
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(18);
+    // The nineteenth is Task 16's automatic feedback round (`startAutomaticFeedbackRound`), checked by its only caller.
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(19);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;
