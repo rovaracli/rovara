@@ -123,3 +123,10 @@ it("consistently observes real role loss and terminal changes despite eventual S
  const denied = await fixture(true);await denied.store.setRole({ orgId: A, developerId: actor, role: "member" });expect((await denied.status()).status).toBe(403);
  const revoked = await fixture(true);expect((await revoked.call()).status).toBe(200);const result = await revoked.status();expect(result.status).toBe(200);expect(result.body?.status).toBe("revoked");
 });
+
+for (const [marker, revision, code] of [["revokedAt", 1, "INVITE_ALREADY_REVOKED"], ["acceptedAt", 3, "INVITE_ALREADY_ACCEPTED"]] as const) it(`prioritizes ${marker} over a stale expected revision directly`, async () => {
+ const f = await fixture();f.db.set({ ...f.created.row, revision, [marker]: "2026-10-27T11:00:00Z" });expect((await f.call()).code).toBe(code);expect(f.events().length).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST").length).toBe(0);
+});
+it("refuses an unsafe canonical revision rather than trusting terminal state", async () => {
+ const f = await fixture();f.db.set({ ...f.created.row, revision: Number.MAX_SAFE_INTEGER + 1, revokedAt: "2026-10-27T11:00:00Z" });expect((await f.call()).status).toBe(404);expect(f.events().length).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST").length).toBe(0);
+});
