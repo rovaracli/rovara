@@ -105,7 +105,7 @@ const OTHER_CLAUDE: ModelIdentifier = { provider: "amazon-bedrock", modelId: bed
 type Meta = Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };
 
 /** A version 2 task, driven through planning, the plan check and the plan's approval until its build has finished: the review step is the next dispatch. */
-async function builtTask(options: { models?: { default: ModelIdentifier; approved: ModelIdentifier[] }; guardrails?: Record<string, unknown>; reviewStepSettings?: Record<string, unknown> } = {}) {
+async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>; workspaceId: string; operations: () => Array<Record<string, unknown>> }) => void; models?: { default: ModelIdentifier; approved: ModelIdentifier[] }; guardrails?: Record<string, unknown>; reviewStepSettings?: Record<string, unknown> } = {}) {
   const access = fakeModelAccess();
   const h = await createSingleAnswerPlanBroker({ register: options.models === undefined, brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   if (options.models !== undefined) await registerSlackProject(h.handler, { models: options.models });
@@ -142,12 +142,27 @@ async function builtTask(options: { models?: { default: ModelIdentifier; approve
     requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record().workflow.artifacts.at(-1)!.sha256,
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  options.beforeBuild?.({ h, workspaceId, operations });
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "a".repeat(40), baseCommitSha: "e".repeat(40) }]);
   await h.finish(workspaceId, String(byMode("IMPLEMENT")[0]!.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passingChecks() } });
   const reports = (operationId: unknown, provider: string, version: string) => ["CRITIC", "SECURITY"].map((role) => ({
     operationId: String(operationId), candidateDigest: candidate.digest, role, provider, version, status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() }));
-  return { h, taskId, workspaceId, record, operations, byMode, invocationOf, candidate, reports };
+  /** The owner's Retry reviews on the blocked review step. */
+  const retryReviews = async () => {
+    const retried = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, candidateDigest: candidate.digest, instructions: "Retry" });
+    expect(retried.status, JSON.stringify(retried.body).slice(0, 300)).toBe(200);
+  };
+  return { h, taskId, workspaceId, record, operations, byMode, invocationOf, candidate, reports, retryReviews };
 }
+/** A review operation that ended with these reports (as the worker records a reviewer whose model call was refused: UNKNOWN, on an operation that SUCCEEDED). */
+async function finishReviewWith(t: Awaited<ReturnType<typeof builtTask>>, review: Record<string, unknown>, extra: Record<string, unknown>) {
+  const model = review.model as ModelIdentifier;
+  await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: { workflowCandidateRepositories: t.candidate.repositories,
+    workflowReviews: t.reports(review.id, model.provider, model.modelId).map((report) => ({ ...report, ...extra })) } });
+}
+const REFUSED = { status: "UNKNOWN", failureReason: "SESSION_FAILED", modelFailure: "the model call failed: key-rejected AccessDeniedException HTTP 403 request 9e7ea41c-1111-2222-3333-444455556666 attempt 1" };
+const THROTTLED = { status: "UNKNOWN", failureReason: "SESSION_FAILED", modelFailure: "the model call failed: limit-or-rate-limited ThrottlingException HTTP 429 attempt 1" };
+const THIRD_CLAUDE: ModelIdentifier = { provider: "amazon-bedrock", modelId: bedrockClaudeModelIds().find((id) => ![CLAUDE_DEFAULT, OTHER_CLAUDE].some((model) => canonicalModelName(model) === canonicalModelName({ provider: "amazon-bedrock", modelId: id })))! };
 
 describe("dispatching the review step of a version 2 task with no model set for it", () => {
   it("runs the reviews on a different model from the build's and records it on the operation", async () => {
@@ -243,5 +258,76 @@ describe("the reviewer model, as people read it", () => {
     const same = workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: reviewed({}, { sameModelAsBuild: true }) });
     expect(same?.text).toContain("anthropic/claude-opus-4-6");
     expect(same?.text).toContain(REVIEW_SAME_MODEL_NOTE);
+  });
+});
+
+// ---- a reviewer model the account can't call (fix round 1)
+
+describe("a review model that the account could not call", () => {
+  const approved = [CLAUDE_DEFAULT, OTHER_CLAUDE, THIRD_CLAUDE];
+
+  it("is left out of the retry: the reviewer reported its model unusable, so the next dispatch picks another one", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved } });
+    const first = t.byMode("REVIEW")[0]!;
+    const refusedModel = first.model as ModelIdentifier;
+    await finishReviewWith(t, first, REFUSED);
+    expect(t.record().workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+    await t.retryReviews();
+    const second = t.byMode("REVIEW")[1]!;
+    expect(second.model).toBeDefined();
+    expect(canonicalModelName(second.model as ModelIdentifier)).not.toBe(canonicalModelName(refusedModel));
+    expect(t.invocationOf(second.id)!.payload.model).toMatchObject({ modelId: (second.model as ModelIdentifier).modelId });
+  });
+
+  it("is not left out when the failure was a throttle: another model would not change it", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved } });
+    const first = t.byMode("REVIEW")[0]!;
+    await finishReviewWith(t, first, THROTTLED);
+    await t.retryReviews();
+    expect(t.byMode("REVIEW")[1]!.model).toMatchObject({ modelId: (first.model as ModelIdentifier).modelId });
+  });
+
+  it("is also left out when its whole operation failed with a refusal (the main session was refused first)", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved } });
+    const first = t.byMode("REVIEW")[0]!;
+    await t.h.finish(t.workspaceId, String(first.id), "FAILED", { error: "the model call failed: key-rejected AccessDeniedException HTTP 403 attempt 1; check the model key and its permissions, then retry" });
+    await t.retryReviews();
+    expect(canonicalModelName(t.byMode("REVIEW")[1]!.model as ModelIdentifier)).not.toBe(canonicalModelName(first.model as ModelIdentifier));
+  });
+
+  it("keeps the reviews on the build's model, with the note, once every other model has failed and nothing is left to choose", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    // First the other model is refused: the build's own model is the only one left (and says so).
+    await finishReviewWith(t, t.byMode("REVIEW")[0]!, REFUSED);
+    await t.retryReviews();
+    const second = t.byMode("REVIEW")[1]!;
+    expect(second.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
+    expect(second.reviewSameModel).toBe(true);
+    // Then that is refused too: nothing can be chosen, the step runs on the project's default, which is the build's model, and the note still says so.
+    await finishReviewWith(t, second, REFUSED);
+    await t.retryReviews();
+    const third = t.byMode("REVIEW")[2]!;
+    expect(t.invocationOf(third.id)!.payload.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
+    expect(third.reviewSameModel).toBe(true);
+  });
+
+  it("takes the build from the latest build that succeeded, not from a later one that failed", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    // A later build that failed on the other model: it is not the code under review.
+    const build = t.byMode("IMPLEMENT")[0]!;
+    t.h.db.set({ ...build, id: randomUUID(), requestId: randomUUID(), status: "FAILED", model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId }, createdAt: "2099-01-01T00:00:00.000Z" });
+    await finishReviewWith(t, t.byMode("REVIEW")[0]!, { status: "UNKNOWN", failureReason: "TIMEOUT" });
+    await t.retryReviews();
+    const second = t.byMode("REVIEW").at(-1)!;
+    expect(second.model, "the build that succeeded ran on the default model, so the review is on the other one").toMatchObject({ modelId: OTHER_CLAUDE.modelId });
+  });
+
+  it("drops a same-model flag the worker sends: only the broker's own dispatch record sets it", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const review = t.byMode("REVIEW")[0]!;
+    expect(review.reviewSameModel).toBeUndefined();
+    await finishReviewWith(t, review, { sameModelAsBuild: true });
+    expect(t.record().workflow.reviews).toHaveLength(2);
+    for (const report of t.record().workflow.reviews!) expect(report).not.toHaveProperty("sameModelAsBuild");
   });
 });
