@@ -25,6 +25,7 @@ const proofTable = {
   { claimId: "1", requirement: "Payments that time out are retried.", evidence: [{ kind: "check", label: "Unit tests", state: "proven" }], result: "proven" },
   { claimId: "2", requirement: "A payment is never charged twice.", evidence: [{ kind: "check", label: "Lint", state: "passed" }, { kind: "scenario", label: "Checkout flow", state: "failed" }], result: "failed" },
   { claimId: "3", requirement: "The retry count is shown.", evidence: [], result: "not_tested" },
+  { claimId: "4", requirement: "The retry stops after five tries.", evidence: [{ kind: "check", label: "Unit tests", state: "passed" }, { kind: "check", label: "Smoke run", state: "not_checked" }], result: "partly_tested" },
  ],
  notTested: [{ kind: "claim", id: "3", text: "The retry count is shown.", reason: "no check or scenario names it" }, { kind: "check", id: "e2e", text: "Smoke run", reason: "it could not run" }],
  testProofLines: ["Test proof: 1 check fails on the original code and passes now"],
@@ -40,6 +41,7 @@ it("shows the proof table with each requirement, its evidence and its result in 
  expect(rows[0]).toEqual(["1: Payments that time out are retried.", "Unit tests (passed, fails on the original code)", "Proven"]);
  expect(rows[1]).toEqual(["2: A payment is never charged twice.", "Lint (passed); Scenario: Checkout flow (failed)", "Failed"]);
  expect(rows[2]).toEqual(["3: The retry count is shown.", "None", "Not tested"]);
+ expect(rows[3]).toEqual(["4: The retry stops after five tries.", "Unit tests (passed); Smoke run (not checked)", "Partly tested"]);
  expect(screen.getByText("Test proof: 1 check fails on the original code and passes now")).toBeTruthy();
  f.close();
 });

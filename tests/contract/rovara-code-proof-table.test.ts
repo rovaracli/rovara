@@ -121,11 +121,79 @@ describe("buildProofTable", () => {
       { scenarioId: "refund-flow", title: "Refund flow", kind: "api", status: "UNKNOWN" },
     ];
     const table = buildProofTable({ plan: withScenarios, checkResults: [], scenarioRows: rows, testProof: undefined, candidateDigest: CODE.digest });
-    expect(rowOf(table, "1.1").result).toBe("passed");
+    // One scenario passed and another it names never ran: partly tested, not passed.
+    expect(rowOf(table, "1.1").result).toBe("partly_tested");
     expect(rowOf(table, "3").result).toBe("failed");
     expect(rowOf(table, "2").result).toBe("not_tested");
     const skipped = table.notTested.filter((item) => item.kind === "scenario").map((item) => item.id).sort();
     expect(skipped).toEqual(["never-ran", "refund-flow"]);
+  });
+});
+
+describe("a claim is no better than its weakest part (partly tested)", () => {
+  const children = (...ids: string[]) => ids.map((id) => ({ id, text: `Part ${id} works.` }));
+  const parentPlan = (proves: Record<string, string[]>, proposed = [check("unit", "Unit tests"), check("lint", "Lint")]) =>
+    plan({ claims: [{ id: "1", text: "Payments that time out are retried.", children: children("1.1", "1.2") }, { id: "2", text: "A payment is never charged twice." }], checks: { proposed, proves } });
+  const build = (p: PlanDocument, checkResults: ProofCheckResult[], testProof?: TestProof) => buildProofTable({ plan: p, checkResults, scenarioRows: [], testProof, candidateDigest: CODE.digest });
+
+  it("a parent whose one child is proven and another has no check is partly tested, not proven", () => {
+    const table = build(parentPlan({ unit: ["1.1"], lint: ["2"] }), passing("unit", "lint"), proofFor(CODE.digest));
+    expect(rowOf(table, "1.1").result).toBe("proven");
+    expect(rowOf(table, "1.2").result).toBe("not_tested");
+    expect(rowOf(table, "1").result).toBe("partly_tested");
+    // The parent is listed once, naming the missing part; the child is listed on its own.
+    const parent = table.notTested.filter((item) => item.kind === "claim" && item.id === "1");
+    expect(parent).toHaveLength(1);
+    expect(parent[0]!.reason).toContain("1.2");
+    expect(table.notTested.filter((item) => item.kind === "claim" && item.id === "1.2")).toHaveLength(1);
+    expect(table.notTested.some((item) => item.kind === "claim" && item.id === "1.1")).toBe(false);
+  });
+
+  it("a parent whose children are all proven or passed keeps that result, and is not listed", () => {
+    const table = build(parentPlan({ unit: ["1.1", "1.2"], lint: ["2"] }), passing("unit", "lint"), proofFor(CODE.digest));
+    expect(rowOf(table, "1").result).toBe("proven");
+    expect(table.notTested.filter((item) => item.kind === "claim")).toEqual([]);
+  });
+
+  it("a failed child fails the parent, even beside an untested one", () => {
+    const table = build(parentPlan({ unit: ["1.1"], lint: ["2"] }), [{ checkId: "unit", status: "FAILED" }, { checkId: "lint", status: "PASS" }]);
+    expect(rowOf(table, "1").result).toBe("failed");
+  });
+
+  it("a claim with one linked check passed and another that never ran is partly tested, and the reason says a linked check did not run", () => {
+    const table = build(parentPlan({ unit: ["1.1", "1.2"], lint: ["1.1"] }), [{ checkId: "unit", status: "PASS" }, { checkId: "lint", status: "UNKNOWN" }]);
+    expect(rowOf(table, "1.1").result).toBe("partly_tested");
+    expect(rowOf(table, "1.2").result).toBe("passed");
+    expect(rowOf(table, "1").result).toBe("partly_tested");
+    expect(table.notTested.find((item) => item.kind === "claim" && item.id === "1.1")?.reason).toMatch(/linked check or scenario did not run/u);
+    // The parent's missing part is the child that is partly tested.
+    expect(table.notTested.find((item) => item.kind === "claim" && item.id === "1")?.reason).toContain("1.1");
+  });
+
+  it("a claim with no evidence at all stays not tested, and one whose only evidence did not run stays not tested", () => {
+    const table = build(parentPlan({ unit: ["1.1"], lint: ["2"] }), [{ checkId: "unit", status: "UNKNOWN" }, { checkId: "lint", status: "PASS" }]);
+    expect(rowOf(table, "1.1").result).toBe("not_tested");
+    expect(rowOf(table, "1.2").result).toBe("not_tested");
+    expect(rowOf(table, "1").result).toBe("not_tested");
+  });
+
+  it("shows partly tested in words, and keeps the row and its bullet at every shrink level", () => {
+    const claims = Array.from({ length: 12 }, (_, index) => ({ id: String(index + 1), text: `Requirement ${index + 1} ${"is described in a fair amount of detail ".repeat(7)}`.slice(0, 290) }));
+    const proposed = [check("unit", "Unit tests"), check("lint", "Lint")];
+    const workflow = workflowWith({ stage: "VERIFY", state: "BLOCKED", blockReason: "candidate checks failed or have unknown results", reviews: undefined, checkPolicy: { required: [], optional: [], selectedOptionalIds: [], proposed },
+      verification: { candidateDigest: CODE.digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [{ checkId: "unit", status: "PASS" }, { checkId: "lint", status: "UNKNOWN" }] } });
+    // 1-6 pass (unit); 7-8 pass with a second check that never ran (partly tested); 9-12 have no check.
+    const ids = (from: number, to: number) => claims.slice(from - 1, to).map((claim) => claim.id);
+    const bigPlan = plan({ claims, checks: { proposed, proves: { unit: ids(1, 8), lint: ids(7, 8) } } });
+    for (let level = 0; level <= PROOF_LEVEL_LAST; level += 1) {
+      const text = proofSection(workflow, { plan: bigPlan })!(level).join("\n");
+      for (const id of [7, 8]) {
+        expect(text, `level ${level} row ${id}`).toMatch(new RegExp(`\\| ${id}: [^\\n]*\\| ⚠ partly tested \\|`, "u"));
+        expect(text.slice(text.indexOf("What wasn't tested")), `level ${level} bullet ${id}`).toMatch(new RegExp(`- Requirement ${id}\\b`, "u"));
+      }
+    }
+    // The passed rows still fold at level 3; the partly tested ones do not.
+    expect(proofSection(workflow, { plan: bigPlan })!(3).join("\n")).toContain("6 more requirements proven or passed");
   });
 });
 

@@ -559,7 +559,7 @@ export type VerificationReport = z.infer<typeof VerificationReportSchema>;
  * Playbook P3: the task page's proof table (the same rows, not-tested list and test-proof lines the pull request's Proof section has). Plain text for the page, redacted and cut by the broker; every reader escapes it
  * for its own markup. At most 50 rows (the plan's claim limit); the lists are bounded so a view stays small.
  */
-export const PROOF_RESULT_VALUES = ["proven", "passed", "failed", "not_tested"] as const;
+export const PROOF_RESULT_VALUES = ["proven", "passed", "failed", "partly_tested", "not_tested"] as const;
 export const ProofTableViewSchema = z
   .object({
     rows: z.array(z.object({

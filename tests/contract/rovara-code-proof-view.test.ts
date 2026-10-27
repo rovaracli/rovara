@@ -140,6 +140,13 @@ describe("proofTableView", () => {
     expect(ProofTableViewSchema.safeParse(view).success).toBe(true);
   });
 
+  it("carries partly_tested through the page's table, and the contract accepts it", () => {
+    const partly = { ...plan, claims: [{ id: "1", text: "Retries work.", children: [{ id: "1.1", text: "Waits longer." }, { id: "1.2", text: "Stops at five." }] }], checks: { proposed: [{ id: "unit", label: "Unit tests", command }], proves: { unit: ["1.1"] } } };
+    const view = proofTableView(workflowWith(CODE.digest), { plan: partly })!;
+    expect(view.rows.map((row) => [row.claimId, row.result])).toEqual([["1", "partly_tested"], ["1.1", "passed"], ["1.2", "not_tested"]]);
+    expect(ProofTableViewSchema.safeParse(view).success).toBe(true);
+  });
+
   it("uses the results recorded for earlier code when the candidate has changed since, rather than calling every requirement untested", () => {
     const view = proofTableView(workflowWith(OLD.digest), { plan })!;
     expect(view.rows[0]).toMatchObject({ claimId: "1", result: "passed" });

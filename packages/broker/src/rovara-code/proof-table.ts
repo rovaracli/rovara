@@ -31,7 +31,8 @@ export interface ProofScenarioRow {
   status: "PASSED" | "FAILED" | "UNKNOWN";
 }
 
-export type ProofResult = "proven" | "passed" | "failed" | "not_tested";
+/** `partly_tested`: some evidence, but a part of the claim (a child claim, or a linked check or scenario) is not tested. */
+export type ProofResult = "proven" | "passed" | "failed" | "partly_tested" | "not_tested";
 /** `proven`: a check that also fails on the original code (a test proof). `not_checked`: no result, or it could not run. */
 export type ProofEvidenceState = "proven" | "passed" | "failed" | "not_checked";
 
@@ -76,6 +77,7 @@ export interface ProofTableInput {
 
 export const NOT_TESTED_REASONS = {
   claimNothingLinked: "no check or scenario names it",
+  claimPartLinkedDidNotRun: "a linked check or scenario did not run",
   claimStaticOnly: "only checks that read files prove it",
   claimDidNotRun: "its checks or scenarios did not run",
   scenarioNotExercised: "it was not exercised",
@@ -111,6 +113,25 @@ function boundTestProof(testProof: unknown, candidateDigest: string | undefined)
 
 const oneLine = (text: string, max: number) => inertLine(text, max);
 
+const PARTLY_IDS_MAX = 30;
+/** Which part of a partly tested claim is missing, in fixed words and the plan's claim IDs (inert), within the contract's 100 characters. */
+function partlyReason(childIds: readonly string[], linkedDidNotRun: boolean): string {
+  const parts: string[] = [];
+  if (childIds.length > 0) {
+    let named = "";
+    let count = 0;
+    for (const id of childIds) {
+      const next = `${named}${count === 0 ? "" : ", "}${oneLine(id, 20)}`;
+      if (next.length > PARTLY_IDS_MAX) break;
+      named = next;
+      count += 1;
+    }
+    parts.push(count === 0 ? "part of it is not tested" : `part not tested: ${named}${count < childIds.length ? ` and ${childIds.length - count} more` : ""}`);
+  }
+  if (linkedDidNotRun) parts.push(NOT_TESTED_REASONS.claimPartLinkedDidNotRun);
+  return parts.join("; ");
+}
+
 type CheckState = "passed" | "failed" | "not_checked";
 
 export function buildProofTable(input: ProofTableInput): ProofTable {
@@ -142,7 +163,9 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
   const rows: ProofRow[] = [];
   const notTested: NotTestedItem[] = [];
 
-  for (const claim of flatClaims(plan.claims)) {
+  // A claim's result is no better than its weakest part: computed from the leaves up, so a parent reads the results of its children. Each claim is listed in `notTested` once; its children are listed on their own.
+  const evaluate = (claim: PlanClaim): ProofResult => {
+    const childResults = (claim.children ?? []).map((child) => ({ child, result: evaluate(child) }));
     // The claim's own ID and its descendants': a proof of a child also covers its ancestors, never the reverse.
     const covered = new Set([claim.id, ...flatClaims(claim.children ?? []).map((child) => child.id)]);
     const evidence: ProofEvidence[] = [];
@@ -157,10 +180,14 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
     }
     const has = (state: ProofEvidenceState) => evidence.some((item) => item.state === state);
     // A failure is never hidden by a proof beside it.
-    const result: ProofResult = has("failed") ? "failed"
+    const base: ProofResult = has("failed") || childResults.some((entry) => entry.result === "failed") ? "failed"
       : has("proven") ? "proven"
         : evidence.length > 0 && staticOnly.has(claim.id) ? "not_tested"
           : has("passed") ? "passed" : "not_tested";
+    // Some evidence is not enough to call the whole claim tested: a child that is not (fully) tested, or a linked check or scenario that did not run, leaves it partly tested.
+    const partChildren = childResults.filter((entry) => entry.result === "not_tested" || entry.result === "partly_tested");
+    const linkedDidNotRun = has("not_checked");
+    const result: ProofResult = (base === "proven" || base === "passed") && (partChildren.length > 0 || linkedDidNotRun) ? "partly_tested" : base;
     const requirement = oneLine(claim.text, CLAIM_TEXT_MAX);
     rows.push({ claimId: claim.id, requirement, evidence, result });
     if (result === "not_tested") {
@@ -168,8 +195,17 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
         kind: "claim", id: claim.id, text: requirement,
         reason: evidence.length === 0 ? NOT_TESTED_REASONS.claimNothingLinked : staticOnly.has(claim.id) ? NOT_TESTED_REASONS.claimStaticOnly : NOT_TESTED_REASONS.claimDidNotRun,
       });
+    } else if (result === "partly_tested") {
+      notTested.push({ kind: "claim", id: claim.id, text: requirement, reason: partlyReason(partChildren.map((entry) => entry.child.id), linkedDidNotRun) });
     }
-  }
+    return result;
+  };
+  for (const claim of plan.claims) evaluate(claim);
+  // Rows and not-tested items read in the plan's order (a parent before its children), though they were computed leaves first. Only claims are in `notTested` so far.
+  const order = new Map(flatClaims(plan.claims).map((claim, index) => [claim.id, index]));
+  const byPlan = (left: string, right: string) => (order.get(left) ?? 0) - (order.get(right) ?? 0);
+  rows.sort((left, right) => byPlan(left.claimId, right.claimId));
+  notTested.sort((left, right) => byPlan(left.id, right.id));
 
   // Scenarios the plan declares that were skipped or not exercised on this code: no row, or a row that could not tell.
   for (const scenario of plan.e2e?.scenarios ?? []) {

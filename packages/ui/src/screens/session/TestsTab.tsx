@@ -3,7 +3,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadTask } from "./workspace-types.js";
 const resultWords: Record<string, string> = { PASS: "Passed", FAILED: "Failed", UNKNOWN: "Not verified" };
 type ProofTable = NonNullable<ReadTask["proofTable"]>;
-const proofResultWords: Record<string, string> = { proven: "Proven", passed: "Passed", failed: "Failed", not_tested: "Not tested" };
+const proofResultWords: Record<string, string> = { proven: "Proven", passed: "Passed", failed: "Failed", partly_tested: "Partly tested", not_tested: "Not tested" };
 const proofEvidenceWords: Record<string, string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 const notTestedNouns: Record<string, string> = { claim: "Requirement", scenario: "Scenario", check: "Check" };
 // Playbook P3: the same rows, test-proof lines and "What wasn't tested" list as the pull request's Proof section. The list is never collapsed: it is what a reader must not miss.

@@ -2,7 +2,7 @@
 // `buildProofTable` (proof-table.ts) decides the rows and has already made every string inert and redacted; this module only lays them out in Markdown, in plain words, and shrinks them to fit.
 //
 // The shrink order, level by level (`proofSection(...)(level)`): 0 full evidence; 1 fewer and shorter evidence entries; 2 evidence as counts; 3 the same, and the proven and passed rows folded into one
-// count line; 4 shorter requirement text and bullets without text. A failed row and a not-tested item are listed at every level: they are what a reader must not miss.
+// count line; 4 shorter requirement text and bullets without text. A failed row, a partly tested row and a not-tested item are listed at every level: they are what a reader must not miss.
 import { workflowCheckResultBroken, workflowSelectedChecks, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
 import { buildProofTable, type ProofCheckResult, type ProofEvidence, type ProofResult, type ProofRow, type ProofScenarioRow } from "./proof-table.js";
 
@@ -19,7 +19,7 @@ export interface ProofContext {
 /** The last shrink level (0 is the full section). */
 export const PROOF_LEVEL_LAST = 4;
 
-const RESULT_WORDS: Record<ProofResult, string> = { proven: "✅ proven", passed: "✅ passed", failed: "❌ failed", not_tested: "⚠ not tested" };
+const RESULT_WORDS: Record<ProofResult, string> = { proven: "✅ proven", passed: "✅ passed", failed: "❌ failed", partly_tested: "⚠ partly tested", not_tested: "⚠ not tested" };
 const STATE_WORDS: Record<ProofEvidence["state"], string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 
 /** The workflow's recorded check results as the table reads them. */
