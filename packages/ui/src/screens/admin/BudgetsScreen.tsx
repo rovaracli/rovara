@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdminBudgetSettings } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, type AdminBudgetSettings } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createBudgetSettingsApi } from "../../api/budget-settings.js";
 import { ApiError } from "../../api/errors.js";
@@ -10,10 +10,9 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { useAdminContext } from "./AdminLayout.js";
 type Row = { label: string; limit: AdminBudgetSettings["orgMonthly"] };
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 6 });
 const columns: readonly Column<Row>[] = [
  { key: "scope", title: "Monthly base", render: row => row.label },
- { key: "amount", title: "Amount (USD)", render: row => row.limit.kind === "unlimited" ? "Unlimited (not configured)" : usd.format(row.limit.microdollars / 1_000_000) },
+ { key: "amount", title: "Amount (USD)", render: row => row.limit.kind === "unlimited" ? "Unlimited (not configured)" : formatUsdMicrodollars(row.limit.microdollars) },
  { key: "source", title: "Source", render: row => row.limit.source === "configured" ? "Set by company" : row.limit.source === "cloud_default" ? "Existing cloud default" : "Not configured" },
 ];
 export function BudgetsScreen() {

@@ -57,3 +57,7 @@ export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInvi
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
+
+// Lane A G1: pure finite stop calculation and exact display; no runtime admission.
+export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
+export { formatUsdMicrodollars } from "./money-format.js";

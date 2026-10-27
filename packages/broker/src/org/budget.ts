@@ -212,7 +212,7 @@ export async function syncBudgets(
   }
 }
 
-const BudgetAmountSchema = z.number().refine(value => usdToWholeMicrodollars(value) !== undefined, "must be a whole-microdollar amount from 0 to 1000000 USD");
+const BudgetAmountSchema = z.number().refine(value => usdToWholeMicrodollars(value) !== undefined, "must be USD from 0 to 1000000 with at most 6 decimal places");
 /** The body of a budget change, from an org owner or admin (`PUT /v1/dev/org/budget`) or an operator (`PUT /v1/admin/org/budget`). */
 export const PutBudgetBodySchema = z.object({
   requestId: z.string().uuid(),
