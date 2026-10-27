@@ -1,8 +1,9 @@
 // Sparse org invite projection. Canonical records decide pending state; bearer material never leaves this module.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AppOrgInvitesResponseSchema, OrgIdSchema, agentXError, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgPk } from "@agentx/contracts";
+import { AgentXError, AppOrgInvitesResponseSchema, OrgIdSchema, agentXError, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgPk, orgScoped } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
+import { takeRateAt } from "../developer/page-comments.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;
 const id = z.string().uuid(), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const referenceSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, entityType: z.literal("ORG_INVITE_DIRECTORY"), pk: z.string(), sk: z.string() });
@@ -28,6 +29,7 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
    let value: unknown;try { value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown; } catch { throw invalid(); }
    const parsed = cursorSchema.safeParse(value);if (!parsed.success || parsed.data.orgId !== caller.orgId) throw invalid();start = orgInviteDirectoryKey(caller.orgId, parsed.data.after);
   }
+  if (!await takeRateAt(deps, { pk: orgScoped(caller.orgId, "INVITE_DIRECTORY_RATE"), sk: caller.developerId }, 20, 60_000)) throw agentXError("TOO_MANY_REQUESTS", "Too many invite checks. Try again shortly.");
   const page = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": orgPk(caller.orgId), ":prefix": "INVITE_DIRECTORY#" }, ConsistentRead: true, Limit: limit, ...(start === undefined ? {} : { ExclusiveStartKey: start }) })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
   const rows = page.Items ?? [];if (rows.length > limit) throw unavailable();
   const invites: z.infer<typeof AppOrgInvitesResponseSchema>["invites"] = [];

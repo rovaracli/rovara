@@ -1,5 +1,5 @@
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
-import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey, orgMetaKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
@@ -30,7 +30,22 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
-  if (command instanceof QueryCommand) { const values = command.input.ExpressionAttributeValues ?? {};return { Items: [...rows.values()].filter(row => row.pk === values[":pk"] && String(row.sk).startsWith(String(values[":prefix"] ?? ""))) }; }
+  if (command instanceof QueryCommand) {
+   const values = command.input.ExpressionAttributeValues ?? {}, after = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
+   const matches = [...rows.values()].filter(row => row.pk === values[":pk"] && String(row.sk).startsWith(String(values[":prefix"] ?? "")) && (after === undefined || String(row.sk) > String(after))).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1);
+   const page = limit === undefined ? matches : matches.slice(0, limit), last = page.at(-1);
+   return { Items: page, ...(limit !== undefined && matches.length > limit && last !== undefined ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
+  }
+  if (command instanceof UpdateCommand) {
+   const input = command.input, values = input.ExpressionAttributeValues ?? {}, key = input.Key ?? {}, row = rows.get(keyOf(key));
+   if (input.UpdateExpression === "SET #count = #count + :one" && input.ConditionExpression === "windowStart = :window AND #count < :limit") {
+    if (row === undefined || row.windowStart !== values[":window"] || typeof row.count !== "number" || typeof values[":limit"] !== "number" || row.count >= values[":limit"]) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...row, count: row.count + 1 });return {};
+   }
+   if (input.UpdateExpression === "SET entityType = :type, windowStart = :window, #count = :one" && input.ConditionExpression === "attribute_not_exists(windowStart) OR windowStart < :window") {
+    if (row?.windowStart !== undefined && !(typeof row.windowStart === "number" && typeof values[":window"] === "number" && row.windowStart < values[":window"])) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...key, entityType: values[":type"], windowStart: values[":window"], count: values[":one"] });return {};
+   }
+   throw new Error("Unsupported fixture rate update.");
+  }
   if (command instanceof DeleteCommand) { rows.delete(keyOf(command.input.Key ?? {}));return {}; }
   if (!(command instanceof TransactWriteCommand)) throw new Error("Unsupported fixture command.");
   const actions = command.input.TransactItems ?? [];
@@ -59,6 +74,7 @@ export function createAdminDirectory() {
  } };
  return {
   setRole,
+  async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },
   evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), audit }; },
