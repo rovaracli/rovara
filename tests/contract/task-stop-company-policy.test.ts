@@ -222,3 +222,16 @@ it("reads a committed policy revision rather than its eventual prior value", asy
   expect(result.body?.defaultStopMicrousd).toBe(2);
   expect(result.body?.revision).toBe(2);
 });
+
+for (const row of ["member", "pointer"] as const) {
+  it(`refuses a revoked company policy actor whose ${row} was deleted`, async () => {
+    const f = fixture();
+    f.policy();
+    f.db.delete(row === "member" ? orgMemberKey(A, who) : developerOrgKey(who));
+    expect((await f.call()).status).toBe(403);
+  });
+}
+it("exports the canonical ceiling micros constant used by both read DTOs", () => {
+  const micros = (Web as unknown as Record<string, unknown>).DEFAULT_MAX_PER_RUN_CEILING_MICROUSD;
+  expect(micros).toBe(100_000_000);
+});
