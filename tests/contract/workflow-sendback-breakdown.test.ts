@@ -168,6 +168,19 @@ describe("a program send-back keeps the approved work breakdown (0.4.17)", () =>
     expect(task.record().workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: BLOCK });
   });
 
+  it("still blocks an unbound run that is not a fix, even though the workflow names an earlier graph operation", async () => {
+    const task = await sentBackTask(true);
+    const sendBack = task.builds()[1]!;
+    const { workflowDependencies: _lost, ...withoutBinding } = sendBack as Record<string, unknown>;
+    void _lost;
+    task.harness.db.set(withoutBinding);
+    // The workflow names the first build as carrying the graph, and this run (not a CI, conflict or feedback fix) was started without one.
+    task.harness.db.set({ ...task.record(), workflow: { ...task.record().workflow, workflowDependenciesOperationId: String(task.first.id) } });
+    expect(task.record().workflow.fixSource).toBeUndefined();
+    await task.finishSendBack(String(sendBack.id));
+    expect(task.record().workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: BLOCK });
+  });
+
   it("leaves a plan without a breakdown unaffected: no binding is made up, and the send-back passes VERIFY", async () => {
     const task = await sentBackTask(false);
     const sendBack = task.builds()[1]!;

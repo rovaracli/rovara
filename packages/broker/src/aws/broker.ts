@@ -15957,12 +15957,12 @@ async function completedWorkflowItems(
           throw new Error(verificationFailure);
         }
         // A custom sequence runs the approved work breakdown in its first build only; its later builds carry none.
-        // 0.4.17: and only the run the workflow names as carrying the graph can have lost it. Every start that carries a binding writes that run's ID onto the workflow in the same transaction
-        // as the operation (workflowWithCurrentGraphOperation), so a run with a different ID was started without a graph on purpose: a CI or conflict fix, which the worker protocol forbids to
-        // carry one. A run that is named but has no binding (or a workflow that names none) still blocks.
+        // 0.4.17: the one run that may go without a graph is a CI, conflict or feedback fix (the worker protocol forbids a fix to carry one), and then only when the workflow names a different run as
+        // carrying the graph. Every start that carries a binding writes that run's ID onto the workflow in the same transaction as the operation (workflowWithCurrentGraphOperation), so a fix
+        // keeps the first build's ID. Any other unbound run still blocks, whatever ID the workflow names.
         if (dependencyBinding === undefined && task.workflow.workflowDependenciesApproval !== undefined && operation.workflowMode === "IMPLEMENT"
           && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)
-          && (task.workflow.workflowDependenciesOperationId === undefined || task.workflow.workflowDependenciesOperationId === operation.id)) {
+          && !(task.workflow.fixSource !== undefined && task.workflow.workflowDependenciesOperationId !== undefined && task.workflow.workflowDependenciesOperationId !== operation.id)) {
           verificationFailure = "approved work breakdown was not carried into this implementation";
           throw new Error(verificationFailure);
         }
