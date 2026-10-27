@@ -52,7 +52,7 @@ describe("browser API boundary", () => {
  });
  it("refuses invite creation when the cookie actor is demoted after authentication", async () => {
   const h = await broker(), send = h.db.send.bind(h.db);let demote = true;h.db.send = async command => { const answer = await send(command);if (demote && command.constructor.name === "GetCommand" && (command.input as { Key?: { pk?: string } }).Key?.pk === `DEVELOPER_ORG#${WHO}`) { demote = false;seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" }); }return answer; };
-  const result = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID(), role: "member" });expect(result.status).toBe(403);expect(h.db.find(row => row.entityType === "ORG_INVITE" || row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST")).toHaveLength(0);expect(demote).toBe(false);
+  const result = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID(), role: "member" });expect(result.status).toBe(403);expect(h.db.find(row => row.entityType === "ORG_INVITE" || row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST").length).toBe(0);expect(demote).toBe(false);
  });
  it("checks Origin and CSRF before any write, with distinct stale recovery", async () => {
   const h = await broker();const body = { requestId: randomUUID(), role: "member" };
