@@ -347,3 +347,6 @@ async function writeDescription(deps: Pick<ProjectSettingsDependencies, "documen
     ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": project, ":active": "active", ":now": new Date().toISOString(), ":unknown": "unknown", ...(empty ? {} : { ":description": description.trim() }) },
   }));
 }
+
+// Lane B: internal read-only working-branch review; no route/save integration yet.
+export { readProjectWorkingBranchPreview, type WorkingBranchReviewDependencies } from "./project-working-branch.js";
