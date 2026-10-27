@@ -838,7 +838,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
     // Validate writes only: historical read/enforcement semantics remain unchanged.
     if (usdToWholeMicrodollars(input.guardrails.maxPerRunCeilingUsd) === undefined) {
-      throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must have at most 6 decimal places");
+      throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };

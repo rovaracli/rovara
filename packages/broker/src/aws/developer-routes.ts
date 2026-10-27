@@ -1,3 +1,5 @@
+// Lane A G1: configured company-default read, with no policy writer.
+import { getTaskStopCompany } from "../org/task-stop-company.js";
 // Lane A G1: narrow read of the existing company ceiling.
 import { getTaskStopCeiling } from "../org/task-stop-ceiling.js";
 // Lane A: read-only monthly base settings; no legacy proxy sync.
@@ -1977,6 +1979,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
   // Lane A G1: no policy write, default inference or paid-start permission.
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-ceiling") return getTaskStopCeiling(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);
   // Lane A: current-org, live-role monthly settings projection.
   if (request.method === "GET" && url.pathname === "/v1/app/org/budget-settings") return getAdminBudgetSettings(deps, caller);
   // Lane A: reviewed creation and actor-bound historical recovery, isolated from legacy onboarding.

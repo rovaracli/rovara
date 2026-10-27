@@ -64,3 +64,6 @@ export { formatUsdMicrodollars } from "./money-format.js";
 
 // Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
 export { TaskStopCeilingReadSchema, type TaskStopCeilingRead } from "./task-stop-ceiling.js";
+
+// Lane A G1: configured company default composed with the one existing ceiling.
+export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "./task-stop-company.js";

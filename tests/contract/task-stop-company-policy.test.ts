@@ -4,9 +4,9 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-    const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
-    const who = "a".repeat(64), other = "b".repeat(64);
-    const path = "/v1/app/org/task-stop-policy";
+const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
+const who = "a".repeat(64);
+const path = "/v1/app/org/task-stop-policy";
 const policyKey = (orgId = A) => ({ pk: `ORG#${orgId}#SETTINGS`, sk: "TASK_STOP_POLICY" });
 function fixture(role = "owner", eventual = false) {
   const db = new FakeDynamoDb(eventual ? { consistency: "eventual" } : undefined);
@@ -180,6 +180,7 @@ it("exports a strict browser-safe DTO that cannot claim readiness", async () => 
   const result = await f.call();
   const schema = (Web as unknown as Record<string, { safeParse(value: unknown): { success: boolean } }>).TaskStopCompanyReadSchema;
   expect(schema).toBeDefined();
+  if (schema === undefined) throw new Error("Company read schema export is missing");
   expect(schema.safeParse(result.body).success).toBe(true);
   for (const extra of [{ locks: "unlocked" }, { calculation: "resolved" }, { enforcement: "active" }, { paidStartAllowed: true }]) {
     expect(schema.safeParse({ ...result.body, ...extra }).success).toBe(false);
@@ -200,3 +201,24 @@ for (const method of ["POST", "PUT", "DELETE"]) {
     expect(f.db.commandNames().length).toBe(0);
   });
 }
+
+it("binds identical policy values and revisions to different company digests", async () => {
+  const f = fixture();
+  f.policy(1);
+  f.policy(1, {}, B);
+  const first = await f.call();
+  f.member(B, "owner");
+  const second = await f.call({ ...f.caller, orgId: B });
+  expect(first.body?.defaultStopMicrousd).toBe(second.body?.defaultStopMicrousd);
+  expect(first.body?.policyDigest === second.body?.policyDigest).toBe(false);
+});
+
+it("reads a committed policy revision rather than its eventual prior value", async () => {
+  const f = fixture("owner", true);
+  f.policy(1);
+  await f.db.send(new TransactWriteCommand({ TransactItems: [{ Update: { TableName: "state", Key: policyKey(), UpdateExpression: "SET #policy = :policy, #revision = :revision", ExpressionAttributeNames: { "#policy": "policy", "#revision": "revision" }, ExpressionAttributeValues: { ":policy": { schemaVersion: 1, defaultStopMicrousd: 2 }, ":revision": 2 } } }] }));
+  const result = await f.call();
+  expect(result.status).toBe(200);
+  expect(result.body?.defaultStopMicrousd).toBe(2);
+  expect(result.body?.revision).toBe(2);
+});

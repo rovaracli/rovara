@@ -266,3 +266,19 @@ it("reads only the narrow company ceiling through real cookie auth and refuses l
  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
 });
+
+
+it("reads configured company defaults through the real cookie boundary without inventing missing settings", async () => {
+  const h = await broker();
+  const path = "/v1/web/org/task-stop-policy";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(503);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.defaultStopMicrousd).toBe(10_000_000);
+  expect(shown.body.locks).toBe("not_loaded");
+  expect(shown.body.enforcement).toBe("not_connected");
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
