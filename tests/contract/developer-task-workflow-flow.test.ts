@@ -4992,6 +4992,25 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
   const pullRequestRecord = (t: { harness: Harness; workspaceId: string }) => t.harness.db.get(`WORKSPACE#${t.workspaceId}`, "PULL_REQUEST#demo#000000000042") as { expectedHeadCommit: string };
   const PUSHED_TEXT = `Pushed the fix to <${PR_URL}|PR #42>. Review it and merge it on GitHub; I'll finish this task when it's merged.`;
 
+  // C59 (0.4.12 review): a push that landed without its callback adds an Update on the pull request's record (its new head, and GitHub's state), and the save that finds the pull request merged
+  // used to add a second Update on the same key through the merged-state items. DynamoDB refuses a transaction with two operations on one item, so the completion could never be saved.
+  it("records a pushed fix GitHub already merged when its push landed without the callback: one update of the pull request's record, and the save completes", async () => {
+    const t = await fixPassed();
+    await t.pass();
+    const [maintain] = maintainOf(t.harness, t.workspaceId);
+    t.gh.state.head = PUSHED;
+    t.gh.state.tree = FIX_TREE;
+    t.gh.state.parent = "d".repeat(40);
+    t.gh.state.pr = "merged";
+    expect(pullRequestRecord(t).expectedHeadCommit).toBe("d".repeat(40));
+    await t.harness.finish(t.workspaceId, maintain!.id, "FAILED", { error: "RUNTIME_UNAVAILABLE: worker callback pull-request-update failed with HTTP 409" });
+    expect(t.harness.db.refusals).toEqual([]);
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE", outcome: "MERGED", pullRequests: [{ state: "MERGED", headSha: PUSHED, headTreeSha: FIX_TREE, candidateDigest: t.fix.digest }] });
+    expect(t.harness.db.get(`WORKSPACE#${t.workspaceId}`, "PULL_REQUEST#demo#000000000042")).toMatchObject({ expectedHeadCommit: PUSHED, state: "merged" });
+    expect(mergedCount(t.harness)).toBe(1);
+    expect(mergedMilestones(t.harness)).toHaveLength(1);
+  });
+
   it("accepts the fix's update callback while GitHub's pull request still shows the head before the push", async () => {
     const t = await fixPassed();
     await t.pass();
