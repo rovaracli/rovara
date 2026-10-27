@@ -1,6 +1,6 @@
 import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
-import { DISPLAY_NAME_MAX_CODE_POINTS, containsEmailAddress } from "./display-name.js";
+import { DISPLAY_NAME_MAX_CODE_POINTS, containsEmailAddress, isReservedDisplayName } from "./display-name.js";
 import { OrgRoleSchema } from "./org.js";
 import { forwardReader } from "./session-views.js";
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
@@ -60,7 +60,8 @@ export const SetMyNameBodySchema = z.object({
     .transform((value) => value.replace(/\s+/gu, " ").trim())
     .refine((value) => value.length > 0 && Array.from(value).length <= DISPLAY_NAME_MAX_CODE_POINTS, `must have 1 to ${String(DISPLAY_NAME_MAX_CODE_POINTS)} characters`)
     .refine((value) => !containsEmailAddress(value), "must not be an email address")
-    .refine((value) => /[\p{L}\p{N}]/u.test(value), "must have a letter or a number"),
+    .refine((value) => /[\p{L}\p{N}]/u.test(value), "must have a letter or a number")
+    .refine((value) => !isReservedDisplayName(value), "can't look like a placeholder name such as Member 3fa9c1d2"),
 }).strict();
 export type SetMyNameBody = z.output<typeof SetMyNameBodySchema>;
 

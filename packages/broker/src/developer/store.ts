@@ -382,6 +382,10 @@ export class DeveloperSignInStore {
     const name = safeChosenName(input.name);
     if (name === undefined) throw agentXError("CONFIG_INVALID", "name: give a name of 1 to 80 characters, with no email address");
     const at = this.iso();
+    // The name already chosen again changes nothing, so it writes and audits nothing.
+    const current = await this.getDeveloper(input.developerId);
+    if (current === undefined) throw agentXError("NOT_FOUND", "your sign-in record was not found; sign in again");
+    if (current.displayNameChosen === true && current.displayName === name) return current;
     const [event] = await tryAuditEvents(this.auditDeps(), () => [auditMemberRenamed({
       orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: at, occurrence: auditOccurrence(input.developerId, at), memberId: input.developerId,
     })]);
@@ -390,13 +394,19 @@ export class DeveloperSignInStore {
         { Update: {
           TableName: this.input.tableName, Key: { pk: `DEVELOPER#${input.developerId}`, sk: META },
           UpdateExpression: "SET displayName = :name, displayNameChosen = :chosen",
-          ConditionExpression: "attribute_exists(pk)",
-          ExpressionAttributeValues: { ":name": name, ":chosen": true },
+          // A person whose sign-in was turned off, or who was merged into another developer, cannot rename (a revocation landing after the session check is caught here).
+          ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(revoked) OR revoked = :false) AND attribute_not_exists(mergedInto)",
+          ExpressionAttributeValues: { ":name": name, ":chosen": true, ":false": false },
         } },
         ...this.pendingFor(event),
       ] }));
     } catch (error) {
-      if (conditionFailed(error)) throw agentXError("NOT_FOUND", "your sign-in record was not found; sign in again");
+      if (error instanceof Error && error.name === "TransactionCanceledException") {
+        const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+        if (reasons?.[0]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
+        throw error;
+      }
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
       throw error;
     }
     await this.flush(event);

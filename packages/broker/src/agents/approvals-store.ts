@@ -23,6 +23,7 @@ import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
 import type { DecideGuard, WriteGateRuntime } from "./write-gate.js";
 import type { AgentRunHost } from "./run-engine.js";
+import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -473,7 +474,14 @@ export async function getAnyApproval(deps: Pick<ApprovalStoreDependencies, "docu
     console.error(JSON.stringify({ component: "broker", level: "error", event: "approval_record_invalid", orgId, approvalId, problem: parsed.error.issues[0]?.path.join(".") ?? "record" }));
     return undefined;
   }
-  return parsed.data as unknown as AnyApprovalRecord;
+  return withReadableOwner(parsed.data as unknown as AnyApprovalRecord);
+}
+
+/** A record as it is read: a run owner stored under their email (an approval made before release 0.4.16) is named without it, in every view and refusal built from the record. */
+function withReadableOwner(record: AnyApprovalRecord): AnyApprovalRecord {
+  if (record.kind === "change" || record.owner === undefined) return record;
+  const name = safeDisplayName(record.owner.name, record.owner.developerId);
+  return name === record.owner.name ? record : { ...record, owner: { ...record.owner, name } };
 }
 
 /** The change record, or undefined when there is none in this org, what is stored is not a record, or it is a step or a write (those are read with `getAnyApproval`). */

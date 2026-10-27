@@ -2212,8 +2212,9 @@ async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller:
       identities: [...new Set(methods)],
     };
   });
-  // The join date orders the list for everyone; only an owner or admin is shown it.
-  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)).map(({ joinedAt, ...rest }) => (admin ? { ...rest, joinedAt } : rest)) };
+  // An owner or admin sees the list in join order, with the dates. A plain member is shown no dates, so the list is not in join order either: it is by name.
+  if (!admin) return { members: listed.sort((left, right) => left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId)).map(({ joinedAt: _joinedAt, ...rest }) => rest) }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
 }
 
 const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();

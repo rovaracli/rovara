@@ -1,23 +1,31 @@
 // Release 0.4.16: a person's email is never their name to anyone else. The email-code ("cloud") sign-in has no name for a person and the provider
 // falls back to their address; every name that is shown to another person goes through here first. A real name stays as it is, a name that holds an
-// address keeps the rest, and a name that is an address (or nothing) becomes the placeholder "Member" with four characters of a hash of the person's id:
+// address keeps the rest, and a name that is an address (or nothing) becomes the placeholder "Member" with eight characters of a hash of the person's id:
 // stable (the same person reads the same on every screen), different for two people, and it tells nobody anything about the person.
 //
 // The email's local part is deliberately not used as the placeholder: "omar.diaz" is the person's real name in most companies, so it would show a name
 // the person never chose to share, and a personal address ("ravi1987") can identify someone outside the company.
 import { createHash } from "node:crypto";
-import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, withoutEmailAddresses } from "@agentx/contracts";
+import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, isReservedDisplayName, withoutEmailAddresses } from "@agentx/contracts";
 
 export { isPlaceholderDisplayName };
 
-/** The name a person without a real name shows as: "Member" and four characters of a hash of their developer id. */
+/** The name a person without a real name shows as: "Member" and eight characters of a hash of their developer id. */
 export function placeholderDisplayName(developerId: string): string {
-  return `Member ${createHash("sha256").update(developerId).digest("hex").slice(0, 4)}`;
+  return `Member ${createHash("sha256").update(developerId).digest("hex").slice(0, 8)}`;
 }
 
 /** The name to show for a person: the stored name without any email address in it, else the placeholder. */
 export function safeDisplayName(name: string | undefined, developerId: string): string {
-  return (name === undefined ? undefined : emailSafeName(name)) ?? placeholderDisplayName(developerId);
+  const safe = name === undefined ? undefined : emailSafeName(name);
+  // A name shaped like a placeholder is nobody's but the placeholder maker's: a person's own stays, any other is no name.
+  if (safe !== undefined && isReservedDisplayName(safe) && safe !== placeholderDisplayName(developerId)) return placeholderDisplayName(developerId);
+  return safe ?? placeholderDisplayName(developerId);
+}
+
+/** An organization name as it is shown: the default name a first sign-in made from an email address ("ravi@example.com's team") reads as "New team". Any other name is as stored. */
+export function safeOrgName(name: string): string {
+  return containsEmailAddress(name) ? "New team" : name;
 }
 
 /**

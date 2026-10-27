@@ -48,6 +48,7 @@ import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditR
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
+import { safeOrgName } from "../developer/person-name.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
 const NOT_EXISTS = "attribute_not_exists(pk)";
@@ -176,7 +177,11 @@ export class OrgStore {
 
   async getOrg(orgId: OrgId): Promise<OrgRecord | undefined> {
     const item = await this.get(orgMetaKey(orgId));
-    return item === undefined ? undefined : (strip(item) as unknown as OrgRecord);
+    if (item === undefined) return undefined;
+    const org = strip(item) as unknown as OrgRecord;
+    // Release 0.4.16: the default name a first sign-in made from an email ("ravi@example.com's team") is never shown to members or invitees.
+    const name = safeOrgName(org.name);
+    return name === org.name ? org : { ...org, name };
   }
 
   /** Owner checked again inside the atomic rename, replay marker and audit transaction. */

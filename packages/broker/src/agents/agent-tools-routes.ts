@@ -35,7 +35,7 @@ import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCach
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";
 import { UNNAMED_MEMBER, effectiveTaskOwner, inertName, ownerDisplayName, tryEffectiveTaskOwner } from "../developer/task-records.js";
-import { personNameForText, withoutEmails } from "../developer/requester-text.js";
+import { personNameForText } from "../developer/requester-text.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
@@ -483,7 +483,7 @@ export function attributionOf(task: DeveloperTaskRecord, agentName: string, gith
 /** The linked GitHub login of the task's owner, asked for only when their display name is an email address (the one case a footer needs it). */
 export async function ownerGithubLoginOf(deps: Pick<AgentToolsDependencies, "githubLoginOf">, task: DeveloperTaskRecord): Promise<string | undefined> {
   const name = ownerDisplayName(task);
-  if (deps.githubLoginOf === undefined || withoutEmails(name) === name.trim()) return undefined;
+  if (deps.githubLoginOf === undefined || personNameForText(name) !== undefined) return undefined;
   const owner = tryEffectiveTaskOwner(task);
   return owner === undefined ? undefined : deps.githubLoginOf(owner.developerId);
 }

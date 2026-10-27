@@ -44,4 +44,4 @@ export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessi
 export * from "./onboarding.js";
 
 export { ChainRunViewReaderSchema } from "./chain-session.js";
-export { isPlaceholderDisplayName } from "./display-name.js";
+export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";

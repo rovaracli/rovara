@@ -43,12 +43,17 @@ export const EMAIL_ADDRESS_SOURCE = "[^\\s@<>()[\\]{},;:\"'`]+@[^\\s@<>()[\\]{},
 
 /** Whether the text holds an email address. */
 export function containsEmailAddress(text: string): boolean {
-  return new RegExp(EMAIL_ADDRESS_SOURCE, "u").test(text);
+  // Stored records are read through this, and an old or partial one may have no text at all.
+  if (typeof text !== "string") return false;
+  const matcher = new RegExp(EMAIL_ADDRESS_SOURCE, "u");
+  // Compatibility forms count too: a fullwidth "＠" or a fullwidth domain is the same address to a person reading it.
+  return matcher.test(text) || matcher.test(text.normalize("NFKC"));
 }
 
 /** The text with every email address taken out, and the empty brackets and spaces they leave tidied away. */
 export function withoutEmailAddresses(text: string): string {
-  return text.replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), " ").replace(/<\s*>|\(\s*\)|\[\s*\]/gu, " ").replace(/<\s*|\s*>/gu, " ").replace(/\s+/gu, " ").trim();
+  const raw = new RegExp(EMAIL_ADDRESS_SOURCE, "u").test(text);
+  return (raw ? text : text.normalize("NFKC")).replace(new RegExp(EMAIL_ADDRESS_SOURCE, "gu"), " ").replace(/<\s*>|\(\s*\)|\[\s*\]/gu, " ").replace(/<\s*|\s*>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 /**
@@ -62,8 +67,15 @@ export function emailSafeName(name: string): string | undefined {
   return /[\p{L}\p{N}]/u.test(stripped) ? cleanDisplayName(stripped) : undefined;
 }
 
-/** The placeholder name of a person with no real name: "Member" and four characters of a hash of their id (the broker makes it; `isPlaceholderDisplayName` knows its shape). */
-const PLACEHOLDER_DISPLAY_NAME = /^Member [0-9a-f]{4}$/u;
+/** The placeholder name of a person with no real name: "Member" and eight characters of a hash of their id (the broker makes it; `isPlaceholderDisplayName` knows its shape). */
+const PLACEHOLDER_DISPLAY_NAME = /^Member [0-9a-f]{4,8}$/u;
+/** Every spelling of that shape, whatever the case or spacing: no person or provider may use one as a name, so nobody reads as another person's placeholder. */
+const RESERVED_DISPLAY_NAME = /^member\s+[0-9a-f]{4,8}$/iu;
+
+/** Whether the name has the shape of a placeholder, which is reserved: a chosen name or a provider's name of this shape is refused or ignored. */
+export function isReservedDisplayName(name: string): boolean {
+  return RESERVED_DISPLAY_NAME.test(name.trim());
+}
 
 /** Whether the name is a placeholder, not a name a person or a sign-in provider gave. */
 export function isPlaceholderDisplayName(name: string): boolean {

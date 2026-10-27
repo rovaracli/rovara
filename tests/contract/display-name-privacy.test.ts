@@ -2,9 +2,9 @@
 // a person by their address) is stored as a placeholder; a person may choose their own name; a sign-in never overwrites a chosen name; and
 // every place that shows a name reads it through the email-safe rule, a stored email included. Names and roles are visible to members;
 // emails, join dates and sign-in methods are for owners and admins (owner decision, option A).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
+import { SLACK_OIDC_ISSUER, agentSessionKey, orgMetaKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { placeholderDisplayName, safeDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { personNameForText } from "../../packages/broker/src/developer/requester-text.js";
@@ -12,6 +12,13 @@ import { startMessage } from "../../packages/broker/src/developer/share-messages
 import { readableTaskComment } from "../../packages/broker/src/developer/page-comments.js";
 import { plainName } from "../../packages/broker/src/aws/task-web.js";
 import { effectiveTaskOwner } from "../../packages/broker/src/developer/task-records.js";
+import { loadTaskPeople } from "../../packages/broker/src/developer/task-people.js";
+import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { createWriteApprovalRecord, getAnyApproval, runOfApproval, forbiddenText } from "../../packages/broker/src/agents/approvals-store.js";
+import { approvalView } from "../../packages/broker/src/agents/approval-routes.js";
+import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { appNav } from "../../packages/broker/src/app-nav/nav.js";
 import { sessionFromItem } from "../../packages/broker/src/agent-sessions/store.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
@@ -22,10 +29,10 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { OIDC_ISSUER, identityHarness } from "../support/developer-fakes.js";
+import { OIDC_ISSUER, httpEvent, identityHarness } from "../support/developer-fakes.js";
 import { TEST_ORG } from "../support/orgs.js";
 
-const PLACEHOLDER = /^Member [0-9a-f]{4}$/;
+const PLACEHOLDER = /^Member [0-9a-f]{8}$/;
 const EMAIL = "omar.diaz@example.com";
 const idOf = (letter: string) => letter.repeat(64);
 
@@ -396,3 +403,200 @@ describe("the other places a person is named", () => {
     expect(text).not.toContain(EMAIL);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Review round 1 (Opus review of abd4a061): C1, I1, I2, I3 and the cheap minors.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("C1: a task's stored People rows from before 0.4.16 stay readable", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111";
+  const slackUserId = "U0BOB0001";
+  const bob = developerIdForSlackUser(slackUserId);
+
+  it("loads a People list that holds a person named by their email, and shows that person without it", async () => {
+    const db = new FakeDynamoDb();
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [
+      { developerId: bob, slackUserId, name: "bob@example.com", role: "owner" },
+      { developerId: idOf("a"), slackUserId: "U0ANN0001", name: "Ann Lee", role: "commenter" },
+    ] });
+    const people = await loadTaskPeople({ documentClient: db, tableName: "state" }, taskId);
+    expect(people?.people.map((person) => person.developerId)).toEqual([bob, idOf("a")]);
+    expect(people?.people[0]?.role).toBe("owner");
+    expect(JSON.stringify(people)).not.toContain("@");
+    expect(people?.people[1]?.name).toBe("Ann Lee");
+  });
+
+  it("still refuses a People row whose name is not a name at all", async () => {
+    const db = new FakeDynamoDb();
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [{ developerId: bob, slackUserId, name: "Bob\u0000", role: "owner" }] });
+    await expect(loadTaskPeople({ documentClient: db, tableName: "state" }, taskId)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+
+  it("reads a task-person registry row stored under an email, comparing the stored identity, and returns the name without the email", async () => {
+    const db = new FakeDynamoDb();
+    const personId = "22222222-2222-4222-8222-222222222222";
+    const owner = idOf("c");
+    db.set({ pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, project: "payments", developerId: owner, provider: "slack", slackUserId: "U0OWNER01" });
+    db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON#${personId}`, schemaVersion: 1, personId, createdAt: "2026-10-01T00:00:00.000Z", developerId: bob, slackUserId, name: "bob@example.com", method: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId });
+    db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON_SUBJECT#${bob}`, schemaVersion: 1, personId, developerId: bob, createdAt: "2026-10-01T00:00:00.000Z" });
+    const deps = {
+      documentClient: db as never, tableName: "state", slackTeamId: "T0TEAM1", now: () => Date.now(), uuid: () => randomUUID(),
+      taskPersonProof: async () => ({ ok: false as const, error: "ineligible" as const }),
+      developerRecord: async () => undefined, projectChannelIds: async () => [], targetProjectAccess: async () => undefined,
+    };
+    const task = db.get(`DEVTASK#${taskId}`, "META") as never;
+    const result = await checkTaskPersonIdentity(deps, task, bob);
+    expect(result.eligible).toBe(false);
+    expect(result.identity).toMatchObject({ developerId: bob, slackUserId, method: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId });
+    expect(result.identity.name).not.toContain("@");
+  });
+});
+
+describe("I1: an approval made before 0.4.16 for an owner stored as an email", () => {
+  const approvalId = "apr_aaaaaaaaaaaaaaaaaaaa";
+  async function legacy() {
+    const db = new FakeDynamoDb();
+    const deps = { documentClient: db as never, tableName: "state", now: Date.now };
+    const created = await createWriteApprovalRecord(deps, {
+      orgId: TEST_ORG, approvalId, kind: "write", subject: { kind: "agent_run", taskId: randomUUID(), stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: {}, argumentsHash: "c".repeat(64),
+      summary: "Create an issue", class: "consequential", approvers: { kind: "ids", ids: [idOf("d")] }, status: "PENDING", project: "payments", owner: { developerId: idOf("d"), name: EMAIL },
+      attempts: 0, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    } as never, [], 8);
+    expect(created).toBe("created");
+    return { db, deps, record: (await getAnyApproval(deps, TEST_ORG, approvalId))! };
+  }
+
+  it("shows the owner without the email in the approval view", async () => {
+    const { record } = await legacy();
+    const view = approvalView({ confirmOrigin: "https://cell.example" }, record) as { owner: { name: string } };
+    expect(view.owner.name).toBe(placeholderDisplayName(idOf("d")));
+    expect(JSON.stringify(view)).not.toContain("@");
+  });
+
+  it("names the owner without the email in the refusal text and the run view", async () => {
+    const { deps, record } = await legacy();
+    expect(forbiddenText(record)).toBe(`Only ${placeholderDisplayName(idOf("d"))} or a project maintainer can decide this.`);
+    expect((await runOfApproval(deps, record))?.owner.name).toBe(placeholderDisplayName(idOf("d")));
+  });
+});
+
+describe("I2: a default organization name made from an email", () => {
+  const legacyName = `${EMAIL}'s team`;
+
+  it("reads as 'New team' from the organization store, an invite and the join answers", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const orgId = await h.orgs.createOrgWithOwner({ name: legacyName, developerId: idOf("e") });
+    expect((await h.orgs.getOrg(orgId))?.name).toBe("New team");
+    const token = (await h.orgs.createInvite({ orgId, createdBy: idOf("e"), role: "member" })).token;
+    expect((await h.orgs.describeInvite(token))?.orgName).toBe("New team");
+    const json = await h.http({ ...httpEvent("GET", `/v1/auth/join?invite=${token}`), headers: { accept: "application/json" } });
+    expect(JSON.parse(json.body)).toMatchObject({ orgName: "New team" });
+    const page = await h.http({ ...httpEvent("GET", `/v1/auth/join?invite=${token}`), headers: { accept: "text/html" } });
+    expect(page.body).not.toContain(EMAIL);
+  });
+
+  it("is what GET /v1/app/me says for a member of such an organization; a real name is untouched", async () => {
+    const h = await broker();
+    h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG))!, name: legacyName });
+    const me = (await h.dev(MAYA, "GET", "/v1/app/me")).body as { org: { name: string } };
+    expect(me.org.name).toBe("New team");
+    expect(JSON.stringify((await h.dev(MAYA, "GET", "/v1/app/org")).body)).not.toContain("@");
+    h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG))!, name: "Acme" });
+    expect(((await h.dev(MAYA, "GET", "/v1/app/me")).body as { org: { name: string } }).org.name).toBe("Acme");
+    const store = new OrgStore({ documentClient: h.db, tableName: "state", now: Date.now });
+    expect((await store.getOrg(TEST_ORG))?.name).toBe("Acme");
+  });
+});
+
+describe("I3: the placeholder is long enough, and a chosen name cannot be someone's placeholder", () => {
+  it("has 32 bits, so two people in one org almost never share one", () => {
+    expect(placeholderDisplayName(idOf("a"))).toMatch(/^Member [0-9a-f]{8}$/);
+    const names = new Set(Array.from({ length: 5000 }, (_, i) => placeholderDisplayName(createHashHex(String(i)))));
+    expect(names.size).toBe(5000);
+  });
+
+  it.each(["Member 3fa9", "member 3FA9", "Member 3fa9c1d2", "MEMBER  3fa9c1d2", "Member abcdef"])("refuses %s as a chosen name", (name) => {
+    expect(SetMyNameBodySchema.safeParse({ name }).success).toBe(false);
+  });
+
+  it("still accepts names that only start with Member", () => {
+    expect(SetMyNameBodySchema.safeParse({ name: "Member of Staff" }).success).toBe(true);
+    expect(SetMyNameBodySchema.safeParse({ name: "Member 3fa9 Jr" }).success).toBe(true);
+  });
+
+  it("treats a provider name of that shape as no name, and keeps a person's own placeholder", () => {
+    expect(safeDisplayName("Member 3fa9", idOf("e"))).toBe(placeholderDisplayName(idOf("e")));
+    expect(safeDisplayName("Member 3fa9c1d2", idOf("e"))).toBe(placeholderDisplayName(idOf("e")));
+    expect(safeDisplayName(placeholderDisplayName(idOf("e")), idOf("e"))).toBe(placeholderDisplayName(idOf("e")));
+  });
+
+  it("stores no impersonating provider name", async () => {
+    const db = new FakeDynamoDb();
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
+    const stolen = placeholderDisplayName(idOf("e"));
+    const record = await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: stolen });
+    expect(record.displayName).toBe(placeholderDisplayName(idOf("c")));
+  });
+});
+
+describe("minors", () => {
+  it("M1: a revoked or merged person cannot rename", async () => {
+    const db = new FakeDynamoDb();
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
+    await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
+    db.set({ ...db.get(`DEVELOPER#${idOf("c")}`, "META")!, revoked: true });
+    await expect(store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" })).rejects.toBeTruthy();
+    db.set({ ...db.get(`DEVELOPER#${idOf("c")}`, "META")!, revoked: false, mergedInto: idOf("d") });
+    await expect(store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" })).rejects.toBeTruthy();
+    expect(db.get(`DEVELOPER#${idOf("c")}`, "META")).toMatchObject({ displayName: "Cy" });
+  });
+
+  it("M2: choosing the name already chosen writes and audits nothing more", async () => {
+    const audit = capturingAuditDeps();
+    const db = new FakeDynamoDb();
+    audit.attach(db);
+    let now = Date.parse("2026-10-27T09:00:00.000Z");
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => now, audit: audit.audit });
+    await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
+    await store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" });
+    now += 1000;
+    const again = await store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" });
+    expect(again).toMatchObject({ displayName: "Cy F", displayNameChosen: true });
+    expect(audit.recordedBy("member.renamed")).toHaveLength(1);
+  });
+
+  it("M2: an audit failure that is not a missing record is not reported as one", async () => {
+    const db = new FakeDynamoDb();
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
+    await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
+    db.injectFault({ command: "TransactWriteCommand", error: { name: "ThrottlingException" } });
+    await expect(store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" })).rejects.toMatchObject({ name: "ThrottlingException" });
+  });
+
+  it("M3: a fullwidth @ does not hide an address", () => {
+    expect(containsEmailAddress("maya＠example.com")).toBe(true);
+    expect(emailSafeName("maya＠example.com")).toBeUndefined();
+    expect(SetMyNameBodySchema.safeParse({ name: "maya＠example.com" }).success).toBe(false);
+  });
+
+  it("M5: a plain member's list is ordered by name, not by join date", async () => {
+    const h = await broker();
+    h.db.set({ pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", developerId: OMAR.developerId, provider: "oidc", displayName: "Aaron", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    const names = ((await h.dev(MAYA, "GET", "/v1/app/org/members")).body.members as Array<{ name: string }>).map((member) => member.name);
+    expect(names).toEqual([...names].sort((left, right) => left.localeCompare(right)));
+  });
+
+  it("M6: the browser allowlist for /me is exactly GET me and PUT me/name", () => {
+    expect(webRouteAllowed("GET", "/v1/web/me")).toBe(true);
+    expect(webRouteAllowed("PUT", "/v1/web/me/name")).toBe(true);
+    for (const [method, path] of [["POST", "/v1/web/me/identities/cloud"], ["DELETE", "/v1/web/me/identities/cloud"], ["PUT", "/v1/web/me/identities/cloud"], ["POST", "/v1/web/me/name"],
+      ["DELETE", "/v1/web/me/name"], ["PUT", "/v1/web/me"], ["PUT", "/v1/web/me/name/x"], ["GET", "/v1/web/me/name"], ["PATCH", "/v1/web/me/name"]] as const) {
+      expect(webRouteAllowed(method, path), `${method} ${path}`).toBe(false);
+    }
+  });
+});
+
+function createHashHex(value: string): string {
+  return createHash("sha256").update(`dev-${value}`).digest("hex");
+}

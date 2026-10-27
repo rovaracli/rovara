@@ -535,7 +535,7 @@ import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/r
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, ownerGithubLoginOf, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
-import { githubLoginOf, personNameForText, withoutEmails } from "../developer/requester-text.js";
+import { githubLoginOf, personNameForText } from "../developer/requester-text.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
 import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
@@ -5703,7 +5703,7 @@ async function attributedBody(
   if (identity.developer) {
     // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
     // C55: never the requester's email address: their display name, else their linked GitHub login (read only when the name is an address), else "the task owner".
-    const login = withoutEmails(identity.developer.name) === identity.developer.name.trim() ? undefined : await githubLoginOfDeveloper(dependencies, identity.developer.developerId);
+    const login = personNameForText(identity.developer.name) !== undefined ? undefined : await githubLoginOfDeveloper(dependencies, identity.developer.developerId);
     const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX", login);
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
