@@ -3,14 +3,14 @@ import { test as base, expect } from "@playwright/test";
 // 'unsafe-inline', blocks it. That report comes from the test tool, not the app, so the guard ignores `style-src-elem` reports while a screenshot is in flight.
 let screenshotsInFlight = 0;
 export const test = base.extend<{ cspGuard: void }>({
- page: async ({ page }, use) => {
+ page: [async ({ page }, use) => {
  const take = page.screenshot.bind(page);
- page.screenshot = (async (options?: Parameters<typeof take>[0]) => {
+ page.screenshot = async options => {
  screenshotsInFlight += 1;
  try { return await take(options); } finally { await page.evaluate(() => undefined).catch(() => undefined);screenshotsInFlight -= 1; }
- }) as typeof take;
+ };
  await use(page);
- },
+ }, { scope: "test" }],
  cspGuard: [async ({ context }, use) => {
  const records: string[] = [];
  await context.exposeBinding("__rovaraReportCsp", (_source, value: unknown) => {
