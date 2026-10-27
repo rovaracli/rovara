@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor, act, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -16,11 +16,12 @@ import { h } from "./support/h.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const member = { developerId: "b".repeat(64), name: "Maya", role: "member", identities: ["github"], joinedAt: "2026-10-01T00:00:00Z" };
-function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; kind?: "web" | "desktop"; state?: unknown; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
+function mount(options: { path?: string; role?: "owner" | "admin" | "member"; theme?: "light" | "dark"; enabled?: boolean; kind?: "web" | "desktop"; state?: unknown; width?: number; respond?: (r: ApiRequest) => Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner", nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, admin: options.enabled ?? true } });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
  const f = fakeHost(async r => options.respond?.(r) ?? { status: 200, body: r.path === "/v1/app/nav" ? nav : r.path === "/v1/app/me" ? me : r.path === "/v1/app/home" ? { cards: [], total: 0 } : { members: [member] } });
  f.host.kind = options.kind ?? "web";
+ f.host.viewport = { width: () => options.width ?? 1280, subscribe: () => () => undefined };
  const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [{ pathname: options.path ?? "/app/admin/people", state: options.state }] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -81,7 +82,7 @@ it("rechecks waiting permissions on same-person admin demotion without retaining
 it("opens only safe bare same-origin confirmation links and drops private queue fields", async () => {
  const urls = ["https://cell.example/v1/app/approve/apr_safe", "https://other.example/v1/app/approve/apr_other", "javascript:alert(1)", "https://cell.example/v1/app/approve/apr_ticket?ticket=unsafe", "https://cell.example/v1/app/approve/apr_fragment#x", "https://cell.example/settings"];
  const f = mount({ path: "/app/admin/waiting", respond: async r => ({ status: 200, body: r.path.includes("/approvals?") ? { approvals: urls.map((confirmUrl, i) => ({ approvalId: `approval-${i}`, status: "PENDING", kind: "step", createdAt: "2026-10-01T00:00:00Z", confirmUrl, prompt: "unneeded private content", email: "synthetic@example.test" })) } : r.path.endsWith("/spend-requests") ? { spendRequests: [] } : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });
- const links = await screen.findAllByRole("link", { name: "Open confirmation" });expect(links).toHaveLength(1);expect(links[0]?.getAttribute("href")).toBe(urls[0]);
+ const buttons = await screen.findAllByRole("button", { name: "Open confirmation" });expect(buttons).toHaveLength(1);expect(f.host.openExternal).not.toHaveBeenCalled();expect(screen.queryByRole("link", { name: "Open confirmation" })).toBeNull();fireEvent.click(buttons[0]!);expect(f.host.openExternal).toHaveBeenCalledExactlyOnceWith(urls[0]);
  const cache = JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }));expect(cache).not.toContain("unneeded private content");expect(cache).not.toContain("synthetic@example.test");expect(cache).not.toContain("other.example");expect(cache).not.toContain("ticket=unsafe");f.close();
 });
 it("keeps working connection data mounted but marks a failed background refresh stale", async () => {
@@ -100,4 +101,17 @@ it("shows declared connection account association without exposing an account id
 it("reads the permitted serving catalog independently of unavailable company sources", async () => {
  const f = mount({ path: "/app/admin/models/available", respond: async r => r.path.endsWith("/model-sources") ? { status: 403, body: {} } : { status: 200, body: r.path === "/v1/app/models" ? bodies[r.path] : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } } });
  await screen.findByText("builtin-model");expect(screen.getByText("Rovara, Personal ChatGPT")).toBeTruthy();expect(screen.getByText(/permission to view/)).toBeTruthy();expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);f.close();
+});
+
+it("keeps filtered waiting counts consistent with visible rows", async () => {
+ const f = area("/app/admin/waiting");await screen.findByText("Approval");const approvals = screen.getByRole("region", { name: "Approvals" });
+ expect(within(approvals).getByText("1 of 1 shown in this list.")).toBeTruthy();fireEvent.change(screen.getByRole("combobox", { name: "Kind" }), { target: { value: "spend" } });
+ expect(within(approvals).getByText("0 of 1 shown in this list.")).toBeTruthy();expect(within(approvals).queryByText("Approval")).toBeNull();fireEvent.change(screen.getByRole("combobox", { name: "Kind" }), { target: { value: "all" } });expect(within(approvals).getByText("1 of 1 shown in this list.")).toBeTruthy();f.close();
+});
+it("hides the waiting navigation link below the supported viewport", async () => {
+ const f = mount({ path: "/app", role: "member", enabled: false, width: 390 });await screen.findByRole("heading", { name: "Home" });expect(screen.queryByRole("link", { name: "Waiting for people" })).toBeNull();f.close();
+});
+it("normalizes configured and serving Bedrock providers at the same cache boundary", async () => {
+ const f = mount({ path: "/app/admin/models/available", respond: async r => ({ status: 200, body: r.path.endsWith("/model-sources") ? { sources: [{ ...source, kind: "bedrock", models: [{ catalog: { provider: "amazon-bedrock", modelId: "bedrock-sample" } }] }], order: [] } : r.path === "/v1/app/models" ? { models: [{ provider: "amazon-bedrock", modelId: "served-bedrock-sample", sources: [source.sourceId] }] } : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });
+ await screen.findByText("bedrock-sample");await screen.findByText("served-bedrock-sample");const cache=JSON.stringify(f.query.getQueriesData({ queryKey: ["admin", "lane-c"] }));expect(cache).not.toContain("amazon-bedrock");expect(cache.match(/"provider":"bedrock"/g)).toHaveLength(2);f.close();
 });

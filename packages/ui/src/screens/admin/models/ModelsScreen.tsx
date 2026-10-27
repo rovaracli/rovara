@@ -6,10 +6,11 @@ import { PageHeader } from "../../../design/PageHeader.js";
 import { DataTable } from "../../../design/DataTable.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadSection, useAdminRead } from "./read.js";
-const catalog = z.object({ provider: z.string().max(100), modelId: z.string().max(256) });
+const modelProvider = z.string().max(100).transform(value => value === "amazon-bedrock" ? "bedrock" : value);
+const catalog = z.object({ provider: modelProvider, modelId: z.string().max(256) });
 const sourcesSchema = z.object({ sources: z.array(z.object({ sourceId: z.string().max(100), kind: z.enum(["anthropic", "openai", "openrouter", "bedrock", "endpoint"]), label: z.string().max(200), hasCredential: z.boolean(), inOrder: z.boolean(), models: z.array(z.object({ catalog })).max(20) })).max(10), order: z.array(z.string().max(100)).max(12) });
 const providers = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "Gateway endpoint" };
-const servingSchema = z.object({ models: z.array(z.object({ provider: z.string().max(100).transform(value => value === "amazon-bedrock" ? "bedrock" : value), modelId: z.string().max(256), sources: z.array(z.string().max(100)).max(12) })).max(1000) });
+const servingSchema = z.object({ models: z.array(z.object({ provider: modelProvider, modelId: z.string().max(256), sources: z.array(z.string().max(100)).max(12) })).max(1000) });
 function ServingCatalog() {
  const read = useAdminRead("serving-models", "/v1/app/models", servingSchema);
  return <><h2>Models returned for this company</h2><ReadSection read={read} label="Permitted model routes">{data => data.models.length === 0 ? <p>No models returned. Provider setup or company rules may block new work. Ask an admin to verify access.</p> : <><DataTable caption="Model routes, unverified provider access" rows={data.models} rowKey={m => `${m.provider}:${m.modelId}`} columns={[
@@ -37,7 +38,7 @@ export function ModelsScreen() {
  </>}
  {tab === "available" && <><h2>Configured model catalog</h2><p>Unverified: the current directory has no fresh per-model check, capability evidence or pricing version. Configured entries are not selectable verified models.</p>
  {data.sources.flatMap(s => s.models).length === 0 ? <p>No company model entries were returned. Model access remains unknown.</p> : <DataTable caption="Configured models, unverified access" rows={data.sources.flatMap(s => s.models.map((m, i) => ({ id: `${s.sourceId}:${i}`, label: s.label, model: m.catalog.modelId, provider: m.catalog.provider })))} rowKey={m => m.id} columns={[
- { key: "model", title: "Model", render: m => <VisibleText text={m.model} /> }, { key: "source", title: "Source", render: m => <VisibleText text={m.label} /> }, { key: "provider", title: "Provider", render: m => <VisibleText text={m.provider === "amazon-bedrock" ? "Amazon Bedrock" : m.provider} /> }, { key: "state", title: "Access", render: () => "Unverified" },
+ { key: "model", title: "Model", render: m => <VisibleText text={m.model} /> }, { key: "source", title: "Source", render: m => <VisibleText text={m.label} /> }, { key: "provider", title: "Provider", render: m => <VisibleText text={m.provider === "bedrock" ? "Amazon Bedrock" : m.provider} /> }, { key: "state", title: "Access", render: () => "Unverified" },
  ]} />}
  <p>Cost unavailable. Stronger-model suggestions require approved rankings, verified access and prices for the same workload. Ask an admin to arrange supported setup, then verify access before selecting a model.</p></>}
  {tab === "steps" && <><h2>Rovara Code choices</h2><p>Effective step choices, policy scope, selection reasons and approved fallbacks cannot be verified in this view yet.</p><DataTable caption="Code step model coverage" rows={["Plan", "Plan check", "Code", "Review"]} rowKey={s => s} columns={[{ key: "step", title: "Step", render: s => s }, { key: "model", title: "Effective model", render: () => "Effective model unavailable" }, { key: "cost", title: "Estimate", render: () => "Cost unavailable" }]} /><p>Quality within budget is the company policy. No provider is enabled here; running task models stay pinned. Verify model access before starting new paid work.</p></>}
