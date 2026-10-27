@@ -1,10 +1,9 @@
 name: CI
 
-# PrepLabsAI/Rovara (public): pull requests and manual runs only, to save Actions minutes. A merge to
-# mainline does not run CI again: its pull request's run already tested the change.
-# PrepLabsAI/Rovara-cloud (private): pull requests into cloud/integration and release/*, pushes to those
-# branches (the backstop for direct pushes, which the Free plan cannot block), and manual runs.
-# A draft pull request runs nothing until it is marked ready for review.
+# PrepLabsAI/Rovara-cloud (private) copy: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the
+# Actions budget). The controller runs it at agreed checkpoints: each release/0.4.x branch before a
+# staging upgrade, security-sensitive merges into cloud/integration, and suspected Linux-only problems.
+# The public PrepLabsAI/Rovara copy of this file keeps its pull_request trigger.
 #
 # This file lives on both repositories, so the Cloud-only parts are guarded by github.repository. A
 # trigger cannot carry an `if`, so the Cloud triggers are narrowed inside `scope` and `local` below (every
@@ -12,10 +11,6 @@ name: CI
 # other branch, runs no job.
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [cloud/integration, "release/**"]
 
 # Read-only by default; a job that needs more says so itself (linux-runtime reads packages, live-aws mints an OIDC token).
 permissions:
