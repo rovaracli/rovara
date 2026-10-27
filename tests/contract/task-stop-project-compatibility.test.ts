@@ -3,6 +3,9 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { ProjectAiSettingsSchema, defaultProjectAiSettings, type ProjectAiSettings } from "../../packages/contracts/src/spend.js";
 import { projectAiKey } from "@agentx/contracts";
 import { applyProjectAiChange, readProjectAiWithRevision, writeProjectAi } from "../../packages/broker/src/spend/settings.js";
+import { resolveRunPayer } from "../../packages/broker/src/agents/runs.js";
+import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 
@@ -77,6 +80,8 @@ for (const [name, value] of [["undefined", undefined], ["null", null], ["missing
     f.db.set({ ...f.db.get(projectAiKey(A, "web")), taskStopPolicy: value });
     const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 }));
     expect(error?.code).toBe("CONFIG_INVALID");
+    expect(error?.message?.includes("project web")).toBe(true);
+    expect(error?.message?.includes("Ask an org owner or admin")).toBe(true);
     expect(f.db.get(projectAiKey(A, "web"))?.revision).toBe(1);
     expect(f.db.transactions().length).toBe(0);
   });
@@ -124,4 +129,27 @@ it("keeps project policy preservation in the caller's org", async () => {
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
   expect(f.db.get(projectAiKey(B, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 1 });
   expect(f.db.get(projectAiKey(B, "web"))?.revision).toBe(5);
+});
+
+for (const firstWrite of [false, true]) {
+  it(`keeps task-stop intent absent after ${firstWrite ? "a first revision0 write" : "an existing policyless document edit"}`, async () => {
+    const f = fixture();
+    if (firstWrite) f.db.delete(projectAiKey(A, "web"));
+    else f.db.set({ ...projectAiKey(A, "web"), entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 200, revision: 1 });
+    const result = await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: firstWrite ? 0 : 1 });
+    expect(Object.hasOwn(f.db.get(projectAiKey(A, "web"))!, "taskStopPolicy")).toBe(false);
+    expect(Object.hasOwn(result.settings, "taskStopPolicy")).toBe(false);
+  });
+}
+it("names the project and org owner/admin remedy when malformed stop settings block a start", async () => {
+  const f = fixture();
+  const deps = { ...f.deps, store: new AgentStore({ documentClient: f.db, tableName: "state", now: f.deps.now }), projectMembers: new FakeProjectMembers(), signInStore: { getDeveloper: async () => undefined }, confirmOrigin: "https://cell.example" };
+  const input = { orgId: A, project: "web", agentId: "rovara-code", origin: "app" as const, startedBy: { developerId: who } };
+  expect((await resolveRunPayer(deps, input)).payer).toEqual({ kind: "member", developerId: who });
+  f.db.set({ ...f.db.get(projectAiKey(A, "web")), taskStopPolicy: { schemaVersion: 1 } });
+  const error = await refused(resolveRunPayer(deps, input));
+  expect(error?.code).toBe("CONFIG_INVALID");
+  expect(error?.message?.includes("project web")).toBe(true);
+  expect(error?.message?.includes("Ask an org owner or admin")).toBe(true);
+  expect(f.db.transactions().length).toBe(0);
 });

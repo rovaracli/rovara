@@ -1137,3 +1137,13 @@ it("preserves future task-stop intent during an ordinary project AI PUT and expo
   expect(member.status).toBe(400);
   expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
 });
+
+
+it("keeps unset task-stop intent absent in the stored row and real project AI PUT reply", async () => {
+  const { db, call } = await routeSetup();
+  db.set({ ...projectAiKey(TEST_ORG, "web"), entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 200, revision: 1 });
+  const result = await call(DANA, "PUT", "/v1/app/projects/web/ai", { monthlyBudgetUsd: 300 });
+  expect(result.status).toBe(200);
+  expect(Object.hasOwn(db.get(projectAiKey(TEST_ORG, "web"))!, "taskStopPolicy")).toBe(false);
+  expect(Object.hasOwn(result.body.settings as Record<string, unknown>, "taskStopPolicy")).toBe(false);
+});
