@@ -153,7 +153,7 @@ describe("the worker's code review", () => {
     const seen: Array<{ role: "CRITIC" | "SECURITY"; prompt: string }> = [];
     try {
       const reports = await runWorkflowReviews({
-        operationId: "11111111-1111-4111-8111-111111111111", rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+        ruleFileBaseCommits: [], operationId: "11111111-1111-4111-8111-111111111111", rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
         piAdapter: adapter(answers, seen), now: () => now, ...(reviewRisk === undefined ? {} : { reviewRisk }),
       });
       return { reports, seen };

@@ -630,7 +630,7 @@ describe("AI-generated PR feedback advisory", () => {
       tests: [{ repositoryId: "app", path: "src.test.ts", operation: "ADD", behavior: "Empty input returns an empty result." }] });
     const adapter = feedbackReviewerSequence([JSON.stringify({ findings: [finding] })], prompts);
     const review = await runWorkflowFeedbackReview({
-      operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
+      ruleFileBaseCommits: [], operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
       taskRequirements: "Return a safe result for empty input.", candidateDigest: fixture.bundle.candidateDigest, rootPath: fixture.rootPath, model: FAUX_MODEL,
       candidate: fixture.candidate, repositories: fixture.repositories, bundles: [{ ref: fixture.bundleRef, bytes: fixture.bytes }],
       piAdapter: { create: async (input) => { sessions.push(input); return adapter.create(input); } },
@@ -645,7 +645,7 @@ describe("AI-generated PR feedback advisory", () => {
     // The step's time limit is the reviewer's: a reviewer that never answers is blocked at it, not at five minutes.
     const slow: PiSessionAdapter = { create: async (input) => ({ ...(await adapter.create(input)), prompt: () => new Promise<void>(() => undefined) }) };
     const timedOut = await runWorkflowFeedbackReview({
-      operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
+      ruleFileBaseCommits: [], operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
       taskRequirements: "Return a safe result for empty input.", candidateDigest: fixture.bundle.candidateDigest, rootPath: fixture.rootPath, model: FAUX_MODEL,
       candidate: fixture.candidate, repositories: fixture.repositories, bundles: [{ ref: fixture.bundleRef, bytes: fixture.bytes }],
       piAdapter: slow, artifactSink: async () => undefined, timeoutMs: 5,

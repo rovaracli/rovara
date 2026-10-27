@@ -94,8 +94,8 @@ async function sentBackTask(withBreakdown: boolean) {
     const done: Record<string, unknown> = { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passingChecks() };
     if (binding !== undefined) {
       const execution = await executeSerialWorkflowDependencies({
-        graph, graphDigest: binding.approval.graphDigest, runId: binding.approval.runId, operationId, initialTreeSha: binding.resumeTreeSha ?? "a".repeat(40), sequenceStart: binding.sequenceStart,
-        resumeProgress: binding.resumeProgress, now: () => new Date().toISOString(),
+        graph, graphDigest: binding.approval.graphDigest, runId: binding.approval.runId, operationId, initialTreeSha: binding.resumeTreeSha ?? "a".repeat(40), ...(binding.sequenceStart === undefined ? {} : { sequenceStart: binding.sequenceStart }),
+        ...(binding.resumeProgress === undefined ? {} : { resumeProgress: binding.resumeProgress }), now: () => new Date().toISOString(),
         persist: async (progress) => { await harness.events(workspaceId, operationId, [{ type: "progress", payload: { workItemProgress: progress } }]); },
         execute: async () => ({ treeSha: "a".repeat(40) }),
       });

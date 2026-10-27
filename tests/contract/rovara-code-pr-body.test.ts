@@ -14,7 +14,7 @@ import { feedbackFixesSection, withFeedbackFixes, withStatusLines } from "../../
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
-import { finishPlanningWithMarkdown, testedPlanDocument } from "../support/plan-documents.js";
+import { finishPlanningWithMarkdown, planAnswer, testedPlanDocument } from "../support/plan-documents.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);
@@ -828,7 +828,7 @@ describe("a pushed fix on a version 2 task", () => {
   const PR_URL = "https://github.com/example/demo/pull/42";
 
   /** The pull request is open with the first description; the fix (tree c) touching infra/ has just passed its checks and reviews. */
-  async function fixPassed(options: { boundTo?: string; beforeOpen?: (harness: Harness, taskId: string, orgId: string) => void } = {}) {
+  async function fixPassed(options: { boundTo?: string; beforeOpen?: (harness: Harness, taskId: string, orgId: string) => void; descriptionUpdateMaxMs?: number; structuredPlan?: boolean } = {}) {
     const state = { head: "d".repeat(40), tree: "b".repeat(40), body: "" };
     const branch = { name: "x" };
     const details = (number: number) => ({ number, url: PR_URL, state: "open" as const, headBranch: branch.name, baseBranch: "main", headCommit: state.head, title: "t", body: state.body });
@@ -841,7 +841,7 @@ describe("a pushed fix on a version 2 task", () => {
       getBranchHead: vi.fn(async () => state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
     };
-    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gateway } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gateway, ...(options.descriptionUpdateMaxMs === undefined ? {} : { descriptionUpdateMaxMs: options.descriptionUpdateMaxMs }) } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = () => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };
@@ -849,8 +849,14 @@ describe("a pushed fix on a version 2 task", () => {
     harness.db.set({ ...record(), workflow: { ...record().workflow, definitionVersion: "1.1.0", checkPolicy: { required: [{ id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } }], optional: [], selectedOptionalIds: [] } } });
     await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
     const plan = "# Plan\n\n1. Fix retry handling.\n";
-    await finishPlanningWithMarkdown(harness, workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), plan, testedPlanDocument());
-    await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex") });
+    const planning = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!;
+    if (options.structuredPlan === true) {
+      // The plan stays the structured document the planning step ended with (so the approved plan has claims and the description has a Proof section).
+      await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(testedPlanDocument()));
+      await harness.finish(workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    } else await finishPlanningWithMarkdown(harness, workspaceId, String(planning.id), plan, testedPlanDocument());
+    const approvedDigest = options.structuredPlan === true ? record().workflow.artifacts.filter((artifact) => artifact.type === "plan").at(-1)!.sha256 : createHash("sha256").update(plan).digest("hex");
+    await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: approvedDigest });
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
     // A session bound to a Linear issue before the pull request is described (the task in this harness has no session of its own).
     const orgOfTask = String((record() as unknown as { orgId: string }).orgId);
@@ -885,6 +891,80 @@ describe("a pushed fix on a version 2 task", () => {
     await harness.artifact(workspaceId, String(reviewTwo.id), "workspace.diff", DIFF(["src/retry.ts", "infra/queue.ts"]));
     return { harness, gateway, state, taskId, workspaceId, record, first, fix, finishReviews: () => reviews(reviewTwo, fix), opened: String(p.body) };
   }
+
+  /** The worker's push of the fix is recorded: the broker rewrites the description. */
+  async function pushFix(t: Awaited<ReturnType<typeof fixPassed>>, afterReviews?: () => void) {
+    await t.finishReviews();
+    afterReviews?.();
+    const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
+    t.state.head = PUSHED;
+    t.state.tree = FIX_TREE;
+    await t.harness.callback(t.workspaceId, maintain.id, "pull-request-update", { repository: "demo", pullRequestNumber: 42, action: "append", headBranch: maintain.maintenance.headBranch, baseBranch: "main", previousCommit: "d".repeat(40), commit: PUSHED });
+    await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", { result: { action: "append", repository: "demo", number: 42, url: PR_URL, state: "open", headBranch: maintain.maintenance.headBranch, baseBranch: "main",
+      previousCommit: "d".repeat(40), commit: PUSHED, treeSha: FIX_TREE, checks: [], reconciled: false } });
+  }
+  const proofPart = (body: string) => { const from = body.indexOf("### Proof"); return from === -1 ? "" : body.slice(from, body.indexOf("## Reviews", from)); };
+
+  it("Playbook: the description rewritten after a pushed fix keeps the Proof section and brings the rest of the block up to date", async () => {
+    const t = await fixPassed({ structuredPlan: true });
+    expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
+    expect(t.state.body).not.toContain("infra/queue.ts");
+    await pushFix(t);
+    expect(t.gateway.updatePullRequest).toHaveBeenCalled();
+    expect(t.state.body).toContain("infra/queue.ts");
+    expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  it("Playbook P2: the rewritten description keeps the Proof section and A2's reviewer-model lines, each once, the Proof section before Reviews", async () => {
+    const t = await fixPassed({ structuredPlan: true });
+    // The reviews of the fixed code ran on the build's own model: the flag A2's dispatch leaves on the task record for this candidate.
+    await pushFix(t, () => t.harness.db.set({ ...t.record(), reviewSameModel: { candidateDigest: t.fix.digest } }));
+    const body = t.state.body;
+    expect(body).toContain("infra/queue.ts");
+    expect(proofPart(body)).toContain("| Requirement | Evidence | Result |");
+    expect(body.match(/Review used the same model as Build\. Enable another model for an independent review\./gu)).toHaveLength(1);
+    expect(body.match(/Reviewed by t\/1/gu)).toHaveLength(1);
+    expect(body.split("### Proof")).toHaveLength(2);
+    expect(body.indexOf("### Proof")).toBeLessThan(body.indexOf("## Reviews"));
+    expect(proofPart(body)).not.toMatch(/Reviewed by|same model/iu);
+    expect(body).toContain("A note from Priya, kept.");
+  });
+
+  it("Playbook P2: with no same-model flag the rewritten description names the reviewer model and has no note", async () => {
+    const t = await fixPassed({ structuredPlan: true });
+    await pushFix(t);
+    expect(t.state.body.match(/Reviewed by t\/1/gu)).toHaveLength(1);
+    expect(t.state.body).not.toContain("Review used the same model as Build");
+    expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
+  });
+
+  it("Playbook: a slow proof read replaces the old Proof table with a short marker, and the rest of the description is still updated (the read is not allowed to abandon the update)", async () => {
+    // The whole update may take 3 seconds; the proof read is given a third of that.
+    const t = await fixPassed({ descriptionUpdateMaxMs: 3_000, structuredPlan: true });
+    const proofBefore = proofPart(t.state.body);
+    expect(proofBefore).toContain("| Requirement | Evidence | Result |");
+    // Once the fix is pushed, storage answers the approved plan's read (the Proof section's input) only when the test lets it.
+    const send = t.harness.s3.send.getMockImplementation()!;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let delayed = 0;
+    let pushed = false;
+    t.harness.s3.send.mockImplementation(async (command) => {
+      if (pushed && command.constructor.name === "GetObjectCommand" && /plan/u.test(command.input.Key ?? "")) { delayed += 1; await held; }
+      return send(command);
+    });
+    pushed = true;
+    await pushFix(t);
+    release();
+    expect(delayed).toBeGreaterThan(0);
+    expect(t.state.body).toContain("infra/queue.ts");
+    // The old table described the code before the fix: the heading stays, its body is exactly the marker, and nothing of the old table is left.
+    expect(proofPart(t.state.body).trimEnd()).toBe("### Proof\n\nProof is being updated for the latest change.");
+    expect(t.state.body).not.toContain("| Requirement | Evidence | Result |");
+    expect(t.state.body.split("### Proof")).toHaveLength(2);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  }, 30_000);
 
   it("adds Fixes <KEY> once to the description when the issue was bound after the pull request opened (Plan 6 Task 20)", async () => {
     const t = await fixPassed();
