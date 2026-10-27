@@ -282,3 +282,19 @@ it("reads configured company defaults through the real cookie boundary without i
   seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
   expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
 });
+
+
+it("reads only a builtin agent's money layer through cookie auth without creating settings", async () => {
+  const h = await broker();
+  const path = "/v1/web/org/task-stop-policy/agents/rovara-code";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.sourceKind).toBe("builtin_absent");
+  expect(shown.body.agentOverride).toEqual({ kind: "inherit" });
+  expect(shown.body.calculation).toBe("unavailable");
+  expect(h.db.get({ pk: `ORG#${TEST_ORG}#BUILTIN_AGENTS`, sk: "rovara-code" })).toBeUndefined();
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});

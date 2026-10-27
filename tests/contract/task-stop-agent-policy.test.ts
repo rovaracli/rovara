@@ -192,3 +192,75 @@ it("exports a strict partial agent-layer DTO without readiness claims", async ()
     expect(schema.safeParse({ ...result.body, ...extra }).success).toBe(false);
   }
 });
+
+it("keeps agent limits in the request org across query spoofing and a live org move", async () => {
+  const f = fixture();
+  f.policy();
+  f.policy(10_000_000, {}, B);
+  f.agent(1);
+  f.db.set({ ...f.db.get(agentKey(A, custom, "META")), ...agentKey(B, custom, "META"), orgId: B, maxPerRunUsd: 2 });
+  expect((await f.readAgent(custom + "?orgId=" + B)).body?.agentOverride).toEqual({ kind: "limited", stopMicrousd: 1_000_000 });
+  const first = await f.readAgent();
+  f.member(B, "owner");
+  expect((await f.readAgent()).status).toBe(403);
+  const second = await f.readAgent(custom, { ...f.caller, orgId: B });
+  expect(second.body?.agentOverride).toEqual({ kind: "limited", stopMicrousd: 2_000_000 });
+  expect(second.body?.sourceDigest === first.body?.sourceDigest).toBe(false);
+});
+it("reads an actually committed agent limit instead of an eventual prior value", async () => {
+  const f = fixture("owner", true);
+  f.policy();
+  f.agent(1);
+  await f.db.send(new TransactWriteCommand({ TransactItems: [{ Update: { TableName: "state", Key: agentKey(A, custom, "META"), UpdateExpression: "SET #amount = :amount", ExpressionAttributeNames: { "#amount": "maxPerRunUsd" }, ExpressionAttributeValues: { ":amount": 2 } } }] }));
+  expect((await f.readAgent()).body?.agentOverride).toEqual({ kind: "limited", stopMicrousd: 2_000_000 });
+});
+it("binds source digest to amount and timestamp instead of read time", async () => {
+  const f = fixture();
+  f.policy();
+  f.agent(1);
+  const first = await f.readAgent();
+  f.deps.now = () => Date.parse("2026-10-27T19:00:00Z");
+  expect((await f.readAgent()).body?.sourceDigest).toBe(first.body?.sourceDigest);
+  f.agent(2);
+  const second = await f.readAgent();
+  expect(second.body?.sourceDigest === first.body?.sourceDigest).toBe(false);
+  f.agent(2, custom, { updatedAt: "2026-10-27T18:01:00.000Z" });
+  expect((await f.readAgent()).body?.sourceDigest === second.body?.sourceDigest).toBe(false);
+});
+for (const [name, extra] of [["foreign org", { orgId: B }], ["foreign agent", { agentId: custom }], ["wrong entity", { entityType: "OTHER" }], ["missing timestamp", { updatedAt: undefined }], ["unsafe pin", { pinnedVersion: Number.MAX_SAFE_INTEGER + 1 }]] as const) {
+  it(`refuses builtin settings with ${name}`, async () => {
+    const f = fixture();
+    f.policy();
+    f.agent(1, builtin, extra);
+    expect((await f.readAgent(builtin)).status).toBe(503);
+  });
+}
+for (const method of ["POST", "PUT", "DELETE"]) {
+  it(`does not add a ${method} agent policy writer`, async () => {
+    const f = fixture();
+    let status: number;
+    try {
+      const result = await routeDeveloperRequest(f.deps, { method, path, headers: {}, requestId: "no-agent-money-write", body: "{}" }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" });
+      status = result === undefined ? 404 : 200;
+    } catch (error) {
+      if (!(error instanceof AgentXError)) throw error;
+      status = errorStatus(error.code);
+    }
+    expect(status).toBe(404);
+    expect(f.db.commandNames().length).toBe(0);
+  });
+}
+
+it("refuses a source returned under another org key even when its body claims this org", async () => {
+  const f = fixture();
+  f.policy();
+  f.agent();
+  const send = f.db.send.bind(f.db);
+  f.db.send = async command => {
+    const result = await send(command);
+    const key = (command.input as { Key?: { pk?: string; sk?: string } }).Key;
+    if (key?.pk === agentKey(A, custom, "META").pk && key.sk === "META") return { Item: { ...f.db.get(agentKey(A, custom, "META")), pk: agentKey(B, custom, "META").pk } };
+    return result;
+  };
+  expect((await f.readAgent()).status).toBe(503);
+});

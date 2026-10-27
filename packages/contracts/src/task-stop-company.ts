@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { OrgIdSchema } from "./org.js";
 import { TaskStopMicrousdSchema } from "./task-stop.js";
-import { DEFAULT_MAX_PER_RUN_CEILING_USD } from "./spend.js";
+import { DEFAULT_MAX_PER_RUN_CEILING_MICROUSD } from "./spend.js";
 export const TaskStopCompanyPolicySchema = z.object({
   schemaVersion: z.literal(1),
   defaultStopMicrousd: TaskStopMicrousdSchema,
@@ -24,7 +24,7 @@ export const TaskStopCompanyReadSchema = z.object({
   calculation: z.literal("unavailable"),
   enforcement: z.literal("not_connected"),
 }).strict().superRefine((value, context) => {
-  if (value.ceilingSource === "configured" ? value.ceilingRevision < 1 : value.ceilingRevision !== 0 || value.ceilingMicrousd !== DEFAULT_MAX_PER_RUN_CEILING_USD * 1_000_000) {
+  if (value.ceilingSource === "configured" ? value.ceilingRevision < 1 : value.ceilingRevision !== 0 || value.ceilingMicrousd !== DEFAULT_MAX_PER_RUN_CEILING_MICROUSD) {
     context.addIssue({ code: "custom", message: "Ceiling source and revision do not agree." });
   }
 });

@@ -157,3 +157,6 @@ export { TaskStopCeilingReadSchema, type TaskStopCeilingRead } from "./task-stop
 
 // Lane A G1: configured company default composed with the one existing ceiling.
 export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "./task-stop-company.js";
+
+// Lane A G1: narrow existing-agent limit read, no start authority.
+export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-agent.js";

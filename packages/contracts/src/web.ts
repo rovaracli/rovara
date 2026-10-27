@@ -67,3 +67,7 @@ export { TaskStopCeilingReadSchema, type TaskStopCeilingRead } from "./task-stop
 
 // Lane A G1: configured company default composed with the one existing ceiling.
 export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "./task-stop-company.js";
+
+// Lane A G1: exact default micros and the narrow existing-agent limit read.
+export { DEFAULT_MAX_PER_RUN_CEILING_MICROUSD } from "./spend.js";
+export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-agent.js";

@@ -100,7 +100,9 @@ export const TESTING_ALLOWANCE_USD = 10;
 export const PER_TEST_CAP_USD = 2;
 
 export const DEFAULT_MAX_AGENT_MONTHLY_USD = 50;
-export const DEFAULT_MAX_PER_RUN_CEILING_USD = 100;
+// Canonical exact default; the legacy USD name is an alias, not another setting.
+export const DEFAULT_MAX_PER_RUN_CEILING_MICROUSD = 100_000_000;
+export const DEFAULT_MAX_PER_RUN_CEILING_USD = DEFAULT_MAX_PER_RUN_CEILING_MICROUSD / 1_000_000;
 export const DEFAULT_OWNER_AGENT_BUDGET_CAP_USD = 100;
 
 /** Estimates come from the last `ESTIMATE_HISTORY_SIZE` runs once there are `ESTIMATE_MIN_SAMPLES` of them. */
