@@ -315,7 +315,8 @@ describe("a review model that the account could not call", () => {
     const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
     // A later build that failed on the other model: it is not the code under review.
     const build = t.byMode("IMPLEMENT")[0]!;
-    t.h.db.set({ ...build, id: randomUUID(), requestId: randomUUID(), status: "FAILED", model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId }, createdAt: "2099-01-01T00:00:00.000Z" });
+    const failedId = randomUUID();
+    t.h.db.set({ ...build, id: failedId, sk: `OPERATION#${failedId}`, requestId: randomUUID(), status: "FAILED", model: { provider: OTHER_CLAUDE.provider, modelId: OTHER_CLAUDE.modelId }, createdAt: "2099-01-01T00:00:00.000Z" });
     await finishReviewWith(t, t.byMode("REVIEW")[0]!, { status: "UNKNOWN", failureReason: "TIMEOUT" });
     await t.retryReviews();
     const second = t.byMode("REVIEW").at(-1)!;

@@ -151,6 +151,12 @@ export const WORKFLOW_REVIEW_FAILURE_REASONS = [
   "SESSION_FAILED", "USAGE_UNAVAILABLE", "BASE_UNAVAILABLE", "DIFF_UNAVAILABLE",
 ] as const;
 
+/**
+ * The sentence a review report carries when its reviewer's model call failed and left it with no answer: the model-call monitor's fixed shape (a failure class, an allow-listed error token, a status, a request id and an
+ * attempt number), never the provider's text. The broker reads it with the plan check's rule for a model the account can't use.
+ */
+export const WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN = /^the model call failed: [A-Za-z0-9 ._:-]{1,250}$/u;
+
 export const WorkflowReviewReportSchema = z.object({
   operationId: z.string().uuid(),
   candidateDigest: DigestSchema,
@@ -173,6 +179,8 @@ export const WorkflowReviewReportSchema = z.object({
   partialDiff: z.literal(true).optional(),
   /** Rovara Code v2: the code reviewer's own risk level for this change (one of three words; the security review states none). Kept only on a 1.1.0 task. */
   risk: z.enum(["low", "medium", "high"]).optional(),
+  /** The reviewer's model call failed and the review has no answer: why, as a fixed sentence (see `WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN`). The model that failed is this report's provider and version. Optional, so reports stored before it parse. */
+  modelFailure: z.string().max(300).regex(WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN).optional(),
   /** Rovara Code v2: the review ran on the same model that wrote the code, because it was the only one the project allowed or the account could use. Set by the broker from the review operation, never by the worker. */
   sameModelAsBuild: z.literal(true).optional(),
 }).strict().superRefine((report, context) => {

@@ -465,7 +465,7 @@ import {
   groundingRoundLapsed, E2E_GROUNDING_ATTEMPT, E2E_GROUNDING_PURPOSE, groundingStartFailureReason, groundingStartItem, markWorkflowE2EGroundingUnavailable, readWorkflowE2EGroundingRecord, recordWorkflowE2EGrounding, requestWorkflowE2EGroundingRound,
   verifyGroundingEvidence, type GroundingRecord, type GroundingUnavailableReason,
 } from "./workflow-e2e-grounding.js";
-import { planQualityFinding } from "@agentx/contracts";
+import { canonicalModelName, planQualityFinding } from "@agentx/contracts";
 import { groundingFindingsOf, plannedExpectation } from "../developer/plan-grounding-findings.js";
 import { handleE2EModelBudgetCallback } from "../e2e/model-budget-endpoint.js";
 import { ModelCheckError, readCurrentTiers, readModelCheck, startModelCheck, untestedRouteSentence, type ModelCheckDependencies } from "../e2e/model-checks.js";
@@ -6051,44 +6051,73 @@ async function reviewerModelOfStep(
   dependencies: AwsBrokerDependencies, orgId: OrgId, workspace: WorkspaceInstance, task: DeveloperTaskRecord, recipe: ResolvedRecipe, programStepId: string | undefined,
   guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
 ): Promise<{ recipe: ResolvedRecipe; sameModelAsBuilder: boolean }> {
-  const unchanged = { recipe, sameModelAsBuilder: false };
   const step = stepForOperation(recipe, "REVIEW", programStepId);
-  if (step === undefined) return unchanged;
+  if (step === undefined) return { recipe, sameModelAsBuilder: false };
   const operations = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
-  const builder = operations
+  // The code under review is the latest build that finished; a later build that failed or was stopped left none.
+  const builds = operations
     .filter((item) => item.workflowMode === "IMPLEMENT" && item.conversationId === task.conversationId)
-    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+  const builder = builds.filter((item) => item.status === "SUCCEEDED").at(-1) ?? builds.at(-1);
   const recorded = ModelSelectionSchema.safeParse(builder?.model);
+  const routing = routingOf(dependencies);
+  // When nothing is chosen the step runs on the project's model (the dispatch's own fallback); when that is the build's model, the review says so.
+  const fallback = projectModel ?? defaultWorkerModel(routing?.rovaraGeography);
+  const own = (step.settings ?? {}) as { model?: unknown; fallbackModel?: unknown };
+  const unchanged = { recipe, sameModelAsBuilder: own.model == null && own.fallbackModel == null && recorded.success && canonicalModelName(recorded.data) === canonicalModelName(fallback) };
   const history = reviewFailures(operations, builder);
   if (history.sinceLatestBuild >= CRITIC_MODEL_ATTEMPTS_MAX) return unchanged;
   // The models of the steps this review must differ in company from; one that recorded none can't be shown to differ, so nothing is chosen and the dispatch's own check decides.
   const targets = crossCompanyTargets(recipe, step, guardrails);
   const priors = targets.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, targets);
   if (priors.some((prior) => prior.model === undefined)) return unchanged;
-  const routing = routingOf(dependencies);
   const chosen = reviewerModelFor({
-    step, builderModel: recorded.success ? recorded.data : projectModel ?? defaultWorkerModel(routing?.rovaraGeography),
+    step, builderModel: recorded.success ? recorded.data : fallback,
     project: { approved }, guardrails, differentCompanyFrom: priors.flatMap((prior) => (prior.model === undefined ? [] : [prior.model])),
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
     unusable: history.models, lastAttempt: history.sinceLatestBuild + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
   });
-  if (chosen === undefined || chosen.chosenBy === "company") return unchanged;
+  // The company's own model stands and says nothing; a choice that couldn't be made leaves the project's model, which may be the build's.
+  if (chosen?.chosenBy === "company") return { recipe, sameModelAsBuilder: false };
+  if (chosen === undefined) return unchanged;
   return {
     recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
     sameModelAsBuilder: chosen.sameModelAsBuilder,
   };
 }
 
-/** The reviews of one workspace that failed because their model could not serve this account (`criticModelUnusable`): the models they ran on, and how many came after the latest build. */
+/**
+ * The reviews of one workspace whose model could not serve this account (`criticModelUnusable`): the models they ran on, and how many came after the latest build. A review fails this way in two shapes:
+ * its operation ended FAILED with the refusal (the operation's own session was refused first), or the operation SUCCEEDED and a reviewer's report says its model call failed (`modelFailure`, a fixed sentence
+ * the worker wrote from the model-call monitor's note, on the report's own provider and version). Each operation counts once.
+ */
 function reviewFailures(operations: ReadonlyArray<Record<string, unknown>>, latestBuild: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestBuild: number } {
-  const failed = operations.filter((item) => item.workflowMode === "REVIEW" && item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined));
   const models: ModelSelection[] = [];
-  for (const item of failed) {
-    const model = ModelSelectionSchema.safeParse(item.model);
-    if (model.success) models.push(model.data);
-  }
+  let sinceLatestBuild = 0;
   const from = typeof latestBuild?.createdAt === "string" ? latestBuild.createdAt : "";
-  return { models, sinceLatestBuild: failed.filter((item) => String(item.createdAt) >= from).length };
+  for (const item of operations) {
+    if (item.workflowMode !== "REVIEW") continue;
+    let failed: ModelSelection | undefined;
+    let unusable = false;
+    if (item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined)) {
+      unusable = true;
+      const model = ModelSelectionSchema.safeParse(item.model);
+      if (model.success) failed = model.data;
+    } else if (item.status === "SUCCEEDED") {
+      const reports = (item.result as { workflowReviews?: unknown } | undefined)?.workflowReviews;
+      for (const report of Array.isArray(reports) ? reports : []) {
+        const { provider, version, modelFailure } = (report ?? {}) as { provider?: unknown; version?: unknown; modelFailure?: unknown };
+        if (typeof modelFailure !== "string" || !criticModelUnusable(modelFailure)) continue;
+        unusable = true;
+        const model = ModelSelectionSchema.safeParse({ provider, modelId: version });
+        if (model.success) failed = model.data;
+      }
+    }
+    if (!unusable) continue;
+    if (failed !== undefined) models.push(failed);
+    if (String(item.createdAt) >= from) sinceLatestBuild += 1;
+  }
+  return { models, sinceLatestBuild };
 }
 
 /**
@@ -16325,8 +16354,9 @@ async function completedWorkflowItems(
         next = task.workflow;
         // The same-model flag is the broker's own record of the dispatch, never the worker's say: a worker's copy is dropped.
         for (const review of reviews) {
-          const { sameModelAsBuild: _reported, ...report } = review as Record<string, unknown>;
-          void _reported;
+          // The model-failure sentence stays on the operation's result, where the next dispatch reads it; it is not kept in the task's workflow.
+          const { sameModelAsBuild: _reported, modelFailure: _failure, ...report } = review as Record<string, unknown>;
+          void _reported; void _failure;
           next = submitWorkflowReview(next, operation.reviewSameModel === true ? { ...report, sameModelAsBuild: true } : report, now);
         }
       } catch {

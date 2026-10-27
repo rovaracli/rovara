@@ -26,7 +26,8 @@ import {
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
 import type { AgentSkillFile } from "../agent-step.js";
@@ -703,6 +704,8 @@ export async function runWorkflowReviews(input: {
     let usageStats: ReturnType<PiSessionHandle["getSessionStats"]> | undefined;
     let usageOutcome: "SUCCEEDED" | "FAILED" = "FAILED";
     let statusOverride: "INTERRUPTED" | undefined = interrupted ? "INTERRUPTED" : undefined;
+    // The reviewer's last model call, when it failed: a fixed sentence from the model-call monitor's note (never the provider's text), cleared when a later call answers.
+    let modelFailure: string | undefined;
     try {
       if (statusOverride !== undefined) throw new Error("review interrupted");
       input.onProgress?.(`AgentX is running the ${role === "CRITIC" ? "code" : "security"} review on this candidate.`);
@@ -726,6 +729,13 @@ export async function runWorkflowReviews(input: {
       unsubscribe = session.subscribe((event: unknown) => {
         const record = event as { type?: unknown; payload?: { type?: unknown }; message?: unknown };
         if (record.type === "message_end" || record.payload?.type === "message_end") response = assistantText(record.message ?? (event as { message?: unknown }).message);
+        const note = sanitizeModelCallEvent(event)?.modelCall;
+        if (note?.outcome === "failed") {
+          const sentence = describeModelCallNote(note);
+          modelFailure = WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN.test(sentence) ? sentence : undefined;
+        } else if (record.type === "message_end" && (record.message as { role?: unknown; stopReason?: unknown } | undefined)?.role === "assistant" && (record.message as { stopReason?: unknown }).stopReason !== "aborted") {
+          modelFailure = undefined;
+        }
       });
       const focus = reviewerFocus(role);
       const stopped = new Promise<"TIMEOUT" | "INTERRUPTED">((resolve) => {
@@ -817,6 +827,8 @@ export async function runWorkflowReviews(input: {
       status: parsed.status,
       ...(statusOverride === undefined ? {} : { status: statusOverride }),
       ...(parsed.failureReason === undefined ? {} : { failureReason: parsed.failureReason }),
+      // A review with no answer because its model call failed says so, so the broker can leave that model out of the next review of the task.
+      ...(parsed.status === "UNKNOWN" && modelFailure !== undefined ? { modelFailure } : {}),
       findings: parsed.findings,
       ...(role === "CRITIC" && input.reviewRisk === true && parsed.risk !== undefined ? { risk: parsed.risk } : {}),
       readOnly: true,
