@@ -83,3 +83,20 @@ for(const area of ["projects","agents"]) it(`drops late ${area} responses from t
 it("strips recipe metadata and private fields from the agent list cache",async()=>{
  const f=mount("/app/admin/agents",{respond:async r=>({status:200,body:r.path.includes("guardrails")?{guardrails,revision:1}:{agents:[{...agent,secretMetadata:"unneeded",email:"synthetic@example.test"}]}})});await screen.findByRole("table");const cached=JSON.stringify(f.query.getQueriesData({queryKey:["admin","agents"]}));expect(cached).not.toContain("unneeded");expect(cached).not.toContain("synthetic@example.test");f.close();
 });
+
+for(const area of ["projects","agents"]) it(`keeps the actual ${area} refresh control focusable and guards duplicate refreshes`,async()=>{
+ const f=mount("/app/admin/"+area);await screen.findByRole("table");const button=screen.getByRole("button",{name:"Refresh "+area});button.focus();
+ let resolve!:(r:ApiResponse)=>void;const pending=new Promise<ApiResponse>(r=>{resolve=r;});let reads=0;f.request.mockImplementation(async()=>{reads++;return pending;});
+ fireEvent.click(button);await waitFor(()=>expect(reads).toBe(1));expect(button.hasAttribute("disabled")).toBe(false);expect(button.getAttribute("aria-disabled")).toBe("true");expect(button.getAttribute("aria-busy")).toBe("true");fireEvent.click(button);expect(reads).toBe(1);
+ await act(async()=>resolve({status:200,body:area==="projects"?{projects:[project]}:{agents:[agent]}}));await waitFor(()=>expect(button.getAttribute("aria-disabled")).not.toBe("true"));expect(screen.getByRole("button",{name:"Refresh "+area})).toBe(button);expect(document.activeElement).toBe(button);f.close();
+});
+for(const area of ["projects","agents"]) it(`keeps the actual ${area} retry control mounted and focused through pending and success`,async()=>{
+ const f=mount("/app/admin/"+area,{respond:async()=>({status:403,body:{}})});await screen.findAllByRole("alert");const button=screen.getAllByRole("button",{name:"Try again"})[0]!;button.focus();
+ let resolve!:(r:ApiResponse)=>void;const pending=new Promise<ApiResponse>(r=>{resolve=r;});let reads=0;f.request.mockImplementation(async()=>{reads++;return pending;});fireEvent.click(button);
+ await waitFor(()=>expect(reads).toBe(1));await waitFor(()=>expect(button.isConnected).toBe(true));expect(button.hasAttribute("disabled")).toBe(false);expect(document.activeElement).toBe(button);
+ await act(async()=>resolve({status:200,body:area==="projects"?{projects:[project]}:{agents:[agent]}}));await screen.findByRole("table");expect(screen.getByRole("button",{name:"Refresh "+area})).toBe(button);expect(document.activeElement).toBe(button);f.close();
+});
+for(const [status,label] of [["unchecked","Not checked yet"],["checking","Checking"],["ready","Ready"],["failed","Failed"],["outdated","Out of date"]]) it(`uses plain project setup words for ${status}`,async()=>{
+ const f=mount("/app/admin/projects",{respond:async()=>({status:200,body:{projects:[{...project,setup:{status}}]}})});await screen.findByRole("table");expect(screen.getByRole("table").textContent).toContain(label);expect(screen.getByRole("table").textContent).toContain("Maintainer");f.close();
+ const detail=mount("/app/admin/projects/payments",{respond:async r=>({status:200,body:r.path.endsWith("/members")?{members:[]}:{...project,setup:{status}}})});await screen.findByText("Setup status: "+label);detail.close();
+});
