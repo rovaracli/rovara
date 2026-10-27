@@ -86,7 +86,7 @@ it("routes an expectedRevision body to the reviewed boundary and exposes only re
  const request = { method: "PUT", path, requestId: "fixture", headers: {}, body: JSON.stringify({ requestId: f.requestId, expectedRevision: 0, order: ["rovara"] }) };
  expect(await routeModelSourceRequest(deps, caller, request, new URL(path, "https://cell.example"))).toEqual({ order: ["rovara"], revision: 1 });
  const listPath = "/v1/app/org/model-sources", result = await routeModelSourceRequest(deps, caller, { ...request, method: "GET", path: listPath, body: "" }, new URL(listPath, "https://cell.example"));
- expect(result).toEqual({ sources: [], order: ["rovara"], revision: 1 });
+ expect(result).toEqual({ orgId: org, developerId: actor, sources: [], order: ["rovara"], revision: 1 });
 });
 it("fails closed on malformed reviewed route input without echoing supplied fields", async () => {
  const { routeModelSourceRequest } = await import("../../packages/broker/src/model-sources/routes.js");const f = fixture(), path = "/v1/app/org/model-sources-order";
@@ -125,4 +125,8 @@ it("validates expected company again at the internal reviewed boundary before an
  const f = fixture(), before = f.db.commandNames().length;
  const input = { orgId: org, expectedOrgId: foreign, by: actor, order: ["rovara"], expectedRevision: 0, request: { orgId: org, developerId: actor, requestId: randomUUID(), fingerprint: "a".repeat(64) } };
  await expect(f.store.setOrder(input)).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.db.commandNames()).toHaveLength(before);expect(f.order()).toBeUndefined();
+});
+it("rejects a reviewed actor mismatch internally before any storage command", async () => {
+ const f=fixture(), before=f.db.commandNames().length, input={orgId:org,by:actor,expectedOrgId:org,expectedDeveloperId:other,expectedRevision:0,order:["rovara"],request:{orgId:org,developerId:actor,requestId:randomUUID(),fingerprint:"a".repeat(64)}};
+ await expect(f.store.setOrder(input)).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.db.commandNames()).toHaveLength(before);expect(f.order()).toBeUndefined();
 });
