@@ -141,7 +141,7 @@ describe("the requalify-schedule unit records that the schedule was enabled", ()
 
 describe("a schedule that was already on before the record existed (ARGUARD M2)", () => {
   const plan = (extra: { requalifyInstalled?: boolean; requalifyScheduleOn?: boolean }, only: Parameters<typeof planTestDeploy>[0]["only"] = ["control-plane-code"]): DeployStep[] => planTestDeploy({
-    env: "agentxlivetest123", only, artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab" }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} }, ...extra,
+    env: "agentxlivetest123", only, artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} }, ...extra,
   });
   const recorded = (steps: DeployStep[]) => steps.filter((step) => step.kind === "record-requalify-enabled");
 
