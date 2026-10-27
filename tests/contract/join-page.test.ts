@@ -102,7 +102,8 @@ describe("GET /v1/auth/join", () => {
   it("reads an admin invite as 'an admin', names the masked address of an email-targeted invite, and says Someone for an unknown creator", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [] });
     const orgId = await acme(h);
-    const token = await inviteTo(h, orgId, { role: "admin", email: "priya@acme.dev", createdBy: "9".repeat(64) });
+    const token = await inviteTo(h, orgId, { role: "admin", email: "priya@acme.dev" });
+    h.db.delete({ pk: `DEVELOPER#${OWNER}`, sk: "META" });
     const page = copy(await get(h, `/v1/auth/join?invite=${token}`));
     expect(page.paragraphs.slice(0, 2)).toEqual(["Someone invited you to join Acme as an admin.", "This invite is for p•••@acme.dev."]);
   });
