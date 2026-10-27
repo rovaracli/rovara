@@ -53,6 +53,17 @@ export async function readProjectPlaybook(deps: ProjectPlaybookReader, orgId: Or
   throw agentXError("PROCESS_UNAVAILABLE", PROCESS_UNAVAILABLE_MESSAGE);
 }
 
+/**
+ * When the playbook document was last written: `exists: false` for a project with no document. The first-version repair (process-layer.ts) uses it to tell a lost write from a
+ * maintainer's choice made since.
+ */
+export async function readProjectPlaybookWrittenAt(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<{ exists: false } | { exists: true; updatedAt: string | undefined }> {
+  const item = await readItem(deps, orgId, project);
+  if (item === undefined) return { exists: false };
+  const updatedAt = item["updatedAt"];
+  return { exists: true, updatedAt: typeof updatedAt === "string" ? updatedAt : undefined };
+}
+
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException"
   || (error.name === "TransactionCanceledException" && (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed"));
 

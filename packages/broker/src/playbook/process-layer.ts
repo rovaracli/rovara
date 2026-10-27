@@ -11,7 +11,7 @@ import {
 } from "@agentx/contracts";
 import type { AgentRecord, AgentStore } from "../agents/store.js";
 import { requireBaseEnabled } from "../agents/guardrails.js";
-import { readProjectPlaybook, writeProjectPlaybook, type ProjectPlaybookWriter } from "./project-playbook-store.js";
+import { readProjectPlaybook, readProjectPlaybookWrittenAt, writeProjectPlaybook, type ProjectPlaybookWriter } from "./project-playbook-store.js";
 import type { ProjectPlaybookDependencies } from "./routes.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 
@@ -76,19 +76,33 @@ export async function postProjectProcess(deps: ProjectPlaybookDependencies, call
  * The hook after a process layer's FIRST version is published (the publish, immediate or confirmed): the project's playbook points at it. It is written right after the publish
  * with the document's revision (the publish transaction is the agent store's, so the two cannot be one); a stale revision is read again, a few times. The playbook is left alone
  * when it already points at this layer, and for any later version: a maintainer who set the project back to the built-in is not switched again by a new version.
+ *
+ * `repair` is the same hook asked again for a version 1 published earlier (a no-op republish, or a confirmation driven again), to mend a playbook write lost with the broker. It
+ * writes only when nobody has written the playbook since version 1 was published: the document is absent, or was last written before `repair.publishedAt`. Otherwise a
+ * maintainer may have set the project back to the built-in since, and that choice stands (final review I1).
  */
 export async function pointPlaybookAtFirstVersion(
-  deps: ProjectPlaybookWriter, agent: Pick<AgentRecord, "orgId" | "agentId" | "purpose" | "owner">, version: number, developerId: string,
+  deps: ProjectPlaybookWriter, agent: Pick<AgentRecord, "orgId" | "agentId" | "purpose" | "owner">, version: number, developerId: string, repair?: { publishedAt: string },
 ): Promise<ProjectPlaybook | undefined> {
   if (agent.purpose !== "process" || version !== 1 || agent.owner.kind !== "project") return undefined;
   const project = agent.owner.project;
   for (let attempt = 0; ; attempt += 1) {
     const current = await readProjectPlaybook(deps, agent.orgId, project, { lenient: true });
     if (current.defaultProcess.kind === "project_process" && current.defaultProcess.agentId === agent.agentId) return current;
+    // Read after the playbook: a write in between shows here as a later time, and the conditional write below refuses one after it.
+    if (repair !== undefined && !writtenBefore(await readProjectPlaybookWrittenAt(deps, agent.orgId, project), repair.publishedAt)) return undefined;
     try {
       return await writeProjectPlaybook(deps, { orgId: agent.orgId, project, developerId, expectedRevision: current.revision, defaultProcess: { kind: "project_process", agentId: agent.agentId } });
     } catch (error) {
       if ((error as { code?: string }).code !== "PLAYBOOK_STALE" || attempt >= 2) throw error;
     }
   }
+}
+
+/** Whether the playbook was never written, or last written strictly before `publishedAt`. A document without a readable time counts as written since: it is left alone. */
+function writtenBefore(written: Awaited<ReturnType<typeof readProjectPlaybookWrittenAt>>, publishedAt: string): boolean {
+  if (!written.exists) return true;
+  const at = written.updatedAt === undefined ? Number.NaN : Date.parse(written.updatedAt);
+  const published = Date.parse(publishedAt);
+  return Number.isFinite(at) && Number.isFinite(published) && at < published;
 }

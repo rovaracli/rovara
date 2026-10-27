@@ -169,6 +169,47 @@ describe("publishing a process layer", () => {
     expect(document(w)).toMatchObject({ revision: 1, defaultProcess: { kind: "project_process", agentId } });
   });
 
+  // Final review I1 (and H3 m1): the repair after a lost playbook write only applies while nobody has written the playbook since version 1 was published.
+  const writer = (w: MergeWorld) => ({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+  const redrive = (w: MergeWorld, agentId: AgentId, draftRevision: number, digest: string) => getApprovalSubjectHandler("agent_publish")!(w.deps, {
+    orgId: ORG_A, approvalId: "apr_r", decidedBy: OLA, subject: { kind: "agent_publish", agentId, draftRevision, digest },
+  } as unknown as ApprovalRecord);
+
+  it("a no-op republish of version 1, or a confirmation redriven, after the project was set back to the built-in leaves it on the built-in", async () => {
+    const w = mergeWorld();
+    const { agentId } = await post(w, MAX);
+    const agent = (await w.store.get(ORG_A, agentId))!;
+    await publishDraft(w.deps, callerOf(w, MAX), agent, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
+    expect(document(w)).toMatchObject({ revision: 1, defaultProcess: { kind: "project_process", agentId } });
+    w.clock.now += 60_000;
+    await writeProjectPlaybook(writer(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 1, defaultProcess: { kind: "builtin" } });
+    w.clock.now += 60_000;
+    const again = await publishDraft(w.deps, callerOf(w, PRIYA), (await w.store.get(ORG_A, agentId))!, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
+    expect(again).toMatchObject({ applied: true, value: { version: 1 } });
+    expect(document(w)).toMatchObject({ revision: 2, defaultProcess: { kind: "builtin" } });
+    await redrive(w, agentId, agent.draftRevision, (await w.store.getVersion(ORG_A, agentId, 1))!.digest);
+    expect(document(w)).toMatchObject({ revision: 2, defaultProcess: { kind: "builtin" } });
+    expect(w.audit.recordedBy("playbook.default_process_changed")).toHaveLength(2);
+  });
+
+  it("still repairs a lost write when the playbook was last written before version 1 was published, by a republish or a redriven confirmation", async () => {
+    for (const how of ["republish", "redrive"] as const) {
+      const w = mergeWorld();
+      // The project chose the built-in explicitly before it had a layer.
+      await writeProjectPlaybook(writer(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "builtin" } });
+      w.clock.now += 60_000;
+      const { agentId } = await post(w, MAX);
+      const agent = (await w.store.get(ORG_A, agentId))!;
+      const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, agentId, "draft"));
+      // Version 1 committed, then the broker died before the playbook write.
+      await w.store.publish({ orgId: ORG_A, agentId, expectedDraftRevision: agent.draftRevision, digest, by: MAX, expectedCurrentVersion: null });
+      w.clock.now += 60_000;
+      if (how === "republish") await publishDraft(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, agentId))!, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
+      else await redrive(w, agentId, agent.draftRevision, digest);
+      expect(document(w), how).toMatchObject({ revision: 2, defaultProcess: { kind: "project_process", agentId } });
+    }
+  });
+
   it("audits process.rolled_back instead of agent.rolled_back for a rollback", async () => {
     const w = mergeWorld();
     const { agentId } = await post(w, MAX);

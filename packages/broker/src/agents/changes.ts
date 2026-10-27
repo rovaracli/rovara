@@ -183,7 +183,7 @@ export async function publishDraft(
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
     // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
-    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId);
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt });
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
@@ -321,8 +321,9 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   requireRovaraCodeBaseForProcess(agent, draft.extends);
   if (agent.currentVersion !== subject.expectedCurrentVersion) {
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
-    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) {
-      await pointPlaybookAtFirstVersion(deps, agent, agent.currentVersion, by);
+    const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
+    if (landed !== undefined && landed.digest === subject.digest) {
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt });
       return;
     }
     throw stale("The published version changed after this was asked. Publish again.");
