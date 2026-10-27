@@ -31,8 +31,9 @@ export function createInviteAdminApi(host: AppHost, orgId: string) {
   return response.body;
  }
  function validScope() { if (!OrgIdSchema.safeParse(orgId).success) throw new ApiError(400, "CONFIG_INVALID", "Check a valid company invite."); }
+ // Broker-configured cloud join sites may differ from the cookie console origin.
  function safeLink(value: string) {
-  try { const url = new URL(value);return url.origin === host.origin && (url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost")) && url.username === "" && url.password === "" && url.pathname.endsWith("/join") && /^(?:#|\?)invite=[A-Za-z0-9_-]{43}$/.test(url.search + url.hash); } catch { return false; }
+  try { const url = new URL(value);return (url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost")) && url.username === "" && url.password === "" && url.pathname.endsWith("/join") && /^(?:#|\?)invite=[A-Za-z0-9_-]{43}$/.test(url.search + url.hash); } catch { return false; }
  }
  return {
   async create(body: z.input<typeof ReviewedInviteCreateBodySchema>) {
