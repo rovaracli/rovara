@@ -695,6 +695,7 @@ describe("I4: the builders", () => {
     ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],
     ["auditOrgRenamed", (occurrence) => builders.auditOrgRenamed({ ...base, occurrence, details })],
     ["auditOrgInviteCreated", (occurrence) => builders.auditOrgInviteCreated({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member", targeted: true })],
+    ["auditOrgInviteRevoked", (occurrence) => builders.auditOrgInviteRevoked({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member" })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],

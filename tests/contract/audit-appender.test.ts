@@ -638,3 +638,7 @@ describe("the SQS batch handler", () => {
 it("appends and verifies the additive invite-creation action and opaque invite target", async () => {
  const h = harness(), inviteId = "11111111-1111-4111-8111-111111111111";const input = event("invite-creation", { eventId: auditEventId("org.invite_created", inviteId), action: "org.invite_created", target: { kind: "invite", id: inviteId }, facts: { role: "member", targeted: true } });await appendAll(h, [input]);const records = recordsOf(h.db);expect(records.length).toBe(1);expect(records[0]?.action).toBe("org.invite_created");expect(records[0]?.target).toEqual({ kind: "invite", id: inviteId });expect(chainOk(h.db)).toEqual({ ok: true });
 });
+
+it("appends and verifies the additive invite-revocation action and opaque invite target", async () => {
+ const h = harness(), inviteId = "11111111-1111-4111-8111-111111111111";const input = event("invite-revocation", { eventId: auditEventId("org.invite_revoked", inviteId), action: "org.invite_revoked", target: { kind: "invite", id: inviteId }, facts: { role: "member" } });await appendAll(h, [input]);const records = recordsOf(h.db);expect(records.length).toBe(1);expect(records[0]?.action).toBe("org.invite_revoked");expect(records[0]?.target).toEqual({ kind: "invite", id: inviteId });expect(chainOk(h.db)).toEqual({ ok: true });
+});
