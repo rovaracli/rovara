@@ -1,3 +1,4 @@
+import { readSlackWorkspaceEvidence } from "../org/slack-workspace-evidence.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
@@ -2069,6 +2070,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const revokeInvite = /^\/v1\/app\/org\/invites\/([^/]+)\/revoke$/.exec(url.pathname);
   if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
+  // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
+    if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
+    return readSlackWorkspaceEvidence(deps, caller);
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/members/lookup") return lookupOrganizationMember(deps, caller, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));

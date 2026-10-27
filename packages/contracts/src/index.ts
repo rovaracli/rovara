@@ -147,3 +147,6 @@ export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMe
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 export * from "./test-proof.js";
+
+// Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
+export * from "./org-slack-workspace-evidence.js";
