@@ -23,8 +23,8 @@ function OrderEditor({available}: Props) {
  const schema=useMemo(()=>sourceOrderSnapshot(context.orgId,context.developerId),[context.orgId,context.developerId]);
  const [open,setOpen]=useState(false),[base,setBase]=useState<SourceOrderSnapshot>(),[draft,setDraft]=useState<string[]>([]),[attempt,setAttempt]=useState<Attempt>(),[busy,setBusy]=useState(false),[sent,setSent]=useState(false),[verified,setVerified]=useState(false),[message,setMessage]=useState<string>(),[checked,setChecked]=useState<SourceOrderSnapshot>();
  const [announcement,setAnnouncement]=useState<string>();
- const draftList=useRef<HTMLOListElement>(null),focusIndex=useRef<number|undefined>(undefined);
- useLayoutEffect(()=>{const index=focusIndex.current;if(index!==undefined){focusIndex.current=undefined;draftList.current?.children[index]?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();}},[draft]);
+ const draftList=useRef<HTMLOListElement>(null),focusMove=useRef<{index:number;direction:-1|1}|undefined>(undefined);
+ useLayoutEffect(()=>{const move=focusMove.current;if(move!==undefined){focusMove.current=undefined;const item=draftList.current?.children[move.index],preferred=item?.querySelector<HTMLButtonElement>(`button[data-move="${move.direction}"]:not(:disabled)`);(preferred??item?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();}},[draft]);
  const alive=useRef(true),version=useRef(0),sending=useRef(false),submitted=useRef(false),ack=useRef<{order:string[];revision:number}|undefined>(undefined),notice=useRef<HTMLParagraphElement>(null);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  useEffect(()=>{if(message&&!busy)notice.current?.focus();},[message,busy]);
@@ -43,9 +43,9 @@ function OrderEditor({available}: Props) {
  function changeOpen(value:boolean){
   if(sending.current&&submitted.current)return;if(value&&!allowed)return;
   const ticket=++version.current;setOpen(value);
-  if(value){setAnnouncement(undefined);focusIndex.current=undefined;setBase(undefined);setDraft([]);setAttempt(undefined);setMessage(undefined);setChecked(undefined);setVerified(false);setSent(false);submitted.current=false;ack.current=undefined;setBusy(true);void load(ticket);}
+  if(value){setAnnouncement(undefined);focusMove.current=undefined;setBase(undefined);setDraft([]);setAttempt(undefined);setMessage(undefined);setChecked(undefined);setVerified(false);setSent(false);submitted.current=false;ack.current=undefined;setBusy(true);void load(ticket);}
  }
- function move(index:number,delta:number){if(busy||attempt||!allowed)return;const next=[...draft],other=index+delta;if(other<0||other>=next.length)return;[next[index],next[other]]=[next[other]!,next[index]!];focusIndex.current=other;setDraft(next);setAnnouncement(`${visibleText(label(next[other]))} moved to position ${other+1} of ${next.length}.`);}
+ function move(index:number,delta:-1|1){if(busy||attempt||!allowed)return;const next=[...draft],other=index+delta;if(other<0||other>=next.length)return;[next[index],next[other]]=[next[other]!,next[index]!];focusMove.current={index:other,direction:delta};setDraft(next);setAnnouncement(`${visibleText(label(next[other]))} moved to position ${other+1} of ${next.length}.`);}
  async function review(){
   if(busy||!allowed||!base||!changed)return;const ticket=version.current;setBusy(true);setMessage(undefined);
   try{const snapshot=await bounded(fresh());if(!valid(ticket))return;if(snapshot.revision!==base.revision||!sameSourceOrder(snapshot.order,base.order)){stale(snapshot);return;}setBase(snapshot);setAttempt({requestId:crypto.randomUUID(),snapshot,order:[...draft]});}
@@ -79,7 +79,7 @@ function OrderEditor({available}: Props) {
  <div aria-busy={busy}><p>Company: <VisibleText text={context.company} /></p><p>Costs can change. Price estimates are unavailable. This does not verify provider or model access.</p><p>Applies when a new route is resolved. Running tasks keep their resolved routes.</p>
  {!base&&busy&&<p role="status">Loading current source order...</p>}
  {base&&busy&&<p role="status">{sent?"Checking the source-order outcome...":"Checking current source order..."}</p>}
- {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{!attempt&&<p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>}{attempt?list(attempt.order):<ol ref={draftList}>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} aria-label={`Move up, ${visibleText(label(id))}`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} aria-label={`Move down, ${visibleText(label(id))}`} onClick={()=>move(index,1)}>Move down</Button></li>)}</ol>}</>}
+ {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{!attempt&&<p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>}{attempt?list(attempt.order):<ol ref={draftList}>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} data-move={-1} aria-label={`Move up, ${visibleText(label(id))}`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} data-move={1} aria-label={`Move down, ${visibleText(label(id))}`} onClick={()=>move(index,1)}>Move down</Button></li>)}</ol>}</>}
  {checked&&<><h3>Checked current order</h3>{list(checked.order)}</>}
  {context.checking&&<p role="status">Checking company access...</p>}
  {message&&<p ref={notice} tabIndex={-1} role={verified?"status":"alert"}>{message}</p>}
