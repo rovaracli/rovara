@@ -48,6 +48,8 @@ export interface TaskAgentRef {
   name: string;
   version: number | "draft";
   builtin: boolean;
+  /** Set when the agent is a project's process layer ("How we work"): its tasks are Rovara Code tasks (`isRovaraCodeTask`). */
+  process?: true;
   /** Only for a draft test run: the draft revision that was read. */
   draftRevision?: number;
   digest: string;
@@ -240,10 +242,15 @@ export async function requireRecipeAllowed(deps: RosterDependencies, orgId: OrgI
 
 const notOnProject = (name: string, project: string) => agentXError("AGENT_NOT_ON_PROJECT", `${name} isn't working on ${project} yet. Ask a project maintainer to add it.`);
 
+/** What every refusal of a process layer says: the same as an agent that is not there (a layer is edited through "How we work", never chosen as an agent). */
+const processLayerRefused = () => agentXError("NOT_FOUND", "no agent has that ID");
+
+const processLayerOf = (agent: AgentRecord, project: string): boolean => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project;
+
 /** A custom agent runs only where a maintainer has put it. */
 async function requireOnRoster(deps: RosterDependencies, orgId: OrgId, project: string, agent: AgentRecord): Promise<void> {
-  // A project's own process layer is never on the roster (it is kept out of every list of agents), and it is how the project works, so it works where it belongs.
-  if (agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project) return;
+  // A project's own process layer is never on the roster (it is kept out of every list of agents); it runs where it belongs, and only as that project's way of working.
+  if (processLayerOf(agent, project)) return;
   if (await readEntry(deps, orgId, project, agent.agentId) === undefined) throw notOnProject(agent.name, project);
 }
 
@@ -295,7 +302,7 @@ async function resolveChosen(
   const name = agent === undefined ? deps.store.builtinName(agentId) : (recipe.chain.at(-1)?.name ?? agent.name);
   await requireRecipeAllowed(deps, orgId, project, name, recipe);
   const digest = recipeDigest(recipe);
-  return { recipe, digest, ref: { agentId, name, version, builtin: agent === undefined, ...(draftRevision === undefined ? {} : { draftRevision }), digest } };
+  return { recipe, digest, ref: { agentId, name, version, builtin: agent === undefined, ...(agent?.purpose === "process" ? { process: true as const } : {}), ...(draftRevision === undefined ? {} : { draftRevision }), digest } };
 }
 
 /** Whether the project is in the company's catalog. */
@@ -319,7 +326,7 @@ function requireNotArchived(agent: AgentRecord): void {
 export async function resolveAgentForTask(
   deps: RosterDependencies,
   caller: AgentCaller,
-  input: { project: string; agent?: { agentId: AgentId; version?: number | "draft" }; role?: ProjectRole; versionApproved?: boolean },
+  input: { project: string; agent?: { agentId: AgentId; version?: number | "draft" }; role?: ProjectRole; versionApproved?: boolean; allowProcessLayer?: boolean },
 ): Promise<{ recipe: ResolvedRecipe; digest: string; ref: TaskAgentRef; testRun: boolean }> {
   if (input.role === undefined) {
     const { role } = deps.checkProjectAccess === undefined ? { role: await roleOnProject(deps, caller, input.project) } : await deps.checkProjectAccess(caller, input.project);
@@ -331,6 +338,8 @@ export async function resolveAgentForTask(
   const { agent } = await requireAgentAccess(deps, caller, agentId, draft ? "edit" : "use");
   await requireAgentEnabled(deps, caller.orgId, agentId);
   if ("owner" in agent) {
+    // A process layer runs only for a start that says it is the project's code intent (`allowProcessLayer`); any other person's run of it is refused.
+    if (!draft && agent.purpose === "process" && input.allowProcessLayer !== true) throw processLayerRefused();
     if (!draft) await requireOnRoster(deps, caller.orgId, input.project, agent);
     requireNotArchived(agent);
   }
@@ -354,6 +363,8 @@ export async function resolveAgentForAutonomousRun(
   if (!isBuiltinAgentId(input.agentId)) {
     agent = await deps.store.get(input.orgId, input.agentId);
     if (agent === undefined) throw agentXError("NOT_FOUND", "no agent has that ID");
+    // An event, a schedule or a chain step with no person never runs a process layer.
+    if (agent.purpose === "process") throw processLayerRefused();
     await requireOnRoster(deps, input.orgId, input.project, agent);
     requireNotArchived(agent);
   }

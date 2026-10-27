@@ -37,7 +37,6 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   LOCAL_OPEN_MAX_MESSAGE,
   LOCAL_OPEN_PER_DEVICE_MAX,
-  ROVARA_CODE_AGENT_ID,
   SESSION_ENDED_MESSAGE,
   SESSION_LEGS_MAX,
   SESSION_RETENTION_DAYS,
@@ -67,6 +66,7 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { projectRepository } from "../agents/comment-trigger-optouts.js";
+import { isRovaraCodeTask } from "../agents/rovara-code-task.js";
 import { errorName, failedIndexes, isTransactionConflict, NOT_EXISTS, type Item, type TransactItem } from "../agents/table-writes.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -145,8 +145,8 @@ export const handoffTaskId = (orgId: OrgId, sessionId: string, requestId: string
 /** The id a cancel for this move is asked with, in the task's own idempotency namespace: not the client's, which could collide with an id the client used on the task page. */
 export const handoffCancelRequestId = (orgId: OrgId, sessionId: string, requestId: string): string => derivedUuid("session-handoff-cancel", orgId, sessionId, requestId);
 
-/** A Rovara Code task, as the broker leaves every task when agents are set up: the built-in agent is on the record. Anything else with an `agent` is an agent-step run. */
-const isAgentStepRun = (task: DeveloperTaskRecord): boolean => task.agent !== undefined && !(task.agent.builtin && task.agent.agentId === ROVARA_CODE_AGENT_ID);
+/** A Rovara Code task, as the broker leaves every task when agents are set up: the built-in agent is on the record. Anything else with an `agent` is an agent-step run; a project's process layer is Rovara Code. */
+const isAgentStepRun = (task: DeveloperTaskRecord): boolean => !isRovaraCodeTask(task);
 
 // ---- the pending record of a cloud start (so a task that is never linked is found and cancelled)
 

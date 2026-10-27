@@ -277,6 +277,8 @@ export interface PrepareRunInput {
   resultContract?: ResultContract;
   /** The owner OK'd the version named (`RunStartOptions.versionApproved`). */
   versionApproved?: true;
+  /** The start is a Rovara Code intent (`RunStartOptions.codeIntent`), the one start that may run the project's process layer. */
+  allowProcessLayer?: true;
   /** The project's repositories, from the revision the task starts on. */
   repositories: ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }>;
   /** The models the project approves (`definition.models.approved`), from the same revision; absent when it lists none. */
@@ -300,6 +302,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
       ...(input.agent === undefined ? {} : { agent: input.agent }),
       ...(input.role === undefined ? {} : { role: input.role }),
       ...(input.versionApproved === true ? { versionApproved: true } : {}),
+      ...(input.allowProcessLayer === true ? { allowProcessLayer: true } : {}),
     });
   } else {
     if (input.agent === undefined) throw agentXError("CONFIG_INVALID", "agent: an autonomous run names its agent");

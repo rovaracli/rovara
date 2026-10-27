@@ -224,3 +224,16 @@ describe("the setup draft", () => {
     expect((h.db.get(`DEVTASK#${taskId}`, "META") as { agent?: Record<string, unknown> }).agent).toMatchObject({ agentId: ROVARA_CODE_AGENT_ID, builtin: true });
   });
 });
+
+describe("a process layer is not an agent anyone can run by id", () => {
+  it("refuses the generic agent runs route for the project's own layer, and starts nothing", async () => {
+    const t = await setup();
+    const agentId = await t.processLayer();
+    t.point(agentId);
+    const reply = await t.dev(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { requestId: randomUUID(), project: "payments", input: { text: "Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(404);
+    expect(reply.body.error).toMatchObject({ code: "NOT_FOUND", message: "no agent has that ID" });
+    expect(t.taskCount()).toBe(0);
+    expect(t.sessions()).toHaveLength(0);
+  });
+});
