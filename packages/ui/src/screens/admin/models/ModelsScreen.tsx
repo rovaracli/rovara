@@ -7,6 +7,7 @@ import { DataTable } from "../../../design/DataTable.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { modelProvider, modelSourcesSnapshot } from "./source-order.js";
+import { ModelSourceGuidance } from "./ModelSourceGuidance.js";
 import { SourceOrderEditor } from "./SourceOrderEditor.js";
 import { ReadSection, useAdminRead } from "./read.js";
 const providers = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "Gateway endpoint" };
@@ -35,6 +36,7 @@ export function ModelsScreen() {
  { key: "access", title: "Model access", render: () => "Unverified" },
  ]} />}
  {(["anthropic", "openai", "openrouter", "bedrock"] as const).filter(kind => !data.sources.some(s => s.kind === kind)).map(kind => <p key={kind}>{providers[kind]}: Not configured as a company source.</p>)}
+ {data.sources.length > 0 && <><h2>Source evidence and setup guidance</h2><div key={`${context.orgId}:${context.developerId}:${context.role}`}>{data.sources.map(source => <ModelSourceGuidance key={source.sourceId} source={source} providerName={providers[source.kind]} />)}</div></>}
  <h2>Source order</h2><ol>{data.order.map(id => <li key={id}><VisibleText text={id === "rovara" ? "Rovara" : id === "personal-chatgpt" ? "Personal ChatGPT" : data.sources.find(s => s.sourceId === id)?.label ?? "Unknown source"} /></li>)}</ol><p>Rovara and Personal ChatGPT remain separate sources. Installation configuration does not establish company access.</p>
  <SourceOrderEditor available={read.isSuccess&&!read.isFetching&&data.orgId===context.orgId&&data.developerId===context.developerId&&data.revision!==undefined&&data.revision<Number.MAX_SAFE_INTEGER&&data.order.length>1} />
  </>}

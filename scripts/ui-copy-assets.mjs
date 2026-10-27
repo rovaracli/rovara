@@ -6,7 +6,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Lane C2: owned audit filter styles.
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.
- "screens/admin/connections/connections.css"]) {
+ "screens/admin/connections/connections.css",
+ // Lane C14: owned Models source guidance styles.
+ "screens/admin/models/model-source-guidance.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
