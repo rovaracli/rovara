@@ -13,13 +13,13 @@ import { failureText, useAgentMembers } from "../agents/agent-context.js";
 import { RecipeDiffView, useRecipeDiff } from "../builder/RecipeDiffView.js";
 import { PendingConfirmation, rolledBackMessage } from "./PendingConfirmation.js";
 /** The versions of the project's process layer: who published each, when, the note, whether it was a less-safe change, and Rollback for a maintainer. */
-export function HowWeWorkHistory({ project, agentId, canEdit, onChanged }: { project: string; agentId: string; canEdit: boolean; onChanged: () => void }) {
+export function HowWeWorkHistory({ project, agentId, canEdit, inUse = true, onChanged }: { project: string; agentId: string; canEdit: boolean; /** Whether the project runs this layer; when it runs the built-in, the current version is saved, not in use. */ inUse?: boolean; onChanged: () => void }) {
  const read = useAgentVersions(agentId), members = useAgentMembers(read.data !== undefined), names = new Map(members.data?.members.map(member => [member.developerId, member.name]) ?? []), [target, setTarget] = useState<number>();
  const opener = useRef<HTMLElement | null>(null);
  return <section className="rv-project-section" aria-labelledby="hww-history"><h2 id="hww-history" tabIndex={-1}>History</h2>
   {read.isPending ? <Skeleton label="Loading the history" /> : read.isError ? <p role="alert"><VisibleText text={failureText(read.error, "Couldn't read the history.")} /></p> : read.data.versions.length === 0 ? <p className="rv-muted">No versions yet. Publish your first change to start the history.</p> :
    <ol className="rv-hww-history">{[...read.data.versions].sort((a, b) => b.version - a.version).map(version => <li key={version.version}>
-    <h3>Version {version.version}{version.current === true ? " · Running now" : ""}</h3>
+    <h3>Version {version.version}{version.current === true ? (inUse ? " · Running now" : " · Saved, not in use") : ""}</h3>
     <p className="rv-muted">{version.publishedBy !== undefined && <>By <VisibleText text={names.get(version.publishedBy) ?? "A team member"} /> </>}{version.publishedAt !== undefined && <RelativeTime at={version.publishedAt} />}</p>
     {version.note !== undefined && version.note !== "" && <p><VisibleText text={version.note} /></p>}
     {(version.safety === "less_safe" || (version.lessSafe?.length ?? 0) > 0) && <p><span className="rv-hww-marker" data-marker="less-safe">Less-safe change</span></p>}
@@ -43,7 +43,7 @@ function RollbackDialog({ project, agentId, version, current, opener, onClose, o
  }
  async function check() {
   setChecking(true);
-  try { const fresh = await how.view(project);query.setQueryData([...howWeWorkKey(project), "view"], fresh);if (fresh.process.version === version) { setPending(undefined);setDone(true);onChanged(); } }
+  try { const fresh = await how.view(project);query.setQueryData([...howWeWorkKey(project), "view"], fresh);if ((fresh.process.kind === "project_process" ? fresh.process.version : fresh.process.draftLayer?.currentVersion) === version) { setPending(undefined);setDone(true);onChanged(); } }
   catch (failure) { setError(failureText(failure, "Couldn't check the status. Try again.")); }
   finally { setChecking(false); }
  }

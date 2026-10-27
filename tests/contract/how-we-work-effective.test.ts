@@ -258,6 +258,21 @@ describe("a process layer", () => {
     expect(stage(v, "check").who.thinking).toEqual({ value: null, source: "rovara", locked: false });
   });
 
+  it("says which version the layer has when the project runs the built-in with a published layer (final review I3)", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    const layer = await w.store.create({ orgId: ORG_A, name: "web process", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX });
+    await w.store.publish({ orgId: ORG_A, agentId: layer.agentId, expectedDraftRevision: layer.draftRevision, digest: "a".repeat(64), by: MAX });
+    // The maintainer set the project back to the built-in (or the first version's playbook write never happened).
+    await writeProjectPlaybook(deps(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "builtin" } });
+    const v = await view(w);
+    expect(v.process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, draftLayer: { agentId: layer.agentId, draftRevision: layer.draftRevision, currentVersion: 1 } });
+    expect(HowWeWorkViewSchema.parse(v)).toEqual(v);
+    // An archived layer's version can't be chosen, so it is not offered.
+    await w.store.archive(ORG_A, layer.agentId, MAX);
+    expect((await view(w)).process.draftLayer).not.toHaveProperty("currentVersion");
+  });
+
   it("falls back to Rovara's process when the layer is only a draft, and refuses a pointer that no longer holds", async () => {
     const w = mergeWorld();
     await adoptVersion2(w);

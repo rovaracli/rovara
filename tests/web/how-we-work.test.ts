@@ -346,6 +346,52 @@ describe("a project that still runs the built-in process", () => {
  });
 });
 
+describe("a project that runs the built-in while its How we work layer has saved versions (final review I3)", () => {
+ const savedVersion = () => howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code", draftLayer: { agentId: LAYER, draftRevision: 3, currentVersion: 2 } }, rules: [] });
+ const playbookPut: Handler = (request, url) => url.pathname === "/v1/app/projects/payments/playbook" && request.method === "PUT" ? { status: 200, body: { playbook: { revision: 2, defaultProcess: { kind: "project_process", agentId: LAYER } } } } : undefined;
+ it("says plainly that the project runs Rovara Code's defaults, and lists the saved versions as not in use", async () => {
+  await open({ view: savedVersion(), handle: playbookPut });
+  const notice = screen.getByRole("region", { name: "Saved version" });
+  expect(notice.textContent).toContain("This project runs Rovara Code's defaults.");
+  expect(notice.textContent).toContain("A saved How we work version exists (version 2).");
+  expect(within(notice).getByRole("button", { name: "Use it" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Version 2 · Saved, not in use" })).toBeTruthy();
+  expect(screen.queryByText(/No versions yet/u)).toBeNull();
+  expect(screen.queryByText(/Running now/u)).toBeNull();
+ });
+ it("Use it makes the saved version the project's default through the playbook, under the revision it read", async () => {
+  const f = await open({ view: savedVersion(), handle: playbookPut });
+  const reads = f.calls().filter(call => call === "GET /v1/app/projects/payments/how-we-work").length;
+  fireEvent.click(within(screen.getByRole("region", { name: "Saved version" })).getByRole("button", { name: "Use it" }));
+  await waitFor(() => expect(f.sent().map(request => request.method + " " + request.path)).toEqual(["PUT /v1/app/projects/payments/playbook"]));
+  expect(f.sent()[0]!.body).toEqual({ expectedRevision: 1, defaultProcess: { kind: "project_process", agentId: LAYER } });
+  await waitFor(() => expect(f.calls().filter(call => call === "GET /v1/app/projects/payments/how-we-work").length).toBeGreaterThan(reads));
+ });
+ it("shows a refused Use it, and leaves the project as it was", async () => {
+  await open({ view: savedVersion(), handle: (request, url) => url.pathname === "/v1/app/projects/payments/playbook" ? { status: 409, body: { error: { code: "PLAYBOOK_STALE", message: "Someone else changed how this project works. Reload and try again." } } } : undefined });
+  fireEvent.click(screen.getByRole("button", { name: "Use it" }));
+  expect((await screen.findByRole("alert")).textContent).toMatch(/Reload and try again|Couldn't/u);
+ });
+ it("Review changes compares the draft with the saved version and says publishing does not switch the project", async () => {
+  const f = await open({ view: savedVersion(), handle: playbookPut });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+  const dialog = await screen.findByRole("dialog", { name: "Review changes" });
+  await within(dialog).findByText("What changes");
+  expect(dialog.textContent).toContain("This project runs Rovara Code's defaults. Publishing saves a new version but does not switch the project to it.");
+  expect(dialog.textContent).not.toContain("Publishing changes how new tasks work");
+  const diffs = f.request.mock.calls.map(([request]) => request.path).filter(path => path.includes("/diff"));
+  expect(diffs.length).toBeGreaterThan(0);
+  for (const path of diffs) expect(new URL(path, "https://cell.example").searchParams.get("from")).toBe("2");
+ });
+ it("a viewer sees the same words without Use it", async () => {
+  await open({ view: savedVersion(), canEdit: false });
+  const notice = screen.getByRole("region", { name: "Saved version" });
+  expect(notice.textContent).toContain("This project runs Rovara Code's defaults.");
+  expect(within(notice).queryByRole("button", { name: "Use it" })).toBeNull();
+ });
+});
+
 for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
  const f = await open({ theme });
  await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Keep changes small."));

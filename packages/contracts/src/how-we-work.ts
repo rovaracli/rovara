@@ -83,8 +83,11 @@ export const HowWeWorkViewSchema = z
         agentId: z.string().min(1).max(HOW_WE_WORK_LINE_MAX),
         version: z.number().int().min(1).optional(),
         draftRevision: z.number().int().min(0).optional(),
-        /** Set while the playbook still runs the built-in and the project already has a process layer (saved, never published): where its draft is. */
-        draftLayer: z.object({ agentId: z.string().min(1).max(HOW_WE_WORK_LINE_MAX), draftRevision: z.number().int().min(0) }).strict().optional(),
+        /**
+         * Set while the playbook still runs the built-in and the project already has a process layer: where its draft is, and its current version when it has published one (the
+         * project was set back to the built-in, or the first version's playbook write was lost). The project does not run that version.
+         */
+        draftLayer: z.object({ agentId: z.string().min(1).max(HOW_WE_WORK_LINE_MAX), draftRevision: z.number().int().min(0), currentVersion: z.number().int().min(1).optional() }).strict().optional(),
       })
       .strict(),
     stages: z.array(HowWeWorkStageSchema).max(HOW_WE_WORK_STAGES_MAX),

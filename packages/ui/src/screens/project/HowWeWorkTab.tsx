@@ -16,12 +16,14 @@ import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
 import { cleanRuleText, ruleTooLong } from "./rule-text.js";
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [{ value: "all", label: "All" }, { value: "changed", label: "Changed here" }, { value: "locked", label: "Locked" }];
+const NOT_IN_USE = "This project runs Rovara Code's defaults.";
 const LESS_SAFE_HINT = "Changing these instructions needs someone else who can approve changes in this project to confirm it.";
 /** The "How we work" tab: Rovara Code's stages as cards of six marked rows. A maintainer edits the team's rules (project-wide and per stage) as a draft of the project's process layer, then reviews and publishes it. */
 export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: boolean }) {
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
  const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState(false);
+ const [choosing, setChoosing] = useState(false), [chooseError, setChooseError] = useState<string>();
  const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured ?? data.process.draftLayer?.agentId;
  const draftKey = [...howWeWorkKey(project), "draft", layerId] as const;
  const draft = useQuery({ queryKey: draftKey, enabled: canEdit && layerId !== undefined, queryFn: () => builder.draft(layerId!) });
@@ -51,9 +53,24 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   } finally { setSaving(false); }
  }
  function refresh() { void query.invalidateQueries({ queryKey: howWeWorkKey(project) });if (layerId !== undefined) void query.invalidateQueries({ queryKey: ["agent", layerId] }); }
- const published = data.process.kind === "project_process" ? data.process.version : undefined;
+ /** A version of the layer the project does not run (it was set back to the built-in): shown as such, offered, and what a publish is compared with. */
+ const savedVersion = data.process.kind === "builtin" ? data.process.draftLayer?.currentVersion : undefined;
+ const published = data.process.kind === "project_process" ? data.process.version : savedVersion;
+ /** "Use it": the saved version becomes the project's default, under the playbook revision this page read. */
+ async function chooseSaved() {
+  if (layerId === undefined || choosing) return;
+  setChoosing(true);setChooseError(undefined);
+  try { await how.useLayer(project, data!.playbookRevision, layerId);refresh(); }
+  catch (failure) { setChooseError(failureText(failure, "Couldn't switch to the saved version. Try again.")); }
+  finally { setChoosing(false); }
+ }
  return <section className="rv-hww" aria-label="How we work">
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
+  {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">
+   <p>{NOT_IN_USE} A saved How we work version exists (version {savedVersion}).</p>
+   {canEdit && <Button busy={choosing} onClick={() => { void chooseSaved(); }}>Use it</Button>}
+   {chooseError !== undefined && <p role="alert"><VisibleText text={chooseError} /></p>}
+  </section>}
   <ol className="rv-hww-stages" aria-label="Stages">{data.stages.map(stage => <li key={stage.id}><button type="button" className="rv-hww-stage" onClick={() => { const card = document.getElementById(stageDomId(stage.id) + "-title");card?.scrollIntoView({ block: "start" });card?.focus(); }}><VisibleText text={stage.name} />{hasChanged(stage, data) && <span className="rv-muted"> (changed here)</span>}</button></li>)}</ol>
   <div className="rv-hww-controls">
    <fieldset className="rv-hww-filter"><legend>Show</legend>{FILTERS.map(option => <label key={option.value}><input type="radio" name="hww-filter" value={option.value} checked={filter === option.value} onChange={() => setFilter(option.value)} /> {option.label}</label>)}</fieldset>
@@ -65,12 +82,12 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
   {canEdit && <div className="rv-hww-actions">
    <Button variant="primary" busy={saving} disabled={!dirty || tooLong} onClick={() => { void save(); }}>Save draft</Button>
-   <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} onPublished={refresh} />
+   <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} notInUse={savedVersion !== undefined} onPublished={refresh} />
    {dirty && <p className="rv-muted">You have edits that aren't saved. Save the draft to review them.</p>}
    {saved && <p role="status">Draft saved. Review changes to publish it.</p>}
    {saveError !== undefined && <p role="alert"><VisibleText text={saveError} /></p>}
    {tooLong && <p role="alert">One of the texts is too long. Shorten it to save.</p>}
   </div>}
-  {layerId !== undefined && data.process.kind === "project_process" ? <HowWeWorkHistory project={project} agentId={layerId} canEdit={canEdit} onChanged={refresh} /> : <section className="rv-project-section" aria-labelledby="hww-history"><h2 id="hww-history">History</h2><p className="rv-muted">No versions yet. Publish your first change to start the history.</p></section>}
+  {layerId !== undefined && (data.process.kind === "project_process" || savedVersion !== undefined) ? <HowWeWorkHistory project={project} agentId={layerId} canEdit={canEdit} inUse={data.process.kind === "project_process"} onChanged={refresh} /> : <section className="rv-project-section" aria-labelledby="hww-history"><h2 id="hww-history">History</h2><p className="rv-muted">No versions yet. Publish your first change to start the history.</p></section>}
  </section>;
 }

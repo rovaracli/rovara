@@ -13,7 +13,7 @@ import { RecipeDiffView, useRecipeDiff } from "../builder/RecipeDiffView.js";
 import { summariseChange } from "./how-we-work-summary.js";
 import { PendingConfirmation, publishedMessage } from "./PendingConfirmation.js";
 /** "Review changes": what the draft changes against what runs now, the less-safe reasons, and Publish. A less-safe change waits for a second person; the page says so and never claims it is live. */
-export function ReviewChangesDialog({ project, agentId, from, revision, disabled, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; onPublished: () => void }) {
+export function ReviewChangesDialog({ project, agentId, from, revision, disabled, notInUse = false, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; /** The project runs the built-in, not this layer: a publish saves a version only. */ notInUse?: boolean; onPublished: () => void }) {
  const [open, setOpen] = useState(false), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [published, setPublished] = useState<number>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), [checking, setChecking] = useState(false);
  const sending = useRef(false), intent = useRef<{ body: string; id: string } | undefined>(undefined), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), diff = useRecipeDiff(agentId, from, "draft", open, revision);
  const summary = diff.data === undefined ? undefined : (() => { try { return summariseChange(diff.data); } catch { return undefined; } })(), empty = diff.data !== undefined && diff.data.changes.length === 0;
@@ -33,13 +33,13 @@ export function ReviewChangesDialog({ project, agentId, from, revision, disabled
   setChecking(true);
   try {
    const fresh = await how.view(project);query.setQueryData([...howWeWorkKey(project), "view"], fresh);
-   const version = fresh.process.version;
+   const version = fresh.process.kind === "project_process" ? fresh.process.version : fresh.process.draftLayer?.currentVersion;
    if (version !== undefined && (from === "base" || version > from)) { setPending(undefined);setPublished(version);onPublished(); }
   } catch (failure) { setError(failureText(failure, "Couldn't check the status. Try again.")); }
   finally { setChecking(false); }
  }
  return <Dialog className="rv-publish-review" title="Review changes" open={open} onOpenChange={value => { if (busy) return;if (value) { setNote("");setError(undefined);setPublished(undefined);setPending(undefined); }setOpen(value); }} trigger={<Button variant="primary" disabled={disabled}>Review changes</Button>}>
-  <p>Publishing changes how new tasks work. Running tasks keep their version.</p>
+  <p>{notInUse ? "This project runs Rovara Code's defaults. Publishing saves a new version but does not switch the project to it." : "Publishing changes how new tasks work. Running tasks keep their version."}</p>
   {diff.isPending ? <p role="status">Loading the changes</p> : diff.isError ? <p role="alert"><VisibleText text={failureText(diff.error, "Couldn't read these changes. Close this and try again.")} /></p> : <>
    {empty ? <p>There are no changes to publish.</p> : summary !== undefined && <section aria-label="What changes"><h3>What changes</h3><ul>{summary.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul></section>}
    {summary !== undefined && summary.lessSafe.length > 0 && <section aria-label="Needs someone else to confirm"><h3>Needs someone else to confirm</h3><p>These changes are less safe. Someone else who can approve changes in this project confirms them before they apply.</p><ul>{summary.lessSafe.map((reason, index) => <li key={index}><VisibleText text={reason} /></li>)}</ul></section>}

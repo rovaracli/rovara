@@ -79,7 +79,10 @@ async function runningProcess(deps: HowWeWorkDependencies, orgId: OrgId, name: s
   if (playbook.defaultProcess.kind === "builtin") {
     // A layer saved but never published is not the default yet; the page needs to find its draft. Read-only: the view never creates a layer.
     const draftLayer = deps.store === undefined ? undefined : await existingLayer({ ...deps, store: deps.store }, deps.store, orgId, name);
-    return { process: { kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, ...(draftLayer === undefined ? {} : { draftLayer: { agentId: draftLayer.agentId, draftRevision: draftLayer.draftRevision } }) }, recipe: base, base, overlay: undefined };
+    // A published, active layer's version is named too (final review I3): the page says the project does not run it and offers it. An archived one can't be chosen.
+    const saved = draftLayer?.status === "active" ? draftLayer.currentVersion : undefined;
+    const layer = draftLayer === undefined ? undefined : { agentId: draftLayer.agentId, draftRevision: draftLayer.draftRevision, ...(saved === undefined ? {} : { currentVersion: saved }) };
+    return { process: { kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, ...(layer === undefined ? {} : { draftLayer: layer }) }, recipe: base, base, overlay: undefined };
   }
   const { agentId } = playbook.defaultProcess;
   const version = await requireProcessLayer(deps.store, orgId, name, agentId);

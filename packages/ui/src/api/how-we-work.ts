@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentIdSchema, HowWeWorkViewReaderSchema, ProjectOverviewProjectSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, HowWeWorkViewReaderSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 
@@ -25,6 +25,11 @@ export function createHowWeWorkApi(host: AppHost) {
    const result = await api.send("POST", base(project) + "/playbook/process", {}, ProcessLayerReader);
    if (result.kind !== "done") throw new Error("Making the process layer needs confirmation");
    return result.value;
+  },
+  /** Makes the project's saved process layer its default (`PUT …/playbook`), under the playbook revision the page read. */
+  async useLayer(project: string, expectedRevision: number, agentId: string): Promise<void> {
+   const result = await api.send("PUT", base(project) + "/playbook", { expectedRevision, defaultProcess: { kind: "project_process", agentId } }, ProjectPlaybookResponseReaderSchema);
+   if (result.kind !== "done") throw new Error("Choosing the saved version needs confirmation");
   },
  };
 }
