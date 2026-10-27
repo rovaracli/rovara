@@ -43,6 +43,22 @@ export class MergeGithub implements CodeMergeGithub {
   readonly mergeCalls: Array<{ number: number; sha: string; method: "squash" | "merge" }> = [];
   readonly calls: string[] = [];
   readonly results = new Map<number, MergePullRequestResult | Error>();
+  /** The paths each pull request changes (default: one ordinary file), the CODEOWNERS text the base branch holds (none by default) and who is in which team (`org/team` to logins). */
+  readonly changedPaths = new Map<number, string[]>();
+  codeOwners: string | undefined | Error;
+  readonly teams = new Map<string, string[] | Error>();
+  async listChangedPaths(_url: string, number: number): Promise<{ paths: string[]; complete: boolean }> {
+    return { paths: this.changedPaths.get(number) ?? ["src/index.ts"], complete: true };
+  }
+  async readCodeOwners(): Promise<string | undefined> {
+    if (this.codeOwners instanceof Error) throw this.codeOwners;
+    return this.codeOwners;
+  }
+  async isTeamMember(_url: string, team: string, login: string): Promise<"member" | "not_member" | "unknown"> {
+    const members = this.teams.get(team);
+    if (members === undefined || members instanceof Error) return "unknown";
+    return members.includes(login) ? "member" : "not_member";
+  }
   /** A hook run at the start of each merge call (a test uses it to race a second handler or to change a pull request under the first). */
   onMerge: ((number: number) => Promise<void> | void) | undefined;
   async getPullRequestStatus(_url: string, number: number): Promise<PullRequestStatus> {
@@ -137,6 +153,8 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const workflow = {
     schemaVersion: 1, definitionId: "agentx-task-to-pr", definitionVersion: "1.1.0", taskId, revision: 9, stage: "WAIT_FOR_MERGE", state: "WAITING", path: "QUICK",
     pullRequests: workflowPrs, updatedAt: stamp,
+    // The risk of the code (a small change): the Merge section shows it and a browser press must have seen it.
+    risk: { level: "low", reasons: ["A small change with no sensitive paths, dependency changes or open concerns."], candidateDigest: "c".repeat(64) },
   };
   const task = w.db.get(taskKey(taskId))!;
   w.db.set({ ...task, startingRevision: 1, workspaceId: "ws-1", workflow });
