@@ -518,6 +518,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark;
     /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
     safety?: "safe" | "less_safe";
+    /** A project's process layer only: the person who confirmed this publish is the one who asked, being the only one who could (`process.published` says so). */
+    selfConfirmedSoleOwner?: boolean;
   }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
@@ -543,9 +545,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...(input.note === undefined ? {} : { note: input.note }),
     };
     const event = this.newEvent(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) });
-    // A project's process layer audits `process.published` instead (the sole-owner confirmation is not built yet, so it is always false).
+    // A project's process layer audits `process.published` instead.
     const audit = await this.audited(() => [agent.purpose === "process"
-      ? auditProcessPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.agentId, version, safety: input.safety ?? "safe", selfConfirmedSoleOwner: false })
+      ? auditProcessPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.agentId, version, safety: input.safety ?? "safe", selfConfirmedSoleOwner: input.selfConfirmedSoleOwner === true })
       : auditPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe" })]);
     const written: TransactItem[] = [
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),

@@ -24,6 +24,7 @@ import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, share
 import {
   confirmUrlFor,
   createPendingChange,
+  registerApprovalDecisionGuard,
   registerApprovalSubjectHandler,
   registerApproverRule,
   type AgentChangeSubject,
@@ -34,6 +35,8 @@ import {
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
+import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
+import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -178,7 +181,7 @@ export async function publishDraft(
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
-  const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
+  const changes = lessSafeChangesFor(agent, await runningNow(deps, agent, draft.extends), next, { firstPublish: agent.currentVersion === undefined });
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
     const version = await deps.store.publish({
@@ -208,7 +211,7 @@ export async function rollbackAgent(
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
-  const changes = lessSafeChanges(current, target);
+  const changes = lessSafeChangesFor(agent, current, target, { firstPublish: false });
   if (changes.length === 0) {
     return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
   }
@@ -321,7 +324,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
   const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
-    skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe",
+    skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe", selfConfirmedSoleOwner: await confirmedBySoleOwner(deps, agent, record, by),
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
   await pointPlaybookAtFirstVersion(deps, agent, published.version, by);
@@ -400,6 +403,8 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
 export function registerAgentApprovals(): void {
   registerApproverRule("agent_publish", managesAgent);
   registerApproverRule("agent_manager", managesAgent);
+  // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).
+  registerApprovalDecisionGuard("process_self_confirm", processSelfConfirmGuard({ candidatesOf: async (deps, agent) => { const spec = await agentApprovers(deps, agent, "agent_publish"); return spec.kind === "rule" ? spec.candidates : spec.ids; }, mayDecide: managesAgent }));
   // Read now, never from the caller's session: a person demoted since they signed in can't decide (R68).
   registerApproverRule("org_admin", async (deps, record, caller) => {
     if (caller.orgId !== record.orgId) return false;
