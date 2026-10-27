@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk, developerOrgKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
@@ -83,4 +83,9 @@ it("marks partial coverage distinctly so older indexed-only readers cannot treat
 
 it("keeps all-bad evaluated pages resumable and treats canonical storage failure as unavailable service", async () => {
  const f = fixture();for (let i = 0; i < 2; i++) { const invite = await f.invite(), key = orgInviteKey(hashOf(invite.token));f.db.set({ ...f.db.get(key), role: "future-role" }); }const first = await f.request("?limit=1");expect(first.status).toBe(200);expect(first.body.invites).toEqual([]);expect(first.body).toMatchObject({ unavailableCount: 1, coverage: "indexed_only_partial" });expect(first.body.nextCursor).toBeTruthy();const last = await f.request("?limit=1&cursor=" + first.body.nextCursor!);expect(last.body.invites).toEqual([]);expect(last.body.nextCursor).toBeUndefined();f.db.injectFault({ command: "GetCommand", match: input => { const key = input.Key as { pk?: unknown } | undefined;return typeof key?.pk === "string" && key.pk.startsWith("ORG_INVITE#"); }, error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);
+});
+
+it("warns with safe scoped identifiers and fixed reason classes for unusable directory entries", async () => {
+ const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ try { const f = fixture(), created = await f.invite(A, "private.person@private.test"), key = orgInviteKey(hashOf(created.token)), record = f.db.get(key)!;f.db.set({ ...record, orgId: B });const result = await f.request();expect(result.status).toBe(200);expect(result.body).toMatchObject({ unavailableCount: 1 });expect(warn).toHaveBeenCalledTimes(1);const raw: unknown = warn.mock.calls[0]?.[0];expect(typeof raw).toBe("string");const entry = JSON.parse(String(raw)) as Record<string, unknown>;expect(entry).toEqual({ component: "broker", event: "org.invite_directory_entry_unavailable", level: "warn", orgId: A, inviteId: record.inviteId, reason: "canonical_org_mismatch" });expect(String(raw).includes(created.token) || String(raw).includes(hashOf(created.token)) || String(raw).includes("private.person") || String(raw).includes(B)).toBe(false); }finally { warn.mockRestore(); }
 });

@@ -8,6 +8,8 @@ import { createAdminBroker } from "../support/admin-broker.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { httpEvent, identityHarness } from "../support/developer-fakes.js";
 import { bench } from "../support/audit-routes-bench.js";
+import { createOnboardingApi } from "../../packages/ui/src/api/onboarding.js";
+import { fakeHost } from "../web/support/fake-host.js";
 import { TEST_ORG } from "../support/orgs.js";
 const CELL = "https://cell.example", SID = "11111111-1111-4111-8111-111111111111", WHO = "a".repeat(64);
 const COOKIE = `__Host-agentx_review_session=${SID}`;
@@ -53,6 +55,9 @@ describe("browser API boundary", () => {
  it("refuses invite creation when the cookie actor is demoted after authentication", async () => {
   const h = await broker(), send = h.db.send.bind(h.db);let demote = true;h.db.send = async command => { const answer = await send(command);if (demote && command.constructor.name === "GetCommand" && (command.input as { Key?: { pk?: string } }).Key?.pk === `DEVELOPER_ORG#${WHO}`) { demote = false;seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" }); }return answer; };
   const result = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID(), role: "member" });expect(result.status).toBe(403);expect(h.db.find(row => row.entityType === "ORG_INVITE" || row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST").length).toBe(0);expect(demote).toBe(false);
+ });
+ it("audits the existing onboarding invite client through the real cookie route atomically", async () => {
+  const h = await broker(), host = fakeHost(async r => h.call(r.method, r.path.replace("/v1/app/", "/v1/web/"), { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, r.body));const result = await createOnboardingApi(host.host).invite({ requestId: randomUUID(), role: "member", email: "private.person@example.test" });expect(typeof result.inviteUrl === "string").toBe(true);const pending = h.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#"));expect(pending.length).toBe(1);expect((pending[0]?.event as { action?: string }).action).toBe("org.invite_created");expect(h.db.transactions().some(items => items.some(item => "Put" in item && item.Put?.Item?.entityType === "ORG_INVITE") && items.some(item => "Put" in item && String(item.Put?.Item?.pk).startsWith("AUDIT_PENDING#")))).toBe(true);
  });
  it("checks Origin and CSRF before any write, with distinct stale recovery", async () => {
   const h = await broker();const body = { requestId: randomUUID(), role: "member" };

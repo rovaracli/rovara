@@ -1,8 +1,11 @@
 import { expect, it } from "vitest";
-import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, developerOrgKey } from "@agentx/contracts";
+import { AuditEventInputSchema, AgentXError, errorStatus, orgMemberKey, orgMetaKey, developerOrgKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { flushAuditEvents } from "../../packages/broker/src/audit/flush.js";
+import { createHash } from "node:crypto";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", who = "a".repeat(64), requestId = "11111111-1111-4111-8111-111111111111";
 function fixture(role = "owner", cached: "owner" | "admin" | "member" = "owner") {
  const db = new FakeDynamoDb();db.set({ ...orgMemberKey(A, who), orgId: A, developerId: who, role });db.set({ ...developerOrgKey(who), orgId: A, role });db.set({ ...orgMetaKey(A), orgId: A, name: "Acme", plan: "team" });
@@ -19,3 +22,20 @@ for (const race of ["demotion", "removal", "pointer", "pointer-role", "member-or
 });
 it("refuses internal unauthorized creation, a closed org and unavailable authority storage", async () => { const f = fixture("member");const result = await f.store.createInvite({ orgId: A, createdBy: who, role: "member" }).then(() => true, () => false);expect(result).toBe(false);const closed = fixture();closed.db.set({ ...closed.db.get(orgMetaKey(A)), closedAt: "2026-10-26T12:00:00Z" });expect((await closed.request()).status).toBe(403);const down = fixture();down.db.injectFault({ command: "GetCommand", error: { name: "ServiceUnavailable" } });expect((await down.request()).status).toBe(503);expect(down.invitations()).toBe(0); });
 for (const [role, target, allowed] of [["owner", "admin", true], ["owner", "member", true], ["admin", "member", true], ["admin", "admin", false], ["member", "member", false], ["future-role", "member", false]] as const) it(`enforces internal ${role} to ${target} creation authority`, async () => { const f = fixture(role);const result = await f.store.createInvite({ orgId: A, createdBy: who, role: target }).then(() => true, () => false);expect(result).toBe(allowed);expect(f.invitations()).toBe(allowed ? 1 : 0); });
+it("refuses closing organizations before creation and at commit without any side records", async () => {
+ for (const atCommit of [false, true]) { const f = fixture();const close = () => f.db.set({ ...f.db.get(orgMetaKey(A)), closingAt: "2026-10-26T12:00:00Z" });if (atCommit) f.beforeCommit(close);else close();expect((await f.request()).status).toBe(403);expect(f.invitations()).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST" || String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(0); }
+});
+it("atomically records creation audit even without a configured delivery runtime and does not duplicate it on replay", async () => {
+ const f = fixture();expect((await f.request()).status).toBe(200);const pending = f.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#"));expect(pending.length).toBe(1);const event = pending[0]?.event as { action?: string; target?: { kind?: string; id?: string }; actor?: { kind?: string; id?: string }; facts?: unknown };expect(event).toMatchObject({ action: "org.invite_created", actor: { kind: "member", id: who }, target: { kind: "invite" }, facts: { role: "member", targeted: false } });expect(typeof event.target?.id === "string" && /^[0-9a-f-]{36}$/.test(event.target.id)).toBe(true);expect(f.db.transactions()[0]?.some(item => "Put" in item && String(item.Put?.Item?.pk).startsWith("AUDIT_PENDING#"))).toBe(true);expect((await f.request()).status).toBe(409);expect(f.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(1);
+});
+it("rolls back invite creation when its atomic audit item cannot commit", async () => {
+ const f = fixture();f.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);expect(f.invitations()).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST" || String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(0);
+});
+
+it("accepts the non-personal invite audit event vocabulary", () => { expect(AuditEventInputSchema.safeParse({ eventId: "aev_" + "a".repeat(40), orgId: A, action: "org.invite_created", actor: { kind: "member", id: who }, target: { kind: "invite", id: "11111111-1111-4111-8111-111111111111" }, occurredAt: "2026-10-26T12:00:00Z", facts: { role: "member", targeted: true } }).success).toBe(true); });
+it("keeps creation audit durable through a queue outage and delivers it without bearer or email material", async () => {
+ const f = fixture(), capture = capturingAuditDeps({ db: f.db, now: () => Date.parse("2026-10-26T12:00:00Z") });capture.queueDown();const store = new OrgStore({ documentClient: f.db, tableName: "state", now: capture.audit.now, audit: capture.audit });const created = await store.createInvite({ orgId: A, createdBy: who, role: "member", email: "private.person@example.test" });expect(capture.pending().length).toBe(1);const event = capture.pending()[0]!;expect(event.action).toBe("org.invite_created");expect(event.facts).toEqual({ role: "member", targeted: true });const text = JSON.stringify(event);expect(text.includes(created.token) || text.includes(createHash("sha256").update(created.token).digest("hex")) || text.includes("private.person") || text.includes("example.test")).toBe(false);capture.queueUp();await flushAuditEvents(capture.deps, capture.pending());expect(capture.pending().length).toBe(0);expect(capture.flushed().length).toBe(1);
+});
+it("refuses a mismatched audit State table without creating an invite or outbox entry", async () => {
+ const f = fixture(), capture = capturingAuditDeps({ db: f.db });const store = new OrgStore({ documentClient: f.db, tableName: "state", now: Date.now, audit: { ...capture.audit, tableName: "other-state" } });const result = await store.createInvite({ orgId: A, createdBy: who, role: "member" }).then(() => "unexpected", error => error instanceof AgentXError ? error.code : "unknown");expect(result).toBe("AUDIT_UNAVAILABLE");expect(f.invitations()).toBe(0);expect(capture.pending().length).toBe(0);
+});
