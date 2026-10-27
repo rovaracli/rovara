@@ -12,12 +12,14 @@ export { isPlaceholderDisplayName };
 
 /** The name a person without a real name shows as: "Member" and eight characters of a hash of their developer id. */
 export function placeholderDisplayName(developerId: string): string {
+  // A display helper fails safe: with no id to hash (an old or partial record) the placeholder is the plain word.
+  if (typeof developerId !== "string" || developerId === "") return "Member";
   return `Member ${createHash("sha256").update(developerId).digest("hex").slice(0, 8)}`;
 }
 
 /** The name to show for a person: the stored name without any email address in it, else the placeholder. */
 export function safeDisplayName(name: string | undefined, developerId: string): string {
-  const safe = name === undefined ? undefined : emailSafeName(name);
+  const safe = typeof name === "string" ? emailSafeName(name) : undefined;
   // A name shaped like a placeholder is nobody's but the placeholder maker's: a person's own stays, any other is no name.
   if (safe !== undefined && isReservedDisplayName(safe) && safe !== placeholderDisplayName(developerId)) return placeholderDisplayName(developerId);
   return safe ?? placeholderDisplayName(developerId);

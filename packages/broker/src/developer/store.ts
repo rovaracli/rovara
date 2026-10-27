@@ -418,7 +418,8 @@ export class DeveloperSignInStore {
   /** The developer's record. Its name reads back safe to show: a name stored as an email (a record from before release 0.4.16) is the placeholder. */
   async getDeveloper(developerId: string): Promise<DeveloperRecord | undefined> {
     const item = await this.get<DeveloperRecord>(`DEVELOPER#${developerId}`);
-    return item === undefined ? undefined : readableDeveloper(strip(item));
+    // The id is the item's key: a sign-in writes no `developerId` attribute, so the record's own field is absent on every real item.
+    return item === undefined ? undefined : readableDeveloper({ ...strip(item), developerId });
   }
 
   /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */

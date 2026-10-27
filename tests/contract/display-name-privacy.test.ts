@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { SLACK_OIDC_ISSUER, agentSessionKey, orgMetaKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
-import { placeholderDisplayName, safeDisplayName } from "../../packages/broker/src/developer/person-name.js";
+import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { personNameForText } from "../../packages/broker/src/developer/requester-text.js";
 import { startMessage } from "../../packages/broker/src/developer/share-messages.js";
 import { readableTaskComment } from "../../packages/broker/src/developer/page-comments.js";
@@ -15,7 +15,7 @@ import { effectiveTaskOwner } from "../../packages/broker/src/developer/task-rec
 import { loadTaskPeople } from "../../packages/broker/src/developer/task-people.js";
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { createWriteApprovalRecord, getAnyApproval, runOfApproval, forbiddenText } from "../../packages/broker/src/agents/approvals-store.js";
+import { createWriteApprovalRecord, getAnyApproval, listApprovalsFor, runOfApproval, forbiddenText } from "../../packages/broker/src/agents/approvals-store.js";
 import { approvalView } from "../../packages/broker/src/agents/approval-routes.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
@@ -600,3 +600,58 @@ describe("minors", () => {
 function createHashHex(value: string): string {
   return createHash("sha256").update(`dev-${value}`).digest("hex");
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Hotfix: a DEVELOPER item written by a sign-in has its id only in `pk` (there is no `developerId` attribute), and a name stored as an email must still read.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("records shaped as sign-ins wrote them: an email for a name and no developerId attribute", () => {
+  const oldShaped = (developerId: string, extra: Record<string, unknown> = {}) => ({
+    pk: `DEVELOPER#${developerId}`, sk: "META", entityType: "DEVELOPER", provider: "cloud", issuer: "https://idp.example.test", subject: "sub-1",
+    displayName: "c@example.com", email: "c@example.com", firstSignInAt: "x", lastSignInAt: "x", revoked: false, ...extra,
+  });
+
+  it("a display helper never throws: with no id the placeholder is plain 'Member'", () => {
+    expect(placeholderDisplayName(undefined as never)).toBe("Member");
+    expect(placeholderDisplayName("")).toBe("Member");
+    expect(safeDisplayName(EMAIL, undefined as never)).toBe("Member");
+    expect(() => readableDeveloper({ displayName: EMAIL } as never)).not.toThrow();
+  });
+
+  it("getDeveloper reads the id from the key, and the name is the placeholder for that id", async () => {
+    const db = new FakeDynamoDb();
+    db.set(oldShaped(idOf("c")));
+    const record = await new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now }).getDeveloper(idOf("c"));
+    expect(record).toMatchObject({ developerId: idOf("c"), displayName: placeholderDisplayName(idOf("c")), email: "c@example.com" });
+  });
+
+  it("the members list answers 200 with the placeholder for such a member, for a member and for an owner", async () => {
+    const h = await broker();
+    h.db.set(oldShaped(OMAR.developerId, { provider: "oidc", subject: "o" }));
+    for (const who of [MAYA, OMAR]) {
+      const answer = await h.dev(who, "GET", "/v1/app/org/members");
+      expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+      const omar = (answer.body.members as Array<{ developerId: string; name: string }>).find((member) => member.developerId === OMAR.developerId);
+      expect(omar?.name).toBe(placeholderDisplayName(OMAR.developerId));
+    }
+  });
+
+  it("the approvals list and the approval view read such an owner without failing", async () => {
+    const db = new FakeDynamoDb();
+    db.set(oldShaped(idOf("d")));
+    const deps = { documentClient: db as never, tableName: "state", now: Date.now };
+    const id = "apr_bbbbbbbbbbbbbbbbbbbb";
+    await createWriteApprovalRecord(deps, {
+      orgId: TEST_ORG, approvalId: id, kind: "write", subject: { kind: "agent_run", taskId: randomUUID(), stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: {}, argumentsHash: "c".repeat(64),
+      summary: "Create an issue", class: "consequential", approvers: { kind: "ids", ids: [idOf("d")] }, status: "PENDING", project: "payments", owner: { developerId: idOf("d"), name: EMAIL },
+      attempts: 0, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    } as never, [], 8);
+    const listed = await listApprovalsFor(deps as never, { orgId: TEST_ORG, developerId: idOf("d") } as never);
+    expect(listed).toHaveLength(1);
+    const view = approvalView({ confirmOrigin: "https://cell.example" }, listed[0]!) as { owner: { name: string } };
+    expect(view.owner.name).toBe(placeholderDisplayName(idOf("d")));
+    const owner = await new DeveloperSignInStore({ documentClient: db, tableName: "state", now: Date.now }).getDeveloper(idOf("d"));
+    expect(owner?.displayName).toBe(placeholderDisplayName(idOf("d")));
+  });
+});
