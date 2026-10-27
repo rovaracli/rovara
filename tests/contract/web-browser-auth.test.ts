@@ -91,10 +91,12 @@ describe("browser API boundary", () => {
   expect(cross.status).toBe(403);
   const good = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) });
   expect(good.status).toBe(200);expect(good.body).toMatchObject({ name: "Web M", nameChosen: true });
-  expect(h.db.get(`DEVELOPER#${WHO}`, "META")).toMatchObject({ displayName: "Web M", displayNameChosen: true });
+  // Release 0.4.18: the name is an item in the State table; the sign-in record keeps the name it had.
+  expect(h.db.get(`DEVELOPER_NAME#${WHO}`, "NAME")).toMatchObject({ name: "Web M" });
+  expect(h.db.get(`DEVELOPER#${WHO}`, "META")).toMatchObject({ displayName: "Web member" });
   const refusedName = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { name: "web@example.test" });
   expect(refusedName.status).toBe(400);
-  expect(h.db.get(`DEVELOPER#${WHO}`, "META")).toMatchObject({ displayName: "Web M" });
+  expect(h.db.get(`DEVELOPER_NAME#${WHO}`, "NAME")).toMatchObject({ name: "Web M" });
   for (const [method, path] of [["POST", "/me/name"], ["DELETE", "/me/name"], ["PUT", "/me"], ["PUT", "/me/identities/cloud"], ["PUT", "/me/name/x"]]) expect((await h.call(method!, "/v1/web" + path!, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body)).status, method + path).toBe(404);
  });
  it("dispatches each supported read family to the same app handler", async () => {

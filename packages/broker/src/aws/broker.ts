@@ -388,6 +388,7 @@ import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConn
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import {
@@ -1089,7 +1090,7 @@ async function listEgressPending(dependencies: AwsBrokerDependencies, identity: 
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
   const orgs = orgStoreOf(dependencies);
   const developers = dependencies.developer === undefined ? undefined
-    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   const orgNames = new Map<string, string>();
   const people = new Map<string, string>();
   const pending: EgressPendingResponse["pending"] = [];
@@ -1179,7 +1180,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   const projectMembers = agents.projectMembers ?? projectMembersOf({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
   });
-  const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
+  const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   const connections = orgConnectionStoreOf(dependencies);
   const routing = routingOf(dependencies);
   const agentStore = new AgentStore({
@@ -1362,7 +1363,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
 function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnectionDependencies | undefined {
   const app = dependencies.githubPullRequests;
   if (dependencies.developer === undefined || app.appSlug === undefined || app.oauthClient === undefined || app.installation === undefined) return undefined;
-  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
     origin: new URL(dependencies.developer.issuer).origin,
@@ -1425,11 +1426,15 @@ function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRe
 }
 
 /** A person's name from their sign-in record, for the answer to an erasure (read before their details are erased). */
-async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, developerId: string): Promise<string | undefined> {
+async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer" | "tableName">, developerId: string): Promise<string | undefined> {
   const table = dependencies.developer?.signInTableName;
   if (table === undefined) return undefined;
-  const out = await dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as { Item?: { displayName?: unknown } };
-  return typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined;
+  const [out, chosen] = await Promise.all([
+    dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as Promise<{ Item?: { displayName?: unknown } }>,
+    // Release 0.4.18: the name the person chose (State table) shows instead of the sign-in record's.
+    readChosenName(dependencies.documentClient, dependencies.tableName, developerId),
+  ]);
+  return chosen ?? (typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined);
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
@@ -8793,7 +8798,7 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
   catch { return { outcome: "refused" }; }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
-  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor);
+  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now }), access.task, userId.data, actor);
   // Plan 6 Task 5: a reply answers Understand's questions only from a person who has "can use" on the task's session in this org, judged live the way the app route judges it (the project
   // role included). It is recorded under that person, whoever owns the task.
   const waiting = access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING";

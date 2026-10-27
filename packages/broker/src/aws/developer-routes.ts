@@ -135,6 +135,7 @@ import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { safeDisplayName } from "../developer/person-name.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { developerTaskIdentity, type DeveloperTaskRecord, type WorkspaceCharge } from "../developer/task-records.js";
@@ -660,7 +661,11 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
   }
-  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "displayNameChosen" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`);
+  // Release 0.4.18: the name the person chose is an item in the State table, read with their sign-in record.
+  const [developer, chosenName] = await Promise.all([
+    getSignIn<Pick<DeveloperRecord, "displayName" | "displayNameChosen" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`),
+    readChosenName(deps.documentClient, deps.tableName, token.developerId),
+  ]);
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
@@ -681,8 +686,8 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     orgId: membership.orgId,
     orgRole: membership.role,
     // Release 0.4.16: the caller's name is everywhere a task, a session or a comment names them, so it is never an email address.
-    name: safeDisplayName(developer.displayName, token.developerId),
-    nameChosen: developer.displayNameChosen === true,
+    name: chosenName ?? safeDisplayName(developer.displayName, token.developerId),
+    nameChosen: chosenName !== undefined || developer.displayNameChosen === true,
     ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
     ...(developer.email === undefined ? {} : { email: developer.email }),
   };
@@ -1261,8 +1266,10 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, row
   const store = signInStoreOf(deps);
   const cards = new Map<string, { name: string; email?: string }>();
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
+  const records = await store.getDevelopers(ids);
   await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
-    const [record, identities] = await Promise.all([store.getDeveloper(id), store.identitiesOf(id)]);
+    const record = records.get(id);
+    const identities = await store.identitiesOf(id);
     const email = showEmails ? record?.email ?? identities.find((identity) => identity.email !== undefined)?.email : undefined;
     cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
   });
@@ -1538,11 +1545,14 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
   return {
     ...deps.agents,
     callerFor: async (orgId, developerId) => {
-      const developer = await getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`);
+      const [developer, chosenName] = await Promise.all([
+        getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`),
+        readChosenName(deps.documentClient, deps.tableName, developerId),
+      ]);
       const membership = await deps.orgs?.orgForDeveloper(developerId);
       if (developer === undefined || developer.revoked || membership === undefined || membership.orgId !== orgId) return undefined;
       return {
-        developerId, sessionId: "agent-run", amr: developer.provider, name: safeDisplayName(developer.displayName, developerId), orgId, orgRole: membership.role,
+        developerId, sessionId: "agent-run", amr: developer.provider, name: chosenName ?? safeDisplayName(developer.displayName, developerId), orgId, orgRole: membership.role,
         ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
         ...(developer.email === undefined ? {} : { email: developer.email }),
       };
@@ -2155,7 +2165,7 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
 async function setMyName(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<SetMyNameResponse> {
   const parsed = SetMyNameBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
   const record = await store.setChosenDisplayName({ developerId: caller.developerId, orgId: caller.orgId, name: parsed.data.name });
   logDeveloperEvent({ event: "developer.name_chosen" });
   return { name: record.displayName, nameChosen: true };
@@ -2234,7 +2244,8 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
     : inviteUrl(`${deps.developer.issuer}/join`, token, "query") };
 }
 
-const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
+// The State table is given for the name a person chose (release 0.4.18): the store shows it instead of the sign-in record's.
+const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now });
 
 const bodyError = (error: z.ZodError) => {
   const issue = error.issues[0];
@@ -2251,12 +2262,15 @@ async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller:
   const store = signInStoreOf(deps);
   const admin = isOrgAdmin(caller);
   const members = await deps.orgs.listMembers(caller.orgId);
+  // The records and the chosen names of everyone in the list, read together (release 0.4.18: one batch for the names, not one read per row).
+  const records = await store.getDevelopers(members.map((member) => member.developerId));
   const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
     if (!admin) {
-      const record = await store.getDeveloper(member.developerId);
+      const record = records.get(member.developerId);
       return { developerId: member.developerId, name: record?.displayName ?? "Unknown", role: member.role, joinedAt: member.joinedAt };
     }
-    const [record, identities] = await Promise.all([store.getDeveloper(member.developerId), store.identitiesOf(member.developerId)]);
+    const record = records.get(member.developerId);
+    const identities = await store.identitiesOf(member.developerId);
     const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
     // A person from before sign-in methods were linked has no IDENTITY rows: their record's own provider is the method they signed in with.
     const methods = identities.length > 0 ? identities.map((identity) => identity.provider) : record === undefined ? [] : [record.provider];

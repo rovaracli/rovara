@@ -101,7 +101,7 @@ describe("the sign-in table", () => {
     const db = new FakeDynamoDb();
     audit.attach(db);
     let now = T0;
-    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => now, audit: audit.audit });
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: () => now, audit: audit.audit });
     return { db, store, audit, tick: (ms: number) => { now += ms; } };
   };
 
@@ -202,7 +202,10 @@ describe("PUT /v1/app/me/name", () => {
     const answer = await setName(h, MAYA, { name: "  Maya C  " });
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
     expect(answer.body).toMatchObject({ name: "Maya C", nameChosen: true });
-    expect(h.db.get(`DEVELOPER#${MAYA.developerId}`, "META")).toMatchObject({ displayName: "Maya C", displayNameChosen: true });
+    // Release 0.4.18: the chosen name is an item in the State table; the sign-in record is not written.
+    expect(h.db.get(`DEVELOPER_NAME#${MAYA.developerId}`, "NAME")).toMatchObject({ name: "Maya C", developerId: MAYA.developerId });
+    expect(h.db.get(`DEVELOPER#${MAYA.developerId}`, "META")).toMatchObject({ displayName: "Maya Chen" });
+    expect(h.db.get(`DEVELOPER#${MAYA.developerId}`, "META")).not.toHaveProperty("displayNameChosen", true);
     const me = await h.dev(MAYA, "GET", "/v1/app/me");
     expect(me.body.developer).toMatchObject({ name: "Maya C", nameChosen: true });
     const members = (await h.dev(OMAR, "GET", "/v1/app/org/members")).body.members as Array<{ developerId: string; name: string }>;
@@ -230,9 +233,10 @@ describe("PUT /v1/app/me/name", () => {
   it("changes only the caller's own record, whoever they are", async () => {
     const h = await broker();
     await setName(h, MAYA, { name: "Maya C" });
-    expect(h.db.get(`DEVELOPER#${OMAR.developerId}`, "META")).toMatchObject({ displayName: "Omar Diaz" });
+    expect(h.db.get(`DEVELOPER_NAME#${OMAR.developerId}`, "NAME")).toBeUndefined();
     await setName(h, OMAR, { name: "Omar D" });
-    expect(h.db.get(`DEVELOPER#${MAYA.developerId}`, "META")).toMatchObject({ displayName: "Maya C" });
+    expect(h.db.get(`DEVELOPER_NAME#${MAYA.developerId}`, "NAME")).toMatchObject({ name: "Maya C" });
+    expect(h.db.get(`DEVELOPER_NAME#${OMAR.developerId}`, "NAME")).toMatchObject({ name: "Omar D" });
   });
 
   it("needs a signed-in session", async () => {
@@ -543,7 +547,7 @@ describe("I3: the placeholder is long enough, and a chosen name cannot be someon
 describe("minors", () => {
   it("M1: a revoked or merged person cannot rename", async () => {
     const db = new FakeDynamoDb();
-    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: Date.now });
     await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
     db.set({ ...db.get(`DEVELOPER#${idOf("c")}`, "META")!, revoked: true });
     await expect(store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" })).rejects.toBeTruthy();
@@ -557,7 +561,7 @@ describe("minors", () => {
     const db = new FakeDynamoDb();
     audit.attach(db);
     let now = Date.parse("2026-10-27T09:00:00.000Z");
-    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => now, audit: audit.audit });
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: () => now, audit: audit.audit });
     await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
     await store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" });
     now += 1000;
@@ -568,7 +572,7 @@ describe("minors", () => {
 
   it("M2: an audit failure that is not a missing record is not reported as one", async () => {
     const db = new FakeDynamoDb();
-    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
+    const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: Date.now });
     await store.upsertDeveloper({ developerId: idOf("c"), provider: "cloud", issuer: "https://idp.example.test", subject: "s", displayName: "Cy" });
     db.injectFault({ command: "TransactWriteCommand", error: { name: "ThrottlingException" } });
     await expect(store.setChosenDisplayName({ developerId: idOf("c"), orgId: TEST_ORG, name: "Cy F" })).rejects.toMatchObject({ name: "ThrottlingException" });
