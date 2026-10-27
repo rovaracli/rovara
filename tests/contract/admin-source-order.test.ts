@@ -111,3 +111,13 @@ it("keeps another company's canonical source order unchanged", async () => {
  const f = fixture();f.db.set({ ...modelSourcesKey(foreign), entityType: "ORG_MODEL_SOURCES", revision: 9, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: other, updatedAt: "2026-10-27T12:00:00Z" });const before = f.db.get(modelSourcesKey(foreign));
  expect((await f.request()).code).toBeUndefined();expect(f.db.get(modelSourcesKey(foreign))).toEqual(before);
 });
+it("fences a concurrent source change against a reviewed no-op without a receipt", async () => {
+ const f = fixture();await f.request();const requestId = randomUUID();f.beforeCommit(() => f.db.set({ ...f.db.get(modelSourcesKey(org)), revision: 2, order: ["personal-chatgpt", "rovara"] }));
+ expect((await f.request({ requestId, expectedRevision: 1 })).code).toBe("CHANGE_STALE");expect(f.order()).toEqual(["personal-chatgpt", "rovara"]);expect(f.db.get({ pk: orgScoped(org, "SOURCE_ORDER_REVIEW"), sk: requestId })).toBeUndefined();expect(f.audit.recorded()).toHaveLength(1);
+});
+it("refuses same-org reverse pointer role disagreement before committing", async () => {
+ const f = fixture("admin");f.db.set({ ...developerOrgKey(actor), orgId: org, role: "member" });expect((await f.request()).code).toBe("FORBIDDEN");expect(f.order()).toBeUndefined();expect(f.db.transactions()).toHaveLength(0);expect(f.audit.recorded()).toEqual([]);
+});
+it("fences only a reverse pointer role change during the commit", async () => {
+ const f = fixture("admin");f.beforeCommit(() => f.db.set({ ...developerOrgKey(actor), orgId: org, role: "member" }));expect((await f.request()).code).toBe("FORBIDDEN");expect(f.order()).toBeUndefined();expect(f.db.get({ pk: orgScoped(org, "SOURCE_ORDER_REVIEW"), sk: f.requestId })).toBeUndefined();expect(f.audit.recorded()).toEqual([]);
+});

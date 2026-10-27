@@ -11,6 +11,8 @@ import { httpEvent, identityHarness } from "../support/developer-fakes.js";
 import { bench } from "../support/audit-routes-bench.js";
 import { createOnboardingApi } from "../../packages/ui/src/api/onboarding.js";
 import { fakeHost } from "../web/support/fake-host.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { modelSourcesKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 const CELL = "https://cell.example", SID = "11111111-1111-4111-8111-111111111111", WHO = "a".repeat(64);
 const COOKIE = `__Host-agentx_review_session=${SID}`;
@@ -222,4 +224,24 @@ it("runs reviewed cookie role writes with receipts and audit while preserving li
  for (let i = 0; i < 2; i++) expect((await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, body)).status).toBe(200);
  expect(audit.recordedBy("member.role_changed")).toHaveLength(1);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
  for (const role of ["admin", "member"] as const) { seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const response = await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, { requestId: randomUUID(), role: "owner", expectedRole: "admin" });expect(response.status).toBe(403);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin"); }
+});
+it("requires a reviewed source-order body on real cookie routes before any mutation", async () => {
+ const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };audit.attach(h.db);
+ for (const body of [{ requestId: randomUUID(), order: ["rovara"] }, { requestId: randomUUID(), expectedRevision: null, order: ["rovara"] }, { requestId: randomUUID(), expectedRevision: -1, order: ["rovara"] }]) {
+  const before = h.db.transactions().length, response = await h.call("PUT", "/v1/web/org/model-sources-order", headers, body);expect(response.status).toBe(400);expect(errorOf(response.body)).toMatchObject({ code: "CONFIG_INVALID", message: "Review a valid company source order before submitting." });expect(h.db.transactions()).toHaveLength(before);
+ }
+});
+it("runs reviewed source-order cookie writes through CSRF, live authority and atomic replay", async () => {
+ const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);
+ h.db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" });
+ const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body = { requestId: randomUUID(), expectedRevision: 1, order: ["rovara"] }, path = "/v1/web/org/model-sources-order";
+ expect((await h.call("PUT", path, { cookie: COOKIE, origin: CELL }, body)).status).toBe(403);
+ for (let i = 0; i < 2; i++) { const reply = await h.call("PUT", path, headers, body);expect(reply.status).toBe(200);expect(reply.body).toMatchObject({ order: ["rovara"], revision: 2 }); }
+ expect(h.db.get(modelSourcesKey(TEST_ORG))?.revision).toBe(2);expect(audit.recordedBy("model_source.order_changed")).toHaveLength(1);
+ seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });expect((await h.call("PUT", path, headers, body)).status).toBe(403);expect(h.db.get(modelSourcesKey(TEST_ORG))?.revision).toBe(2);
+ h.db.delete({ pk: `SESSION#${SID}`, sk: "META" });expect((await h.call("PUT", path, headers, body)).status).toBe(401);
+});
+it("retains the explicit bearer CLI source-order compatibility path", async () => {
+ const h = await broker({ agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });
+ expect((await h.call("PUT", "/v1/app/org/model-sources-order", { authorization: "Bearer test-only-bearer" }, { requestId: randomUUID(), order: ["rovara"] })).status).toBe(200);
 });
