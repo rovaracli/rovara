@@ -550,7 +550,7 @@ import { developerReply, json } from "./json-reply.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, laterProgramBuild, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { planQualityFindings } from "../developer/plan-quality.js";
 import { planDryRunFindings, readPlanDryRunOutcome } from "../developer/plan-dry-run-results.js";
@@ -15719,12 +15719,6 @@ function programContinuesCoding(workflow: WorkflowSnapshot, operation: Operation
   return move.kind === "step" && move.step.kind === "build";
 }
 
-/** Whether the workflow program is past its first build step: a work breakdown the plan approved belongs to that first build. */
-function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
-  const first = workflow.program?.steps.find((step) => step.kind === "build");
-  return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
-}
-
 /* Plan 6 Task 10 note: the setup-draft branch is first in completedWorkflowItems. */
 async function completedWorkflowItems(
   dependencies: AwsBrokerDependencies,
@@ -15963,8 +15957,12 @@ async function completedWorkflowItems(
           throw new Error(verificationFailure);
         }
         // A custom sequence runs the approved work breakdown in its first build only; its later builds carry none.
+        // 0.4.17: and only the run the workflow names as carrying the graph can have lost it. Every start that carries a binding writes that run's ID onto the workflow in the same transaction
+        // as the operation (workflowWithCurrentGraphOperation), so a run with a different ID was started without a graph on purpose: a CI or conflict fix, which the worker protocol forbids to
+        // carry one. A run that is named but has no binding (or a workflow that names none) still blocks.
         if (dependencyBinding === undefined && task.workflow.workflowDependenciesApproval !== undefined && operation.workflowMode === "IMPLEMENT"
-          && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)) {
+          && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)
+          && (task.workflow.workflowDependenciesOperationId === undefined || task.workflow.workflowDependenciesOperationId === operation.id)) {
           verificationFailure = "approved work breakdown was not carried into this implementation";
           throw new Error(verificationFailure);
         }

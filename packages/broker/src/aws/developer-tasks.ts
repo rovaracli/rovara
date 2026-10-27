@@ -4653,13 +4653,33 @@ export async function startTaskWorkflowImplementationFromSystem(
       ? `Implement the human-approved plan below, one coding step of a longer sequence: the previous step's work is in the code now. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`
       : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`, next);
   }
+  // 0.4.17: a findings round sent back to the first build step runs the task's approved work breakdown again, as the owner's Send back and AUTOFIX's send-back do. Without the binding the
+  // finished run has nothing to show it built the approved plan, and VERIFY blocked a task whose code and tests were fine. A CI, conflict or feedback fix cannot carry one (the worker protocol
+  // forbids a fix to open pull requests to combine with a work breakdown), and a later build of a custom sequence carries none by design; neither is given a binding here.
+  let workflowDependencies: WorkflowDependencyInvocation | undefined;
+  if (workflow.workflowDependenciesApproval !== undefined && workflow.fixSource === undefined && found.length > 0 && !laterProgramBuild(workflow)) {
+    const approved = await approvedWorkflowDependencies(deps, task, dispatchAccess?.peopleRevision);
+    if (approved !== undefined) {
+      if (!workflowDependenciesAllowed(deps, workflow)) {
+        throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to continue it");
+      }
+      // The reviewed code is what the workspace holds, so the run starts from its tree (as the owner's answer to a review finding does); the checkpoints already acknowledged stay in the history.
+      workflowDependencies = {
+        ...approved,
+        resumeTreeSha: workflow.candidate?.repositories.length === 1 ? workflow.candidate.repositories[0]!.treeSha : approved.resumeTreeSha,
+        sequenceStart: workflow.workflowDependenciesProgress?.at(-1)?.sequence ?? approved.sequenceStart ?? 0,
+        resumeProgress: [],
+      };
+    }
+  }
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":ready": "READY" },
+      // The run that carries the graph is the one the workflow names, written in this same transaction (a run with no binding leaves the earlier name as it was).
+      ExpressionAttributeValues: { ":workflow": workflowDependencies === undefined ? next : workflowWithCurrentGraphOperation(next, operation.id, workflowDependencies), ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":ready": "READY" },
     } },
     putNew(turnTable(deps), aiToolTurn({
       party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -4667,9 +4687,16 @@ export async function startTaskWorkflowImplementationFromSystem(
     })),
     ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
   ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), programStepId: workflow.programStepId,
+    ...(workflowDependencies === undefined ? {} : { workflowDependencies }),
     // A CI or feedback fix starts from the head the pull request has (Plan 6 Task 17), so an abandoned conflict round's files are not what it begins on.
     ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(fixStartHead(workflow) === undefined ? {} : { startFrom: fixStartHead(workflow)! }) } }) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
+/** Whether the workflow program is past its first build step: a work breakdown the plan approved belongs to that first build. */
+export function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
+  const first = workflow.program?.steps.find((step) => step.kind === "build");
+  return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
 }
 
 /** The head a CI or feedback fix starts from: the one open pull request's recorded head (none for a conflict round, which works on the merge's files, or for several pull requests). */
