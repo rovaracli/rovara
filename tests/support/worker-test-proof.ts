@@ -9,11 +9,11 @@ import { FAKE_TEST_COMMAND, fakeTestRunner, passedEntry, repositoryWithCandidate
 
 const LINT: ProjectCommand = { cwd: ".", executable: "npm", args: ["run", "lint"], timeoutSeconds: 60 };
 
-/** The proof the worker writes for `candidateDigest` when the check at `provenIndex` (0-based, in the task's selected-check order) is the one whose new test proves the change. */
-export async function workerTestProof(candidateDigest: string, provenIndex: number): Promise<{ proof: TestProof; json: string }> {
+/** The proof the worker writes (one item per check of the plan: `checkCount` checks, default up to the proven one) for `candidateDigest` when the check at `provenIndex` (0-based, in the task's selected-check order) is the one whose new test proves the change. */
+export async function workerTestProof(candidateDigest: string, provenIndex: number, checkCount = provenIndex + 1): Promise<{ proof: TestProof; json: string }> {
   const made = await repositoryWithCandidate({ "src/bug.ts": "export const value = 1;\n" }, { "src/bug.ts": "export const value = 2;\n", "src/bug.test.ts": 'import { value } from "./bug.js";\nexpect(value).toBe(2);\n' });
   try {
-    const readiness = Array.from({ length: provenIndex + 1 }, (_, index) => (index === provenIndex ? FAKE_TEST_COMMAND : LINT));
+    const readiness = Array.from({ length: checkCount }, (_, index) => (index === provenIndex ? FAKE_TEST_COMMAND : LINT));
     const plan: CheckPlan = { source: "project", readiness, projectBefore: readiness.map(() => "unknown" as const) };
     const newEntries: CheckEntry[] = readiness.map((_, index) => passedEntry(`readiness:${index}`, index === provenIndex ? "retry tests" : "lint"));
     const proof = await runTestProof({

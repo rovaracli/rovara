@@ -72,18 +72,34 @@ export interface ProofTableInput {
   /** Used only when its `candidateDigest` equals `candidateDigest`; otherwise ignored, as if absent. */
   testProof: TestProof | undefined;
   candidateDigest: string | undefined;
-  /** The ids of the workflow's selected checks, in selection order (`workflowSelectedChecks(checkPolicy)`): what the worker's `readiness:<index>` ids in the test proof stand for. Absent: no test-proof item can be matched to a check. */
-  selectedCheckIds?: readonly string[] | undefined;
+  /**
+   * The check ids recorded with the check results the test proof belongs to (`workflow.verification.results[i].checkId`, in selection order, for the current code): what the worker's `readiness:<index>` ids in the proof stand for.
+   * Absent or empty, or a different number than the proof's checks: the proof marks nothing proven.
+   */
+  recordedCheckIds?: readonly string[] | undefined;
 }
 
+const READINESS_ID = /^readiness:(0|[1-9]\d{0,5})$/u;
+
 /**
- * The workflow check a test-proof item is about. The worker numbers the project checks it runs `readiness:<index>`, in the order of the task's selected checks (required, proposed, selected optional), and
- * the broker maps the same index to the check's id when it records the check results (`workflowSelectedChecks(checkPolicy)[index]`). So does this. An id that is not exactly `readiness:` and a canonical index, or whose
- * index is past the selected checks, is about no check: undefined, never matched to one by accident.
+ * The check a test-proof item is about. The worker numbers the project checks it runs `readiness:<index>`, in the order of the task's selected checks at the time (required, proposed, selected optional), and
+ * the broker records the check results in that same order. The index is read through those recorded results, not through the policy as it is now: a verification retry can change the selection and keep the results. An id
+ * that is not exactly `readiness:` and a canonical index, or whose index is past the recorded checks, is about no check: undefined, never matched to one by accident.
  */
-export function checkIdOfProofItem(itemCheckId: string, selectedCheckIds: readonly string[] | undefined): string | undefined {
-  const index = /^readiness:(0|[1-9]\d{0,5})$/u.exec(itemCheckId)?.[1];
-  return index === undefined ? undefined : selectedCheckIds?.[Number(index)];
+export function checkIdOfProofItem(itemCheckId: string, recordedCheckIds: readonly string[] | undefined): string | undefined {
+  const index = READINESS_ID.exec(itemCheckId)?.[1];
+  return index === undefined ? undefined : recordedCheckIds?.[Number(index)];
+}
+
+/** Whether the proof's checks are the recorded results' checks: the worker writes an item for each of its checks, so for n recorded results the proof names `readiness:0` to `readiness:<n-1>`, no more and no fewer. */
+function proofMatchesRecorded(proof: TestProof, recordedCheckIds: readonly string[] | undefined): boolean {
+  if (recordedCheckIds === undefined || recordedCheckIds.length === 0) return false;
+  const indexes = new Set<number>();
+  for (const item of proof.items) {
+    const index = READINESS_ID.exec(item.checkId)?.[1];
+    if (index !== undefined) indexes.add(Number(index));
+  }
+  return indexes.size === recordedCheckIds.length && [...indexes].every((index) => index < recordedCheckIds.length);
 }
 
 export const NOT_TESTED_REASONS = {
@@ -168,7 +184,7 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
     if (result === undefined || result.couldNotRun === true) return "not_checked";
     return result.status === "PASS" ? "passed" : result.status === "FAILED" ? "failed" : "not_checked";
   };
-  const provesChange = new Set((proof?.items ?? []).filter((item) => item.verdict === "proves_change").flatMap((item) => checkIdOfProofItem(item.checkId, input.selectedCheckIds) ?? []));
+  const provesChange = new Set((proof !== undefined && proofMatchesRecorded(proof, input.recordedCheckIds) ? proof.items : []).filter((item) => item.verdict === "proves_change").flatMap((item) => checkIdOfProofItem(item.checkId, input.recordedCheckIds) ?? []));
   const checkOrder = [...new Set([...proposed.map((check) => check.id), ...Object.keys(proves)])];
 
   const rowOfScenario = new Map(input.scenarioRows.map((row) => [row.scenarioId, row]));
