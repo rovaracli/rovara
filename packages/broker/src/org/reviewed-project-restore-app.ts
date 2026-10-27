@@ -20,6 +20,8 @@ export async function readReviewedProjectRestoreAppPreview(deps: Base, caller: D
 export async function restoreProjectReviewedWithEffects(deps: Deps, caller: DeveloperCaller, name: string, body: unknown): Promise<ReviewedProjectRestoreOutcome> {
  const parsed = ReviewedProjectRestoreBodySchema.safeParse(body);
  if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review the project and acknowledge that new work can be requested before restoring.");
+ // A displayed-company pin only fences the authenticated scope; it never selects it.
+ if (parsed.data.expectedOrgId !== undefined && parsed.data.expectedOrgId !== caller.orgId) throw agentXError("CHANGE_STALE", "The company changed. Refresh and review the restore again.");
  const change = { requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, expectedProjectRevision: parsed.data.expectedProjectRevision };
  try {
   const outcome = await commitReviewedProjectRestore(withRepositoryPolicy(deps), caller, name, change);
