@@ -22,7 +22,7 @@ async function read(deps: Deps, key: { pk: string; sk: string }) {
 }
 export async function revokeOrganizationInvite(deps: Deps, caller: DeveloperCaller, inviteId: string, body: unknown): Promise<{ inviteId: string; revokedAt: string; revision: number }> {
  const parsed = RevokeOrganizationInviteBodySchema.safeParse(body);
- if (!parsed.success || !uuid.safeParse(inviteId).success || !OrgIdSchema.safeParse(caller.orgId).success || !/^[a-f0-9]{64}$/.test(caller.developerId)) throw agentXError("CONFIG_INVALID", "Review a valid company invite before revoking it.");
+ if (!parsed.success || parsed.data.expectedRevision >= Number.MAX_SAFE_INTEGER || !uuid.safeParse(inviteId).success || !OrgIdSchema.safeParse(caller.orgId).success || !/^[a-f0-9]{64}$/.test(caller.developerId)) throw agentXError("CONFIG_INVALID", "Review a valid company invite before revoking it.");
  try {
   const { orgId, developerId: by } = caller, actorKey = orgMemberKey(orgId, by), pointerKey = developerOrgKey(by), orgKey = orgMetaKey(orgId);
   async function authority() {

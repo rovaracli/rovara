@@ -243,3 +243,10 @@ it("runs reviewed cookie role writes with receipts and audit while preserving li
  expect(audit.recordedBy("member.role_changed")).toHaveLength(1);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
  for (const role of ["admin", "member"] as const) { seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const response = await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, { requestId: randomUUID(), role: "owner", expectedRole: "admin" });expect(response.status).toBe(403);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin"); }
 });
+
+it("uses the real cookie Origin and CSRF boundary for reviewed creation and safe receipt recovery", async () => {
+ const audit=capturingAuditDeps(),h=await broker({audit:audit.audit});audit.attach(h.db);const body={requestId:randomUUID(),role:"member",email:"private.person@example.test"},path="/v1/web/org/invites/reviewed",headers={cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)};
+ for(const bad of [{cookie:COOKIE,origin:CELL},{...headers,origin:"https://evil.example"}]){expect((await h.call("POST",path,bad,body)).status).toBe(403);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(0);}
+ const first=await h.call("POST",path,headers,body);expect(first.status).toBe(200);expect(typeof first.body.inviteUrl==="string").toBe(true);const replay=await h.call("POST",path,headers,body);expect(replay.status).toBe(200);expect(replay.body.inviteUrl).toBeUndefined();expect(replay.body.receipt).toEqual(first.body.receipt);const recovery=await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`);expect(recovery.status).toBe(200);expect(recovery.body.receipt).toEqual(first.body.receipt);expect(Object.keys(recovery.body).sort()).toEqual(["receipt","requestId"]);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);
+ seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`)).status).toBe(403);expect((await h.call("POST",path,headers,body)).status).toBe(403);
+});

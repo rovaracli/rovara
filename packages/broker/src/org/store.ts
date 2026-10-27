@@ -1,3 +1,4 @@
+import { inviteCreateBodyHash } from "./invite-creation.js";
 import { takeRateAt } from "../developer/page-comments.js";
 // packages/broker/src/org/store.ts
 // Multi-tenancy: orgs, membership, invites and the Slack team binding. A developer belongs to at
@@ -268,12 +269,13 @@ export class OrgStore {
    * replay of the same request is refused with IDEMPOTENCY_CONFLICT: only the token's hash is stored, so the
    * first answer cannot be given again.
    */
-  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
+  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean }): Promise<{ token: string }> {
     try {
       const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
       const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
       if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
+      if (input.reviewed && (input.requestId === undefined || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.requestId))) throw coded("CONFIG_INVALID", "Review a valid invite request.");
       const token = randomBytes(32).toString("base64url");
       const tokenHash = sha256Hex(token), inviteId = randomUUID();
       const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
@@ -307,6 +309,8 @@ export class OrgStore {
       if (!await takeRateAt(this.input, { pk: orgScoped(input.orgId, "INVITE_CREATE_RATE"), sk: input.createdBy }, 20, 60_000)) throw coded("TOO_MANY_REQUESTS", "Too many invite creation attempts. Try again in a minute.");
       // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
       items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
+      // Lane A: durable safe outcome; the existing permanent request marker prevents re-creation.
+      if (input.reviewed && input.requestId !== undefined) items.push(this.put({ pk: orgScoped(input.orgId, "INVITE_CREATE_REVIEWED"), sk: input.requestId }, "ORG_INVITE_CREATE_RECEIPT", { orgId: input.orgId, requestId: input.requestId, inviteId, role: input.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, by: input.createdBy, action: "org.invite_created", bodyHash: inviteCreateBodyHash(input) }));
       await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
       await this.flush(event);
       return { token };

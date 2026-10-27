@@ -1,3 +1,4 @@
+import { createReviewedOrganizationInvite, getInviteCreationReceipt } from "../org/invite-creation.js";
 import { getOrganizationInviteStatus } from "../org/invite-status.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
@@ -1970,6 +1971,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  // Lane A: reviewed creation and actor-bound historical recovery, isolated from legacy onboarding.
+  if (request.method === "POST" && url.pathname === "/v1/app/org/invites/reviewed") return createReviewedOrganizationInvite(deps, caller, jsonBody(request));
+  const createReceipt = /^\/v1\/app\/org\/invites\/requests\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && createReceipt !== null) return getInviteCreationReceipt(deps, caller, createReceipt[1]!);
   // Lane A: explicit canonical review/recovery for the invite write flow.
   const inviteStatus = /^\/v1\/app\/org\/invites\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && inviteStatus !== null) return getOrganizationInviteStatus(deps, caller, inviteStatus[1]!);

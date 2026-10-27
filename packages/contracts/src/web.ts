@@ -51,3 +51,6 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 // Lane A: canonical invite review/recovery, isolated from other admin lanes.
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 export { OrgIdSchema } from "./org.js";
+
+// Lane A: safe reviewed invite creation receipts.
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema } from "./invite-creation.js";
