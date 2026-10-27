@@ -54,6 +54,7 @@ import {
   assertNewFile, auditLogQuery, auditLogText, auditPageUrl, developerExportTransport, exportAuditFile, exportRange, fetchAuditRecords, jsonSafe, verifyAuditExport,
   type AuditLogFlags, type AuditRuntime,
 } from "./developer/audit.js";
+import { projectSlackBind, projectSlackUnbind, slackBindText, slackUnbindText } from "./developer/slack-channel.js";
 import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
 import { orgCommentTriggers, orgCommentTriggersText, orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -1537,6 +1538,31 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "reject", orgId: org, owner: parsedOwner, domain, reason: options.reason }, services.fetchImplementation);
       services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
+    });
+
+  // Release 0.4.17: an org owner or admin binds their own project to a Slack channel with the developer sign-in (the admin form above needs the operator's).
+  const slack = program.command("slack").description("bind your project to a Slack channel with your own sign-in (an organization owner or admin)");
+  slack
+    .command("bind")
+    .description("bind a Slack channel of your organization's Slack workspace to --project; then invite the bot in Slack")
+    .requiredOption("--channel <channel-id>", "Slack channel ID, for example C0123456789")
+    .option("--team <team-id>", "Slack workspace ID, only when your organization has more than one")
+    .action(async (options: { channel: string; team?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const project = AgentXNameSchema.parse(requireProject(globals));
+      const result = await projectSlackBind(developerSession(), developerEnv(command), project, options.channel, options.team);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project, teamId: result.teamId, channelId: result.channelId, changed: result.changed }, true) : slackBindText(result));
+    });
+  slack
+    .command("unbind")
+    .description("remove a Slack channel binding from --project; existing thread workspaces are kept")
+    .requiredOption("--channel <channel-id>", "Slack channel ID, for example C0123456789")
+    .option("--team <team-id>", "Slack workspace ID, only when your organization has more than one")
+    .action(async (options: { channel: string; team?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const project = AgentXNameSchema.parse(requireProject(globals));
+      const result = await projectSlackUnbind(developerSession(), developerEnv(command), project, options.channel, options.team);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project, teamId: result.teamId, channelId: result.channelId, removed: result.changed }, true) : slackUnbindText(result));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");

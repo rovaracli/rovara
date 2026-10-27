@@ -421,6 +421,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
+import { readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
@@ -4447,7 +4448,7 @@ async function putSlackBinding(
   await orgStoreOf(dependencies).bindSlackTeam({ orgId, teamId: binding.teamId });
   await dependencies.documentClient.send(new PutCommand({
     TableName: dependencies.tableName,
-    Item: { ...slackBindingKey(orgId, binding.teamId, binding.channelId), entityType: "SLACK_BINDING", ...binding, updatedBy: identity.ownerKey },
+    Item: slackBindingItem(orgId, binding, identity.ownerKey),
   }));
   return { binding, latestRevision: latest.definition.revision };
 }
@@ -4478,15 +4479,7 @@ async function getSlackBinding(
   teamId: string,
   channelId: string,
 ): Promise<SlackChannelBinding | undefined> {
-  const item = await getItem<Record<string, unknown>>(dependencies, slackBindingKey(orgId, teamId, channelId));
-  if (!item) return undefined;
-  // Bindings written before channels followed the latest revision also carry projectRevision; it is ignored.
-  return SlackChannelBindingSchema.parse({
-    teamId: item.teamId,
-    channelId: item.channelId,
-    projectName: item.projectName,
-    updatedAt: item.updatedAt,
-  });
+  return readSlackBinding(dependencies, orgId, teamId, channelId);
 }
 
 /** A channel's binding inside the org its Slack team is bound to; a team bound to no org has none. */

@@ -197,6 +197,19 @@ export function auditProjectMemberRemoved(input: AuditBuilderBase & { projectNam
   return build("project_member.removed", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role });
 }
 
+/**
+ * `occurrence`: `auditOccurrence(requestId, project, teamId, channelId)` (release 0.4.17). A request id is remembered per project, so the same id can reach
+ * another project or channel; each makes its own occurrence. The project is a name-keyed target; the Slack team and channel are opaque ids, related.
+ */
+export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string }): AuditEventInput {
+  return build("slack_channel.bound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
+}
+
+/** `occurrence`: as for `auditSlackChannelBound`. */
+export function auditSlackChannelUnbound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string }): AuditEventInput {
+  return build("slack_channel.unbound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
+}
+
 /** `occurrence`: `auditOccurrence(identityKey, createdAt of the link item)`. */
 export function auditIdentityLinked(input: AuditBuilderBase & { memberId: string; provider: string }): AuditEventInput {
   return build("identity.linked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
