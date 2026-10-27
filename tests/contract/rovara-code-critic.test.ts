@@ -15,6 +15,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
@@ -1291,6 +1292,51 @@ describe("criticModelFor across providers (staging 0.4.10): nothing here assumes
   it("counts a model refused on one provider as refused on another route to the same model", () => {
     const direct = { provider: "anthropic", modelId: "claude-fable-5-1" };
     expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [direct] }))).toBe("anthropic/claude-opus-5-5");
+  });
+});
+
+// C84: the plan check reads the base commit's rule files through the verified copy of the base's objects. When that fails, the worker's one fixed reason stops the check visibly
+// (unlike the other ways a check can end, which let the plan go on unchecked): the owner sees it and chooses Retry plan check. It is not a model failure, so the model-retry
+// path does not take it, and nothing starts the check again by itself.
+describe("a plan check whose base rule files could not be verified (C84)", () => {
+  const UNVERIFIED_ERROR = `CONFIG_INVALID: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}`;
+
+  it("is not read as a model the account can't use", () => {
+    expect(criticModelUnusable(UNVERIFIED_ERROR)).toBe(false);
+    expect(criticModelUnusable(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE)).toBe(false);
+  });
+
+  it("blocks the plan check with the fixed reason, shown to the owner with Retry plan check, and does not pass the plan on unchecked", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(record.workflow.critique).toBeUndefined();
+    const message = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!;
+    expect(message.text).toContain("The plan check stopped before it finished.");
+    expect(message.text).toContain("couldn't verify the base rule files");
+    expect(JSON.stringify(message)).toContain("agentx_workflow_retry_plan_check");
+  });
+
+  it("starts no second check, by the model-retry path or by a sweep: one check ran, and the plan waits for the owner", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.dispatchRows(taskId)).toEqual([]);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+  });
+
+  it("is a blocked step for the task page and the session, not a failed task and not a plan that went on", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    const task = (await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { status: string; workflow: { stage: string; state: string; blockReason?: string } };
+    expect(task.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(task.status).not.toBe("SUCCEEDED");
   });
 });
 
