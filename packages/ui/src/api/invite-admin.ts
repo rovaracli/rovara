@@ -1,8 +1,10 @@
 // Invite mutations deliberately do not inherit generic automatic network/429 POST retries.
-import { AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/contracts/web";
+import type { InviteCreateReceiptSchema } from "@agentx/contracts/web";
+import { ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/contracts/web";
 import type { z } from "zod";
 import type { ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
+export type InviteCreateReceipt = z.infer<typeof InviteCreateReceiptSchema>;
 export type InviteStatus = z.infer<typeof AppOrgInviteStatusSchema>;
 function unreadable() { return new ApiError(502, "INVALID_RESPONSE", "The invite response could not be verified."); }
 export function createInviteAdminApi(host: AppHost, orgId: string) {
@@ -28,7 +30,21 @@ export function createInviteAdminApi(host: AppHost, orgId: string) {
   }
   return response.body;
  }
+ function validScope() { if (!OrgIdSchema.safeParse(orgId).success) throw new ApiError(400, "CONFIG_INVALID", "Check a valid company invite."); }
+ function safeLink(value: string) {
+  try { const url = new URL(value);return url.origin === host.origin && (url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost")) && url.username === "" && url.password === "" && url.pathname.endsWith("/join") && /^(?:#|\?)invite=[A-Za-z0-9_-]{43}$/.test(url.search + url.hash); } catch { return false; }
+ }
  return {
+  async create(body: z.input<typeof ReviewedInviteCreateBodySchema>) {
+   validScope();const parsed = ReviewedInviteCreateBodySchema.safeParse(body);if (!parsed.success) throw new ApiError(400, "CONFIG_INVALID", "Review a valid invite destination and company role.");
+   const value = ReviewedInviteCreateResponseSchema.safeParse(await once({ method: "POST", path: "/v1/app/org/invites/reviewed", body: parsed.data }));
+   if (!value.success || value.data.receipt.orgId !== orgId || value.data.receipt.requestId !== parsed.data.requestId || value.data.receipt.role !== parsed.data.role || (value.data.inviteUrl !== undefined && !safeLink(value.data.inviteUrl))) throw unreadable();return value.data;
+  },
+  async creationReceipt(requestId: string) {
+   validScope();if (!OrgInvitePublicIdSchema.safeParse(requestId).success) throw new ApiError(400, "CONFIG_INVALID", "Check a valid creation request.");
+   const value = ReviewedInviteCreateResponseSchema.safeParse(await once({ method: "GET", path: "/v1/app/org/invites/requests/" + requestId }));
+   if (!value.success || value.data.inviteUrl !== undefined || value.data.receipt.orgId !== orgId || value.data.receipt.requestId !== requestId) throw unreadable();return { receipt: value.data.receipt };
+  },
   setScopeActive(active: boolean) { scopeActive = active; },
   async status(inviteId: string): Promise<InviteStatus> {
    const value = AppOrgInviteStatusSchema.safeParse(await once({ method: "GET", path: path(inviteId) }));
