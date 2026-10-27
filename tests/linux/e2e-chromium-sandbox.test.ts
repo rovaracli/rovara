@@ -53,6 +53,8 @@ async function inContainer(mode: "sandbox" | "no-sandbox", seccomp: "pinned" | "
   const args = ["run", "--rm", "--init", "--network", "none", "--cap-drop=ALL", "--security-opt", "no-new-privileges",
     ...(seccomp === "pinned" ? ["--security-opt", `seccomp=${installedExecutorSeccompProfilePath()}`] : []),
     "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m", "--shm-size", "1g", "--pids-limit", "1024", "--memory", "2g", "-e", `SANDBOX_MODE=${mode}`,
+    // Bare imports in the script resolve from the working directory: the verifier's folder holds the image's playwright-core.
+    "-w", "/opt/agentx/packages/verifier",
     EXECUTOR_IMAGE, "node", "--input-type=module", "-e", INSIDE_THE_CONTAINER];
   const result = await docker(...args);
   const raw = `exit ${result.code}\n${result.stdout}\n${result.stderr}`;
