@@ -25,3 +25,5 @@ it("builds org/project/revision-bound events without copying free text or extra 
  const selection=events.auditProjectModelSelectionChanged({...base,...selectionFacts,sourceSurface:"slack",...extra});expect(selection.action).toBe("project.model_selection_changed");expect(selection.facts).toEqual(selectionFacts);expect(JSON.stringify(selection)).not.toContain("unneeded-private-text");
  expect(()=>make({...input,afterModelIdsDigest:"bad"})).toThrow();
 });
+
+for(const [action,facts] of [["project.models_changed",modelsFacts],["project.model_selection_changed",selectionFacts]] as const)it(`accepts a name-keyed project target for ${action}`,()=>{expect(AUDIT_ACTIONS as readonly string[]).toContain(action);expect(AuditEventInputSchema.safeParse(event(action,facts)).success).toBe(true);expect(AuditEventInputSchema.safeParse({...event(action,facts),target:{kind:"project",name:"private-roadmap"}}).success).toBe(true);});
