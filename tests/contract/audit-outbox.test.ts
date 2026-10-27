@@ -9,6 +9,7 @@ import {
   AUDIT_PENDING_SHARDS,
   AUDIT_PENDING_TTL_DAYS,
   AuditEventInputSchema,
+  auditOperatorId,
   INDEX_EXPIRY_ATTRIBUTE,
   type AuditEventInput,
 } from "@agentx/contracts";
@@ -695,6 +696,12 @@ describe("I4: the builders", () => {
     ["auditIdentityUnlinked", (occurrence) => builders.auditIdentityUnlinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],
     ["auditOrgRenamed", (occurrence) => builders.auditOrgRenamed({ ...base, occurrence, details })],
+    // Call sites: developer/store.ts setChosenDisplayName; org/slack-binding.ts bind and unbind; aws/broker.ts connectSlackTeam and disconnectSlackTeam (operator actor).
+    ["auditMemberRenamed", (occurrence) => builders.auditMemberRenamed({ ...base, occurrence, details, memberId: "dev_1" })],
+    ["auditSlackChannelBound", (occurrence) => builders.auditSlackChannelBound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
+    ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
+    ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
+    ["auditSlackTeamDisconnected", (occurrence) => builders.auditSlackTeamDisconnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],
