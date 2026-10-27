@@ -12,7 +12,7 @@ import { requestRecordPut } from "./request-records.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "audit">;
 const uuid = z.string().uuid(), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const reference = z.object({ pk: z.string(), sk: z.string(), entityType: z.literal("ORG_INVITE_DIRECTORY"), orgId: OrgIdSchema, inviteId: uuid, tokenHash: hash });
-const canonical = z.object({ entityType: z.literal("ORG_INVITE"), orgId: OrgIdSchema, inviteId: uuid, tokenHash: hash, role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), acceptedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional(), revision: z.number().int().nonnegative().optional() });
+const canonical = z.object({ entityType: z.literal("ORG_INVITE"), orgId: OrgIdSchema, inviteId: uuid, tokenHash: hash, role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), acceptedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() });
 const forbidden = () => agentXError("FORBIDDEN", "Only a current company owner or admin can revoke invites.");
 const missing = () => agentXError("NOT_FOUND", "That invite is unavailable in this company.");
 const stale = () => agentXError("CHANGE_STALE", "That invite changed or is no longer pending. Refresh before continuing.");

@@ -13,6 +13,7 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
 }
 const terminalCopy = (status: InviteStatus["status"]) => status === "accepted" ? "This invite has already been accepted. No access was revoked." : status === "revoked" ? "This invite was already revoked. No additional change was made." : "This invite has expired. No change was made.";
 function failure(error: unknown, reading = false) {
+ if (error instanceof ApiError && error.code === "CSRF_STALE") return "Your sign-in changed in another tab. No change was made. Close, reload and review again.";
  if (error instanceof ApiError && error.status === 403) return "Your permission to revoke invites has ended. Close and reload.";
  if (error instanceof ApiError && error.status === 429) return reading ? "Too many invite checks. Wait a minute before checking again." : "Too many invite changes. Wait a minute, then check the current invite.";
  if (error instanceof ApiError && error.status === 404) return "This invite is unavailable. Refresh the directory before continuing.";
@@ -28,7 +29,7 @@ export function InviteRevokeDialog({ orgId, company, target, checking, changed, 
    if (!active || !alive.current) return;setCurrent(value);
    if (value.status !== "pending") { setMessage(terminalCopy(value.status));setSettled(true);onApplied(); }
    else if (value.revision !== target.revision || value.role !== target.role) setMessage("Invite details changed. Close and review the directory again.");
-  }).catch(error => { if (active && alive.current) { if (error instanceof ApiError && error.status === 403) onDenied();setMessage(error instanceof ApiError && [403, 404, 429].includes(error.status) ? failure(error, true) : "The current invite could not be checked. Check again before confirming."); } }).finally(() => { if (active && alive.current) setBusy(false); });
+  }).catch(error => { if (active && alive.current) { if (error instanceof ApiError && error.status === 403 && error.code !== "CSRF_STALE") onDenied();setMessage(error instanceof ApiError && [403, 404, 429].includes(error.status) ? failure(error, true) : "The current invite could not be checked. Check again before confirming."); } }).finally(() => { if (active && alive.current) setBusy(false); });
   return () => { active = false;alive.current = false;api.setScopeActive(false); };
  }, [api, target, onDenied, onApplied]);
  useEffect(() => { if (!busy && verified) receipt.current?.focus();else if (!busy && sent && !settled && message) recovery.current?.focus(); }, [busy, verified, sent, settled, message]);
@@ -41,7 +42,7 @@ export function InviteRevokeDialog({ orgId, company, target, checking, changed, 
     setVerified(true);setSettled(true);setMessage("Invite revoked.");onApplied();
    } else if (value.status !== "pending") { setSettled(true);setMessage(terminal ? terminalCopy(value.status) : value.status === "revoked" ? "This invite is revoked. This attempt's outcome could not be confirmed." : terminalCopy(value.status));onApplied(); }
    else setMessage(attempted.current ? "This invite is still pending. Close and review again before making another change." : value.revision !== target.revision || value.role !== target.role ? "Invite details changed. Close and review the directory again." : undefined);
-  } catch (error) { if (!alive.current) return;if (error instanceof ApiError && error.status === 403) onDenied();setMessage(expected !== undefined ? "The revocation could not be verified. " + (error instanceof ApiError && error.status === 429 ? "Wait a minute before checking again." : "Check the current invite before continuing.") : failure(error, true)); }
+  } catch (error) { if (!alive.current) return;if (error instanceof ApiError && error.status === 403 && error.code !== "CSRF_STALE") onDenied();setMessage(expected !== undefined ? "The revocation could not be verified. " + (error instanceof ApiError && error.status === 429 ? "Wait a minute before checking again." : "Check the current invite before continuing.") : failure(error, true)); }
  }
  async function commit() {
   if (sending.current || busy || attempted.current || sent || checking || changed || staleData || !ready) return;
@@ -50,7 +51,7 @@ export function InviteRevokeDialog({ orgId, company, target, checking, changed, 
    const result = await bounded(api.revoke(target.inviteId, { requestId: globalThis.crypto.randomUUID(), expectedRevision: target.revision }));if (!alive.current) return;await check(result);
   } catch (error) {
    if (!alive.current) return;
-   if (error instanceof ApiError && error.status === 403) onDenied();
+   if (error instanceof ApiError && error.status === 403 && error.code !== "CSRF_STALE") onDenied();
    if (error instanceof ApiError && ["INVITE_ALREADY_ACCEPTED", "INVITE_ALREADY_REVOKED", "INVITE_EXPIRED", "CHANGE_STALE"].includes(error.code)) await check(undefined, true);
    else setMessage(error instanceof ApiError && error.code === "PENDING" ? "The revoke request is pending. Check the current invite before continuing." : failure(error));
   } finally { sending.current = false;if (alive.current) setBusy(false); }
