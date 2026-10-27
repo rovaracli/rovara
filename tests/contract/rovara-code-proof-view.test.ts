@@ -15,6 +15,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { taskView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { planAnswer, testedPlanDocument, turnPlanIntoMarkdown } from "../support/plan-documents.js";
+import { workerTestProof } from "../support/worker-test-proof.js";
 
 const now = "2026-10-27T12:00:00.000Z";
 const pullRequestGateway = () => ({
@@ -25,7 +26,7 @@ const pullRequestGateway = () => ({
 const passingChecks = (count = 1) => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: Array.from({ length: count }, (_, index) => ({ id: `readiness:${index}`, label: index === 0 ? "npm test" : "retry tests", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 })), extraTry: "not_needed", agentClaim: "success" });
 
 /** A version 2 task taken through planning, approval, build and review, as the pull request test does; `withPlan: false` stops before the plan is approved. */
-async function task(options: { testProofFor?: (digest: string, proposedCheckId: string | undefined) => unknown; withPlan?: boolean; legacyPlan?: boolean; linkedCheck?: boolean } = {}) {
+async function task(options: { testProofFor?: (digest: string) => unknown; withPlan?: boolean; legacyPlan?: boolean; linkedCheck?: boolean } = {}) {
   const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
   const id = String((started.body.task as { taskId: string }).taskId);
@@ -43,7 +44,8 @@ async function task(options: { testProofFor?: (digest: string, proposedCheckId: 
   const planArtifact = record().workflow.artifacts.filter((artifact) => artifact.type === "plan").at(-1)!;
   await harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: planArtifact.sha256 });
   const implementation = operations().find((item) => item.workflowMode === "IMPLEMENT")!;
-  if (options.testProofFor !== undefined) await harness.artifact(workspaceId, String(implementation.id), "test-proof.json", JSON.stringify(options.testProofFor(built.digest, record().workflow.checkPolicy?.proposed?.[0]?.id)));
+  const proofText = options.testProofFor === undefined ? undefined : await options.testProofFor(built.digest);
+  if (options.testProofFor !== undefined) await harness.artifact(workspaceId, String(implementation.id), "test-proof.json", typeof proofText === "string" ? proofText : JSON.stringify(proofText));
   await harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: built.repositories, workflowCheckCandidateRepositories: built.repositories, checks: passingChecks(record().workflow.checkPolicy?.proposed?.length ? 2 : 1) } });
   return { harness, id, record, built, workspaceId };
 }
@@ -67,16 +69,16 @@ describe("the task view's proof table", () => {
   });
 
   it("carries the test-proof lines of a proof bound to the candidate, and ignores one for other code (the same inputs as the pull request)", async () => {
-    const proofItems = (digest: string) => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: "readiness:0", label: "npm test", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 1200 });
+    const proofItems = async (digest: string) => (await workerTestProof(digest, 0)).json;
     const bound = await task({ testProofFor: proofItems });
     expect((await readTask(bound.harness, bound.id))["proofTable"]).toMatchObject({ testProofLines: ["Test proof: 1 check fails on the original code and passes now"] });
     const other = await task({ testProofFor: () => proofItems("f".repeat(64)) });
     expect(ProofTableViewSchema.parse((await readTask(other.harness, other.id))["proofTable"]).testProofLines).toEqual([]);
   });
 
-  it("shows a requirement as proven, with the test-proof line once, when a real test-proof.json (as the worker writes it) has a proves_change verdict for the check that proves it", async () => {
-    const proofFor = (digest: string, checkId: string | undefined) => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: checkId ?? "missing", label: "retry tests", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 1200 });
-    const { harness, id } = await task({ linkedCheck: true, testProofFor: proofFor });
+  it("shows a requirement as proven, with the test-proof line once, when the test-proof.json the worker wrote (readiness:<index> check ids) has a proves_change verdict for the check that proves it", async () => {
+    // Selected checks: required-1 (index 0) and the plan's proposed retry check (index 1); the worker's own code makes the proof.
+    const { harness, id } = await task({ linkedCheck: true, testProofFor: async (digest) => (await workerTestProof(digest, 1)).json });
     const proof = ProofTableViewSchema.parse((await readTask(harness, id))["proofTable"]);
     expect(proof.rows[0]).toMatchObject({ claimId: "1", result: "proven", evidence: [{ kind: "check", label: "retry tests", state: "proven" }] });
     expect(proof.testProofLines).toEqual(["Test proof: 1 check fails on the original code and passes now"]);
@@ -103,7 +105,7 @@ describe("the task view's proof table", () => {
   });
 
   it("is the same for a reader who is not the owner (the view the session read gives a project viewer), and carries nothing more than the schema's fields", async () => {
-    const { harness, record } = await task({ testProofFor: (digest) => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: "readiness:0", label: "npm test", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 1200 }) });
+    const { harness, record } = await task({ testProofFor: async (digest) => (await workerTestProof(digest, 0)).json });
     const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
     const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
     const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions }, caller);
@@ -206,7 +208,7 @@ describe("proofTableView", () => {
   });
 
   it("carries the test-proof lines only for a proof bound to the current candidate", () => {
-    const proof = (digest: string): TestProof => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: "unit", label: "Unit tests", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 5 });
+    const proof = (digest: string): TestProof => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: "readiness:0", label: "Unit tests", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 5 });
     expect(proofTableView(workflowWith(CODE.digest), { plan, testProof: proof(CODE.digest) })!.testProofLines).toHaveLength(1);
     expect(proofTableView(workflowWith(CODE.digest), { plan, testProof: proof(OLD.digest) })!.testProofLines).toEqual([]);
     expect(proofTableView(workflowWith(CODE.digest), { plan, testProof: proof(CODE.digest) })!.rows[0]!.result).toBe("proven");

@@ -27,6 +27,9 @@ export const PROOF_LEVEL_LAST = 4;
 const RESULT_WORDS: Record<ProofResult, string> = { proven: "✅ proven", passed: "✅ passed", failed: "❌ failed", partly_tested: "⚠ partly tested", not_tested: "⚠ not tested" };
 const STATE_WORDS: Record<ProofEvidence["state"], string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 
+/** The ids of the workflow's selected checks in selection order: the order the worker numbers its checks `readiness:<index>` in (see `checkIdOfProofItem`). */
+export const selectedCheckIdsOf = (workflow: WorkflowSnapshot): string[] => workflowSelectedChecks(workflow.checkPolicy).map((check) => check.id);
+
 /** The workflow's recorded check results as the table reads them. */
 function recordedCheckResults(workflow: WorkflowSnapshot, recorded: NonNullable<WorkflowSnapshot["verification"]>): ProofCheckResult[] {
   const labels = new Map(workflowSelectedChecks(workflow.checkPolicy).map((check) => [check.id, check.label]));
@@ -75,7 +78,7 @@ export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | u
   if (proof?.stale === true) return () => ["### Proof", "", PROOF_STALE_LINE];
   const plan = proof?.plan;
   if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
-  const table = buildProofTable({ plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest });
+  const table = buildProofTable({ plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest, selectedCheckIds: selectedCheckIdsOf(workflow) });
   return (level) => {
     const requirementMax = level >= 4 ? 60 : level >= 3 ? 120 : level >= 2 ? 160 : level === 1 ? 200 : 300;
     const folded = level >= 3 ? table.rows.filter((row) => row.result === "proven" || row.result === "passed") : [];

@@ -4,7 +4,7 @@
 // it "earlier", the way it labels the recorded checks).
 import { redactText, type ProofTableView, type WorkflowSnapshot } from "@agentx/contracts";
 import { buildProofTable, testProofLinesOf } from "./proof-table.js";
-import { earlierProofCheckResults, proofCheckResults, type ProofContext } from "./proof-section.js";
+import { earlierProofCheckResults, proofCheckResults, selectedCheckIdsOf, type ProofContext } from "./proof-section.js";
 
 /**
  * The page's words for a string `buildProofTable` made inert for GitHub: its escapes undone (`&lt;` before `&amp;`, so `&amp;lt;` stays `&lt;`), its joiners dropped, anything secret-shaped redacted again, and
@@ -23,7 +23,7 @@ export function proofTableView(workflow: WorkflowSnapshot, proof: ProofContext |
   try {
     const earlier = earlierProofCheckResults(workflow);
     const table = buildProofTable({
-      plan, checkResults: earlier.length > 0 ? earlier : proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest,
+      plan, checkResults: earlier.length > 0 ? earlier : proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest, selectedCheckIds: selectedCheckIdsOf(workflow),
     });
     return {
       rows: table.rows.slice(0, 50).map((row) => ({

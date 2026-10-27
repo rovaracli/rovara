@@ -72,6 +72,18 @@ export interface ProofTableInput {
   /** Used only when its `candidateDigest` equals `candidateDigest`; otherwise ignored, as if absent. */
   testProof: TestProof | undefined;
   candidateDigest: string | undefined;
+  /** The ids of the workflow's selected checks, in selection order (`workflowSelectedChecks(checkPolicy)`): what the worker's `readiness:<index>` ids in the test proof stand for. Absent: no test-proof item can be matched to a check. */
+  selectedCheckIds?: readonly string[] | undefined;
+}
+
+/**
+ * The workflow check a test-proof item is about. The worker numbers the project checks it runs `readiness:<index>`, in the order of the task's selected checks (required, proposed, selected optional), and
+ * the broker maps the same index to the check's id when it records the check results (`workflowSelectedChecks(checkPolicy)[index]`). So does this. An id that is not exactly `readiness:` and a canonical index, or whose
+ * index is past the selected checks, is about no check: undefined, never matched to one by accident.
+ */
+export function checkIdOfProofItem(itemCheckId: string, selectedCheckIds: readonly string[] | undefined): string | undefined {
+  const index = /^readiness:(0|[1-9]\d{0,5})$/u.exec(itemCheckId)?.[1];
+  return index === undefined ? undefined : selectedCheckIds?.[Number(index)];
 }
 
 export const NOT_TESTED_REASONS = {
@@ -156,7 +168,7 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
     if (result === undefined || result.couldNotRun === true) return "not_checked";
     return result.status === "PASS" ? "passed" : result.status === "FAILED" ? "failed" : "not_checked";
   };
-  const provesChange = new Set((proof?.items ?? []).filter((item) => item.verdict === "proves_change").map((item) => item.checkId));
+  const provesChange = new Set((proof?.items ?? []).filter((item) => item.verdict === "proves_change").flatMap((item) => checkIdOfProofItem(item.checkId, input.selectedCheckIds) ?? []));
   const checkOrder = [...new Set([...proposed.map((check) => check.id), ...Object.keys(proves)])];
 
   const rowOfScenario = new Map(input.scenarioRows.map((row) => [row.scenarioId, row]));
