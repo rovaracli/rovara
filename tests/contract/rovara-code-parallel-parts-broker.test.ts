@@ -180,7 +180,7 @@ describe("the timeline line that says why parts run one after another (Bug N)", 
   });
 
   it("says nothing for a version 1 task, which never runs parts together", async () => {
-    expect(await note({ member: 3, organization: 20, memberCount: 3, orgCount: 5 }, { ...task, workflow: { definitionVersion: "1.0.0" } } as typeof v2)).toBeUndefined();
+    expect(await note({ member: 3, organization: 20, memberCount: 3, orgCount: 5 }, { ...task, workflow: { definitionVersion: "1.0.0" } })).toBeUndefined();
   });
 
   it("says so when the limits could not be read, and still runs one part", async () => {
