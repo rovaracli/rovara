@@ -548,6 +548,19 @@ describe("POST /v1/app/sessions/{id}/answers", () => {
     expect(errorOf(none).code).toBe("INTENT_NOT_WAITING");
   });
 
+  it("takes the workflow revision the page read: a revision that has moved on is INTENT_NOT_WAITING and writes nothing, the current one answers", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    const revision = (t.meta(run.taskId).workflow as { revision: number }).revision;
+    const before = JSON.stringify(t.meta(run.taskId).workflow);
+    const stale = await t.respond(MAYA, run.sessionId, { revision: revision - 1 });
+    expect(stale.status).toBe(409);
+    expect(errorOf(stale)).toEqual({ code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." });
+    expect(JSON.stringify(t.meta(run.taskId).workflow)).toBe(before);
+    expect((await t.respond(MAYA, run.sessionId, { revision })).status).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+  });
+
   it("answers a repeat of the same request with the first outcome and writes nothing; the same id with other answers, or from another person, is a conflict", async () => {
     const t = await world();
     const run = await t.waitingTask();

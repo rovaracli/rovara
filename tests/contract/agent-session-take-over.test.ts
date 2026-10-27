@@ -37,6 +37,7 @@ function world(options: { audit?: boolean; sessions?: boolean; chain?: boolean }
   const audit = options.audit === true ? capturingAuditDeps({ db: w.db, now: () => w.clock.now }) : undefined;
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now });
   const admissions: Array<{ developerId: string; project: string }> = [];
+  const paths: string[] = [];
   const live = { budgetRefusal: undefined as string | undefined, chainPayer: undefined as Payer | undefined, stepTaskId: undefined as string | undefined };
   const published: Array<{ channel: string; events: string[] }> = [];
   const chainCalls: Array<Record<string, unknown>> = [];
@@ -49,7 +50,7 @@ function world(options: { audit?: boolean; sessions?: boolean; chain?: boolean }
   };
   const sessionDeps: SessionTakeOverDependencies = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore,
-    admitPayer: async (input) => { admissions.push({ developerId: input.payer.kind === "member" ? input.payer.developerId : "", project: input.project }); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
+    admitPayer: async (input) => { paths.push(input.path); admissions.push({ developerId: input.payer.kind === "member" ? input.payer.developerId : "", project: input.project }); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
     realtimePublish: {
       endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "AKIA", secretAccessKey: "secret" }),
       fetch: (async (_url: unknown, init: { body: string }) => { published.push(JSON.parse(init.body) as { channel: string; events: string[] }); return new Response("{}", { status: 200 }); }) as never,
@@ -105,7 +106,7 @@ function world(options: { audit?: boolean; sessions?: boolean; chain?: boolean }
     w.db.set({ ...mySessionsKey(ORG_A, owner, CREATED_AT, sessionId), entityType: "MY_SESSION", orgId: ORG_A, sessionId, developerId: owner, createdAt: CREATED_AT });
   };
   const feed = (developerId: string) => w.db.find((item) => item.pk === changesKey(ORG_A, developerId, CREATED_AT, 0).pk);
-  return { ...w, audit, store, sessionDeps, deps, kind, context, browser, decide, ask, asked, confirm, approvalOf, meta, events, taskOf, seedRows, feed, admissions, live, published, chainCalls, decideStore };
+  return { ...w, audit, store, sessionDeps, deps, kind, context, browser, decide, ask, asked, confirm, approvalOf, meta, events, taskOf, seedRows, feed, admissions, paths, live, published, chainCalls, decideStore };
 }
 type World = ReturnType<typeof world>;
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
@@ -116,6 +117,16 @@ const sessionSeed = (w: World, options: Parameters<World["seedSession"]>[0] = {}
 };
 
 describe("asking to take a session over", () => {
+  it("checks the taker's budget for a process-layer task on the same floor as a Rovara Code task (TASK)", async () => {
+    const w = world();
+    const plain = sessionSeed(w);
+    await w.ask(MAX, plain.sessionId);
+    const layer = sessionSeed(w);
+    w.db.set({ ...w.taskOf(layer.taskId), agent: { agentId: "agt_pppppppppppppppppppp", name: "web process", version: 1, builtin: false, process: true, digest: "d".repeat(64) } });
+    await w.ask(MAX, layer.sessionId);
+    expect(w.paths).toEqual(["TASK", "TASK"]);
+  });
+
   it("answers 202 with the ticketed link and the changes, and changes nothing until it is confirmed", async () => {
     const w = world();
     const { sessionId, taskId } = sessionSeed(w);

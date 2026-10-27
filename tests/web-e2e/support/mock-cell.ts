@@ -1,3 +1,4 @@
+import { CodeIntentBodySchema } from "@agentx/contracts";
 import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
@@ -5,6 +6,7 @@ import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedRespo
 import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
+import { understandSession } from "../../web/support/understand-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
 import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -133,6 +135,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
  if (current.project !== undefined && current.project.project.name === "payments" && await howWeWorkMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
+ const code = /^\/v1\/web\/projects\/([^/]+)\/code$/.exec(url.pathname);
+ if (current.project !== undefined && current.session !== undefined && code !== null && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
+  const input = CodeIntentBodySchema.parse(JSON.parse(body));
+  if (code[1] !== current.project.project.name) { json(404, { error: { code: "PROJECT_NOT_FOUND", message: "Not found." } });return; }
+  evidence.body = input;json(202, { task: taskFixture({ sessionId: current.session.sessionId }), sessionId: current.session.sessionId, sessionUrl: origin + "/s/" + current.session.sessionId });return;
+ }
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
   let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
@@ -161,6 +170,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
  if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }
+ // Understand's questions (playbook S3): answers are taken against the revision the page read; a workflow that moved on is INTENT_NOT_WAITING, as the broker answers.
+ if (url.pathname === path + "/answers" && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 12000) throw new Error("Mock body limit."); }
+  const input = JSON.parse(body) as { revision?: number; round?: number };evidence.body = input;
+  if (input.revision !== session.revision || input.round !== 1) { json(409, { error: { code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." } });return; }
+  current.session = understandSession({ waiting: false, revision: session.revision + 1 });json(200, { session: current.session });return;
+ }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
  if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
  if ((url.pathname === path + "/messages" && method === "POST") || (url.pathname === path + "/shares" && method === "PUT")) {

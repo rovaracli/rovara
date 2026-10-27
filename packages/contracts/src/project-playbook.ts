@@ -46,3 +46,6 @@ export const PLAYBOOK_STALE_MESSAGE = "Someone changed how this project works. R
 
 /** What PROCESS_UNAVAILABLE (400) says, whatever the reason: the process can't be set, or can't run, in this project. The process is never named. */
 export const PROCESS_UNAVAILABLE_MESSAGE = "This project's process isn't available. Check that it is published and not archived.";
+
+/** What PROCESS_UNAVAILABLE (400) says when work is started: the person starting it is not necessarily a maintainer, so it says who can fix it and where. */
+export const PROCESS_START_REFUSED_MESSAGE = "This project's way of working can't be used right now. A maintainer can fix it in How we work.";

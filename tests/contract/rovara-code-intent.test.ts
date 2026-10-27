@@ -457,6 +457,7 @@ describe("a deployment where agents are not set up", () => {
       starter: undefined, origin: "https://cell.example.com",
       startPlainTask: async (_caller: unknown, body: unknown) => { bodies.push(body); return { task: { taskId: TASK_ID_A } } as never; },
       ownedTask: async () => { throw new Error("not read"); },
+      projectProcess: async () => { throw new Error("not asked"); },
     };
     const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
     return { bodies, dependencies, caller };
@@ -479,7 +480,7 @@ describe("a deployment where agents are not set up", () => {
 
   it("a follow-up is started only when the deployment confirms the task it names: a missing check, a refusal and a failing check all stop it", async () => {
     const started: unknown[] = [];
-    const base = { starter: {} as never, origin: "https://cell.example.com", startPlainTask: async () => { throw new Error("not used"); }, ownedTask: async () => { throw new Error("not read"); } };
+    const base = { starter: {} as never, origin: "https://cell.example.com", startPlainTask: async () => { throw new Error("not used"); }, ownedTask: async () => { throw new Error("not read"); }, projectProcess: async () => { throw new Error("not asked"); } };
     const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
     for (const retryable of [undefined, async () => false, async () => { throw new Error("down"); }]) {
       const refused = await refusal(startCodeIntent({ ...base, ...(retryable === undefined ? {} : { retryable }) }, caller, request({ retryOf: TASK_ID_A })));

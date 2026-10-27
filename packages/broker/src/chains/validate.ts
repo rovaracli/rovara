@@ -175,7 +175,10 @@ type AgentFound = Awaited<ReturnType<typeof requireAgentAccess>>;
 /** Whether the caller holds `use` on an agent: what they found, or the problem (a missing agent and one the caller cannot see read the same). */
 async function useAgent(deps: ChainValidateDeps, caller: AgentCaller, agentId: AgentId, at: string): Promise<{ found: AgentFound } | { problems: ChainProblem[] }> {
   try {
-    return { found: await requireAgentAccess(deps, caller, agentId, "use") };
+    const found = await requireAgentAccess(deps, caller, agentId, "use");
+    // A project's process layer is never a chain step: it reads as an agent that is not there.
+    if ("owner" in found.agent && found.agent.purpose === "process") return { problems: [{ path: at, message: UNKNOWN_AGENT }] };
+    return { found };
   } catch (error) {
     if (error instanceof AgentXError && error.code === "NOT_FOUND") return { problems: [{ path: at, message: UNKNOWN_AGENT }] };
     if (error instanceof AgentXError && error.code === "FORBIDDEN") return { problems: [{ path: at, message: plainMessage(error) }] };
