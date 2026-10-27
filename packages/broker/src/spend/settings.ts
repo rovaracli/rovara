@@ -70,7 +70,11 @@ const revisionOf = (item: Document): number | undefined => (typeof item["revisio
 
 /** A project's AI settings and their revision. A document that doesn't read is an error: falling back to the defaults would quietly undo what an admin set. */
 export async function readProjectAiWithRevision(deps: SpendSettingsDependencies, orgId: OrgId, project: string): Promise<StoredProjectAi> {
-  const item = await getItem(deps, projectAiKey(orgId, project));
+  return parseProjectAiWithRevision(await getItem(deps, projectAiKey(orgId, project)), project);
+}
+
+/** Shared canonical validation of a single already-read project settings snapshot. */
+export function parseProjectAiWithRevision(item: Document | undefined, project: string): StoredProjectAi {
   if (item === undefined) return { settings: defaultProjectAiSettings(), revision: 0 };
   const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd, taskStopPolicy } = item;
   if (Object.hasOwn(item, "taskStopPolicy") && !TaskStopProjectPolicySchema.safeParse(taskStopPolicy).success) {

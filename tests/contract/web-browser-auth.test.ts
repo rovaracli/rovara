@@ -2,7 +2,7 @@ import { createInviteAdminApi } from "../../packages/ui/src/api/invite-admin.js"
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey, orgProjectCatalogKey, projectAiKey } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
 import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
@@ -295,6 +295,21 @@ it("reads only a builtin agent's money layer through cookie auth without creatin
   expect(shown.body.agentOverride).toEqual({ kind: "inherit" });
   expect(shown.body.calculation).toBe("unavailable");
   expect(h.db.get({ pk: `ORG#${TEST_ORG}#BUILTIN_AGENTS`, sk: "rovara-code" })).toBeUndefined();
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
+
+it("reads a known project's source through cookie auth without initializing settings", async () => {
+  const h = await broker(), path = "/v1/web/org/task-stop-policy/projects/web";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(503);
+  h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 1 });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.projectOverride).toEqual({ kind: "inherit" });
+  expect(shown.body.projectLifecycle).toBe("not_loaded");
+  expect(h.db.get(projectAiKey(TEST_ORG, "web"))).toBeUndefined();
   seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
   expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
 });

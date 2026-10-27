@@ -1,3 +1,5 @@
+// Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
+import { getTaskStopProject } from "../org/task-stop-project.js";
 // Lane A G1: existing agent money limit, no initialization or management.
 import { getTaskStopAgent } from "../org/task-stop-agent.js";
 // Lane A G1: configured company-default read, with no policy writer.
@@ -1984,6 +1986,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);
   const taskStopAgentPath = /^\/v1\/app\/org\/task-stop-policy\/agents\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && taskStopAgentPath !== null) return getTaskStopAgent(deps, caller, taskStopAgentPath[1]!);
+  const taskStopProjectPath = /^\/v1\/app\/org\/task-stop-policy\/projects\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && taskStopProjectPath !== null) return getTaskStopProject(deps, caller, taskStopProjectPath[1]!);
   // Lane A: current-org, live-role monthly settings projection.
   if (request.method === "GET" && url.pathname === "/v1/app/org/budget-settings") return getAdminBudgetSettings(deps, caller);
   // Lane A: reviewed creation and actor-bound historical recovery, isolated from legacy onboarding.

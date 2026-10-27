@@ -162,4 +162,4 @@ export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCo
 export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-agent.js";
 
 // Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
-export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy } from "./task-stop-project.js";
+export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";

@@ -157,3 +157,29 @@ for (const method of ["POST", "PUT", "DELETE"]) it(`has no project ${method} set
   catch (error) { if (!(error instanceof AgentXError)) throw error; expect(errorStatus(error.code)).toBe(404); }
   expect(f.db.commandNames()).toHaveLength(0);
 });
+
+it("reads an actually committed AI revision instead of its eventual prior version", async () => {
+  const f = fixture("owner", true); f.ai({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1 } });
+  await f.db.send(new TransactWriteCommand({ TransactItems: [{ Update: { TableName: "state", Key: projectAiKey(A, "web"), UpdateExpression: "SET #policy = :policy, #rev = :rev", ExpressionAttributeNames: { "#policy": "taskStopPolicy", "#rev": "revision" }, ExpressionAttributeValues: { ":policy": { schemaVersion: 1, stopMicrousd: 2 }, ":rev": 2 } } }] }));
+  expect(await f.call()).toMatchObject({ status: 200, body: { settingsRevision: 2, projectOverride: { kind: "limited", stopMicrousd: 2 } } });
+});
+it("uses live owner membership despite a cached member role", async () => {
+  const f = fixture(); expect((await f.call({ ...f.caller, orgRole: "member" })).status).toBe(200);
+});
+it("retains the company-settings cause when the configured default is absent", async () => {
+  const f = fixture();
+  const send = f.db.send.bind(f.db);
+  f.db.send = command => {
+    const key = (command.input as { Key?: { pk?: string; sk?: string } }).Key;
+    if (key?.pk === policyKey().pk && key.sk === policyKey().sk) return Promise.resolve({});
+    return send(command);
+  };
+  const result = await f.call(); expect(result.status).toBe(503);
+  expect(result.message?.includes("Company task-stop settings could not be checked.")).toBe(true);
+});
+it("rejects an invalid project name before any state reads", async () => {
+  const f = fixture();
+  try { await routeDeveloperRequest(f.deps, { method: "GET", path: path.replace("/web", "/Bad"), headers: {}, requestId: "invalid-project" }, new URL(path.replace("/web", "/Bad"), "https://cell.example"), { caller: f.caller, csrf: "" }); throw new Error("Expected refusal"); }
+  catch (error) { if (!(error instanceof AgentXError)) throw error; expect(errorStatus(error.code)).toBe(400); }
+  expect(f.db.commandNames()).toHaveLength(0);
+});
