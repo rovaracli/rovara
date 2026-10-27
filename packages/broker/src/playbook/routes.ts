@@ -1,0 +1,60 @@
+// "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
+// settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
+import {
+  ProjectPlaybookBodySchema,
+  agentXError,
+  projectAllows,
+  type ProjectPlaybookResponse,
+  type ProjectRole,
+} from "@agentx/contracts";
+import type { AuditRuntime } from "../audit/outbox.js";
+import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { StatusReply } from "../aws/status-reply.js";
+import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { requireProcessLayer, type ProcessAgentReader } from "./project-process.js";
+
+/** The path this module owns under `/v1/app/projects/`. */
+export const PLAYBOOK_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook$/;
+
+export interface ProjectPlaybookDependencies {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  now: () => number;
+  store: ProcessAgentReader | undefined;
+  audit?: AuditRuntime | undefined;
+  /** The caller's role in the project: the project's name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another org's. */
+  projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
+}
+
+const MAINTAINERS_ONLY = "only a project maintainer can change how the project works";
+
+/** `GET /v1/app/projects/{p}/playbook`: to anyone who can see the project. */
+export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<ProjectPlaybookResponse> {
+  const { name } = await deps.projectFor(caller, rawProject);
+  return { playbook: await readProjectPlaybook(deps, caller.orgId, name, { lenient: true }) };
+}
+
+/**
+ * `PUT /v1/app/projects/{p}/playbook`. A maintainer sets the project's default process under the revision they read (`PLAYBOOK_STALE` for another). A `project_process` must be
+ * one of this project's own published, active process layers (`PROCESS_UNAVAILABLE`).
+ */
+export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string, rawBody: unknown): Promise<StatusReply> {
+  const found = await deps.projectFor(caller, rawProject);
+  if (!projectAllows(found.role, "edit_settings")) throw agentXError("FORBIDDEN", MAINTAINERS_ONLY);
+  const parsed = ProjectPlaybookBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    // Field names only: the values are the caller's.
+    const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
+    throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
+  }
+  const { expectedRevision, defaultProcess } = parsed.data;
+  if (defaultProcess.kind === "project_process") await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
+  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess });
+  return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
+}
+
+/** Routes one request on `PLAYBOOK_PATH`; the caller has matched the path and the method (GET or PUT). */
+export async function routeProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, method: "GET" | "PUT", rawProject: string, body: () => unknown): Promise<StatusReply | ProjectPlaybookResponse> {
+  return method === "GET" ? getProjectPlaybook(deps, caller, rawProject) : putProjectPlaybook(deps, caller, rawProject, body());
+}

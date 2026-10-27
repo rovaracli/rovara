@@ -71,6 +71,8 @@ export interface AgentRecord {
   description: string;
   owner: AgentOwner;
   accountable?: { developerId: string };
+  /** `process`: a project's process layer ("How we work"), never offered as an agent. Absent for every ordinary agent. */
+  purpose?: "process";
   currentVersion?: number;
   latestVersion: number;
   draftRevision: number;
@@ -385,6 +387,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     accountable?: { developerId: string };
     extends?: AgentId;
     overlay?: RecipeOverlay;
+    /** Marks the agent as a project's process layer. Left out, it is an ordinary agent. */
+    purpose?: "process";
     /** Task 10c: where the agent comes from. Only the create-from-session route passes it. */
     origin?: AgentOrigin;
     /** What the request's stored answer carries besides the agent (the create-from-session route's `copied` report); a repeat of the request reads it back. */
@@ -411,6 +415,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       description,
       owner: input.owner,
       ...(input.accountable === undefined ? {} : { accountable: input.accountable }),
+      ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
       latestVersion: 0,
       draftRevision: 1,
       status: "active",
