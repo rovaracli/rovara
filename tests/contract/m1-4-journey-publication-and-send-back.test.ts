@@ -5,6 +5,8 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import type { ObservedApiOutcome } from "../support/e2e-application-evidence-fixture.js";
 import { MAYA } from "../support/developer-task-broker.js";
+import { TEST_ORG, testProjectPk } from "../support/orgs.js";
+import { orgProjectCatalogKey, slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { apiRowKey, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 
 // JOURNEY46 (M1.4 Task 4.4a review, m6), Docker-free. The agent journeys (agent-renamed-export, agent-wrong-action) end in two broker decisions that their own asserts never checked:
@@ -60,16 +62,16 @@ function expectedFenceKeys(round: ApplicationRound): { required: string[]; accou
   const projects = round.harness.db.find((row) => row.entityType === "PROJECT" && (row.definition as { name?: string } | undefined)?.name === "payments") as Array<{ pk: string; sk: string; revision?: number }>;
   const latest = projects.reduce((best, row) => (row.sk > best.sk ? row : best));
   // The creator's authority (the Slack channel binding the task was started from) and the project's account row, as the store holds them.
-  const channelBindings = round.harness.db.find((row) => String(row.pk).includes("SLACK_BINDING#") && row.projectName === "payments") as Array<{ pk: string; sk: string }>;
-  const accounts = round.harness.db.find((row) => String(row.pk).endsWith("PROJECT#payments") && String(row.sk).startsWith("E2E_ACCOUNT_LATEST#")) as Array<{ pk: string; sk: string }>;
-  const catalog = round.harness.db.find((row) => String(row.pk).endsWith("PROJECT_CATALOG") && row.sk === "PROJECT#payments") as Array<{ pk: string; sk: string }>;
-  expect(catalog.length, "the fixture's project is in the catalog").toBe(1);
+  // Cloud: the channel binding, the account rows and the catalog live under the harness org's keys (orgScoped), exactly.
+  const channelBindings = round.harness.db.find((row) => String(row.pk).startsWith(slackBindingPk(TEST_ORG, "")) && row.projectName === "payments") as Array<{ pk: string; sk: string }>;
+  const accounts = round.harness.db.find((row) => row.pk === testProjectPk("payments") && String(row.sk).startsWith("E2E_ACCOUNT_LATEST#")) as Array<{ pk: string; sk: string }>;
+  const catalogKey = orgProjectCatalogKey(TEST_ORG, "payments");
+  expect(round.harness.db.get(catalogKey.pk, catalogKey.sk), "the fixture's project is in the catalog").toBeDefined();
   expect(channelBindings.length, "the fixture's creator has a channel binding").toBeGreaterThan(0);
   expect(accounts.length, "the fixture's project has an account row").toBeGreaterThan(0);
   const keys = [
     ...channelBindings.map((row) => ({ pk: row.pk, sk: row.sk })),
-    // Cloud: the catalog and the developer's membership are org-scoped; their keys are read from the store, as the checks run against it.
-    ...catalog,
+    { pk: catalogKey.pk, sk: catalogKey.sk },
     { pk: latest.pk, sk: latest.sk },
     { pk: `DEVELOPER#${MAYA.developerId}`, sk: "META" },
     { pk: apiRowKey.pk, sk: apiRowKey.sk },

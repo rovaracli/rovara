@@ -350,7 +350,10 @@ describe("DISPATCHEXHAUST 2: the runner lost the task mid-run", () => {
     // Held: the sweep does nothing for the delay.
     // Cloud: the sweep also takes the due `operation_end` row of the lost run (Plan 3 Task 22), so it is not "nothing attempted"; the held AUTOFIX row is what must stay untouched.
     const heldRow = dispatchRows(harness)[0]!;
-    await sweep(harness);
+    const operationEnds = harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "operation_end").length;
+    expect(operationEnds).toBeGreaterThan(0);
+    // Exactly the operation_end rows are attempted, never the held AUTOFIX row (mainline: attempted 0).
+    expect(JSON.parse((await sweep(harness)).body)).toMatchObject({ attempted: operationEnds });
     expect(dispatchRows(harness)).toEqual([heldRow]);
     expect(automatic(harness, ctx.taskId)).toEqual([]);
     // After the delay: one AGENTX retry of the reviews.
