@@ -33,4 +33,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "maintain.workflowSync",
   // Mainline #408: the plan dry run (a coding plan's proposed checks tried on the unchanged code; the executor monitor withholds it on a host without the executor image) and the grounding round (T7a/T7b).
   "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
+  // Mainline #413 (MIDSTEPCOOKIE): the executor syncs the browser's session values before every model call; the application-runtime monitor withholds it on a host whose executor image lacks the session-sync label.
+  "task.workflowE2EMidStepSync.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

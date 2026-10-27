@@ -267,7 +267,7 @@ describe("the code and security reviewers honor the step", () => {
     const inputs: PiSessionInput[] = [];
     const prompts: Array<{ role: string; text: string }> = [];
     await runWorkflowReviews({
-      operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+      ruleFileBaseCommits: [], operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
       piAdapter: recordingAdapter(inputs, prompts), promptSection: SECTION, skills: [skill()], tools: ["read", "bash", "grep"],
     });
     expect(prompts.map(({ role }) => role)).toEqual(["CRITIC", "SECURITY"]);
@@ -289,7 +289,7 @@ describe("the code and security reviewers honor the step", () => {
     const { rootPath, repositories, candidate } = await fixture();
     const plainInputs: PiSessionInput[] = [];
     const plain: Array<{ role: string; text: string }> = [];
-    await runWorkflowReviews({ operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories, piAdapter: recordingAdapter(plainInputs, plain) });
+    await runWorkflowReviews({ ruleFileBaseCommits: [], operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories, piAdapter: recordingAdapter(plainInputs, plain) });
     for (const input of plainInputs) {
       expect("skills" in input).toBe(false);
       expect("agentTools" in input).toBe(false);
@@ -300,7 +300,7 @@ describe("the code and security reviewers honor the step", () => {
   it("gives each reviewer the step's time limit instead of the default", async () => {
     const { rootPath, repositories, candidate } = await fixture();
     const reports = await runWorkflowReviews({
-      operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+      ruleFileBaseCommits: [], operationId: OPERATION, rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
       piAdapter: recordingAdapter([], [], () => new Promise(() => undefined)), timeoutMs: 5,
     });
     expect(reports.map((report) => report.failureReason)).toEqual(["TIMEOUT", "TIMEOUT"]);

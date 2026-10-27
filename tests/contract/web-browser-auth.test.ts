@@ -97,7 +97,8 @@ describe("browser API boundary", () => {
   const refusedName = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { name: "web@example.test" });
   expect(refusedName.status).toBe(400);
   expect(h.db.get(`DEVELOPER_NAME#${WHO}`, "NAME")).toMatchObject({ name: "Web M" });
-  for (const [method, path] of [["POST", "/me/name"], ["DELETE", "/me/name"], ["PUT", "/me"], ["PUT", "/me/identities/cloud"], ["PUT", "/me/name/x"]]) expect((await h.call(method!, "/v1/web" + path!, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body)).status, method + path).toBe(404);
+  const unsupportedRoutes: ReadonlyArray<readonly [string, string]> = [["POST", "/me/name"], ["DELETE", "/me/name"], ["PUT", "/me"], ["PUT", "/me/identities/cloud"], ["PUT", "/me/name/x"]];
+  for (const [method, path] of unsupportedRoutes) expect((await h.call(method, "/v1/web" + path, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body)).status, method + path).toBe(404);
  });
  it("dispatches each supported read family to the same app handler", async () => {
   const h = await broker();
