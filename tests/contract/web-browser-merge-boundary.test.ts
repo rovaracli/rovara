@@ -1,13 +1,14 @@
 // Owner decision 2026-10-27: Merge merges at once only for a caller the web boundary vouched for (a live browser session cookie, the same-origin header and the CSRF token). A token never carries that mark.
 import { describe, expect, it, vi } from "vitest";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
+import type * as developerRoutes from "../../packages/broker/src/aws/developer-routes.js";
 
 const SID = "11111111-1111-4111-8111-111111111111";
 const CELL = "https://cell.example";
 const caller = { developerId: "a".repeat(64), sessionId: SID, amr: "cloud" as const, name: "Priya", orgId: "org_aaaaaaaaaaaaaaaaaaaa", orgRole: "member" as const };
 
 vi.mock("../../packages/broker/src/aws/developer-routes.js", async (original) => ({
-  ...(await original<typeof import("../../packages/broker/src/aws/developer-routes.js")>()),
+  ...(await original<typeof developerRoutes>()),
   authenticateDeveloperSessionId: async () => ({ ...caller }),
 }));
 

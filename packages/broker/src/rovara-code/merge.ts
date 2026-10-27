@@ -40,7 +40,6 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import { findLinkedGithubWorkflowPullRequest } from "../aws/github-webhooks.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
 import { confirmationReply, type SessionShareDependencies, type ShareCaller } from "../agent-sessions/shares.js";
-import { parseControlBody } from "../agent-sessions/stop.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { createPendingChange, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../agents/approvals.js";
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";
