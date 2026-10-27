@@ -37,6 +37,7 @@ import { lessSafeChanges } from "./less-safe.js";
 import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
 import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
 import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
+import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -171,6 +172,8 @@ export async function publishDraft(
   if (draft === undefined || draft.revision !== input.expectedRevision || agent.draftRevision !== input.expectedRevision) {
     throw agentXError("AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again.");
   }
+  // A process layer's draft cannot reorder the stages, whatever got it stored.
+  requireNoSequenceForProcess(agent, draft.overlay);
   const next = await resolveRecipe(deps, agent.orgId, agent.agentId, "draft");
   const digest = recipeDigest(next);
   // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.

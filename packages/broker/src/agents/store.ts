@@ -55,6 +55,7 @@ import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner
 import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OverrideCap, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
+import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
 import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
@@ -403,6 +404,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (input.owner.kind === "project" && input.accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const overlay = parseOverlay(input.overlay ?? {});
+    requireNoSequenceForProcess({ purpose: input.purpose }, overlay);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     const base = input.extends === undefined ? undefined : await this.pinTarget(input.orgId, input.extends);
 
@@ -443,6 +445,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   async saveDraft(input: { orgId: OrgId; agentId: AgentId; overlay: RecipeOverlay; extends?: AgentId | null; expectedRevision: number; by: string; request?: RequestMark }): Promise<AgentDraft> {
     const overlay = parseOverlay(input.overlay);
     const agent = await this.require(input.orgId, input.agentId);
+    requireNoSequenceForProcess(agent, overlay);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
@@ -925,7 +928,7 @@ export async function resolveAgent(
     const base = content.extends === undefined ? EMPTY_RECIPE : await layer(content.extends.agentId, content.extends.version, [...trail, { agentId: id, name: agent.name }]);
     const problems = overlayProblems(base, content.overlay);
     if (problems.length > 0) { if (options.problems) options.problems.push(...problems); else throw problemsError(problems); }
-    const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false };
+    const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false, ...(agent.purpose === "process" ? { process: true as const } : {}) };
     // The registry is read here, not inside applyOverlay, which is synchronous: the layer's added skills are looked up first.
     const added = new Map<string, ResolvedSkill>();
     for (const ref of content.overlay.skills?.add ?? []) added.set(ref.skillId, await resolveSkill(ref));
