@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { ApprovalDependencies, ApprovalRecord, ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
-import { getApproval, getApprovalSubjectHandler, getApproverRule } from "../../packages/broker/src/agents/approvals.js";
+import { decideApproval, getApproval, getApprovalSubjectHandler, getApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import {
   lessSafeGuardrailChanges,
   readGuardrails,
@@ -27,6 +27,7 @@ import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../pac
 import { DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_MAX_AUTONOMY, DEFAULT_MAX_PER_RUN_CEILING_USD } from "../../packages/contracts/src/spend.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
@@ -988,5 +989,58 @@ describe("canonical ceiling write precision compatibility", () => {
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(1);
     await writeGuardrails(deps, TEST_ORG, guardrails({ maxPerRunCeilingUsd: 0.000001 }), DANA.developerId, { expectedRevision: 1 });
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(2);
+  });
+});
+
+
+describe("required ceiling authority-boundary regressions", () => {
+  for (const [name, value] of [
+    ["missing", undefined], ["undefined", undefined], ["NaN", NaN], ["infinite", Infinity],
+    ["negative", -1], ["over maximum", 1000000.000001], ["string", "1"], ["null", null],
+  ] as const) {
+    it(`refuses a direct store ceiling that is ${name} without inventing zero`, async () => {
+      const { db, deps } = await setup();
+      const next: Record<string, unknown> = { ...defaults(), maxPerRunCeilingUsd: value };
+      if (name === "missing") delete next.maxPerRunCeilingUsd;
+      const before = db.transactions().length;
+      const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: next as unknown as AgentGuardrails, expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
+      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+      expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
+      expect(db.transactions().length).toBe(before);
+    });
+  }
+  it("refuses a missing ceiling key at schema and PUT without a default or approval", async () => {
+    const { db, call, GUARDRAILS } = await setup();
+    const next: Record<string, unknown> = { ...defaults() };
+    delete next.maxPerRunCeilingUsd;
+    expect(AgentGuardrailsSchema.safeParse(next).success).toBe(false);
+    const before = db.transactions().length;
+    const result = await call(DANA, "PUT", GUARDRAILS, { expectedRevision: 0, guardrails: next });
+    expect(result.status).toBe(400);
+    expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
+    expect(db.transactions().length).toBe(before);
+  });
+  it("ends a historical sub-micro guardrails approval failed without changing the document or auditing a change", async () => {
+    const { db, deps, put, approvals, current } = await setup();
+    const capture = capturingAuditDeps({ db });
+    deps.store = new AgentStore({ documentClient: db, tableName: "state", now: Date.now, audit: capture.audit });
+    const decide = (approvalId: string) => decideApproval(deps, { orgId: TEST_ORG, developerId: OWEN.developerId, orgRole: "owner" }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+    // Positive control proves this same handler/store really writes and emits audit.
+    expect((await put(DANA, guardrails({ maxPerRunCeilingUsd: 200 }))).status).toBe(202);
+    const first = approvals()[0]!;
+    expect((await decide(first.approvalId)).status).toBe("APPROVED_DONE");
+    expect(capture.recorded().filter(event => event.action === "guardrails.changed").length).toBe(1);
+    const before = await current();
+    expect((await put(DANA, guardrails({ maxPerRunCeilingUsd: 300 }))).status).toBe(202);
+    const pending = approvals().find(record => record.status === "PENDING")!;
+    db.set({ ...db.get(approvalKey(TEST_ORG, pending.approvalId)), subject: { kind: "guardrails", next: guardrails({ maxPerRunCeilingUsd: 300.0000001 }), expectedRevision: before.revision } });
+    const count = capture.recorded().length;
+    expect((await decide(pending.approvalId)).status).toBe("APPROVED_FAILED");
+    const ended = await getApproval(deps, TEST_ORG, pending.approvalId);
+    expect(ended?.status).toBe("APPROVED_FAILED");
+    expect(ended?.failure).toBe("maxPerRunCeilingUsd: must have at most 6 decimal places");
+    expect(await current()).toEqual(before);
+    expect(capture.recorded().length).toBe(count);
+    expect(capture.pending().length).toBe(0);
   });
 });
