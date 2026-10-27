@@ -24,7 +24,7 @@ export function InviteCreateDialog({ open, orgId, company, role, checking, stale
  const scopeChanged = sent && operationClient !== undefined && operationClient !== api;
  const privateLink = useRef<string | undefined>(undefined), generation = useRef(0), alive = useRef(true), attempted = useRef(false), sending = useRef(false), notice = useRef<HTMLParagraphElement>(null), reviewHeading = useRef<HTMLHeadingElement>(null);
  useEffect(() => { alive.current = true;generation.current += 1;api.setScopeActive(true);return () => { alive.current = false;generation.current += 1;privateLink.current = undefined;sending.current = false;api.setScopeActive(false); }; }, [api]);
- useEffect(() => { if (!busy && feedback) notice.current?.focus();else if (intent && !sent) reviewHeading.current?.focus(); }, [feedback, busy, intent, sent]);
+ useEffect(() => { if (!busy && (feedback || scopeChanged)) notice.current?.focus();else if (intent && !sent) reviewHeading.current?.focus(); }, [feedback, busy, intent, sent, scopeChanged]);
  const locked = checking || staleData, roleBlocked = intent?.role === "admin" && role !== "owner";
  const valid = (version: number) => alive.current && version === generation.current;
  function review() {
