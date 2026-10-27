@@ -178,7 +178,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
       const outcome = await handleGithubWebhook({
         documentClient: w.db, tableName: "state", rawBody: body, headers: { "x-hub-signature-256": sign(body), "x-github-delivery": deliveryId, "x-github-event": "pull_request_review" }, secret: SECRET,
         authorizeRepository: (scope) => "headSha" in scope ? Promise.resolve(false) : authorizeLinkedGithubWebhook({
-          documentClient: w.db, tableName: "state", scope, loadTask: async (id) => w.db.get(taskKey(id)) as never, repositoryUrl: (...args) => w.host.repositoryUrl(...args), verifyRepository: async () => true,
+          documentClient: w.db, tableName: "state", scope, loadTask: async (id) => w.db.get(taskKey(id)) as never, repositoryUrl: (...args) => w.host.repositoryUrl(...(args as Parameters<typeof w.host.repositoryUrl>)), verifyRepository: async () => true,
         }),
         process: async (event) => {
           if (event.kind === "HEAD_STATUS") throw new Error("a review is not a head event");
