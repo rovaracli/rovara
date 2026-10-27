@@ -365,7 +365,7 @@ import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPullRequestOpened } from "../audit/events.js";
+import { auditOccurrence, auditPullRequestOpened, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "./slack-thread-key.js";
@@ -421,6 +421,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
+import { listTeamChannels, readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
@@ -2704,6 +2705,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (request.method === "POST" && url.pathname === "/v1/admin/workspaces/prepare") {
         return json(await prepareWorkspace(dependencies, identity, body), request.requestId, 202);
       }
+      // Release 0.4.17: an operator connects a Slack workspace to a named org (an org of a cloud install has no other way to hold one).
+      const slackTeamRoute = /^\/v1\/admin\/slack\/teams\/([^/]+)$/.exec(url.pathname);
+      if (slackTeamRoute?.[1] && request.method === "PUT") {
+        return json(await connectSlackTeam(dependencies, identity, slackTeamRoute[1], body), request.requestId);
+      }
+      if (slackTeamRoute?.[1] && request.method === "DELETE") {
+        return json(await disconnectSlackTeam(dependencies, identity, slackTeamRoute[1]), request.requestId);
+      }
       const slackBinding = /^\/v1\/admin\/slack\/bindings\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (slackBinding?.[1] && slackBinding[2] && request.method === "PUT") {
         return json(await putSlackBinding(dependencies, identity, slackBinding[1], slackBinding[2], body), request.requestId);
@@ -4420,6 +4429,58 @@ function displayName(value: string | undefined): string | undefined {
   } catch { return undefined; }
 }
 
+/**
+ * Release 0.4.17: `PUT /v1/admin/slack/teams/{teamId}` with `{ orgId }`. An operator (the admin pool, which belongs to no org) connects a Slack
+ * workspace to one named org, so its owner can then bind channels with the developer sign-in. Only an operator may: an org can never claim a
+ * workspace on a cloud install by itself. A closed or closing org takes none. The link is audited in that org's ledger in the same write;
+ * repeating it for the org that holds the workspace changes and records nothing; a workspace another org holds is SLACK_TEAM_TAKEN.
+ */
+async function connectSlackTeam(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, teamIdValue: string, body: unknown): Promise<{ teamId: string; orgId: OrgId }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const teamId = SlackTeamIdSchema.safeParse(decodeURIComponent(teamIdValue));
+  const orgId = OrgIdSchema.safeParse(object(body, "Slack team connection").orgId);
+  if (!teamId.success) throw agentXError("CONFIG_INVALID", "teamId: not a Slack workspace ID");
+  if (!orgId.success) throw agentXError("CONFIG_INVALID", "orgId: not an organization ID");
+  const orgs = orgStoreOf(dependencies);
+  if (await orgs.getOrg(orgId.data) === undefined) throw agentXError("NOT_FOUND", "organization not found");
+  if (await orgs.orgForSlackTeam(teamId.data) !== orgId.data) {
+    const at = new Date().toISOString();
+    // The chain names the operator by a pseudonymous id, never by their identity.
+    const event = await tryAuditEvent(dependencies, () => auditSlackTeamConnected({
+      orgId: orgId.data, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt: at, occurrence: auditOccurrence(teamId.data, at), teamId: teamId.data,
+    }));
+    await orgs.bindSlackTeam({ orgId: orgId.data, teamId: teamId.data, event });
+    console.log(JSON.stringify({ component: "broker", event: "admin.slack_team_connected", orgId: orgId.data }));
+  }
+  return { teamId: teamId.data, orgId: orgId.data };
+}
+
+/**
+ * Release 0.4.17: `DELETE /v1/admin/slack/teams/{teamId}`. An operator releases a Slack workspace from the org that holds it. It is refused while that
+ * org still has channels bound in the workspace (their owner unbinds them first), so no binding is left pointing at a workspace that routes nowhere.
+ * A channel bound in the instant after the check stays in the org's own partition and is never reached: the workspace then belongs to no org, so its
+ * Slack events are ignored. Audited in the org's ledger in the same write.
+ */
+async function disconnectSlackTeam(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, teamIdValue: string): Promise<{ teamId: string; orgId: OrgId }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const teamId = SlackTeamIdSchema.safeParse(decodeURIComponent(teamIdValue));
+  if (!teamId.success) throw agentXError("CONFIG_INVALID", "teamId: not a Slack workspace ID");
+  const orgs = orgStoreOf(dependencies);
+  const orgId = await orgs.orgForSlackTeam(teamId.data);
+  if (orgId === undefined) throw agentXError("NOT_FOUND", "that Slack workspace is not connected to an organization");
+  const channels = await listTeamChannels(dependencies, orgId, teamId.data);
+  if (channels.length > 0) {
+    throw agentXError("CONFIG_INVALID", `${String(channels.length)} channel(s) of that organization are still bound in this Slack workspace (${channels.slice(0, 10).join(", ")}${channels.length > 10 ? ", ..." : ""}); the organization's owner or admin unbinds each one first with: rovara --project <project> slack unbind --channel <channel>`);
+  }
+  const at = new Date().toISOString();
+  const event = await tryAuditEvent(dependencies, () => auditSlackTeamDisconnected({
+    orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt: at, occurrence: auditOccurrence(teamId.data, at), teamId: teamId.data,
+  }));
+  await orgs.unbindSlackTeam({ orgId, teamId: teamId.data, event });
+  console.log(JSON.stringify({ component: "broker", event: "admin.slack_team_disconnected", orgId }));
+  return { teamId: teamId.data, orgId };
+}
+
 async function putSlackBinding(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
@@ -4447,7 +4508,7 @@ async function putSlackBinding(
   await orgStoreOf(dependencies).bindSlackTeam({ orgId, teamId: binding.teamId });
   await dependencies.documentClient.send(new PutCommand({
     TableName: dependencies.tableName,
-    Item: { ...slackBindingKey(orgId, binding.teamId, binding.channelId), entityType: "SLACK_BINDING", ...binding, updatedBy: identity.ownerKey },
+    Item: slackBindingItem(orgId, binding, identity.ownerKey),
   }));
   return { binding, latestRevision: latest.definition.revision };
 }
@@ -4478,15 +4539,7 @@ async function getSlackBinding(
   teamId: string,
   channelId: string,
 ): Promise<SlackChannelBinding | undefined> {
-  const item = await getItem<Record<string, unknown>>(dependencies, slackBindingKey(orgId, teamId, channelId));
-  if (!item) return undefined;
-  // Bindings written before channels followed the latest revision also carry projectRevision; it is ignored.
-  return SlackChannelBindingSchema.parse({
-    teamId: item.teamId,
-    channelId: item.channelId,
-    projectName: item.projectName,
-    updatedAt: item.updatedAt,
-  });
+  return readSlackBinding(dependencies, orgId, teamId, channelId);
 }
 
 /** A channel's binding inside the org its Slack team is bound to; a team bound to no org has none. */

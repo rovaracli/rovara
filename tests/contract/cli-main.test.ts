@@ -5,7 +5,7 @@ describe("AgentX executable command surface", () => {
   it("exposes administration and developer sign-in; developer tasks come from AI tools", () => {
     const program = createCliProgram();
 
-    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "chains", "sessions", "session", "home", "agents", "skills", "approvals", "spend-requests", "task", "github", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
+    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "chains", "sessions", "session", "home", "agents", "skills", "approvals", "spend-requests", "task", "github", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "slack", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
 
     expect(subcommands(program, "org")).toEqual(["members", "role", "remove", "leave", "comment-triggers", "spend", "guardrails", "sources"]);
     // Plan 3, Task 14b: the opt-outs of the comment rule are listed here and set on the confirmation page; no command sets one.
@@ -20,7 +20,8 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
     expect(subcommands(admin, "budget")).toEqual(["set"]);
-    expect(subcommands(admin, "slack")).toEqual(["bind", "unbind"]);
+    expect(subcommands(admin, "slack")).toEqual(["bind", "connect-team", "disconnect-team", "unbind"]);
+    expect(subcommands(program, "slack")).toEqual(["bind", "unbind"]);
     expect(subcommands(admin, "eval")).toEqual(["enable", "show", "disable", "batch"]);
     expect(admin?.commands.find((command) => command.name() === "eval")?.commands.find((command) => command.name() === "batch")?.commands.map((command) => command.name())).toEqual(["start", "show", "stop", "results"]);
     expect(subcommands(admin, "credential")).toEqual(["register", "authorize", "list"]);
@@ -48,8 +49,9 @@ describe("AgentX executable command surface", () => {
     const program = createCliProgram();
     const rootCommands = program.commands.map((command) => command.name());
 
-    // `slack` survives only as an administrator subcommand, never as a developer command.
-    for (const retired of ["status", "conversation", "pr", "cancel", "slack"]) {
+    // Release 0.4.17: `slack` is a developer command again, for an organization owner or admin to bind their own project's channel (`slack bind|unbind`);
+    // it carries no workflow. The operator's form stays under `admin slack`.
+    for (const retired of ["status", "conversation", "pr", "cancel"]) {
       expect(rootCommands).not.toContain(retired);
     }
     expect(allCommands(program).map((command) => command.name())).not.toContain("prepare");

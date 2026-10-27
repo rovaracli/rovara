@@ -48,7 +48,7 @@ const deps: DeveloperRouteDependencies = {
  return {};
  } },
  developer: { issuer: origin + "/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "mock-signin", verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
- orgs: { renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: "member" } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
+ orgs: { bindSlackTeam: unavailable, renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: "member" } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
 };
 const handler = createAppHandler({ appDirectory: resolve("packages/web/dist/app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {

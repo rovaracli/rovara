@@ -33,6 +33,7 @@ import {
   TaskPeopleDisplayReadResponseSchema,
   AgentXError,
   agentXError,
+  projectArchivedMessage,
   LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
@@ -60,6 +61,8 @@ import {
   StartDeveloperTaskRequestSchema,
   type ProjectMemberChangeResponse,
   type ProjectMemberRemoveResponse,
+  type ProjectSlackChannelRemoveResponse,
+  type ProjectSlackChannelResponse,
   type ProjectMembersResponse,
   type ProjectRole,
   type ChannelByNameRequest,
@@ -92,6 +95,8 @@ import {
   OrgRoleSchema,
   ProjectSetupCheckBodySchema,
   PutProjectMemberBodySchema,
+  PutProjectSlackChannelBodySchema,
+  RemoveProjectSlackChannelBodySchema,
   RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
@@ -115,6 +120,7 @@ import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
+import { bindProjectChannel, unbindProjectChannel, type ProjectSlackChannelDependencies } from "../org/slack-binding.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
@@ -249,7 +255,7 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  orgs?: Pick<OrgStore, "bindSlackTeam" | "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
@@ -1317,6 +1323,47 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
   return removed;
 }
 
+const SLACK_BIND_ROLE_MESSAGE = "only an organization owner or admin can bind a Slack channel to a project";
+
+/**
+ * `PUT /v1/app/projects/{name}/slack-channel` (release 0.4.17): an org owner or admin binds a Slack channel of the org's Slack workspace to a
+ * project of the org, with the developer sign-in. Owner or admin only, read live from the membership on every call: the operator's bind needs the
+ * project's `administrator` membership, which a project's own maintainer does not hold, so a project maintainer who is only an org member is 403.
+ * No access to the project is the usual 404. The team and channel checks, the replay and the audit are `bindProjectChannel`'s.
+ */
+async function putProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<ProjectSlackChannelResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
+  const parsed = PutProjectSlackChannelBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  // Slack must not route new work to an archived project (an unbind is still allowed).
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
+  const result = await bindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
+  if (result.changed) logDeveloperEvent({ event: "developer.slack_channel_bound", orgId: caller.orgId, project: name });
+  return result;
+}
+
+/** `DELETE /v1/app/projects/{name}/slack-channel`: the same people unbind one of the project's channels. `removed` is false when it was not bound. */
+async function deleteProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<ProjectSlackChannelRemoveResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
+  const parsed = RemoveProjectSlackChannelBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const result = await unbindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
+  if (result.removed) logDeveloperEvent({ event: "developer.slack_channel_unbound", orgId: caller.orgId, project: name });
+  return result;
+}
+
+/** What a bind writes and reads. A Rovara Cloud install gives an org no claim on the installation's own Slack team: its orgs connect their own. */
+function slackChannelDepsOf(deps: DeveloperRouteDependencies): ProjectSlackChannelDependencies {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, now: () => new Date(deps.now()), orgs: deps.orgs,
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    ...(deps.cloud === true || deps.developer.slackTeamId === undefined ? {} : { installSlackTeamId: deps.developer.slackTeamId }),
+  };
+}
+
 /**
  * `GET /v1/app/github/repositories?installation=<id>` (Plan 2, Task 15): the repositories one of the org's installations reaches, each marked with
  * the project of the caller's that already uses it. An installation that is not the org's answers NOT_FOUND, as a missing one does.
@@ -1944,6 +1991,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+  }
+  const projectSlackChannelRoute = /^\/v1\/app\/projects\/([^/]+)\/slack-channel$/.exec(url.pathname);
+  if (projectSlackChannelRoute !== null) {
+    if (request.method === "PUT") return putProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
+    if (request.method === "DELETE") return deleteProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
