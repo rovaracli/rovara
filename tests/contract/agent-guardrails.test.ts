@@ -939,3 +939,45 @@ describe("a built-in agent turned off", () => {
     expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
   });
 });
+
+
+describe("canonical ceiling write precision compatibility", () => {
+  for (const [name, value] of [["sub-micro", 0.0000001], ["fractional micro", 0.0000015], ["float noise", 0.30000000000000004]] as const) {
+    it(`refuses ${name} at PUT before request or approval persistence`, async () => {
+      const { db, call, GUARDRAILS } = await setup();
+      const before = db.transactions().length;
+      const result = await call(DANA, "PUT", GUARDRAILS, { expectedRevision: 0, guardrails: guardrails({ maxPerRunCeilingUsd: value }) });
+      expect(result.status).toBe(400);
+      expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
+      expect(db.transactions().length).toBe(before);
+      expect(JSON.stringify(result.body).includes(String(value))).toBe(false);
+    });
+    it(`refuses ${name} at the sole store writer before audit or commit`, async () => {
+      const { db, deps } = await setup();
+      const before = db.transactions().length;
+      const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
+      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+      expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
+      expect(db.transactions().length).toBe(before);
+    });
+  }
+  for (const value of [0, -0, 0.000001, 0.29, 999999.999999, 1000000]) {
+    it(`stores an exact ceiling of ${String(value)} USD unchanged`, async () => {
+      const { deps } = await setup();
+      const result = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId });
+      expect(result.revision).toBe(1);
+      expect((await readGuardrails(deps, TEST_ORG)).maxPerRunCeilingUsd).toBe(value);
+    });
+  }
+  it("keeps legacy sub-micro rows readable without rounding and requires explicit corrected replacement", async () => {
+    const { db, deps } = await setup();
+    const old = guardrails({ maxPerRunCeilingUsd: 0.0000001 });
+    db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: old });
+    expect((await readGuardrails(deps, TEST_ORG)).maxPerRunCeilingUsd).toBe(old.maxPerRunCeilingUsd);
+    const error = await writeGuardrails(deps, TEST_ORG, old, DANA.developerId, { expectedRevision: 1 }).then(() => undefined, (e: Error) => e);
+    expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+    expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(1);
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxPerRunCeilingUsd: 0.000001 }), DANA.developerId, { expectedRevision: 1 });
+    expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(2);
+  });
+});
