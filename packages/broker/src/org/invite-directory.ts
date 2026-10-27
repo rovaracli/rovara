@@ -1,3 +1,4 @@
+import { logDeveloperEvent } from "../developer/log.js";
 // Sparse org invite projection. Canonical records decide pending state; bearer material never leaves this module.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -37,7 +38,7 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
   const badEntry = (row: Record<string, unknown>, reason: "reference_invalid" | "reference_org_mismatch" | "reference_key_mismatch" | "canonical_missing" | "canonical_invalid" | "canonical_org_mismatch" | "canonical_reference_mismatch") => {
    unavailableCount++;const keyId = id.safeParse(row.pk === orgPk(caller.orgId) && typeof row.sk === "string" && row.sk.startsWith("INVITE_DIRECTORY#") ? row.sk.slice("INVITE_DIRECTORY#".length) : undefined);
    const publicId = keyId.success ? keyId : id.safeParse(row.inviteId), requestOrg = OrgIdSchema.safeParse(caller.orgId);
-   try { console.warn(JSON.stringify({ component: "broker", event: "org.invite_directory_entry_unavailable", level: "warn", ...(requestOrg.success ? { orgId: requestOrg.data } : {}), ...(publicId.success ? { inviteId: publicId.data } : {}), reason })); } catch { /* A warning sink must not make partial reads fail. */ }
+   try { logDeveloperEvent({ event: "org.invite_directory_entry_unavailable", level: "warn", ...(requestOrg.success ? { orgId: requestOrg.data } : {}), ...(publicId.success ? { inviteId: publicId.data } : {}), reason }); } catch { /* A warning sink must not make partial reads fail. */ }
    return undefined;
   };
   // Bound fanout as well as each page. Index rows contain no email or raw token.

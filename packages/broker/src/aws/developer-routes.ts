@@ -1,3 +1,4 @@
+import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
 import { changeReviewedMemberRole } from "../org/role-changes.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
@@ -321,10 +322,6 @@ export interface DeveloperCaller { developerId: string; sessionId: string; amr: 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
 
-/** One structured log line. Only event names, reasons and error names: never payloads or secrets. */
-function logDeveloperEvent(entry: Record<string, string>): void {
-  console.log(JSON.stringify({ component: "broker", ...entry }));
-}
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "UnknownError");
 const SLACK_UNAVAILABLE = { ok: false, error: "slack_unavailable" } as const;
 /** A Slack or DeveloperIdentity error code: the only error text that may reach a log or an answer (R9). */
