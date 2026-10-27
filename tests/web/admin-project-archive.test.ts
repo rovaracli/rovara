@@ -75,3 +75,56 @@ for (const changed of ["lifecycle", "configuration"] as const) it(`requires a fr
   expect(next).toMatchObject({ expectedOrgId: f.me.org.orgId, expectedRevision: lifecycle, expectedProjectRevision: configuration, acknowledgeNewWorkStops: true });
  } finally { f.close(); }
 });
+
+// B9: recovery distinguishes old uncertainty, a refused submission and a confirmed receipt.
+it("keeps an earlier unconfirmed archive visible after fresh review and reopening", async () => {
+ let posted = false;
+ const f = mount({ post: async () => { posted = true;throw new Error("Synthetic lost response"); }, preview: () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", status: posted ? "archived" : "active", expectedRevision: posted ? 1 : 0, expectedProjectRevision: 3, checkedAt: "2026-10-27T17:22:00.000Z", access: { actions: posted ? [] : ["archive"] } } }) });
+ try {
+  await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);
+  fireEvent.click(screen.getByRole("button", { name: "Check current state" }));await screen.findByText("Current project status: Archived.");
+  fireEvent.click(screen.getByRole("button", { name: "Review latest state" }));await screen.findByText("An earlier archive request remains unconfirmed. Reviewing new state does not confirm its outcome.");
+  expect(f.posts()).toHaveLength(1);expect(screen.queryByText(/Original archive recorded/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await screen.findByText(/An earlier archive request remains unconfirmed/);
+  fireEvent.click(screen.getByRole("button", { name: "Review archive" }));await screen.findByText("An earlier archive request remains unconfirmed. Reviewing new state does not confirm its outcome.");expect(f.posts()).toHaveLength(1);
+ } finally { f.close(); }
+});
+for (const [status, code] of [[400, "CONFIG_INVALID"], [403, "FORBIDDEN"], [404, "NOT_FOUND"], [429, "TOO_MANY_REQUESTS"]] as const) it(`distinguishes a definite ${status} archive refusal from an unknown outcome`, async () => {
+ const f = mount({ post: async () => ({ status, body: { error: { code, message: "private synthetic refusal detail" } } }) });
+ try { await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText("This submission was refused. No new archive was recorded by this submission.");expect(screen.queryByText(/outcome is unconfirmed/)).toBeNull();expect(screen.queryByRole("button", { name: "Retry same archive request" })).toBeNull();expect(f.posts()).toHaveLength(1);expect(document.body.textContent).not.toContain("private synthetic refusal detail"); } finally { f.close(); }
+});
+it("keeps the earlier outcome unknown if a retry of its UUID is definitively refused", async () => {
+ let calls = 0;const f = mount({ post: async () => { if (++calls === 1) throw new Error("Synthetic lost response");return { status: 403, body: { error: { code: "FORBIDDEN" } } }; } });
+ try { await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);const original = f.posts()[0]!.body;
+  fireEvent.click(screen.getByRole("button", { name: "Check current state" }));await screen.findByRole("checkbox");acknowledge();fireEvent.click(screen.getByRole("button", { name: "Retry same archive request" }));
+  await screen.findByText("This submission was refused. No new archive was recorded by this submission. The earlier outcome for this request is still unconfirmed.");expect(f.posts()).toHaveLength(2);expect(f.posts()[1]!.body).toEqual(original);
+ } finally { f.close(); }
+});
+it("resolves uncertainty only when the same request returns a validated receipt", async () => {
+ let calls = 0;const current = () => ({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", status: calls > 1 ? "archived" : "active", expectedRevision: calls > 1 ? 1 : 0, expectedProjectRevision: 3, checkedAt: "2026-10-27T17:22:00.000Z", access: { actions: calls > 1 ? [] : ["archive"] } });
+ const f = mount({ preview: () => ({ status: 200, body: current() }), post: async () => { if (++calls === 1) throw new Error("Synthetic lost response");return { status: 200, body: { replayed: true, receipt: { project: "payments", status: "archived", revision: 1, projectRevision: 3, archivedAt: "2026-10-27T17:22:00.000Z", egressReconciliation: "pending" }, current: current(), effects: { egress: "not_attempted", archiveHook: "not_attempted" } } }; } });
+ try { await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);const original = f.posts()[0]!.body;
+  fireEvent.click(screen.getByRole("button", { name: "Check current state" }));await screen.findByRole("checkbox");acknowledge();fireEvent.click(screen.getByRole("button", { name: "Retry same archive request" }));await screen.findByText("Current project status: Archived.");expect(screen.getByText(/Original archive recorded/)).toBeTruthy();expect(screen.queryByText(/remains unconfirmed/)).toBeNull();expect(screen.queryByText(/outcome is unconfirmed/)).toBeNull();expect(f.posts()[1]!.body).toEqual(original);
+ } finally { f.close(); }
+});
+it("focuses a stable pending status and keeps focus through archive completion", async () => {
+ let resolve!:(r:ApiResponse)=>void;const f = mount({ post: () => new Promise<ApiResponse>(r => { resolve = r; }) });
+ try { await review();acknowledge();const button = screen.getByRole("button", { name: "Archive project" });button.focus();fireEvent.click(button);
+  const pending = await screen.findByRole("status", { name: "Archive request progress" });await waitFor(() => expect(document.activeElement).toBe(pending));expect(f.posts()).toHaveLength(1);
+  await act(async () => { resolve({ status: 503, body: {} }); });await screen.findByText(/outcome is unconfirmed/);expect(document.activeElement).toBe(pending);
+ } finally { resolve?.({ status: 503, body: {} });f.close(); }
+});
+for (const malformed of [false, true]) it(`keeps an unrecognized ${malformed ? "malformed" : "typed"} 4xx outcome unconfirmed`, async () => {
+ const f = mount({ post: async () => ({ status: malformed ? 404 : 403, body: malformed ? "Synthetic proxy response" : { error: { code: "FUTURE_REFUSAL", message: "private unrecognized detail" } } }) });
+ try { await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);expect(screen.queryByText(/No new archive was recorded/)).toBeNull();expect(f.posts()).toHaveLength(1);expect(document.body.textContent).not.toContain("private unrecognized detail"); } finally { f.close(); }
+});
+it("does not resolve an older ambiguous UUID when a different fresh request gets a receipt", async () => {
+ let calls = 0, revision = 0, archived = false;
+ const current = () => ({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", status: archived ? "archived" : "active", expectedRevision: revision, expectedProjectRevision: 3, checkedAt: "2026-10-27T17:22:00.000Z", access: { actions: archived ? [] : ["archive"] } });
+ const f = mount({ preview: () => ({ status: 200, body: current() }), post: async () => { if (++calls === 1) throw new Error("Synthetic lost response");archived = true;revision++;return { status: 200, body: { replayed: false, receipt: { project: "payments", status: "archived", revision, projectRevision: 3, archivedAt: "2026-10-27T17:22:00.000Z", egressReconciliation: "pending" }, current: current(), effects: { egress: "synchronized", archiveHook: "not_configured" } } }; } });
+ try {
+  await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);const original = f.posts()[0]!.body as Record<string, unknown>;
+  revision = 2;fireEvent.click(screen.getByRole("button", { name: "Check current state" }));await screen.findByRole("button", { name: "Review latest state" });fireEvent.click(screen.getByRole("button", { name: "Review latest state" }));await screen.findByRole("checkbox");acknowledge();await waitFor(() => expect(screen.getByRole("button", { name: "Archive project" })).toHaveProperty("disabled", false));fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+  await screen.findByText("Current project status: Archived.");expect(screen.getByText(/Original archive recorded/)).toBeTruthy();expect(screen.getByText("An earlier archive request remains unconfirmed. Reviewing new state does not confirm its outcome.")).toBeTruthy();expect((f.posts()[1]!.body as Record<string, unknown>).requestId).not.toBe(original.requestId);
+ } finally { f.close(); }
+});
