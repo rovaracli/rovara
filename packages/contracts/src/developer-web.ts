@@ -52,6 +52,6 @@ export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRo
 /** Pending indexed invites only. Historical unindexed invites may still exist; never return bearer material. */
 export const AppOrgInvitesResponseSchema = z.object({
  invites: z.array(z.object({ inviteId: z.string().uuid(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
- coverage: z.literal("indexed_only"), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
+ unavailableCount: z.number().int().min(0).max(50).optional(), coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
 }).strict();
 export const AppOrgInvitesResponseReaderSchema = forwardReader(AppOrgInvitesResponseSchema);

@@ -17,12 +17,14 @@ export function createAdminDirectory() {
  for (const [org, id, name, role] of [[FIXTURE_ORG, FIXTURE_DEVELOPER, "Priya", "owner"], [FIXTURE_ORG, "b".repeat(64), "Maya", "member"], ["org_bbbbbbbbbbbbbbbbbbbb", "c".repeat(64), "Other company person", "owner"]] as const) {
   setRole(id, role, org);put({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name, provider: "cloud" });
  }
+ put({ ...orgMetaKey("org_bbbbbbbbbbbbbbbbbbbb"), orgId: "org_bbbbbbbbbbbbbbbbbbbb", name: "Other company", plan: "team" });
  put({ ...orgMetaKey(FIXTURE_ORG), orgId: FIXTURE_ORG, name: "Acme", plan: "team", createdBy: FIXTURE_DEVELOPER });
  function condition(expression: string | undefined, row: Row | undefined, names: Record<string, string> = {}, values: Row = {}): boolean {
   if (expression === undefined) return true;
   return expression.split(/\s+AND\s+/).every(part => {
    if (part === "attribute_not_exists(pk)") return row === undefined;
    if (part === "attribute_exists(pk)") return row !== undefined;
+   if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
    const equal = /^(#[A-Za-z]+|[A-Za-z]+) = (:[A-Za-z]+)$/.exec(part);
    if (equal === null) throw new Error("Unsupported fixture condition.");
    return row?.[names[equal[1]!] ?? equal[1]!] === values[equal[2]!];
@@ -75,6 +77,7 @@ export function createAdminDirectory() {
  } };
  return {
   setRole,
+  damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
   async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },

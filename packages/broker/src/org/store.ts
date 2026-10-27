@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX,
+  AgentXError,
   agentXError,
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
@@ -265,6 +266,11 @@ export class OrgStore {
    * first answer cannot be given again.
    */
   async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
+    try {
+    const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
+    if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
+    const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
+    if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || org.closedAt !== undefined) throw forbidden();
     const token = randomBytes(32).toString("base64url");
     const tokenHash = sha256Hex(token), inviteId = randomUUID();
     const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
@@ -279,15 +285,20 @@ export class OrgStore {
       createdAt: this.iso(),
       expiresAt: new Date(this.input.now() + ttlMs).toISOString(),
     };
-    await this.transact(
-      [
-        this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
-        ...(input.requestId === undefined ? [] : [this.put(orgInviteRequestKey(input.orgId, input.requestId), "ORG_INVITE_REQUEST", { tokenHash, createdAt: invite.createdAt })]),
-        this.put(orgInviteDirectoryKey(input.orgId, inviteId), "ORG_INVITE_DIRECTORY", { orgId: input.orgId, inviteId, tokenHash }),
-      ],
-      (failed) => (input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined),
+    const items: TransactItem[] = [
+      this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
+      ...(input.requestId === undefined ? [] : [this.put(orgInviteRequestKey(input.orgId, input.requestId), "ORG_INVITE_REQUEST", { tokenHash, createdAt: invite.createdAt })]),
+      this.put(orgInviteDirectoryKey(input.orgId, inviteId), "ORG_INVITE_DIRECTORY", { orgId: input.orgId, inviteId, tokenHash }),
+    ];
+    const authorityAt = items.length;
+    items.push(
+      { ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(input.orgId, input.createdBy), ConditionExpression: "orgId = :org AND developerId = :person AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":person": input.createdBy, ":role": actor.role } } },
+      { ConditionCheck: { TableName: this.input.tableName, Key: developerOrgKey(input.createdBy), ConditionExpression: "orgId = :org AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":role": actor.role } } },
+      { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "orgId = :org AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":org": input.orgId } } },
     );
+    await this.transact(items, failed => [...failed].some(index => index >= authorityAt) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
     return { token };
+    } catch (error) { if (error instanceof AgentXError) throw error;throw coded("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Reload before trying again."); }
   }
 
   /**

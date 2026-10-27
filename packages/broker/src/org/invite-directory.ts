@@ -33,15 +33,16 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
   const page = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": orgPk(caller.orgId), ":prefix": "INVITE_DIRECTORY#" }, ConsistentRead: true, Limit: limit, ...(start === undefined ? {} : { ExclusiveStartKey: start }) })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
   const rows = page.Items ?? [];if (rows.length > limit) throw unavailable();
   const invites: z.infer<typeof AppOrgInvitesResponseSchema>["invites"] = [];
-  const nowMs = deps.now(), now = new Date(nowMs).toISOString();
+  const nowMs = deps.now(), now = new Date(nowMs).toISOString();let unavailableCount = 0;
+  const badEntry = () => { unavailableCount++;return undefined; };
   // Bound fanout as well as each page. Index rows contain no email or raw token.
   for (let at = 0; at < rows.length; at += 8) {
    const batch = await Promise.all(rows.slice(at, at + 8).map(async row => {
-    const parsed = referenceSchema.safeParse(row);if (!parsed.success) throw unavailable();const ref = parsed.data, key = orgInviteDirectoryKey(caller.orgId, ref.inviteId);
-    if (ref.orgId !== caller.orgId || ref.pk !== key.pk || ref.sk !== key.sk) throw unavailable();
-    const record = await get(deps, orgInviteKey(ref.tokenHash));if (record === undefined) return undefined;
-    const canonical = canonicalSchema.safeParse(record);if (!canonical.success) throw unavailable();const invite = canonical.data;
-    if (invite.orgId !== caller.orgId || invite.inviteId !== ref.inviteId || invite.tokenHash !== ref.tokenHash) throw unavailable();
+    const parsed = referenceSchema.safeParse(row);if (!parsed.success) return badEntry();const ref = parsed.data, key = orgInviteDirectoryKey(caller.orgId, ref.inviteId);
+    if (ref.orgId !== caller.orgId || ref.pk !== key.pk || ref.sk !== key.sk) return badEntry();
+    const record = await get(deps, orgInviteKey(ref.tokenHash));if (record === undefined) return badEntry();
+    const canonical = canonicalSchema.safeParse(record);if (!canonical.success) return badEntry();const invite = canonical.data;
+    if (invite.orgId !== caller.orgId || invite.inviteId !== ref.inviteId || invite.tokenHash !== ref.tokenHash) return badEntry();
     if (invite.acceptedAt !== undefined || Date.parse(invite.expiresAt) <= nowMs) return undefined;
     return { inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, createdBy: invite.createdBy, destination: invite.email === undefined ? { kind: "link" as const } : { kind: "email" as const, label: `***@${invite.email.slice(invite.email.lastIndexOf("@") + 1)}` } };
    }));for (const invite of batch) if (invite !== undefined) invites.push(invite);
@@ -51,6 +52,6 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
    const last = page.LastEvaluatedKey, after = typeof last.sk === "string" && last.sk.startsWith("INVITE_DIRECTORY#") ? last.sk.slice("INVITE_DIRECTORY#".length) : undefined;
    if (last.pk !== orgPk(caller.orgId) || !id.safeParse(after).success) throw unavailable();nextCursor = Buffer.from(JSON.stringify({ orgId: caller.orgId, after })).toString("base64url");
   }
-  return AppOrgInvitesResponseSchema.parse({ invites, coverage: "indexed_only", checkedAt: now, ...(nextCursor === undefined ? {} : { nextCursor }) });
+  return AppOrgInvitesResponseSchema.parse({ invites, unavailableCount, coverage: unavailableCount > 0 ? "indexed_only_partial" : "indexed_only", checkedAt: now, ...(nextCursor === undefined ? {} : { nextCursor }) });
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }

@@ -2129,7 +2129,9 @@ async function getOrganization(deps: DeveloperRouteDependencies, caller: Develop
  */
 async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ inviteUrl: string }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
+  let live: Record<string, unknown> | undefined;
+  try { const answer = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(caller.orgId, caller.developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };live = answer.Item; } catch { throw agentXError("RUNTIME_UNAVAILABLE", "Invite access could not be checked. Try again."); }
+  if (live?.orgId !== caller.orgId || live.developerId !== caller.developerId || (live.role !== "owner" && live.role !== "admin")) throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
   const parsed = CreateOrganizationInviteBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -2137,7 +2139,7 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const { requestId, role, email } = parsed.data;
-  if (role === "admin" && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
+  if (role === "admin" && live.role !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
   // A cloud install shares the web app's link, with the token in the fragment so a static host never receives it. A private install's

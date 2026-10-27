@@ -62,6 +62,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-fail-after-write" && method === "POST" && current.name === "admin") { adminFailAfterWrite = true;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-invites" && method === "POST" && current.name === "admin") { await adminDirectory.seedInvites();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-evidence" && method === "GET" && current.name === "admin") { json(200, adminDirectory.evidence());return; }
  if (url.pathname === "/__mock/admin-target-owner" && method === "POST" && current.name === "admin") { adminDirectory.setRole("b".repeat(64), "owner");json(200, { ok: true });return; }

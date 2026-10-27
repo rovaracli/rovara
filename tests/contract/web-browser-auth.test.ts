@@ -50,6 +50,10 @@ describe("browser API boundary", () => {
   const page = await h.call("GET", "/v1/web/org/invites");expect(page.status).toBe(200);expect(page.body).toMatchObject({ coverage: "indexed_only", invites: [{ destination: { kind: "email", label: "***@example.test" } }] });const serialized = JSON.stringify(page.body);let token: string | null;try { token = new URL(String(created.body.inviteUrl)).searchParams.get("invite"); } catch { throw new Error("Invalid fixture invite link."); }expect(token !== null && /^[A-Za-z0-9_-]{43}$/.test(token)).toBe(true);expect(serialized.includes("private.person") || (token !== null && (serialized.includes(token) || serialized.includes(createHash("sha256").update(token).digest("hex"))))).toBe(false);
   seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });expect((await h.call("GET", "/v1/web/org/invites")).status).toBe(403);
  });
+ it("refuses invite creation when the cookie actor is demoted after authentication", async () => {
+  const h = await broker(), send = h.db.send.bind(h.db);let demote = true;h.db.send = async command => { const answer = await send(command);if (demote && command.constructor.name === "GetCommand" && (command.input as { Key?: { pk?: string } }).Key?.pk === `DEVELOPER_ORG#${WHO}`) { demote = false;seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" }); }return answer; };
+  const result = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID(), role: "member" });expect(result.status).toBe(403);expect(h.db.find(row => row.entityType === "ORG_INVITE" || row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST")).toHaveLength(0);expect(demote).toBe(false);
+ });
  it("checks Origin and CSRF before any write, with distinct stale recovery", async () => {
   const h = await broker();const body = { requestId: randomUUID(), role: "member" };
   for (const headers of [{}, { origin: CELL }, { origin: "null", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {
