@@ -406,3 +406,8 @@ export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: 
 export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
   return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
 }
+
+// Lane B: name-keyed project target is pseudonymized by the existing appender.
+export function auditProjectArchived(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
+ return build("project.archived", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
+}
