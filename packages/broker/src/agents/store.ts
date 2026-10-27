@@ -55,6 +55,7 @@ import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner
 import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OverrideCap, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
+import { inertProcessOverlay } from "../playbook/inert-rule-text.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
@@ -403,8 +404,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (this.reservedName(name)) throw nameTaken(name);
     if (input.owner.kind === "project" && input.accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
-    const overlay = parseOverlay(input.overlay ?? {});
-    requireNoSequenceForProcess({ purpose: input.purpose }, overlay);
+    const parsed = parseOverlay(input.overlay ?? {});
+    requireNoSequenceForProcess({ purpose: input.purpose }, parsed);
+    const overlay = inertProcessOverlay({ purpose: input.purpose }, parsed);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     const base = input.extends === undefined ? undefined : await this.pinTarget(input.orgId, input.extends);
 
@@ -443,9 +445,10 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * its current version; the same base keeps its pin) or, as `null`, none; left out, the base stays as it is.
    */
   async saveDraft(input: { orgId: OrgId; agentId: AgentId; overlay: RecipeOverlay; extends?: AgentId | null; expectedRevision: number; by: string; request?: RequestMark }): Promise<AgentDraft> {
-    const overlay = parseOverlay(input.overlay);
+    const parsed = parseOverlay(input.overlay);
     const agent = await this.require(input.orgId, input.agentId);
-    requireNoSequenceForProcess(agent, overlay);
+    requireNoSequenceForProcess(agent, parsed);
+    const overlay = inertProcessOverlay(agent, parsed);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();

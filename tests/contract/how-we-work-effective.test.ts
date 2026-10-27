@@ -10,9 +10,10 @@ import { writeProjectPlaybook } from "../../packages/broker/src/playbook/project
 import { BO, MAX, MIA, ORG_A, ORG_B, ZED, OLA } from "../support/agent-session-world.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };
 function deps(w: MergeWorld): HowWeWorkDependencies {
@@ -34,10 +35,12 @@ async function adoptVersion2(w: MergeWorld) {
   await w.store.adoptBuiltinVersion({ orgId: ORG_A, agentId: ROVARA_CODE_AGENT_ID, version: 2, expectedPinnedVersion: await w.store.pinnedBuiltinVersion(ORG_A, ROVARA_CODE_AGENT_ID), by: MAX });
 }
 /** A published process layer of the project with `overlay`, and the playbook pointing at it. */
-async function withProcessLayer(w: MergeWorld, overlay: RecipeOverlay): Promise<AgentId> {
+async function withProcessLayer(w: MergeWorld, overlay: RecipeOverlay, options: { legacy?: boolean } = {}): Promise<AgentId> {
   const layer = await w.store.create({
-    orgId: ORG_A, name: "web process", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, overlay, purpose: "process", createdBy: MAX,
+    orgId: ORG_A, name: "web process", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, overlay: options.legacy === true ? {} : overlay, purpose: "process", createdBy: MAX,
   });
+  // A layer saved before rule text was limited (H7): its draft is written straight into storage, as the earlier code stored it.
+  if (options.legacy === true) await w.db.send(new UpdateCommand({ TableName: "state", Key: agentKey(ORG_A, layer.agentId, "DRAFT"), UpdateExpression: "SET overlay = :overlay", ExpressionAttributeValues: { ":overlay": overlay } }));
   await w.store.publish({ orgId: ORG_A, agentId: layer.agentId, expectedDraftRevision: layer.draftRevision, digest: "a".repeat(64), by: MAX });
   await writeProjectPlaybook(deps(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "project_process", agentId: layer.agentId } });
   return layer.agentId;
@@ -205,7 +208,7 @@ describe("code settings", () => {
       models: { default: { provider: "p".repeat(128), modelId: "m".repeat(256), thinkingLevel: "high" }, approved: [{ provider: "p".repeat(128), modelId: "m".repeat(256) }] },
       developerTasks: { optionalWorkflowChecks: Array.from({ length: 16 }, (_, i) => ({ id: `check-${String(i)}`, label: "L".repeat(80), command: command("npm", [long]) })) },
     });
-    await withProcessLayer(w, { instructions: "R".repeat(8192), steps: { build: { instructions: "B".repeat(8192) } } });
+    await withProcessLayer(w, { instructions: "R".repeat(8192), steps: { build: { instructions: "B".repeat(8192) } } }, { legacy: true });
     const v = await view(w);
     const parsed = HowWeWorkViewSchema.safeParse(v);
     expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues.slice(0, 2))).toBe(true);
