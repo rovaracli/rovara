@@ -1865,6 +1865,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
         getTaskPeopleCapabilities: (caller, taskId) => getTaskPeopleCapabilities(routeDeps(caller), caller, taskId),
         api: createTaskWebApi({
           origin: deps.developer.issuer,
+          log: logDeveloperEvent,
           authenticateSession,
           taskState: (caller, taskId) => getTaskPageState(routeDeps(caller), caller, taskId),
           listComments: (caller, taskId) => listPageComments(routeDeps(caller), caller, taskId),

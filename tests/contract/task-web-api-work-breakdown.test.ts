@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
+import { TASK_PAGE_DECIDING_SCRIPT } from "../../packages/broker/src/aws/task-page-assets.js";
 import { PageDecisionInputSchema, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
 import { DEV_ISSUER, MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
@@ -55,7 +56,7 @@ describe("the decision body", () => {
       headers: { origin: ORIGIN, cookie: `__Host-agentx_review_session=s1; __Host-agentx_review_csrf=${CSRF}`, "x-agentx-csrf": CSRF, "content-type": "application/json" } };
     const answer = await createTaskWebApi(deps)(request, new URL(`${ORIGIN}${request.path}`));
     expect(answer.statusCode).toBe(400);
-    expect(JSON.parse(answer.body).message).toEqual(expect.stringContaining("Refresh"));
+    expect((JSON.parse(answer.body) as { message?: string }).message).toEqual(expect.stringContaining("Refresh"));
     expect(logged).toEqual([expect.objectContaining({ event: "task_page.refused", route: "decision", taskId, code: "INVALID_REQUEST" })]);
     expect(JSON.stringify(logged)).not.toMatch(/private note|value-that-must-not-leak/);
   });
@@ -92,7 +93,7 @@ describe("approving a coding plan with a work breakdown from the page", () => {
         headers: { host: "abc123.execute-api.us-east-1.amazonaws.com", cookie: `__Host-agentx_review_session=${sessionId}; __Host-agentx_review_csrf=${CSRF}`,
           origin: ORIGIN, "x-agentx-csrf": CSRF, "content-type": "application/json" },
         body: JSON.stringify(body), requestContext: { requestId: randomUUID(), http: { method: "POST" } },
-      }) as { statusCode: number; body: string };
+      });
       return { status: response.statusCode, json: JSON.parse(response.body) as Record<string, unknown> & { message?: string; error?: string } };
     };
     const decision = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision: revision, artifactDigest: sha256, decision: "APPROVE", answers: [{ decisionId: "d1", optionId: "three", opened: false }], includedCommentIds: [], ...extra });
@@ -161,5 +162,24 @@ describe("approving a coding plan with a work breakdown from the page", () => {
     const answer = await t.send("decision", t.decision());
     expect(answer.status, JSON.stringify(answer.json)).toBe(200);
     expect(t.workflow().revision).toBeGreaterThan(t.revision);
+  });
+});
+
+describe("the page and the decision body", () => {
+  it("every field the page script puts in a decision is one the strict schema accepts", () => {
+    const start = TASK_PAGE_DECIDING_SCRIPT.indexOf("function submit(){");
+    const end = TASK_PAGE_DECIDING_SCRIPT.indexOf('call("POST","decision",payload)', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const source = TASK_PAGE_DECIDING_SCRIPT.slice(start, end);
+    const literal = /var body=\{([\s\S]*?)\n {2}\};/u.exec(source)?.[1] ?? "";
+    const keys = new Set([
+      "requestId",
+      ...[...literal.matchAll(/(?:^|[,{\s])([A-Za-z]+):/gu)].map((match) => match[1]!).filter((key) => key !== "function" && key !== "decisionId" && key !== "optionId" && key !== "opened"),
+      ...[...source.matchAll(/\bbody\.([A-Za-z]+)\s*=/gu)].map((match) => match[1]!),
+    ]);
+    expect([...keys]).toEqual(expect.arrayContaining(["expectedRevision", "artifactDigest", "decision", "answers", "includedCommentIds", "workBreakdownDigest", "note"]));
+    const accepted = new Set(Object.keys(PageDecisionInputSchema.shape));
+    expect([...keys].filter((key) => !accepted.has(key))).toEqual([]);
   });
 });
