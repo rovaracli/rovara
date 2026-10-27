@@ -545,7 +545,7 @@ import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBin
 import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
 import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
-import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, wakeFromPullRequestEvent, wakesTrackingRow, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -12768,6 +12768,13 @@ export async function processGithubWorkflowEvent(
   if (event.kind === "HEAD_STATUS") {
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
+  }
+  // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
+  // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
+  if (options === undefined && wakesTrackingRow(event)) {
+    await wakeFromPullRequestEvent(headEventDependencies(dependencies), event).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "tracking.wake_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
+    });
   }
   const getFeedback = options === undefined
     ? dependencies.githubPullRequests.getPullRequestFeedback
