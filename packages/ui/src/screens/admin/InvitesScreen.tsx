@@ -17,13 +17,13 @@ export function InvitesScreen() {
 }
 function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: string }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), { checking } = useAdminContext();
- const [cursors, setCursors] = useState<string[]>([]), [pageFocus, setPageFocus] = useState(false), summary = useRef<HTMLParagraphElement>(null), cursor = cursors.at(-1);
+ const [cursors, setCursors] = useState<string[]>([]), pageFocus = useRef(false), summary = useRef<HTMLParagraphElement>(null), cursor = cursors.at(-1);
  useEffect(() => () => { const key = ["admin", "invites", orgId, developerId];void query.cancelQueries({ queryKey: key });query.removeQueries({ queryKey: key }); }, [query, orgId, developerId]);
  const read = useQuery({ queryKey: ["admin", "invites", orgId, developerId, cursor ?? "first"], gcTime: 0, queryFn: async () => {
   const response = await api.get("/v1/app/org/invites?limit=25" + (cursor === undefined ? "" : "&cursor=" + encodeURIComponent(cursor)), AppOrgInvitesResponseReaderSchema);
   return { checkedAt: response.checkedAt, nextCursor: response.nextCursor, invites: response.invites.map(invite => ({ inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, destination: invite.destination.kind === "link" ? { kind: "link" as const } : invite.destination.kind === "email" && typeof invite.destination.label === "string" ? { kind: "email" as const, label: invite.destination.label } : { kind: "unknown" as const } })) };
  } });
- useEffect(() => { if (pageFocus && read.isSuccess && !read.isFetching) { summary.current?.focus();setPageFocus(false); } }, [pageFocus, read.isSuccess, read.isFetching]);
+ useEffect(() => { if (pageFocus.current && read.isSuccess && !read.isFetching) { summary.current?.focus();pageFocus.current = false; } }, [cursor, read.isSuccess, read.isFetching]);
  const terminal = read.error instanceof ApiError && ([401, 403, 404].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
  const stale = read.isError && read.data !== undefined && !terminal, hidden = read.isError && !stale;
  const locked = checking || read.isFetching || read.isError, nextCursor = read.data?.nextCursor;
@@ -43,7 +43,7 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
      { key: "created", title: "Created (UTC)", render: invite => <time dateTime={invite.createdAt}>{utc(invite.createdAt)}</time> },
      { key: "expires", title: "Expires (UTC)", render: invite => <time dateTime={invite.expiresAt}>{utc(invite.expiresAt)}</time> },
     ]} />}
-    <div className="rv-admin-role-actions"><Button disabled={cursors.length === 0} aria-disabled={locked || cursors.length === 0} onClick={() => { if (locked) return;setCursors(old => old.slice(0, -1));setPageFocus(true); }}>Previous page</Button><Button disabled={nextCursor === undefined} aria-disabled={locked || nextCursor === undefined} onClick={() => { if (!locked && nextCursor !== undefined) { setCursors(old => [...old, nextCursor]);setPageFocus(true); } }}>Next page</Button></div>
+    <div className="rv-admin-role-actions"><Button disabled={cursors.length === 0} aria-disabled={locked || cursors.length === 0} onClick={() => { if (locked) return;setCursors(old => old.slice(0, -1));pageFocus.current = true; }}>Previous page</Button><Button disabled={nextCursor === undefined} aria-disabled={locked || nextCursor === undefined} onClick={() => { if (!locked && nextCursor !== undefined) { setCursors(old => [...old, nextCursor]);pageFocus.current = true; } }}>Next page</Button></div>
    </>}
   </>}
  </section>;

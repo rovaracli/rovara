@@ -66,6 +66,7 @@ it("limits invite reads per org and caller before querying, resets next minute a
  const f = fixture();await f.invite();for (let i = 0; i < 20; i++) expect((await f.request()).status).toBe(200);
  const before = f.db.commandNames().filter(name => name === "QueryCommand").length;expect((await f.request()).status).toBe(429);expect(f.db.commandNames().filter(name => name === "QueryCommand")).toHaveLength(before);
  expect((await f.request("", { ...f.caller, orgId: B, developerId: foreign })).status).toBe(200);
+ f.db.set({ ...orgMemberKey(B, actor), orgId: B, developerId: actor, role: "owner" });expect((await f.request("", { ...f.caller, orgId: B })).status).toBe(200);
  f.db.set({ ...orgMemberKey(A, joined), orgId: A, developerId: joined, role: "admin" });expect((await f.request("", { ...f.caller, developerId: joined })).status).toBe(200);
  f.advance(60_000);expect((await f.request()).status).toBe(200);f.db.injectFault({ command: "UpdateCommand", error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);
 });
