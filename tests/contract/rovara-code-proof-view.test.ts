@@ -11,6 +11,9 @@ import { buildProofTable } from "../../packages/broker/src/rovara-code/proof-tab
 import { proofCheckResults } from "../../packages/broker/src/rovara-code/proof-section.js";
 import { proofTableView } from "../../packages/broker/src/rovara-code/proof-view.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { taskView } from "../../packages/broker/src/aws/developer-tasks.js";
+import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { planAnswer, testedPlanDocument, turnPlanIntoMarkdown } from "../support/plan-documents.js";
 
 const now = "2026-10-27T12:00:00.000Z";
@@ -79,6 +82,30 @@ describe("the task view's proof table", () => {
     expect(await readTask(approved.harness, approved.id)).toHaveProperty("proofTable");
   });
 
+  it("stays in the view of a blocked task, where a failed requirement matters most", async () => {
+    const { harness, id, record } = await task();
+    harness.db.set({ ...record(), workflow: { ...record().workflow, state: "BLOCKED", blockReason: "candidate checks failed or have unknown results" } });
+    const view = await readTask(harness, id);
+    expect((view["workflow"] as { state: string }).state).toBe("BLOCKED");
+    expect(ProofTableViewSchema.parse(view["proofTable"]).rows.length).toBeGreaterThan(1);
+  });
+
+  it("is the same for a reader who is not the owner (the view the session read gives a project viewer), and carries nothing more than the schema's fields", async () => {
+    const { harness, record } = await task({ testProofFor: (digest) => ({ schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 1, changed: 0, deleted: 0 }, items: [{ checkId: "readiness:0", label: "npm test", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }], durationMs: 1200 }) });
+    const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions }, caller);
+    const stored = record() as never;
+    const owner = await taskView(deps, stored, { events: 0, details: true, actor: "owner" });
+    const viewer = await taskView(deps, stored, { events: 0, details: true, actor: "viewer" });
+    expect(owner.proofTable).toBeDefined();
+    expect(viewer.proofTable).toEqual(owner.proofTable);
+    // The viewer's field is exactly the schema's four-part shape; a strict parse accepts it and nothing was added.
+    expect(Object.keys(viewer.proofTable!).sort()).toEqual(["notTested", "rows", "testProofLines"]);
+    expect(ProofTableViewSchema.safeParse(viewer.proofTable).success).toBe(true);
+    expect(viewer.proofTable!.testProofLines).toHaveLength(1);
+  });
+
   it("is absent when the approved plan is a legacy Markdown document, which has no claims", async () => {
     const { harness, id } = await task({ legacyPlan: true });
     expect(await readTask(harness, id)).not.toHaveProperty("proofTable");
@@ -116,6 +143,20 @@ describe("proofTableView", () => {
   it("uses the results recorded for earlier code when the candidate has changed since, rather than calling every requirement untested", () => {
     const view = proofTableView(workflowWith(OLD.digest), { plan })!;
     expect(view.rows[0]).toMatchObject({ claimId: "1", result: "passed" });
+  });
+
+  it("keeps every string within its contract limit after the page-plain step, even when redacting a tail the first cut made would make it longer", () => {
+    // 290 filler characters then a client password flag: the builder cuts the text at 300 characters and leaves "mysql -pabc", which the page's second redaction turns into "mysql -p[REDACTED]" (longer).
+    const text = `${"x".repeat(290)} mysql -pabc tail words here and more`;
+    const grown = { ...plan, claims: [{ id: "1", text }, { id: "2", text: "The retry count is shown." }], checks: { proposed: [{ id: "unit", label: `${"y".repeat(110)} mysql -pabc more words`, command }], proves: { unit: ["1"] } } };
+    const view = proofTableView(workflowWith(CODE.digest), { plan: grown })!;
+    const points = (value: string) => Array.from(value).length;
+    expect(points(view.rows[0]!.requirement)).toBeLessThanOrEqual(300);
+    expect(view.rows[0]!.evidence.every((item) => points(item.label) <= 120)).toBe(true);
+    expect(view.notTested.every((item) => points(item.text) <= 300 && points(item.id) <= 64 && points(item.reason) <= 100)).toBe(true);
+    expect(ProofTableViewSchema.safeParse(view).success).toBe(true);
+    // The same text unchanged would have been over the limit: the cut is what keeps it in.
+    expect(points(view.rows[0]!.requirement)).toBe(300);
   });
 
   it("redacts a secret in a requirement, and is absent without a plan with claims", () => {

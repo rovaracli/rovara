@@ -6,8 +6,15 @@ import { redactText, type ProofTableView, type WorkflowSnapshot } from "@agentx/
 import { buildProofTable } from "./proof-table.js";
 import { earlierProofCheckResults, proofCheckResults, type ProofContext } from "./proof-section.js";
 
-/** The page's words for a string `buildProofTable` made inert for GitHub: its escapes undone (`&lt;` before `&amp;`, so `&amp;lt;` stays `&lt;`), its joiners dropped, and anything secret-shaped redacted again. */
-const plain = (text: string): string => redactText(text.replaceAll("\u200D", "").replaceAll("&lt;", "<").replaceAll("&amp;", "&"));
+/**
+ * The page's words for a string `buildProofTable` made inert for GitHub: its escapes undone (`&lt;` before `&amp;`, so `&amp;lt;` stays `&lt;`), its joiners dropped, anything secret-shaped redacted again, and
+ * then cut to the contract's limit for that field (counted in code points, as the inert helpers count). The cut comes last: redacting a tail the first cut made (`-pabc` to `-p[REDACTED]`) can make a string longer
+ * than the builder left it, and one string over its limit would make the whole session view unreadable for web readers.
+ */
+const plain = (text: string, max: number): string => {
+  const points = Array.from(redactText(text.replaceAll("\u200D", "").replaceAll("&lt;", "<").replaceAll("&amp;", "&")));
+  return points.length <= max ? points.join("") : `${points.slice(0, max - 1).join("")}…`;
+};
 
 /** The table for the task view, or undefined when there is no approved structured plan with claims. Reads nothing; a fault in the plan's shape gives undefined (the page then has no table). */
 export function proofTableView(workflow: WorkflowSnapshot, proof: ProofContext | undefined): ProofTableView | undefined {
@@ -20,11 +27,11 @@ export function proofTableView(workflow: WorkflowSnapshot, proof: ProofContext |
     });
     return {
       rows: table.rows.slice(0, 50).map((row) => ({
-        claimId: row.claimId, requirement: plain(row.requirement), result: row.result,
-        evidence: row.evidence.slice(0, 100).map((item) => ({ kind: item.kind, label: plain(item.label), state: item.state })),
+        claimId: row.claimId, requirement: plain(row.requirement, 300), result: row.result,
+        evidence: row.evidence.slice(0, 100).map((item) => ({ kind: item.kind, label: plain(item.label, 120), state: item.state })),
       })),
-      notTested: table.notTested.slice(0, 200).map((item) => ({ kind: item.kind, id: plain(item.id), text: plain(item.text), reason: item.reason })),
-      testProofLines: table.testProofLines.slice(0, 4).map(plain),
+      notTested: table.notTested.slice(0, 200).map((item) => ({ kind: item.kind, id: plain(item.id, 64), text: plain(item.text, 300), reason: plain(item.reason, 100) })),
+      testProofLines: table.testProofLines.slice(0, 4).map((line) => plain(line, 600)),
     };
   } catch {
     return undefined;

@@ -1742,8 +1742,9 @@ export async function taskView(
   const verification = rovaraCodeV2 && detailsLoaded && task.workflow?.verification !== undefined && task.workflow.stage !== "IMPLEMENT"
     ? verificationReport(task.workflow, details.changedFiles ?? [], { ...(ciBasis === undefined ? {} : { ciBasis }) }) : undefined;
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
-  // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out.
-  const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner") : undefined;
+  // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out. A blocked task keeps it:
+  // a failed requirement matters most there. (A plan whose document could not be verified is blocked only while it waits for approval, when no plan is approved and the table is absent anyway.)
+  const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner") : undefined;
   return {
     taskId: task.taskId,
     title: task.title,
