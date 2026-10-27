@@ -922,7 +922,7 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
     // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
-    // Only a model the company chose for the check, and that it may not use, blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
+    // Only a model the company chose for the check, and that it may not use, or a base whose rule files could not be verified (its fixed reason), blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
     case "PLAN_CRITIQUE/BLOCKED": {
       const reason = workflow.blockReason;
       const said = reason !== undefined && MODEL_REFUSAL.test(reason) ? slackText(reason) : plainBlockReason(reason, "Rovara");

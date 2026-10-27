@@ -29,6 +29,7 @@ import {
   type IntentAssessment, type IntentQuestion,
 } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
+import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/task-workflow-node.js";
 import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
@@ -387,6 +388,22 @@ describe("a version 2 task starts by understanding", () => {
     const b = await t.understanding();
     await t.finish(b.workspaceId, b.operationId, "FAILED", { error: "the model call failed: provider-outage" });
     expect(t.meta(b.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: "understanding operation ended failed" });
+  });
+
+  // C84: a base whose rule files cannot be verified stops Understand visibly, with its own fixed reason; it neither runs on without the rule files nor starts again by itself.
+  it("a base whose rule files could not be verified blocks with its fixed reason, plans nothing, starts no second Understand, and keeps the owner's Retry", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finish(run.workspaceId, run.operationId, "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
+    const { workflow } = t.meta(run.taskId);
+    expect(workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
+    expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
+    await t.sweep();
+    expect(t.operations(run.workspaceId).filter((item) => item.workflowMode === "UNDERSTAND")).toHaveLength(1);
+    expect(t.rows()).toEqual([]);
+    const message = workflowMessage({ taskId: run.taskId, workflow: workflow as never, project: "payments" })!;
+    expect(message.text).toContain("couldn't verify the base rule files");
+    expect(JSON.stringify(message)).toContain("agentx_workflow_retry_plan");
   });
 });
 
