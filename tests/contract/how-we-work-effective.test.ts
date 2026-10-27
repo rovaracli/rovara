@@ -118,12 +118,12 @@ describe("a project with no process layer", () => {
     expect(stage(v, "pull_request").evidence.items.map((entry) => entry.value)).toEqual(["Plan summary", "What changed", "Tests", "Reviews", "Risk"]);
   });
 
-  it("says on the three reviewing stages that project rules do not reach them, and on no other stage", async () => {
+  it("says on the reviewing stages (the plan check, the review, and the pull request feedback review) that project rules do not reach them, and on no other stage", async () => {
     const w = mergeWorld();
     await adoptVersion2(w);
     const v = await view(w);
     for (const s of v.stages) {
-      if (s.kind === "plan_critic" || s.kind === "review") expect(s.knows.note).toBe("Project rules apply to Understand, Plan and Build. Reviewers only follow rules written for them.");
+      if (s.kind === "plan_critic" || s.kind === "review" || s.kind === "pull_request") expect(s.knows.note).toBe("Project rules apply to Understand, Plan and Build. Reviewers only follow rules written for them.");
       else expect(s.knows.note).toBeUndefined();
     }
     expect(HOW_WE_WORK_REVIEWER_NOTE).toBe("Project rules apply to Understand, Plan and Build. Reviewers only follow rules written for them.");
@@ -238,10 +238,12 @@ describe("a process layer", () => {
     expect(texts("review")).not.toContain("PROJECT-WIDE-RULE");
     expect(texts("plan_critic")).not.toContain("PROJECT-WIDE-RULE");
     expect(texts("review")).not.toContain("BUILD-RULE");
+    expect(texts("pull_request")).not.toContain("PROJECT-WIDE-RULE");
     // It is listed as a project-wide rule, and the reviewing stages carry the note.
     expect(v.rules).toEqual([{ value: "PROJECT-WIDE-RULE", source: "project", locked: false }]);
     expect(stage(v, "review").knows.note).toBe(HOW_WE_WORK_REVIEWER_NOTE);
     expect(stage(v, "plan_critic").knows.note).toBe(HOW_WE_WORK_REVIEWER_NOTE);
+    expect(stage(v, "pull_request").knows.note).toBe(HOW_WE_WORK_REVIEWER_NOTE);
     expect(stage(v, "build").knows.note).toBeUndefined();
   });
 

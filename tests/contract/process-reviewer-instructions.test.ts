@@ -31,7 +31,8 @@ function recipeWith(layer: RecipeLayer, overlay: RecipeOverlay): ResolvedRecipe 
   const withBuiltin = applyOverlay(V2, { instructions: BUILTIN_RULE }, builtinLayer);
   return applyOverlay(withBuiltin, overlay, layer);
 }
-const OVERLAY: RecipeOverlay = { instructions: PROJECT_RULE, steps: { review: { instructions: REVIEW_RULE }, plan_critic: { instructions: CRITIC_RULE } } };
+const FEEDBACK_RULE = "FEEDBACK-STAGE-RULE: summarise each comment before judging it.";
+const OVERLAY: RecipeOverlay = { instructions: PROJECT_RULE, steps: { review: { instructions: REVIEW_RULE }, plan_critic: { instructions: CRITIC_RULE }, pull_request: { instructions: FEEDBACK_RULE } } };
 
 /** What the worker is sent for a stage: the prompt section and the copy inside the step payload. */
 function sentFor(recipe: ResolvedRecipe, layer: RecipeLayer, mode: DispatchMode, programStepId?: string) {
@@ -61,8 +62,19 @@ describe("a process layer's project-wide rules", () => {
     }
   });
 
-  it("reach the Plan step and the Pull request step as before", () => {
+  it("reach the Plan step as before", () => {
     expectBoth(sentFor(recipe, layer, "PLAN", "plan"), (text) => expect(text).toContain(PROJECT_RULE));
+  });
+
+  it("never reach the pull request feedback review (follow-up M3), which still gets Rovara's built-in layers and the rule written on its own stage", () => {
+    const sent = sentFor(recipe, layer, "FEEDBACK_REVIEW", "pull_request");
+    expect(sent.section.length, "FEEDBACK_REVIEW sends a prompt section").toBeGreaterThan(0);
+    expect(sent.payload.length, "FEEDBACK_REVIEW sends the step payload copy").toBeGreaterThan(0);
+    expectBoth(sent, (text) => {
+      expect(text).not.toContain(PROJECT_RULE);
+      expect(text).toContain(BUILTIN_RULE);
+      expect(text).toContain(FEEDBACK_RULE);
+    });
   });
 
   it("a rule written on the review stage reaches the reviewers, and a rule on the plan check reaches the plan check, and neither reaches Build", () => {
@@ -72,7 +84,7 @@ describe("a process layer's project-wide rules", () => {
   });
 
   it("Rovara's built-in layers still reach the reviewers and the plan check", () => {
-    for (const [mode, step] of [["REVIEW", "review"], ["PLAN_CRITIQUE", "plan_critic"]] as const) {
+    for (const [mode, step] of [["REVIEW", "review"], ["PLAN_CRITIQUE", "plan_critic"], ["FEEDBACK_REVIEW", "pull_request"]] as const) {
       expectBoth(sentFor(recipe, layer, mode, step), (text) => expect(text).toContain(BUILTIN_RULE));
     }
   });
@@ -82,7 +94,7 @@ describe("an ordinary custom agent's recipe-level instructions", () => {
   it("still reach its reviewers and plan check", () => {
     const layer = customLayer("reviewer bot", false);
     const recipe = recipeWith(layer, OVERLAY);
-    for (const [mode, step] of [["REVIEW", "review"], ["PLAN_CRITIQUE", "plan_critic"], ["IMPLEMENT", "build"]] as const) {
+    for (const [mode, step] of [["REVIEW", "review"], ["PLAN_CRITIQUE", "plan_critic"], ["IMPLEMENT", "build"], ["FEEDBACK_REVIEW", "pull_request"]] as const) {
       expectBoth(sentFor(recipe, layer, mode, step), (text) => { expect(text).toContain(PROJECT_RULE); expect(text).toContain(BUILTIN_RULE); });
     }
   });

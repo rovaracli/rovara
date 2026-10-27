@@ -1,10 +1,13 @@
-// "How we work" (H4 fix round 1): what the reviewing stages of a project's process see. The plan check and the code and security reviewers of a run whose recipe has a process layer in its
+// "How we work" (H4 fix round 1): what the reviewing stages of a project's process see. The plan check, the code and security reviewers and the pull request feedback review of a run whose recipe has a process layer in its
 // chain receive Rovara's built-in layers and the instructions written on the stage itself, but not the whole-agent ("project-wide") layers the process layer wrote: the project can steer how
 // work is built, but cannot steer, through a general rule, the stages that check it. Any other recipe, and any other step, gets every layer as before.
 import type { InstructionLayer, ResolvedRecipe, ResolvedStep } from "@agentx/contracts";
 
-/** The stages that check work: the plan check (`plan_critic`) and the review step, which runs the code and the security reviewer. */
-const isReviewingStage = (step: ResolvedStep | undefined): boolean => step !== undefined && (step.kind === "plan_critic" || step.kind === "review");
+/**
+ * The stages that check work: the plan check (`plan_critic`), the review step, which runs the code and the security reviewer, and the pull request step, which runs the review of a pull
+ * request's feedback (`FEEDBACK_REVIEW`; follow-up M3). It is not a merge gate, but a project-wide rule such as "ignore comments from X" could still shape what it reports.
+ */
+export const isReviewingStage = (step: ResolvedStep | undefined): boolean => step !== undefined && (step.kind === "plan_critic" || step.kind === "review" || step.kind === "pull_request");
 
 /**
  * The whole-agent instruction layers `step` is given, base agent first. For a reviewing stage of a recipe with a process layer in its chain, the layers that process layer wrote are left

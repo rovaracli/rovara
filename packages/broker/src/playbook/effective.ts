@@ -3,7 +3,7 @@
 // comes from: a value written in the process layer's overlay is the project's; a value the company's guardrails set is the company's; anything else is Rovara's. The project's own settings (the
 // definition and the code settings) are the project's. A value the project cannot change is locked, by the company or by a fact Rovara keeps for safety.
 //
-// Reviewing stages (the plan check, and the review that runs the code and security reviewers) are not given the process layer's project-wide rules (`wholeAgentLayers`), so those rules are left out of
+// Reviewing stages (the plan check, the review that runs the code and security reviewers, and the pull request feedback review) are not given the process layer's project-wide rules (`wholeAgentLayers`), so those rules are left out of
 // their instructions here too, and the stage carries a fixed note the page can show.
 import {
   HOW_WE_WORK_INSTRUCTION_MAX,
@@ -40,7 +40,7 @@ import { resolveAgent, type AgentStore } from "../agents/store.js";
 import { latestRevision } from "../org/project-settings.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { existingLayer } from "./process-layer.js";
-import { wholeAgentLayers } from "./process-reviewers.js";
+import { isReviewingStage, wholeAgentLayers } from "./process-reviewers.js";
 import { readProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer } from "./project-process.js";
 import type { ProjectPlaybookDependencies } from "./routes.js";
@@ -147,7 +147,7 @@ function stageOf(step: ResolvedStep, inputs: Inputs): HowWeWorkStage {
     : targets.length > 0 ? mark(targets, origin("differentCompanyFrom")) : mark<string[]>([], "rovara");
 
   // Knows
-  const reviewing = step.kind === "plan_critic" || step.kind === "review";
+  const reviewing = isReviewingStage(step);
   const instructions = layerRows(recipe, [...wholeAgentLayers(recipe, step), ...(settings.instructions ?? [])]);
 
   // May
