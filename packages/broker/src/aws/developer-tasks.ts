@@ -4799,7 +4799,7 @@ async function queueWorkflowUnderstand(
         receivedAt, finishedAt: iso(deps), request: input.request, response: `${input.response} as operation ${operation.id}.`, operationId: operation.id,
       })),
       ...(input.access === undefined ? [] : [accessFence(deps, input.access)]),
-    ], { sharedTask: current.shared === true, workflowMode: "UNDERSTAND" });
+    ], { sharedTask: current.shared === true, workflowMode: "UNDERSTAND", ...taskBaseOption(current, next) });
   });
 }
 
@@ -4933,7 +4933,7 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
       request: "Check the plan with a second model", response: `The plan check started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
-  ], { sharedTask: task.shared === true, workflowMode: "PLAN_CRITIQUE", programStepId: step.id });
+  ], { sharedTask: task.shared === true, workflowMode: "PLAN_CRITIQUE", programStepId: step.id, ...taskBaseOption(task, next) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 

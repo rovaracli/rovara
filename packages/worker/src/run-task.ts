@@ -561,8 +561,12 @@ async function runTask(
   const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" ? "PLAN" : payloadMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
+  const planCritique = payloadMode === "PLAN_CRITIQUE";
   const reviewing = invocation.payload.workflowMode === "REVIEW";
-  /** Reviewers' rule files come from the broker's base alone, never from the manifest's commit, which the agent can write. */
+  /**
+   * Reviewers' rule files come from the broker's base alone, never from the manifest's commit, which the agent can write. The plan check and Understand are
+   * checks on someone else's words in a workspace a coding session may have written, so they read the base commit as well (A5).
+   */
   const reviewerRuleBases = { contextFilesAt: "base-commit" as const, baseCommits: invocation.payload.workflowBase ?? [] };
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
@@ -634,7 +638,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing ? reviewerRuleBases : {}),
+        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -647,7 +651,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing ? reviewerRuleBases : {}),
+        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),

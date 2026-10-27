@@ -514,6 +514,8 @@ describe("a version 2 plan goes to the plan check", () => {
     const [check] = t.byMode(workspaceId, "PLAN_CRITIQUE");
     expect(check).toMatchObject({ kind: "task", programStepId: "plan_critic" });
     expect(t.invocationOf(check!.id)?.payload.workflowMode).toBe("PLAN_CRITIQUE");
+    // A5: the worker reads the plan check's rule files from the task's base commit, so the broker sends it.
+    expect((t.invocationOf(check!.id)?.payload as { workflowBase?: unknown }).workflowBase).toEqual(PREPARED.result.preparedBase);
     // The row that made it due went with the start.
     expect(t.dispatchRows(taskId)).toEqual([]);
   });
