@@ -84,6 +84,9 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.WorkflowDependenciesEnabled;
   // Rovara Code v2 per environment (Plan 6): its parameter and its packed setting are no part of the proof-only addition either.
   delete remainder.Parameters?.RovaraCodeV2Enabled;
+  // Mainline #408 kill switches (plan self-check, automatic fixing): parameters and packed settings, no part of the proof-only addition.
+  delete remainder.Parameters?.PlanSelfCheckEnabled;
+  delete remainder.Parameters?.AutofixEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -116,7 +119,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -283,18 +286,19 @@ describe("the named TEST proof-only installation gate", () => {
     // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
     // Round 8 release-path fixes: the web app's ResponseHeadersPolicy and OriginAccessControl got explicit prefixed names, so the named and foreign digests were retaken from the test's output; legacy did not move.
     // Staging v0.4.9: the invalid `GET /app/` web route (an empty path segment, refused by API Gateway) was removed with its Lambda permission, so the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Round 11 (mainline #408 sync): the notifier's role gained the WORKFLOW_DISPATCH read (blocked cards are no longer lost, LIVEFIX-1); the named and foreign digests were retaken from the test's output, legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "f077aa59651ad246c33b474f9c9144f3e746a257312a363999a234367f652fc5",
-        withoutRoute: "e5b39d57a7e00923907c876036171bc6ca3cc2a396d1c7eff0240ce2ae4c9bf8",
+        withRoute: "2dcdabc6785c64aa613010a13339bb217ccafd5d4894b9fbcd78e0e42913181f",
+        withoutRoute: "74ed7d02160dd9698b80071abf2c2fe1bb47b11b428b7171b4f110f1a4079283",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "bd635f276ba294accfddf7216d598e51adf5377faf297c55105b5e05162da9a7",
-        withoutRoute: "cf6eb4815361f98ee9cda36712d3bf7d27ac0753cf6f6a3704d3c35abf2697e4",
+        withRoute: "1881b84d8862ff1cc72973e64981eb9e03243608691af5bdb5430d905fb0cd98",
+        withoutRoute: "1b5c7f8039b1126b3e92352a8f94cfe2eb2ff6d37e183f939a713393883417f8",
       },
       {
         label: "legacy",

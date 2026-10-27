@@ -29,7 +29,7 @@ const WITH_ADMIN_TOOL_NAMES = [...DEVELOPER_TOOLS, ...ADMIN_READ_TOOLS].map((too
 const offered = async (client: Client) => (await client.listTools()).tools.map((tool) => tool.name).sort();
 
 describe("the tool lists", () => {
-  it("are 36 developer tools, including the five session tools, and 44 with the eight admin read tools", () => {
+  it("are 36 developer tools, including the five session tools and agentx_get_plan, and 44 with the eight admin read tools", () => {
     expect(DEVELOPER_TOOL_NAMES).toHaveLength(36);
     expect(DEVELOPER_TOOL_NAMES).toEqual(expect.arrayContaining(SESSION_TOOLS));
     expect(ADMIN_READ_TOOLS).toHaveLength(8);

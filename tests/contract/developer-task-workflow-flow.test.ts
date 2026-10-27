@@ -21,7 +21,7 @@ import { recordThreadNoteThroughBroker } from "../../packages/broker/src/aws/sla
 import { finishPlanningWithMarkdown, planAnswer, planDocument, type RawChecksInput } from "../support/plan-documents.js";
 import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
-import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
@@ -32,7 +32,7 @@ import { projectPk, projectRevisionKey } from "../../packages/contracts/src/org-
 /** A prepare result as the worker sends it: where preparation checked out each repository. */
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 
-type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
+type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 const REQUIRED_CHECK = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
 const taskWorkflow = (harness: Harness, taskId: string) => (harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow;
@@ -110,7 +110,7 @@ async function collectingFeedbackTask(plan: { content: string; structured?: bool
   options: { checkPolicy?: WorkflowCheckPolicyInput } = {}) {
     const currentFeedback = { pullRequest: { number: 7, url: "https://github.com/example/demo/pull/7", state: "open" as const,
       headBranch: "feature", baseBranch: "main", headCommit: "a".repeat(40), headTreeSha: "b".repeat(40), title: "Fix retry", body: "" }, comments: [], threads: [] };
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async () => currentFeedback } } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async () => currentFeedback } } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -176,7 +176,7 @@ async function collectingFeedbackTask(plan: { content: string; structured?: bool
 describe("native developer task workflow", () => {
   it("requires a canonical E2E plan when the pinned project has required baseline scenarios", async () => {
     const approvePlanWithoutE2E = async (policy?: unknown, options: { structured?: boolean; registerLatestEmptyRevision?: boolean; removePinnedProject?: boolean } = {}) => {
-      const harness = await createDeveloperTaskBroker();
+      const harness = await createSingleAnswerPlanBroker();
       const project = harness.db.find((item) => item.entityType === "PROJECT" && item.definition !== undefined && (item.definition as { name: string }).name === "payments")[0]!;
       const definition = { ...(project.definition as Record<string, unknown>), ...(policy === undefined ? {} : { e2e: policy }) };
       harness.db.set({ ...project, definition });
@@ -223,7 +223,7 @@ describe("native developer task workflow", () => {
     const creator: Developer = { developerId: developerIdForSlackUser(creatorSlack), name: "Parked Creator", provider: "slack", sessionId: "s-parked-creator", slackUserId: creatorSlack };
     const nextOwner: Developer = { developerId: developerIdForSlackUser(nextSlack), name: "Next Owner", provider: "slack", sessionId: "s-next-owner", slackUserId: nextSlack };
     const eligible = new Map([[creator.developerId, true], [nextOwner.developerId, true]]);
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       channelMembers: async (request) => ({ ok: true, memberOf: [...request.channelIds] }),
       developerExtra: {
         taskPeopleConfiguration: { peopleChangesEnabled: true },
@@ -303,7 +303,7 @@ describe("native developer task workflow", () => {
   it("keeps a queued system successor parked without spending its recovery attempts after last-owner loss", async () => {
     const retrySlackUserId = "U0RETRY02";
     const retryOwner: Developer = { developerId: developerIdForSlackUser(retrySlackUserId), name: "Retry Owner", provider: "slack", sessionId: "s-retry-owner", slackUserId: retrySlackUserId };
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       channelMembers: async (request) => ({ ok: true, memberOf: [...request.channelIds] }),
       developerExtra: {
         taskPeopleConfiguration: { peopleChangesEnabled: true },
@@ -359,7 +359,7 @@ describe("native developer task workflow", () => {
   });
 
   it("stops a warmed required-E2E dispatch in the idle gap before recovery can admit a round", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const taskRow = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
@@ -397,7 +397,7 @@ describe("native developer task workflow", () => {
   });
 
   it("lets the owner cancel an active required-E2E readiness resume and prevents recovery admission", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const taskRow = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
@@ -444,7 +444,7 @@ describe("native developer task workflow", () => {
   });
 
   it("returns a successful terminal response when the owner rejects a plan", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Prepare a rejectable plan", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -478,7 +478,7 @@ describe("native developer task workflow", () => {
   });
 
   it("refuses webhook feedback critic acceptance after all effective owners are lost", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate } = await workflowAtVerification(harness);
     const task = harness.db.get(`DEVTASK#${taskId}`, "META")!;
     const workflow = { ...task.workflow as WorkflowSnapshot, stage: "WAIT_FOR_MERGE" as const, state: "WAITING" as const,
@@ -502,7 +502,7 @@ describe("native developer task workflow", () => {
     const secondSlack = "U0NATIVE02";
     const creator: Developer = { developerId: developerIdForSlackUser(creatorSlack), name: "Native Creator", provider: "slack", sessionId: "s-native-creator", slackUserId: creatorSlack };
     const second: Developer = { developerId: developerIdForSlackUser(secondSlack), name: "Second Owner", provider: "slack", sessionId: "s-second-owner", slackUserId: secondSlack };
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       channelMembers: async (request) => ({ ok: true, memberOf: [...request.channelIds] }),
       developerExtra: {
         taskPeopleConfiguration: { peopleChangesEnabled: true },
@@ -855,7 +855,7 @@ describe("native developer task workflow", () => {
   });
 
   it("leaves the established task entry point unchanged unless workflow was requested", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const response = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client",
     });
@@ -865,7 +865,7 @@ describe("native developer task workflow", () => {
   });
 
   it("lets only the task owner re-drive the currently pinned Canvas manifest", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Closeout retry fixture", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -899,7 +899,7 @@ describe("native developer task workflow", () => {
   });
 
   it("allows an owner to retry a preparation failure bound to the current workflow revision", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Retry artifact verification", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -920,7 +920,7 @@ describe("native developer task workflow", () => {
   });
 
   it("allows the owner of a rejected task (CLOSED, outcome REJECTED) to retry its Canvas closeout", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Retry a rejected task's closeout", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -936,7 +936,7 @@ describe("native developer task workflow", () => {
   });
 
   it("rejects an owner retry when the workflow advanced after the persisted preparation failure", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fence stale closeout retry", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -954,7 +954,7 @@ describe("native developer task workflow", () => {
   });
 
   it("tells every workflow phase that AgentX owns approvals, checks, reviews and publishing", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Add a greeting", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = String(harness.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
@@ -968,7 +968,7 @@ describe("native developer task workflow", () => {
   });
 
   it("runs Full requirements, design, and coding-plan reviews before implementation", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Add password reset", client: "test-client", workflow: true, workflowPath: "FULL",
     });
@@ -1006,7 +1006,7 @@ describe("native developer task workflow", () => {
   });
 
   it("stores a control-plane-digested plan and only queues implementation after owner approval", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async (_url: string, number: number) => ({
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async (_url: string, number: number) => ({
       pullRequest: { number, url: "https://github.com/example/demo/pull/42", state: "open", headCommit: "d".repeat(40), headTreeSha: "b".repeat(40) },
       comments: [], threads: [],
     }) } } });
@@ -1151,7 +1151,7 @@ describe("native developer task workflow", () => {
 
   it("opens a draft pull request automatically once both reviews pass, pushed only by the publish step", async () => {
     const gh = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -1188,7 +1188,7 @@ describe("native developer task workflow", () => {
 
   it("holds admitted publication before credentials and callback when latest project material changes", async () => {
     const github = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: github } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: github } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -1221,7 +1221,7 @@ describe("native developer task workflow", () => {
 
   it("rechecks an empty-baseline E2E policy before exchanging credentials when a newer revision adds required baselines", async () => {
     const github = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: github } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: github } });
     const project = harness.db.find((item) => item.entityType === "PROJECT" && item.definition !== undefined && (item.definition as { name: string }).name === "payments")[0]!;
     harness.db.set({ ...project, definition: { ...(project.definition as Record<string, unknown>), e2e: baselinePolicy([]) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
@@ -1248,7 +1248,7 @@ describe("native developer task workflow", () => {
 
   it("holds the same publication mode when its approved plan reference and Owner approval change", async () => {
     const github = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: github } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: github } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -1291,7 +1291,7 @@ describe("native developer task workflow", () => {
   });
 
   it("treats a reused publication request with a changed candidate base as an idempotency conflict", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -1317,7 +1317,7 @@ describe("native developer task workflow", () => {
   ] as const) {
     it(`refuses the pull request when ${name}: nothing recorded, closed if opened, and the owner can retry`, async () => {
       const gh = pullRequestGateway(tree, heads);
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
       const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
       await finishImplementation();
       await passReviews(harness, workspaceId, candidate);
@@ -1361,7 +1361,7 @@ describe("native developer task workflow", () => {
   });
 
   it("does not loop after a failed publication: the sweep leaves it, and the owner's retry opens it with a new request", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -1388,7 +1388,7 @@ describe("native developer task workflow", () => {
   });
 
   it("gives up after ten failed publication starts: blocks in plain words, and Retry opening the pull request starts it", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
@@ -1426,7 +1426,7 @@ describe("native developer task workflow", () => {
   });
 
   it("starts both reviews automatically once the selected checks pass, bound to the exact checked code", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     // This is the ordinary non-E2E review-start control. Required browser/source-interface intent now uses the
     // dedicated normal-route acceptance, where unsupported criteria remain UNKNOWN and hold review admission.
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness, planDocument());
@@ -1451,7 +1451,7 @@ describe("native developer task workflow", () => {
   });
 
   it("recovers a review dispatch lost after the checks result committed, and never starts it twice", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, finishImplementation } = await workflowAtVerification(harness);
     harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"workflowMode":"REVIEW"'), error: { name: "InternalServerError" } });
     await finishImplementation();
@@ -1467,7 +1467,7 @@ describe("native developer task workflow", () => {
   });
 
   it("keeps a review start that met a busy workspace, counting the attempt and backing off before the sweep tries again", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, finishImplementation } = await workflowAtVerification(harness);
     // A cancelled acceptance with no saved request is acceptTask's "workspace already has an active writer".
     busyReviewStart(harness);
@@ -1492,7 +1492,7 @@ describe("native developer task workflow", () => {
   });
 
   it("gives up after ten failed starts: blocks the task in plain words, removes the row, and Retry reviews then starts them", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     busyReviewStart(harness);
     await finishImplementation();
@@ -1511,7 +1511,7 @@ describe("native developer task workflow", () => {
   });
 
   it("runs a due review start even when more than a page of rows are still waiting out their backoff", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, finishImplementation } = await workflowAtVerification(harness);
     busyReviewStart(harness);
     await finishImplementation();
@@ -1536,7 +1536,7 @@ describe("native developer task workflow", () => {
       (workflow) => ({ workflow, closedAt: new Date().toISOString() }),
     ];
     for (const move of moves) {
-      const harness = await createDeveloperTaskBroker();
+      const harness = await createSingleAnswerPlanBroker();
       const { taskId, workspaceId, finishImplementation } = await workflowAtVerification(harness);
       busyReviewStart(harness);
       await finishImplementation();
@@ -1566,7 +1566,7 @@ describe("native developer task workflow", () => {
     ["missing review collection", [], "generic", undefined, "missing"],
   ];
   it.each(reviewResultCases)("classifies %s only after validating candidate context and report provenance", async (_label, roles, classification, mutation, malformedCollection) => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
@@ -1591,7 +1591,7 @@ describe("native developer task workflow", () => {
   });
 
   it("refuses an ordinary write-capable turn on a workflow task even after reviews passed", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };
@@ -1612,7 +1612,7 @@ describe("native developer task workflow", () => {
   });
 
   it("records each selected check's result by its report ID, not by position, including failing checks", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };
@@ -1642,7 +1642,7 @@ describe("native developer task workflow", () => {
   });
 
   it("does not let an agent-claimed passing check stand in for a selected project check", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };
@@ -1669,7 +1669,7 @@ describe("native developer task workflow", () => {
   });
 
   it("blocks verification with a clear reason when the code changed after checks ran", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -1707,7 +1707,7 @@ describe("native developer task workflow", () => {
     const required = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
     const checks = { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
     /** Starts a Quick task, approves its plan (after `beforeApproval` edits the stored workflow), and returns the IMPLEMENT operation. */
-    async function implementing(harness: Awaited<ReturnType<typeof createDeveloperTaskBroker>>, beforeApproval?: (workflow: Record<string, unknown>) => Record<string, unknown>, prepared: { result: Record<string, unknown> } = PREPARED) {
+    async function implementing(harness: Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>, beforeApproval?: (workflow: Record<string, unknown>) => Record<string, unknown>, prepared: { result: Record<string, unknown> } = PREPARED) {
       const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
         requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
       });
@@ -1741,42 +1741,42 @@ describe("native developer task workflow", () => {
     }
 
     // Before the first pin, the worker is sent the base preparation recorded.
-    const unbased = await implementing(await createDeveloperTaskBroker());
+    const unbased = await implementing(await createSingleAnswerPlanBroker());
     expect(unbased.invocation.payload.workflowBase).toEqual(PREPARED.result.preparedBase);
     expect(await unbased.finish({})).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "AgentX could not record where this change started. Close the task and start a new one." });
 
-    const unconfirmed = await implementing(await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async () => { throw new Error("GitHub commit lookup HTTP 404"); } } } }));
+    const unconfirmed = await implementing(await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async () => { throw new Error("GitHub commit lookup HTTP 404"); } } } }));
     expect(await unconfirmed.finish({ baseCommitSha: base })).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "AgentX could not confirm the task's starting commit on GitHub." });
 
     const lookups: Array<[string, string]> = [];
-    const confirmed = await implementing(await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async (url: string, sha: string) => { lookups.push([url, sha]); return "d".repeat(40); } } } }));
+    const confirmed = await implementing(await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async (url: string, sha: string) => { lookups.push([url, sha]); return "d".repeat(40); } } } }));
     const pinned = await confirmed.finish({ baseCommitSha: base });
     expect(pinned).toMatchObject({ stage: "REVIEW", reviewBase: [{ repositoryId: "demo", baseCommitSha: base }] });
     expect(lookups).toEqual([[expect.stringContaining("github.com"), base]]);
 
     // A worker-reported base other than the prepared one is refused, never pinned.
-    const elsewhere = await implementing(await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async () => "d".repeat(40) } } }));
+    const elsewhere = await implementing(await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getCommitTree: async () => "d".repeat(40) } } }));
     const refused = await elsewhere.finish({ baseCommitSha: "9".repeat(40) });
     expect(refused).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "The code's starting point changed. Send the task back to coding or close it." });
     expect(refused.reviewBase).toBeUndefined();
     // A prepare that recorded no base (a worker built before it) leaves nothing to compare against.
-    const unprepared = await implementing(await createDeveloperTaskBroker(), undefined, { result: {} });
+    const unprepared = await implementing(await createSingleAnswerPlanBroker(), undefined, { result: {} });
     expect(unprepared.invocation.payload.workflowBase).toBeUndefined();
     expect(await unprepared.finish({ baseCommitSha: base })).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "AgentX could not record where this change started. Close the task and start a new one." });
 
     // Code that no longer descends from the base is explained to the owner in plain words.
-    const rewritten = await implementing(await createDeveloperTaskBroker());
+    const rewritten = await implementing(await createSingleAnswerPlanBroker());
     expect((await rewritten.fail(`CONFIG_INVALID: ${WORKFLOW_HISTORY_REWRITTEN_MESSAGE}`)).blockReason).toBe(WORKFLOW_HISTORY_REWRITTEN_MESSAGE);
 
     // A task whose base is already pinned sends it to the worker and refuses a candidate that started elsewhere.
     const pinnedBase = [{ repositoryId: "demo", baseCommitSha: "f".repeat(40) }];
-    const moved = await implementing(await createDeveloperTaskBroker(), (workflow) => ({ ...workflow, reviewBase: pinnedBase }));
+    const moved = await implementing(await createSingleAnswerPlanBroker(), (workflow) => ({ ...workflow, reviewBase: pinnedBase }));
     expect(moved.invocation.payload.workflowBase).toEqual(pinnedBase);
     expect(await moved.finish({ baseCommitSha: base })).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "The code's starting point changed. Send the task back to coding or close it." });
   });
 
   it("records the owner's optional check choice and gives that exact command to the worker check runner", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -1804,7 +1804,7 @@ describe("native developer task workflow", () => {
   });
 
   it("makes a Slack-started workflow's own thread its control surface rather than a view-only share", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000011" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -1823,7 +1823,7 @@ describe("native developer task workflow", () => {
   });
 
   it("keeps a share from an AI tool view-only", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug",
       client: "test-client", workflow: true, workflowPath: "QUICK", shareToChannel: true });
     const taskId = String((started.body.task as { taskId: string }).taskId);
@@ -1840,7 +1840,7 @@ describe("native developer task workflow", () => {
     const creatorSlack = "U0R3OWN01";
     const ownerSlack = "U0R3OWN02";
     const creator: Developer = { developerId: developerIdForSlackUser(creatorSlack), name: creatorSlack, provider: "slack", sessionId: "s-r3-shared-creator", slackUserId: creatorSlack };
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       channelMembers: async (request) => ({ ok: true, memberOf: request.channelIds }),
       developerExtra: { taskPeopleConfiguration: { peopleChangesEnabled: true },
         taskPersonProof: async (request) => ({ ok: true, user: { id: request.slackUserId, teamId: SLACK_TEAM, name: request.slackUserId }, memberOf: request.channelIds }) },
@@ -1881,7 +1881,7 @@ describe("native developer task workflow", () => {
   });
 
   it("accepts a Slack owner's workflow approval using the same stable developer identity as task start", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000077" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -1911,7 +1911,7 @@ describe("native developer task workflow", () => {
   });
 
   it("explains an empty verification block and retries only checks against the current workflow revision", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -1960,7 +1960,7 @@ describe("native developer task workflow", () => {
   });
 
   it("keeps an interrupted plan blocked and requires a new read-only planning run to recover", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK",
     });
@@ -1982,7 +1982,7 @@ describe("native developer task workflow", () => {
   });
 
   it("stores every thread reply as task input without moving the workflow, and feeds them into the next document", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000021" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2013,7 +2013,7 @@ describe("native developer task workflow", () => {
   });
 
   it("saves a reply even when its first save meets a conflicting write, and fails loudly rather than losing it", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000023" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2037,7 +2037,7 @@ describe("native developer task workflow", () => {
   });
 
   it("re-stamps a reply that a step's mark overtook while it was being saved, so the next step still gets it", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000025" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2060,7 +2060,7 @@ describe("native developer task workflow", () => {
   });
 
   it("gives each reply to one step only: a blocked-planning retry's replies are not given again at the next decision", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000024" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2087,7 +2087,7 @@ describe("native developer task workflow", () => {
   });
 
   it("keeps notes out of a closed task and past the note limit, and gives the next step only notes after the last decision", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000022" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2187,7 +2187,7 @@ describe("exits for blocked work (Task 16)", () => {
   };
 
   it("sends introduced review findings back to coding as instructions, and checks and reviews run again after", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, candidate, plan, digest, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
@@ -2241,7 +2241,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("retries blocked planning only at the current revision, and a repeated retry starts nothing new", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
@@ -2263,7 +2263,7 @@ describe("exits for blocked work (Task 16)", () => {
     const agentClaims = { status: "verified", source: "agent_commands", preambleVersion: "1", preambleSha256: "c".repeat(64),
       checks: [{ id: "agent:0", label: "npm test", source: "agent_commands", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
     for (const policy of [{ required: [], optional: [], selectedOptionalIds: [] }, undefined]) {
-      const harness = await createDeveloperTaskBroker();
+      const harness = await createSingleAnswerPlanBroker();
       const { taskId, workspaceId, candidate } = await workflowAtVerification(harness);
       const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
       const { checkPolicy: _old, ...withoutPolicy } = record.workflow;
@@ -2281,7 +2281,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("retries a blocked implementation with the approved plan", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, plan, digest } = await workflowAtVerification(harness);
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
     await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: "the model stopped" });
@@ -2308,7 +2308,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("drops a pending pull request start once the owner sends the change back, so nothing publishes the old code", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"kind":"publish"'), error: { name: "TransactionCanceledException" } });
@@ -2327,7 +2327,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("runs the checks again on the current code after the code changed under a ready change", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -2347,7 +2347,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("closes a blocked task from its Slack thread for the owner only, discarding unpublished work", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000088" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2375,7 +2375,7 @@ describe("exits for blocked work (Task 16)", () => {
   // on GitHub, so the owner's confirmation discards with a pull request too (keeping the check left an unpushed fix
   // refusing the close, and the thread was never told).
   it("closes from Slack discarding unpublished work also when a pull request is recorded, as the confirmed modal says", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000086" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2394,7 +2394,7 @@ describe("exits for blocked work (Task 16)", () => {
   });
 
   it("sends blocked work back to coding from its Slack thread for the owner only", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000087" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2433,7 +2433,7 @@ describe("Slack refusals (Task 19)", () => {
   const refusals = (harness: Harness, taskId: string) => harness.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("REFUSAL#"));
 
   it("a refused Slack decision answers 200 and tells the owner privately in the thread", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000091" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2471,7 +2471,7 @@ describe("Slack refusals (Task 19)", () => {
   });
 
   it("keeps the out-of-date words for stale presses, refuses presses from another Slack workspace, and approves a plan with no check chosen", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000092" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2512,7 +2512,7 @@ describe("Slack refusals (Task 19)", () => {
   });
 
   it("sends the owner of a task started from an AI tool back there when they press its button in Slack, never a failed save (Task 19 fix)", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug",
       client: "test-client", workflow: true, workflowPath: "QUICK", shareToChannel: true });
     const taskId = String((started.body.task as { taskId: string }).taskId);
@@ -2533,7 +2533,7 @@ describe("Slack refusals (Task 19)", () => {
   });
 
   it("names a stale button as a button, and tells one invoke delivered twice once (Task 19 fix)", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000094" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2556,7 +2556,7 @@ describe("Slack refusals (Task 19)", () => {
   });
 
   it("tells the owner a busy step plainly, and a genuine failure still fails", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000092" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread,
       userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
@@ -2597,7 +2597,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() });
 
   it("holds publication when the owner-approved plan bytes no longer match its digest", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     const plan = taskWorkflow(harness, taskId).artifacts.find((artifact) => artifact.type === "plan")!;
     // The saved plan object changed after the owner approved it.
@@ -2624,7 +2624,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
   });
 
   it("starts no publication when the task moves on between its read and the commit", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     const send = harness.db.send;
@@ -2643,7 +2643,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
 
   it("sends the task's pinned base as the published commit's parent, and refuses a pushed commit on any other parent", async () => {
     const gh = pullRequestGateway("b".repeat(40), { parent: "9".repeat(40) });
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -2663,7 +2663,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     const gh = pullRequestGateway("b".repeat(40));
     let lookups = 0;
     gh.getCommitParents.mockImplementation(async () => [(lookups += 1) === 1 ? "e".repeat(40) : "9".repeat(40)]);
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
     const { workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -2675,7 +2675,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
   });
 
   it("after a failed publication, the page says so until the next try, and the owner's retry moves the step on", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -2702,7 +2702,7 @@ describe("thread replies reach exactly one step (final review)", () => {
   });
 
   it("retries a decision when a reply with an earlier stamp commits between its read and its commit, so the reply is not skipped", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -2738,7 +2738,7 @@ describe("thread replies reach exactly one step (final review)", () => {
   });
 
   it("answers a repeated coding retry with the run it started, even after a reply came in and coding stopped again", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await workflowAtVerification(harness);
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
     await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: "the model stopped" });
@@ -2800,7 +2800,7 @@ describe("checks AgentX proposes in the coding plan", () => {
     (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation as { payload: { readiness?: unknown[] } }).payload.readiness;
 
   it("recognizes a graph plan but does not start it when the broker capability is absent", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix retry handling", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = String(harness.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
@@ -2826,7 +2826,7 @@ describe("checks AgentX proposes in the coding plan", () => {
       pullRequest: { number, url: "https://github.com/example/demo/pull/42", state: "open" as const, headBranch: "x", baseBranch: "main",
         headCommit: "d".repeat(40), headTreeSha: "c".repeat(40), title: "t", body: "" }, comments: [], threads: [],
     }));
-    const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { githubPullRequests: github } });
+    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { githubPullRequests: github } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix retry handling", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = String(harness.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
@@ -2913,7 +2913,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("asks a coding plan, and only a coding plan, to find the repository's checks CI first and put them in the plan's checks member", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const instructions = planChecksInstructions(["repo/demo"]);
     expect(instructions).toContain(".github/workflows");
     expect(instructions).toContain("at most 8 checks");
@@ -2960,7 +2960,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("never sends a rejected plan's proposed commands to the revising planner", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, planningId, digest } = await quickPlanWaiting(harness, answerWith(rawChecks([unitTests, typecheck])));
     await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision,
       decision: "REQUEST_CHANGES", reason: "Smaller please", artifactDigest: digest });
@@ -2969,7 +2969,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("asks a task stored without a check policy for no proposal, since none would run", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };
@@ -2983,7 +2983,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("tells the planner every proposal limit, the task's own repository paths, and the project checks that always run", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown>; startingRevision: number };
@@ -3003,7 +3003,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("gives only eligible coding planners the canonical graph binding from the task's starting revision", async () => {
-    const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true } });
+    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Implement the retry update", client: "test-client", workflow: true, workflowPath: "FULL" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; startingRevision: number };
@@ -3041,7 +3041,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("omits work-breakdown guidance for an enabled planner when the pinned project has multiple repositories", async () => {
-    const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true } });
+    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Update both services", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; startingRevision: number };
@@ -3059,7 +3059,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("stores the checks a coding plan proposes, or a note when they cannot be read, keeping the proposal in the saved plan", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId } = await quickPlanWaiting(harness, answerWith(rawChecks([unitTests, typecheck])));
     const workflow = taskWorkflow(harness, taskId);
     const saved = String(harness.s3.objects.get(String(workflow.artifacts.at(-1)?.objectKey)));
@@ -3070,17 +3070,17 @@ describe("checks AgentX proposes in the coding plan", () => {
       { id: "proposed-2", label: "Typecheck", command: { cwd: "repo/demo", executable: "npx", args: ["tsc", "--noEmit"], timeoutSeconds: 120 } },
     ]);
     for (const unsafe of [{ ...unitTests, cwd: "elsewhere" }, { ...unitTests, cwd: "repo/demo/../x" }, { ...unitTests, executable: "npm test && echo" }]) {
-      const other = await createDeveloperTaskBroker();
+      const other = await createSingleAnswerPlanBroker();
       const refused = await quickPlanWaiting(other, answerWith(rawChecks([unsafe])));
       expect(taskWorkflow(other, refused.taskId).checkPolicy).toMatchObject({ proposed: [], proposalNote: "AgentX could not read the proposed checks" });
     }
-    const quiet = await createDeveloperTaskBroker();
+    const quiet = await createSingleAnswerPlanBroker();
     const none = await quickPlanWaiting(quiet, answerWith(rawChecks([], "Only a README sentence changes.")));
     expect(taskWorkflow(quiet, none.taskId).checkPolicy).toMatchObject({ proposed: [], noneReason: "Only a README sentence changes." });
   });
 
   it("runs the approved plan's proposed checks in order on a project with no checks of its own", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, digest } = await quickPlanWaiting(harness, answerWith(rawChecks([unitTests, typecheck])));
     expect(taskWorkflow(harness, taskId).checkPolicy).toMatchObject({ required: [] });
     expect((await approve(harness, taskId, digest)).status).toBe(200);
@@ -3092,7 +3092,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("maps each worker result to the project's, the proposed and the chosen optional checks in that order, and a retry reruns the same commands", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const optional = { id: "diff-check", label: "Check patch whitespace", command: { cwd: "repo/demo", executable: "git", args: ["diff", "--check"], timeoutSeconds: 30 } };
     // The proposed `npm test` repeats the project's own check, so only the typecheck is added.
     const { taskId, workspaceId, digest } = await quickPlanWaiting(harness, answerWith(rawChecks([unitTests, typecheck])), { required: [REQUIRED_CHECK], optional: [optional], selectedOptionalIds: [] });
@@ -3116,7 +3116,7 @@ describe("checks AgentX proposes in the coding plan", () => {
   });
 
   it("lets the owner drop a proposed check from a verification retry, never add one, and keeps the result mapping on what runs", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId, digest } = await quickPlanWaiting(harness, answerWith(rawChecks([unitTests, typecheck])));
     await approve(harness, taskId, digest);
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
@@ -3155,7 +3155,7 @@ describe("checks AgentX proposes in the coding plan", () => {
       class: after === "passed" ? "passing" : "regression", output, durationMs: 5, ...(exitCode === undefined ? {} : { exitCode }) });
     /** A Quick task whose approved plan proposes `proposed`, coded, and verified from the worker's `entries`. */
     async function verified(proposed: Array<typeof unitTests | typeof typecheck | typeof script | typeof node | { label: string; cwd: string; executable: string; args: string[]; proves: string[] }>, entries: unknown[]) {
-      const harness = await createDeveloperTaskBroker();
+      const harness = await createSingleAnswerPlanBroker();
       const { taskId, workspaceId, digest } = await quickPlanWaiting(harness, answerWith(rawChecks(proposed)));
       await approve(harness, taskId, digest);
       const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
@@ -3298,7 +3298,7 @@ describe("review-only verification when no check applies", () => {
   const reviewOnlyPlan = (reason: string) => ({ answer: planAnswer(planDocument(), { checks: { checks: [], none_reason: reason } }) });
 
   it("records a review-only verification, starts the reviews, and says so in the draft pull request", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only: ping @octocat, see <https://evil.example/x> and #12"), EMPTY_POLICY);
     await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: NO_CHECKS } });
     const verified = taskWorkflow(harness, taskId);
@@ -3331,7 +3331,7 @@ describe("review-only verification when no check applies", () => {
         workflowCheckCandidateRepositories: createCandidateManifest([{ repositoryId: "other", commitSha: "a".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]).repositories },
         WORKFLOW_BLOCK_REASONS.repositoriesIncomplete],
     ] as const) {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
       const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
       await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { ...result, checks: NO_CHECKS } });
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: reason });
@@ -3344,7 +3344,7 @@ describe("review-only verification when no check applies", () => {
     checks: [{ id: "agent:0", label: "npm test", source: "agent_commands", before: "passed", after, class: after === "passed" ? "passing" : "regression", output: after === "passed" ? "" : "1 failing", durationMs: 12 }] });
 
   it("blocks a review-only task when AgentX's rerun of the agent's own tests finds one that passed before and fails now", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
     await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: rerunReport("regression", "failed") } });
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.regressionFound });
@@ -3353,7 +3353,7 @@ describe("review-only verification when no check applies", () => {
   });
 
   it("records which tests regressed and tells the coder about them when the owner sends the change back", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
     const entry = (id: string, label: string, before: string, after: string) => ({ id, label, source: "agent_commands", before, after, class: before === "passed" && (after === "failed" || after === "timed_out") ? "regression" : "already_failing", output: "1 failing", durationMs: 12 });
     const report = { ...rerunReport("regression", "failed"), checks: [
@@ -3380,7 +3380,7 @@ describe("review-only verification when no check applies", () => {
 
   it("takes a review-only rerun that stopped or errored with no regression as no evidence either way: the task goes to review", async () => {
     for (const reason of ["stopped", "error"] as const) {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
       const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
       await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories,
         checks: { ...NO_CHECKS, notVerifiedReason: reason } } });
@@ -3388,7 +3388,7 @@ describe("review-only verification when no check applies", () => {
       expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "REVIEW")).toHaveLength(1);
     }
     // A task with a selected check still stops when its checks were not run.
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, implementationId } = await coding(harness, "# Plan\n\nFix retry handling.\n", { required: [REQUIRED_CHECK], optional: [], selectedOptionalIds: [] });
     await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories,
       checks: { ...NO_CHECKS, notVerifiedReason: "stopped" } } });
@@ -3397,7 +3397,7 @@ describe("review-only verification when no check applies", () => {
 
   it("lets a review-only task whose own tests passed on rerun go to review, and its pull request says only that it is review only", async () => {
     const gh = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
     const { taskId, workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
     await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: rerunReport("verified", "passed") } });
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "REVIEW", verification: { results: [], reviewOnly: true } });
@@ -3416,7 +3416,7 @@ describe("review-only verification when no check applies", () => {
 
   it("keeps the review-only line but still reports a check that fails when the pull request opens", async () => {
     const gh = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh } });
     const { workspaceId, implementationId } = await coding(harness, reviewOnlyPlan("Docs only."), EMPTY_POLICY);
     await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: NO_CHECKS } });
     await passReviews(harness, workspaceId, candidate);
@@ -3436,7 +3436,7 @@ describe("review-only verification when no check applies", () => {
 
   it("still blocks a task with a selected check, or with no stored check policy, when no check ran", async () => {
     for (const policy of [{ required: [REQUIRED_CHECK], optional: [], selectedOptionalIds: [] }, undefined]) {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
       const { taskId, workspaceId, implementationId } = await coding(harness, "# Plan\n\nFix retry handling.\n", policy);
       await harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: NO_CHECKS } });
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noChecksConfigured });
@@ -3494,7 +3494,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("asks requirements, design, coding plan and Quick plan for one agentx-plan block, ranked and scaled to the task, with checks only where they belong", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const full = await startTask(harness, "FULL");
     const prompts: string[] = [];
     for (const content of ["Goal: retries.", "Approach: backoff."]) {
@@ -3536,7 +3536,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("revises a structured document from its own JSON and the owner's words, not from Markdown", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await startTask(harness, "QUICK");
     await finishLegacyPlanning(harness, workspaceId, "# Plan\n\nFix it.\n");
     const plan = planDocument({ checks: { proposed: [{ id: "proposed-1", label: "Unit tests", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 600 } }], proves: { "proposed-1": ["1"] } } });
@@ -3559,7 +3559,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("builds the design from the approved structured requirements, keeping the claims' IDs", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await startTask(harness, "FULL");
     await finishLegacyPlanning(harness, workspaceId, "Goal: retries.");
     const requirements = planDocument();
@@ -3575,7 +3575,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("tells the planner which claim IDs were removed earlier, so a later revision cannot reuse them", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await startTask(harness, "QUICK");
     const withThree = planDocument({ claims: [...planDocument().claims, { id: "3", text: "Receipts are emailed." }] });
     await finishPlanning(harness, workspaceId, planAnswer(withThree));
@@ -3588,7 +3588,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("tells the next Full step which answers the approved requirements settled, redacted and as data", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await startTask(harness, "FULL");
     await finishLegacyPlanning(harness, workspaceId, "Goal: retries.");
     const first = planDocument().decisions[0]!;
@@ -3611,7 +3611,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("gives the coder an approved structured plan as readable text that says the owner took the recommended answers", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await startTask(harness, "QUICK");
     await finishLegacyPlanning(harness, workspaceId, "# Plan\n\nFix it.\n");
     const digest = seedStructured(harness, taskId, "plan", planDocument());
@@ -3626,7 +3626,7 @@ describe("structured plan documents in the planner's prompts", () => {
 
   it("refuses to act on a structured document that changed or cannot be read, and starts nothing", async () => {
     for (const damage of [(key: string, harness: Harness) => harness.s3.objects.set(key, `${String(harness.s3.objects.get(key))} `), (key: string, harness: Harness) => harness.s3.objects.delete(key)]) {
-      const harness = await createDeveloperTaskBroker();
+      const harness = await createSingleAnswerPlanBroker();
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishLegacyPlanning(harness, workspaceId, "# Plan\n\nFix it.\n");
       const digest = seedStructured(harness, taskId, "plan", planDocument());
@@ -3638,7 +3638,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("sends the worker the kind of document each planning step writes, and none for a Quick plan", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const payloadPhase = (workspaceId: string) => (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === activePlanning(harness, workspaceId).id)[0]?.invocation as { payload: { workflowPhase?: string } }).payload.workflowPhase;
     const full = await startTask(harness, "FULL");
     const phases = [payloadPhase(full.workspaceId)];
@@ -3652,7 +3652,7 @@ describe("structured plan documents in the planner's prompts", () => {
   });
 
   it("marks every planning run as asking for a structured plan, and no other run", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const payloadOf = (operationId: unknown) => (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation as { payload: { planFormat?: string } }).payload;
     const quick = await startTask(harness, "QUICK");
     expect(payloadOf(activePlanning(harness, quick.workspaceId).id).planFormat).toBe("structured");
@@ -3687,7 +3687,7 @@ describe("structured plan documents in the planner's prompts", () => {
 
     it("stores a readable answer as canonical JSON at once, without reading the code it cites, and queues one evidence job", async () => {
       const getFileAtCommit = vi.fn(async () => { throw new Error("GitHub is down"); });
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { ...JOB_MODE, githubPullRequests: { getFileAtCommit } } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...JOB_MODE, githubPullRequests: { getFileAtCommit } } });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       const plan = citing("repo/demo/src/charge.ts", 2, 3);
       await finishPlanning(harness, workspaceId, planAnswer(plan));
@@ -3717,12 +3717,12 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("queues no evidence job for a plan that cites no code, and none for an unreadable answer", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(planDocument({ claims: [{ id: "1", text: "A claim.", evidence: [{ kind: "quote", text: "Retries must stop.", author: "Priya" }] }], decisions: [] })));
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
       expect(evidenceRows(harness)).toEqual([]);
-      const unreadable = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const unreadable = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const second = await startTask(unreadable, "QUICK");
       await finishPlanning(unreadable, second.workspaceId, "# Plan\n\n1. Fix it.\n");
       expect(taskWorkflow(unreadable, second.taskId)).toMatchObject({ state: "BLOCKED" });
@@ -3730,7 +3730,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("still posts the plan's step notice, and neither the job row nor attaching evidence adds one", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const stream = recordStream(harness.db);
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       stream.take();
@@ -3750,7 +3750,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("records the evidence in its own item, in a content-addressed object, and leaves the workflow as it is", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const before = taskRecordOf(harness, taskId);
@@ -3778,7 +3778,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("ignores a pointer for another digest, and a pointer that cannot be read does not hide the page", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const artifact = lastArtifact(harness, taskId);
@@ -3793,7 +3793,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("gives the task page the plan's stored time and the time now, so it can say the code is still loading", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const now = Date.now() + 60_000;
@@ -3805,7 +3805,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("refuses evidence for a different digest or a plan that is gone, and writes nothing", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const before = taskWorkflow(harness, taskId);
@@ -3821,7 +3821,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("keeps the evidence when an owner's decision read the task before the attach and commits after it", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const artifact = lastArtifact(harness, taskId);
@@ -3845,7 +3845,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("keeps the winner's evidence intact when two runs hold different bundles: each writes its own object and the pointer matches its bytes", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const artifact = lastArtifact(harness, taskId);
@@ -3876,7 +3876,7 @@ describe("structured plan documents in the planner's prompts", () => {
         ["prefix", (harness, taskId) => harness.db.set({ ...pointerOf(harness, taskId, String(lastArtifact(harness, taskId).id))!, objectKey: "private/someone-else/evidence.json" })],
       ];
       for (const [reason, damage] of damages) {
-        const harness = await createDeveloperTaskBroker({ brokerExtra: { ...JOB_MODE, githubPullRequests: { getFileAtCommit: async () => "one\ntwo\nthree\nfour\n" } } });
+        const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...JOB_MODE, githubPullRequests: { getFileAtCommit: async () => "one\ntwo\nthree\nfour\n" } } });
         const { taskId, workspaceId } = await startTask(harness, "QUICK");
         await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
         const planned = lastArtifact(harness, taskId);
@@ -3901,7 +3901,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("lands a coding plan's proposed checks on the check policy", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       withChecks(harness, taskId);
       const checks = { checks: [{ label: "Unit tests", cwd: "repo/demo", executable: "npx", args: ["vitest"], proves: ["1"] }], none_reason: null };
@@ -3913,8 +3913,11 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("blocks an unreadable answer with the planner's errors kept for Retry planning, which names them in its prompt", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      // The self-check is on, as in production: the first unreadable answer is asked again by itself, the second blocks.
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...JOB_MODE, planSelfCheck: true } });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
+      await finishPlanning(harness, workspaceId, "# Plan\n\n1. Fix it.\n");
+      expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN", state: "RUNNING" });
       await finishPlanning(harness, workspaceId, "# Plan\n\n1. Fix it.\n");
       const blocked = taskWorkflow(harness, taskId);
       expect(blocked).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.planUnreadable });
@@ -3937,9 +3940,10 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("reports at most five errors, and an answer over the size limit as too long", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...JOB_MODE, planSelfCheck: true } });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       const many = planDocument({ claims: Array.from({ length: 9 }, (_, at) => ({ id: String(at + 1), text: "" })) });
+      await finishPlanning(harness, workspaceId, planAnswer(many));
       await finishPlanning(harness, workspaceId, planAnswer(many));
       expect(taskRecordOf(harness, taskId).planUnreadable!.errors).toHaveLength(5);
       await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision, instructions: "Plan again." });
@@ -3953,7 +3957,8 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("blocks a revision that brings back the number of a claim an earlier version removed", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      // Single-answer planning: the fixture plans carry no checks, so the self-check would send each one back; the unreadable two-step is pinned by the tests above.
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       const full = planDocument();
       const withoutSecond = planDocument({ claims: [full.claims[0]!] });
@@ -3968,7 +3973,7 @@ describe("structured plan documents in the planner's prompts", () => {
     });
 
     it("ignores an earlier document that fails its digest when it works out which claim numbers are retired", async () => {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: JOB_MODE });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: JOB_MODE });
       const { taskId, workspaceId } = await startTask(harness, "QUICK");
       const full = planDocument();
       await finishPlanning(harness, workspaceId, planAnswer(full));
@@ -3997,7 +4002,7 @@ describe("a structured plan reaches coders, reviewers and the pull request as Ma
   });
 
   it("retries blocked coding with the approved plan as Markdown that says the owner took the recommended answers", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const plan = planDocument();
     const { taskId, workspaceId, digest } = await workflowAtVerification(harness, plan);
     await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
@@ -4012,7 +4017,7 @@ describe("a structured plan reaches coders, reviewers and the pull request as Ma
   });
 
   it("refuses to retry on a structured plan whose bytes changed, and starts nothing", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await workflowAtVerification(harness, planDocument());
     await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
     const key = String(taskWorkflow(harness, taskId).artifacts.at(-1)!.objectKey);
@@ -4024,7 +4029,7 @@ describe("a structured plan reaches coders, reviewers and the pull request as Ma
   });
 
   it("sends a ready change back to coding with the approved structured plan as Markdown", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const plan = planDocument();
     const { taskId, workspaceId, candidate, digest, finishImplementation } = await workflowAtVerification(harness, plan);
     await finishImplementation();
@@ -4042,7 +4047,7 @@ describe("a structured plan reaches coders, reviewers and the pull request as Ma
 
   it("opens the pull request with the top level-1 claims, made inert, and nothing else of the plan", async () => {
     const gateway = pullRequestGateway("b".repeat(40));
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gateway } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gateway } });
     const { workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness, claimsPlan);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -4155,7 +4160,7 @@ describe("questions in a Slack-started task's thread", () => {
 
   /** A Slack-started Quick task whose plan waits for approval, with the service-route helpers for its thread. */
   async function planWaiting(plan = MARKDOWN, threadTs = "1695500000.000031") {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -4346,7 +4351,7 @@ describe("the real request in a plan's why", () => {
   };
   /** A Slack-started Quick task whose first plan is stored and waiting. */
   async function slackPlanWaiting(instructions = REQUEST, threadTs = "1695500000.000041") {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions, workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -4382,7 +4387,7 @@ describe("the real request in a plan's why", () => {
   });
 
   it("does the same for a task an AI tool started", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = taskRow(harness, taskId).workspaceId;
@@ -4498,7 +4503,7 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
   };
   /** A task whose code review (and maybe security review) blocked on findings. */
   async function blockedOnFindings(critic: unknown[] = [PARSER], security: unknown[] = [TOKEN], securityStatus?: "PASS" | "FINDINGS" | "FAILED", extra: Record<string, unknown> = {}) {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)), ...extra } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)), ...extra } });
     const setup = await workflowAtVerification(harness);
     await setup.finishImplementation();
     const review = operations(harness, setup.workspaceId).find((item) => item.workflowMode === "REVIEW")!;
@@ -4561,7 +4566,7 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
   describe("from Slack (Task 6)", () => {
     /** A task started from a Slack thread (as its owner's Slack identity) whose reviews blocked on a code finding and a security finding. */
     async function slackBlockedOnFindings() {
-      const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+      const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
       const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000093" };
       const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
       const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -4688,7 +4693,7 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
   });
 
   it("history says how many answers changed and comments were included", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const workspaceId = String(harness.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
@@ -4808,7 +4813,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
   /** A task whose first pull request (#42, head d, tree b) is open, and whose approved fix (tree c) just passed its checks and reviews. */
   async function fixPassed() {
     const gh = github();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gh.gateway } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gh.gateway } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
@@ -5252,7 +5257,7 @@ describe("Spec 059 ordered workflow broker review regressions", () => {
     orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() });
 
   async function approvedGraph(itemCount: number) {
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       developerExtra: { workflowDependenciesEnabled: true },
       brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } },
     });
@@ -5395,7 +5400,7 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
 
   async function install() {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY }, cloud: true } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     /** Asks for a model key as the worker of an operation. */

@@ -12,7 +12,8 @@ import { recomputeRisk, withLinearCloseLine } from "../../packages/broker/src/ro
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { feedbackFixesSection, withFeedbackFixes, withStatusLines } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, testedPlanDocument } from "../support/plan-documents.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
@@ -698,7 +699,7 @@ const DIFF = (files: string[]) => ["## demo", "", "### status", "### diff", ...f
 
 /** A task through its build: version 2 (its stored definition version set to 1.1.0, as the app will start it) or version 1. */
 async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string, instructions = "Fix the retry bug") {
-  const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
+  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions, client: "test-client", workflow: true, workflowPath: "QUICK" });
   const id = String((started.body.task as { taskId: string }).taskId);
   const record = () => harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };
@@ -840,7 +841,7 @@ describe("a pushed fix on a version 2 task", () => {
       getBranchHead: vi.fn(async () => state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
     };
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: gateway } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: gateway } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = () => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };

@@ -6,14 +6,14 @@ import { TEST_ORG } from "../support/orgs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan, type WorkflowSnapshot } from "@agentx/contracts";
-import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { URL_BASE, signedInClient } from "../support/mcp-broker-client.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 
-type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
+type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 
 const workspaceOf = (harness: Harness, taskId: string) => (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
 const activeOf = (harness: Harness, workspaceId: string) => String((harness.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
@@ -21,7 +21,7 @@ const say = (text: string) => ({ type: "progress", payload: { type: "message_end
 
 describe("hand off a task from an AI tool and move on (US1)", () => {
   it("lists projects, starts, reads, continues and opens a PR, with every action audited", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool, expectNoTokenLeaked } = await signedInClient(harness, MAYA);
 
     expect((await tool("agentx_list_projects")).value).toMatchObject({ projects: [{ name: "payments", tasks_enabled: true }] });
@@ -55,7 +55,7 @@ describe("hand off a task from an AI tool and move on (US1)", () => {
   });
 
   it("tells another developer the task was not found (US1 scenario 6)", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const maya = await signedInClient(harness, MAYA);
     const taskId = String((await maya.tool("agentx_start_task", { project: "payments", instructions: "x" })).value.task_id);
     const omar = await signedInClient(harness, OMAR);
@@ -64,7 +64,7 @@ describe("hand off a task from an AI tool and move on (US1)", () => {
   });
 
   it("gives PROJECT_NOT_FOUND and PROJECT_ACCESS_DENIED their own codes (US1 scenario 7)", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const omar = await signedInClient(harness, OMAR);
     expect((await omar.tool("agentx_start_task", { project: "nope", instructions: "x" })).error).toMatchObject({ code: "PROJECT_NOT_FOUND" });
     expect((await omar.tool("agentx_start_task", { project: "payments", instructions: "x" })).error).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: "you don't have access to `payments`: ask an admin" });
@@ -72,7 +72,7 @@ describe("hand off a task from an AI tool and move on (US1)", () => {
   });
 
   it("answers SIGN_IN_REQUIRED with the exact command when this computer has no sign-in", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, undefined);
     expect(await tool("agentx_list_projects")).toMatchObject({ isError: true, error: { code: "SIGN_IN_REQUIRED", next_step: `run npx @preplabsai/rovara-code login ${URL_BASE}` } });
     // The server keeps answering after a sign-in error: it does not crash.
@@ -82,7 +82,7 @@ describe("hand off a task from an AI tool and move on (US1)", () => {
 
 describe("a saved plan that fails its digest check", () => {
   it("is shown blocked by GET task and agentx_get_task, in plain words, and is never stored blocked", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = (started.body.task as { taskId: string }).taskId;
@@ -110,7 +110,7 @@ describe("a saved plan that fails its digest check", () => {
 describe("the document an AI tool is asked to approve", () => {
   type Approval = { workflow: { approval_document: { type: string; sha256: string; version: number; content?: string }; plan: { content?: string } } };
   const waitingTask = async (finish: (harness: Harness, workspaceId: string, planning: string) => Promise<unknown>) => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = (started.body.task as { taskId: string }).taskId;
@@ -151,7 +151,7 @@ describe("the document an AI tool is asked to approve", () => {
 
 describe("busy answers name the right next step (final review M1)", () => {
   it("tells the AI tool to try the start again with the same request_id when the start's transaction fails", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const original = harness.db.send;
     let failed = 0;
@@ -177,7 +177,7 @@ describe("busy answers name the right next step (final review M1)", () => {
   });
 
   it("tells the AI tool to try the close again, not to wait or cancel, when a setup-failed close fails", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const taskId = String((await tool("agentx_start_task", { project: "payments", instructions: "x" })).value.task_id);
     const workspaceId = workspaceOf(harness, taskId);
@@ -197,7 +197,7 @@ describe("busy answers name the right next step (final review M1)", () => {
 
 describe("wait for a small task (US2)", () => {
   it("returns the finished task when it ends inside the wait", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     let done = false;
     const { tool } = await signedInClient(harness, MAYA, async () => {
       // The worker prepares the workspace and finishes the task while the tool waits.
@@ -212,7 +212,7 @@ describe("wait for a small task (US2)", () => {
   });
 
   it("returns timed_out, not an error, when the task outlives the wait", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const taskId = String((await tool("agentx_start_task", { project: "payments", instructions: "long" })).value.task_id);
     const waited = await tool("agentx_wait_for_task", { task_id: taskId, wait_seconds: 5 });
@@ -227,7 +227,7 @@ describe("what an AI tool reads of a Rovara Code v2 plan (staging 0.4.10, bug D)
   ] });
   const v2PlanAtReview = async () => {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
@@ -265,7 +265,7 @@ describe("what an AI tool reads of a Rovara Code v2 plan (staging 0.4.10, bug D)
   });
 
   it("reads nothing about a plan check or an estimate on a task that has neither", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const { tool } = await signedInClient(harness, MAYA);
     const started = await tool("agentx_start_task", { project: "payments", instructions: "Fix it" });
     expect(started.value).not.toHaveProperty("plan_check");

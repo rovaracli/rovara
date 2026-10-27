@@ -36,7 +36,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
   const ALL: Record<BrokerSettingKey, string> = {
     memberWorkspaceLimit: "3", organizationWorkspaceLimit: "20",
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
-    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false",
+    slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false",
   };
 
   it("puts every setting back under the variable the broker reads, to the text it was given", () => {
@@ -123,6 +123,8 @@ describe("the control plane wires each setting and name to what it came from", (
       oidcSince: { Ref: "DeveloperOidcSince" },
       mcpConfirmElicitation: { Ref: "McpConfirmElicitation" },
       rovaraCodeV2: { Ref: "RovaraCodeV2Enabled" },
+      planSelfCheck: { Ref: "PlanSelfCheckEnabled" },
+      autofix: { Ref: "AutofixEnabled" },
     });
     for (const spec of Object.values(BROKER_SETTINGS)) expect(cloud, spec.variable).not.toHaveProperty(spec.variable);
   });

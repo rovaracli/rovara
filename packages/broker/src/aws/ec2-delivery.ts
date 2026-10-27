@@ -8,6 +8,8 @@ import {
   E2E_AGENT_UNAVAILABLE_REASONS,
   E2E_MODEL_FREE_LIMITS_FEATURE,
   E2E_REPLAY_CHECKS_FEATURE,
+  GROUNDING_CHECKS_FEATURE,
+  PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
   WORKER_INVOKE_AUTHORIZATION_SCHEME,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
@@ -22,7 +24,7 @@ import {
   type Ec2RuntimeBinding,
   type WorkerInvocation,
 } from "@agentx/contracts";
-import { asksForApplicationPlan, asksForCodeAnchors, withoutApplicationPlanText, withoutCodeAnchorText } from "./broker-shared.js";
+import { asksForApplicationPlan, asksForCodeAnchors, asksForPlanQuality, withoutApplicationPlanText, withoutCodeAnchorText, withoutPlanQualityText } from "./broker-shared.js";
 import type { Ec2OutboxRecord } from "./lambda.js";
 import { serialWorkerCanResume } from "../rovara-code/parallel-parts.js";
 import type { SessionManager } from "./sessions.js";
@@ -63,6 +65,11 @@ export interface Ec2DeliveryDependencies {
    * A failure fails the attempt (the run must not go out with the record still saying 2).
    */
   applicationPlanNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
+  /**
+   * Called, before the invocation is posted, when a planning run's plan quality guidance was dropped for a worker that does not list the plan-quality feature:
+   * the operation record then stops saying the planner was asked for the new plan members, so the broker never sends that planner a revision that names them.
+   */
+  planQualityNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
   /**
    * The schemaVersion of the admission a CHECKS invocation's reference names, read from the stored object and held to the reference's content address; undefined when it
    * cannot be read. With it, the dispatcher does not trust the reference's `kind` alone: a reference whose kind disagrees with its admission is refused before delivery.
@@ -171,6 +178,15 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
         throw agentXError("CONFIG_INVALID", "the application plan version was dropped for this worker but no applicationPlanNotNegotiated recorder is configured");
       }
       await dependencies.applicationPlanNotNegotiated(record);
+    }
+    if (invocation.kind === "task" && asksForPlanQuality(invocation.payload.prompt)
+      && !(sent.kind === "task" && asksForPlanQuality(sent.payload.prompt))) {
+      // Without the recorder the operation would keep saying the planner was asked for the new plan members while this worker was sent a prompt without them, and a revision prompt
+      // would then name members its strict parser rejects: a missing recorder is a wiring error, and the run does not go out (the same as the application plan above).
+      if (dependencies.planQualityNotNegotiated === undefined) {
+        throw agentXError("CONFIG_INVALID", "the plan quality guidance was dropped for this worker but no planQualityNotNegotiated recorder is configured");
+      }
+      await dependencies.planQualityNotNegotiated(record);
     }
     if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
     const payload = workerInvokeTokenPayload({
@@ -297,6 +313,7 @@ async function forWorkerFeatures(
   const carriesWorkflowBase = invocation.kind === "task" && invocation.payload.workflowBase !== undefined;
   const carriesStructuredPlans = invocation.kind === "task" && (invocation.payload.workflowPhase !== undefined || invocation.payload.planFormat !== undefined);
   const carriesCodeAnchors = invocation.kind === "task" && asksForCodeAnchors(invocation.payload.prompt);
+  const carriesPlanQuality = invocation.kind === "task" && asksForPlanQuality(invocation.payload.prompt);
   const carriesApplicationPlans = invocation.kind === "task" && (invocation.payload.workflowE2EPlanVersion !== undefined || asksForApplicationPlan(invocation.payload.prompt)
     || invocation.payload.workflowReviewPlan?.e2eIntent?.schemaVersion === 2);
   const carriesApplicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application";
@@ -319,7 +336,7 @@ async function forWorkerFeatures(
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -405,6 +422,11 @@ async function forWorkerFeatures(
   // candidate's, and its refusal of the signed purpose would come only after compute was spent, so it is refused here with the reason.
   if (carriesApplicationAdmission && invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.purpose === "baseline" && !features.includes("task.workflowE2EBaselineChecks")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "the baseline round on the unchanged code needs a worker that runs baseline rounds (it must list task.workflowE2EBaselineChecks); this worker predates it or has no executor image on its host, so no baseline round was sent to it");
+  }
+  // T7b: a grounding round (the proposed plan's must-not-change checks on the unchanged code) is a kind of its own too. A worker without its feature would not know the purpose, so it is
+  // refused here before compute is spent; the plan then reads "not checked against the current app".
+  if (carriesApplicationAdmission && invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.purpose === "grounding" && !features.includes(GROUNDING_CHECKS_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the plan grounding round needs a worker that runs grounding rounds (it must list task.workflowE2EGroundingChecks.v1); this worker predates it, so no grounding round was sent to it");
   }
   // M1.4 Task 4.6b: an audit replay is an application round of a kind of its own, run with no model by a worker that lists its feature. An older worker could not parse the purpose, and one
   // that runs application rounds only would run it as a candidate's; it is never handed one, and nothing is spent on a worker that cannot run it.
@@ -581,10 +603,20 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
+  const qualified = withoutPlanQuality(planned, features);
+  if (qualified !== planned) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.plan_quality_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
   // M1.3 Task 3.7b: the request to export the unchanged code is only for a worker that can; an older one runs the coding without it (a baseline never stops the coding), and the
   // baseline then says it could not be checked.
-  const serial = withoutParallelParts(planned, features);
-  if (serial !== planned) {
+  const serial = withoutParallelParts(qualified, features);
+  if (serial !== qualified) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.parallel_parts_omitted",
@@ -593,8 +625,14 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const sent = withoutBaselineSource(serial, features);
-  if (sent !== serial) {
+  const baselineTrimmed = withoutBaselineSource(serial, features);
+  // T7b: a planning run's request to export the unchanged code (to ground the plan) goes only to a worker that can, and only while the run still negotiates the application plan the
+  // request depends on (a worker that does not parse that plan has it removed above, and the schema refuses the request without it).
+  const sent = withoutGroundingSource(baselineTrimmed, features);
+  if (sent !== baselineTrimmed) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.grounding_source_omitted", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  if (baselineTrimmed !== serial) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.baseline_source_omitted",
@@ -628,10 +666,25 @@ function withoutBaselineSource(invocation: WorkerInvocation, features: readonly 
   return { ...invocation, payload };
 }
 
+/** A planning run without the request to export the unchanged code for grounding, for a worker that does not list the grounding feature or whose run no longer negotiates the application plan. */
+function withoutGroundingSource(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowE2EGroundingSource === undefined) return invocation;
+  if (features.includes(GROUNDING_CHECKS_FEATURE) && invocation.payload.workflowE2EPlanVersion === 2) return invocation;
+  const { workflowE2EGroundingSource: _request, ...payload } = invocation.payload;
+  void _request;
+  return { ...invocation, payload };
+}
+
 /** A planning prompt that does not ask for anchor lines, for a worker that does not parse them: it would reject a plan that carried one. */
 function withoutCodeAnchors(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
   if (invocation.kind !== "task" || !asksForCodeAnchors(invocation.payload.prompt) || features.includes("task.codeAnchors")) return invocation;
   return { ...invocation, payload: { ...invocation.payload, prompt: withoutCodeAnchorText(invocation.payload.prompt) } };
+}
+
+/** A planning prompt without the plan quality guidance, for a worker that does not list the plan-quality feature: it would reject a plan that carried the members the guidance names. */
+function withoutPlanQuality(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || !asksForPlanQuality(invocation.payload.prompt) || features.includes(PLAN_DRY_RUN_FEATURE)) return invocation;
+  return { ...invocation, payload: { ...invocation.payload, prompt: withoutPlanQualityText(invocation.payload.prompt) } };
 }
 
 /**

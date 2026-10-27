@@ -508,19 +508,42 @@ export const PlanOptionIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,30}$/);
 
 export const WorkflowAnswerSchema = z.object({ decisionId: PlanDecisionIdSchema, optionId: PlanOptionIdSchema }).strict();
 
+/**
+ * The broker's own actor for automatic fixing (AUTOFIX): a fixed identity that is nobody's account. Decisions it records carry `actorRole: "AGENTX"`; such a decision can only be
+ * REQUEST_CHANGES with source AUTO_FIX or AUTO_RETRY (see `WorkflowDecisionSchema`), so it can never be an approval, a skip, a rejection or a publication.
+ * (Web-safe file: `sha256Hex` gives the same digest as node:crypto's sha256 of the same UTF-8 text.)
+ */
+export const WORKFLOW_AGENTX_ACTOR_ID = sha256Hex("agentx:automatic-fix:v1");
+/** The stages an automatic action can be recorded for (the same stages the owner's Retry and Send back buttons belong to). */
+export const WORKFLOW_AUTO_STAGES = ["PLAN", "IMPLEMENT", "VERIFY", "REVIEW"] as const;
+/** At most this many automatic send backs to coding per approved plan version (decisions since the plan's last APPROVE). */
+export const WORKFLOW_AUTO_SEND_BACK_LIMIT = 2;
+/** At most this many automatic retries of one stage for one candidate. */
+export const WORKFLOW_AUTO_RETRY_LIMIT = 1;
+/** At most this many automatic actions (send backs and retries together) in one task, however many plan versions it has. */
+export const WORKFLOW_AUTO_ACTION_LIMIT = 6;
+/** What an automatic decision was for: the stage it acted on and, when there was one, the candidate that stage had produced. */
+export const WorkflowAutoActionSchema = z.object({ stage: z.enum(WORKFLOW_AUTO_STAGES), candidateDigest: DigestSchema.optional() }).strict();
+
 export const WorkflowDecisionSchema = z.object({
   requestId: z.string().uuid(),
   workflowRevision: z.number().int().positive(),
   decision: z.enum(["APPROVE", "REQUEST_CHANGES", "REJECT", "SKIP"]),
   actorId: ActorIdSchema,
-  actorRole: z.enum(["TASK_OWNER", "PROJECT_ADMIN"]),
+  /** `AGENTX` is the broker acting by itself (automatic fixing); only with source AUTO_FIX or AUTO_RETRY, and never for an approval. */
+  actorRole: z.enum(["TASK_OWNER", "PROJECT_ADMIN", "AGENTX"]),
   reason: z.string().trim().min(1).max(500),
   artifactDigest: DigestSchema.optional(),
   /** The exact dependency graph covered by this whole-plan approval. */
   workBreakdownDigest: DigestSchema.optional(),
   selectedOptionalCheckIds: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(20).optional(),
-  /** Where the decision was made: an approval gate (the default), the owner sending blocked work back to coding, or the owner resolving review findings. */
-  source: z.enum(["GATE", "SEND_BACK", "FINDINGS"]).optional(),
+  /**
+   * Where the decision was made: an approval gate (the default), the owner sending blocked work back to coding, or the owner resolving review findings; or the broker by itself
+   * sending blocked work back to coding (AUTO_FIX) or retrying a stage (AUTO_RETRY).
+   */
+  source: z.enum(["GATE", "SEND_BACK", "FINDINGS", "AUTO_FIX", "AUTO_RETRY"]).optional(),
+  /** Automatic decisions only: the stage (and candidate) the automatic action was for. The automatic limits are counted from these. */
+  auto: WorkflowAutoActionSchema.optional(),
   /** Plan decisions: the owner's answers that differ from AgentX's recommended ones, in the plan's decision order. */
   answerOverrides: z.array(WorkflowAnswerSchema).min(1).max(WORKFLOW_DECISION_ANSWERS_MAX).optional(),
   /** How many page comments the decision sent along (their IDs are in the decision's detail item). */
@@ -531,6 +554,31 @@ export const WorkflowDecisionSchema = z.object({
   closedAs: z.literal("ANSWERED").optional(),
   at: z.string().datetime(),
 }).strict();
+
+/**
+ * A decision as the workflow stores it: the shape above plus the rules for the AGENTX actor. A separate schema because a refined object cannot be `.omit()`ted or `.extend()`ed,
+ * and clients and tests derive older shapes from the plain one.
+ */
+export const WorkflowDecisionRecordSchema = WorkflowDecisionSchema.superRefine((decision, context) => {
+  const automatic = decision.source === "AUTO_FIX" || decision.source === "AUTO_RETRY";
+  if (automatic !== (decision.actorRole === "AGENTX")) {
+    context.addIssue({ code: "custom", path: ["actorRole"], message: "the AGENTX actor makes automatic decisions, and only it does" });
+  }
+  if (decision.actorRole === "AGENTX" && decision.actorId !== WORKFLOW_AGENTX_ACTOR_ID) {
+    context.addIssue({ code: "custom", path: ["actorId"], message: "an automatic decision is made by the AgentX actor" });
+  }
+  if (automatic) {
+    // An automatic decision can only ask for a change: it carries no approval, no document, no choice of checks and no owner answers.
+    if (decision.decision !== "REQUEST_CHANGES") context.addIssue({ code: "custom", path: ["decision"], message: "an automatic decision can only be REQUEST_CHANGES" });
+    if (decision.auto === undefined) context.addIssue({ code: "custom", path: ["auto"], message: "an automatic decision names its stage" });
+    if (decision.artifactDigest !== undefined || decision.workBreakdownDigest !== undefined || decision.selectedOptionalCheckIds !== undefined
+      || decision.answerOverrides !== undefined || decision.commentsIncluded !== undefined || decision.via !== undefined) {
+      context.addIssue({ code: "custom", message: "an automatic decision carries nothing an approval carries" });
+    }
+  } else if (decision.auto !== undefined) {
+    context.addIssue({ code: "custom", path: ["auto"], message: "only an automatic decision names an automatic stage" });
+  }
+});
 
 export const WorkflowCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
@@ -707,7 +755,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   artifacts: z.array(WorkflowArtifactSchema).max(100),
-  decisions: z.array(WorkflowDecisionSchema).max(100),
+  decisions: z.array(WorkflowDecisionRecordSchema).max(100),
   checkPolicy: WorkflowCheckPolicySchema.optional(),
   /** Frozen E2E references. Results remain separately qualified by the broker. */
   e2e: E2EWorkflowProgressSchema.optional(),

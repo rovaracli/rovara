@@ -32,7 +32,7 @@ export interface StoppedRunOperation {
   createdAt: string;
   workflowMode?: RunMode | undefined;
   workflowDependencies?: unknown;
-  workflowE2EAdmission?: { purpose?: "baseline" | "replay" | undefined } | undefined;
+  workflowE2EAdmission?: { purpose?: "baseline" | "replay" | "grounding" | undefined } | undefined;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
 }
 

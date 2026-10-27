@@ -1198,6 +1198,9 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("workflowDependencies", signInParameters.workflowDependenciesEnabled.valueAsString);
       // Rovara Code v2, per environment: a packed setting, not a variable (ENV-ROOM). Off unless the operator sets the parameter.
       brokerSettings.add("rovaraCodeV2", signInParameters.rovaraCodeV2Enabled.valueAsString);
+      // Mainline #408: the plan self-check and automatic fixing switches, packed settings (never Lambda variables of their own). On unless the operator sets the parameter to false.
+      brokerSettings.add("planSelfCheck", signInParameters.planSelfCheckEnabled.valueAsString);
+      brokerSettings.add("autofix", signInParameters.autofixEnabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
