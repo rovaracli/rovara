@@ -4,7 +4,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
  // Lane C2: owned audit filter styles.
- "screens/admin/audit/audit.css"]) {
+ "screens/admin/audit/audit.css",
+ // Lane C12: owned Connections guidance styles.
+ "screens/admin/connections/connections.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
