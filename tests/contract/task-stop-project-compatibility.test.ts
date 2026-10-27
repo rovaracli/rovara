@@ -151,6 +151,7 @@ it("names the project and org owner/admin remedy when malformed stop settings bl
   expect(error?.code).toBe("CONFIG_INVALID");
   expect(error?.message?.includes("project web")).toBe(true);
   expect(error?.message?.includes("Ask an org owner or admin")).toBe(true);
+  expect(error?.message).toBe("CONFIG_INVALID: The per-task stop for project web is invalid. Ask an org owner or admin to fix it before starting work.");
   expect(f.db.transactions().length).toBe(0);
 });
 
