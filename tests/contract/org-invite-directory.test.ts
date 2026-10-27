@@ -86,17 +86,17 @@ it("keeps all-bad evaluated pages resumable and treats canonical storage failure
 });
 
 it("warns with safe scoped identifiers and fixed reason classes for unusable directory entries", async () => {
- const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
  try { const f = fixture(), created = await f.invite(A, "private.person@private.test"), key = orgInviteKey(hashOf(created.token)), record = f.db.get(key)!;f.db.set({ ...record, orgId: B });const result = await f.request();expect(result.status).toBe(200);expect(result.body).toMatchObject({ unavailableCount: 1 });expect(warn).toHaveBeenCalledTimes(1);const raw: unknown = warn.mock.calls[0]?.[0];expect(typeof raw).toBe("string");const entry = JSON.parse(String(raw)) as Record<string, unknown>;expect(String(raw).includes(created.token) || String(raw).includes(hashOf(created.token)) || String(raw).includes("private.person") || String(raw).includes(B)).toBe(false);expect(entry).toEqual({ component: "broker", event: "org.invite_directory_entry_unavailable", level: "warn", orgId: A, inviteId: record.inviteId, reason: "canonical_org_mismatch" }); }finally { warn.mockRestore(); }
 });
 
 it("classifies unusable entries without logging unparseable identifiers and survives warning sink failure", async () => {
- const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
  try { for (const reason of ["reference_invalid", "reference_org_mismatch", "reference_key_mismatch", "canonical_missing", "canonical_invalid", "canonical_reference_mismatch"] as const) { const f = fixture(), created = await f.invite(), key = orgInviteKey(hashOf(created.token)), record = f.db.get(key)!, ref = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!;if (reason === "reference_invalid") { f.db.delete({ pk: String(ref.pk), sk: String(ref.sk) });f.db.set({ ...ref, sk: "INVITE_DIRECTORY#unparseable-private-identifier", inviteId: "unparseable-private-identifier" }); }else if (reason === "reference_org_mismatch") f.db.set({ ...ref, orgId: B });else if (reason === "reference_key_mismatch") f.db.set({ ...ref, inviteId: "22222222-2222-4222-8222-222222222222" });else if (reason === "canonical_missing") f.db.delete(key);else if (reason === "canonical_invalid") f.db.set({ ...record, role: "future-role" });else f.db.set({ ...record, inviteId: "22222222-2222-4222-8222-222222222222" });warn.mockClear();expect((await f.request()).status).toBe(200);expect(warn.mock.calls.length).toBe(1);const entry = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;expect(entry.reason).toBe(reason);expect(entry.orgId).toBe(A);if (reason === "reference_invalid") expect(Object.hasOwn(entry, "inviteId")).toBe(false);expect(JSON.stringify(entry).includes("unparseable-private-identifier") || JSON.stringify(entry).includes(created.token) || JSON.stringify(entry).includes(hashOf(created.token))).toBe(false); }
  const f = fixture(), created = await f.invite(), key = orgInviteKey(hashOf(created.token));f.db.delete(key);warn.mockImplementation(() => { throw new Error("warning sink unavailable"); });expect((await f.request()).body).toMatchObject({ unavailableCount: 1 }); }finally { warn.mockRestore(); }
 });
 
 it("identifies a corrupt reference by its scoped public key UUID rather than an invalid ID attribute", async () => {
- const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+ const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
  try { const f = fixture();await f.invite();const ref = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!;f.db.set({ ...ref, inviteId: "private-corrupt-value" });expect((await f.request()).status).toBe(200);const entry = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;expect(entry.inviteId).toBe(ref.inviteId);expect(JSON.stringify(entry).includes("private-corrupt-value")).toBe(false); }finally { warn.mockRestore(); }
 });

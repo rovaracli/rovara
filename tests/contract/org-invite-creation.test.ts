@@ -49,3 +49,16 @@ it("delivers a configured creation audit after its atomic commit", async () => {
 it("refuses creation when its audit event cannot validate rather than writing without a valid audit", async () => {
  const f = fixture(), invalidActor = "x".repeat(101);f.db.set({ ...orgMemberKey(A, invalidActor), orgId: A, developerId: invalidActor, role: "owner" });f.db.set({ ...developerOrgKey(invalidActor), orgId: A, role: "owner" });const result = await f.store.createInvite({ orgId: A, createdBy: invalidActor, role: "member" }).then(() => "unexpected", error => error instanceof AgentXError ? error.code : "unknown");expect(result).toBe("AUDIT_UNAVAILABLE");expect(f.invitations()).toBe(0);expect(f.db.commandNames().includes("TransactWriteCommand")).toBe(false);expect(f.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(0);
 });
+
+it("reports only an audit-Put condition collision as unavailable rather than forbidden", async () => {
+ const f = fixture(), send = f.db.send.bind(f.db);let seeded = false;
+ f.db.send = async command => {
+  if (command.constructor.name === "TransactWriteCommand" && !seeded) {
+   const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: Record<string, unknown> } }> }).TransactItems;
+   const pending = items?.map(item => item.Put?.Item).find(item => typeof item?.pk === "string" && item.pk.startsWith("AUDIT_PENDING#"));
+   if (pending !== undefined) { seeded = true;f.db.set({ ...pending, fixtureCollision: true }); }
+  }
+  return send(command);
+ };
+ const result = await f.request();expect(seeded).toBe(true);expect(result.status).toBe(503);expect(result.code).toBe("RUNTIME_UNAVAILABLE");expect(f.invitations()).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY" || row.entityType === "ORG_INVITE_REQUEST").length).toBe(0);expect(f.db.find(row => row.fixtureCollision === true).length).toBe(1);
+});
