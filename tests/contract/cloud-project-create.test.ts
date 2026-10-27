@@ -156,6 +156,29 @@ describe("POST /v1/app/projects", () => {
     expect(await h.listed(MAYA)).toEqual([{ name: "payments-api", myRole: "maintainer", description: "Payments, as a service." }]);
   });
 
+  it("keeps every command of testCommands and setupCommands, in order, and a replay of the same list is the same request", async () => {
+    const h = await cloudInstall();
+    const body = { requestId: REQUEST, repository: "acme/api", name: "api", setupCommands: ["pip install -r requirements-dev.txt", "npm ci"], testCommands: ["python3 -m ruff check .", "python3 -m pytest"] };
+    const created = await h.create(MAYA, body);
+    expect(created.status).toBe(201);
+    expect((created.body.project as { definition: Record<string, unknown> }).definition).toMatchObject({
+      setup: [{ executable: "pip", args: ["install", "-r", "requirements-dev.txt"] }, { executable: "npm", args: ["ci"] }],
+      readiness: [{ executable: "python3", args: ["-m", "ruff", "check", "."] }, { executable: "python3", args: ["-m", "pytest"] }],
+    });
+    const again = await h.create(MAYA, body);
+    expect(again.status).toBe(200);
+    expect(again.body.duplicate).toBe(true);
+  });
+
+  it("refuses a list together with the single command it would repeat, and a bad command in a list names its place", async () => {
+    const h = await cloudInstall();
+    expect(await h.create(MAYA, { requestId: REQUEST, repository: "acme/web", testCommand: "npm test", testCommands: ["npm test", "npm run lint"] })).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+    const bad = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web", testCommands: ["npm test", "npm test \"x"] });
+    expect(bad).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+    expect(String((bad.body.error as { message: string }).message)).toContain("testCommands.1");
+    expect(h.written()).toEqual([]);
+  });
+
   it("refuses a member with 403 and writes and reads nothing", async () => {
     const h = await cloudInstall({ roles: { maya: "member" } });
     const refused = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" });

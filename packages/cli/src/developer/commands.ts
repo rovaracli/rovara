@@ -223,7 +223,7 @@ export function linkText(result: { provider: "cloud" | "github"; authorizeUrl: s
 export async function createDeveloperProject(
   deps: DeveloperSessionDeps,
   env: string | undefined,
-  input: { requestId: string; repository: string; name?: string; description?: string; setupCommand?: string; testCommand?: string },
+  input: { requestId: string; repository: string; name?: string; description?: string; setupCommands?: string[]; testCommands?: string[] },
 ): Promise<{ env: string; url: string; created: DeveloperCreateProjectResponse }> {
   const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/projects", DeveloperCreateProjectResponseSchema, {
     method: "POST",
@@ -232,12 +232,21 @@ export async function createDeveloperProject(
       repository: input.repository,
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.description === undefined ? {} : { description: input.description }),
-      ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
-      ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+      ...commandFields("setupCommand", input.setupCommands),
+      ...commandFields("testCommand", input.testCommands),
     },
     explain: true,
   });
   return { env: resolved, url, created: body };
+}
+
+/**
+ * A project's commands as the create route reads them: one command as the single field it has always been (so a control plane from before lists reads it), several as the whole
+ * list in the order they were given.
+ */
+function commandFields(single: "setupCommand" | "testCommand", commands: string[] | undefined): Record<string, string | string[]> {
+  if (commands === undefined || commands.length === 0) return {};
+  return commands.length === 1 ? { [single]: commands[0]! } : { [`${single}s`]: commands };
 }
 
 /** What `agentx project create` prints, with the next step. */

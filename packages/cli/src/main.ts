@@ -1942,15 +1942,16 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("<project>", "the project")
     .argument("<hook-id>", "the hook's ID, from the list")
     .action(async (project: string, hookId: string, _options: unknown, command: Command) => printResult(command, await hooksDelete(developerSession(), developerEnv(command), project, hookId)));
+  const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
     .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
     .option("--description <text>", "what the project is, up to 280 characters")
-    .option("--setup-command <command>", "the setup command, or \"\" for none")
-    .option("--test-command <command>", "the test command, or \"\" for none")
-    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+    .option("--setup-command <command>", "a setup command, or \"\" for none; give it again for each one, in order", collect, [] as string[])
+    .option("--test-command <command>", "a test command, or \"\" for none; give it again for each one, in order", collect, [] as string[])
+    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand: string[]; testCommand: string[] }, command: Command) => {
       const globals = globalOptions(command);
       if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
       const result = await createDeveloperProject(developerSession(), developerEnv(command), {
@@ -1958,8 +1959,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         repository: options.repository,
         ...(options.name === undefined ? {} : { name: options.name }),
         ...(options.description === undefined ? {} : { description: options.description }),
-        ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
-        ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
+        ...(options.setupCommand.length === 0 ? {} : { setupCommands: options.setupCommand }),
+        ...(options.testCommand.length === 0 ? {} : { testCommands: options.testCommand }),
       });
       services.stdout.write(globals.json
         ? formatSuccess({ env: result.env, url: result.url, duplicate: result.created.duplicate, project: result.created.project.definition }, true)
@@ -2049,7 +2050,6 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, removed: result.removed }, true) : projectRemoveMemberText(result));
     });
-  const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand
     .command("settings")
     .description("change a project's settings, on Rovara Cloud (a maintainer of the project); only the settings you give change")

@@ -3443,8 +3443,9 @@ function projectCreateBodyHash(input: CreateProjectInput): string {
     repository: `${input.owner}/${input.repositoryName}`.toLowerCase(),
     ...(input.name === undefined ? {} : { name: input.name }),
     ...(input.description === undefined ? {} : { description: input.description }),
-    ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
-    ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+    // One command is hashed as the single field it always was, so a retry of a request made before lists existed is still the same request.
+    ...(input.setupCommands === undefined ? {} : input.setupCommands.length === 1 ? { setupCommand: input.setupCommands[0] } : { setupCommands: input.setupCommands }),
+    ...(input.testCommands === undefined ? {} : input.testCommands.length === 1 ? { testCommand: input.testCommands[0] } : { testCommands: input.testCommands }),
   }), "utf8").digest("hex");
 }
 
