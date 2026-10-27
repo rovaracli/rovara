@@ -7,7 +7,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", who = "a".repeat(64);
-const policy = { schemaVersion: 1, stopMicrousd: 20_000_000 };
+const policy = { schemaVersion: 1, stopMicrousd: 20_000_000 } as const;
 function fixture() {
   const db = new FakeDynamoDb();
   const capture = capturingAuditDeps({ db });
@@ -56,7 +56,7 @@ for (const [name, value] of [["changed", { schemaVersion: 1, stopMicrousd: 0 }],
     const input = { ...oldClient(), taskStopPolicy: value } as unknown as ProjectAiSettings;
     const error = await refused(writeProjectAi(f.deps, A, "web", input, who, { expectedRevision: 1 }));
     expect(error?.code).toBe("CONFIG_INVALID");
-    expect(error?.message?.startsWith("taskStopPolicy:")).toBe(true);
+    expect(error?.message?.startsWith("CONFIG_INVALID: taskStopPolicy:")).toBe(true);
     expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
     expect(f.db.transactions().length).toBe(0);
     expect(f.capture.recorded().length).toBe(0);

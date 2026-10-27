@@ -160,3 +160,6 @@ export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCo
 
 // Lane A G1: narrow existing-agent limit read, no start authority.
 export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-agent.js";
+
+// Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
+export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy } from "./task-stop-project.js";

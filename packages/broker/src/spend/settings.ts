@@ -6,6 +6,8 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PLANNING_LIMIT_USD,
   ProjectAiSettingsSchema,
+  TaskStopProjectPolicySchema,
+  sameJsonContent,
   SpendPolicySchema,
   TRIAL_LIMITS_R49,
   agentKey,
@@ -70,8 +72,10 @@ const revisionOf = (item: Document): number | undefined => (typeof item["revisio
 export async function readProjectAiWithRevision(deps: SpendSettingsDependencies, orgId: OrgId, project: string): Promise<StoredProjectAi> {
   const item = await getItem(deps, projectAiKey(orgId, project));
   if (item === undefined) return { settings: defaultProjectAiSettings(), revision: 0 };
-  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd } = item;
+  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd, taskStopPolicy } = item;
+  if (Object.hasOwn(item, "taskStopPolicy") && taskStopPolicy === undefined) throw unreadable(`${project}'s AI settings`);
   const parsed = ProjectAiSettingsSchema.safeParse({
+    ...(taskStopPolicy === undefined ? {} : { taskStopPolicy }),
     projectPays, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(sourceOrder === undefined ? {} : { sourceOrder }), ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }),
     ...(memberAcceptRunLimitUpToUsd === undefined ? {} : { memberAcceptRunLimitUpToUsd }),
   });
@@ -121,19 +125,34 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** The settings the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: ProjectAiSettings } = {},
+  options: { expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings } = {},
 ): Promise<StoredProjectAi> {
-  const expected = options.expectedRevision ?? (await readProjectAiWithRevision(deps, orgId, project)).revision;
+  // A supplied audit "before" is not authority to discard newer money intent.
+  const current = await readProjectAiWithRevision(deps, orgId, project);
+  const expected = options.expectedRevision ?? current.revision;
+  if (!Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER) {
+    throw agentXError("CONFIG_INVALID", "expectedRevision: cannot advance this settings revision");
+  }
+  if (current.revision !== expected) throw changedUnderYou(`${project}'s AI settings`);
+  if (settings.taskStopPolicy !== undefined) {
+    const candidate = TaskStopProjectPolicySchema.safeParse(settings.taskStopPolicy);
+    if (!candidate.success || !sameJsonContent(candidate.data, current.settings.taskStopPolicy)) {
+      throw agentXError("CONFIG_INVALID", "taskStopPolicy: changes require the reviewed task-stop policy writer");
+    }
+  }
+  const preserved: ProjectAiSettings = { ...settings };
+  delete preserved.taskStopPolicy;
+  if (current.settings.taskStopPolicy !== undefined) preserved.taskStopPolicy = current.settings.taskStopPolicy;
   const updatedAt = new Date(deps.now()).toISOString();
   // One `budget.changed` for each money limit that moved. The write commits once per revision, so the revision is each event's occurrence.
   const events = await tryAuditEvents(deps, async () => projectAiEvents({
-    orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: settings,
-    before: options.before ?? await settingsAt(expected, () => readProjectAiWithRevision(deps, orgId, project), (stored) => stored.settings),
+    orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: preserved,
+    before: options.before ?? current.settings,
   }));
-  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...settings, updatedBy: by, updatedAt }, expected);
-  await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings, revision: expected + 1 });
+  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
+  await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
   await flushAuditEvents(deps, events);
-  return { settings, revision: expected + 1 };
+  return { settings: preserved, revision: expected + 1 };
 }
 
 /** What a change to a project's AI settings names: a number, list or flag sets it, `null` clears it, and what is left out stays. */
@@ -157,6 +176,7 @@ export function applyProjectAiChange(current: ProjectAiSettings, change: Project
   }
   const memberAccepts = change.memberAcceptRunLimitUpToUsd === undefined ? current.memberAcceptRunLimitUpToUsd : change.memberAcceptRunLimitUpToUsd ?? undefined;
   const parsed = ProjectAiSettingsSchema.safeParse({
+    ...(current.taskStopPolicy === undefined ? {} : { taskStopPolicy: current.taskStopPolicy }),
     projectPays: change.projectPays ?? current.projectPays,
     ...(memberAccepts === undefined ? {} : { memberAcceptRunLimitUpToUsd: memberAccepts }),
     ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }),

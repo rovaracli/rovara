@@ -1,6 +1,7 @@
 // Budget and approval placeholder constants for agents. Other tasks read these before the budget engine that
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
 import { z } from "zod";
+import { TaskStopProjectPolicySchema } from "./task-stop-project.js";
 import { ModelSourceIdSchema, type AgentId } from "./agent.js";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "./org-budget.js";
 import type { ChainId } from "./chains.js";
@@ -211,6 +212,8 @@ const PlanningLimit = z.number().finite().min(PLANNING_LIMIT_MIN_USD).max(PLANNI
 
 /** A project's AI settings: its own monthly budget, whether it pays for its tasks, the model sources it prefers and its planning limits. */
 export const ProjectAiSettingsSchema = z.object({
+  /** Preserved by ordinary settings changes; only a separately reviewed writer may change it. */
+  taskStopPolicy: TaskStopProjectPolicySchema.optional(),
   monthlyBudgetUsd: Amount.optional(),
   projectPays: z.boolean(),
   /** Absent: the project follows the org's order. */
