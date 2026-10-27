@@ -77,3 +77,12 @@ it("does not recreate old-person source cache if identity changes while canonica
 it("refreshes authority and evicts the old company when a canonical read reveals a live company switch",async()=>{
  const f=mount();await propose();const original=f.request.getMockImplementation()!;let switched=false;f.request.mockImplementation(async r=>{if(r.path.endsWith("/model-sources")){switched=true;f.me.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";f.setSnapshot({orgId:f.me.org.orgId});}return original(r);});fireEvent.click(screen.getByRole("button",{name:"Review order"}));await waitFor(()=>expect(switched).toBe(true));try{await waitFor(()=>expect(screen.queryByRole("dialog")).toBeNull());expect(f.writes()).toHaveLength(0);expect(f.query.getQueriesData({queryKey:["admin","lane-c","sources",orgId,developerId]})).toEqual([]);}finally{f.close();}
 });
+it("keeps the visible move label at the start of its accessible name",async()=>{
+ const f=mount();fireEvent.click(await screen.findByRole("button",{name:"Change source order"}));await screen.findByRole("button",{name:"Move Rovara up"});try{expect(screen.getByRole("button",{name:"Move up, Rovara"}).textContent).toBe("Move up");expect(screen.getByRole("button",{name:"Move down, Personal ChatGPT"}).textContent).toBe("Move down");}finally{f.close();}
+});
+it("announces the moved source position and retains keyboard focus on its enabled counterpart",async()=>{
+ const f=mount();await propose();try{const position=screen.queryByText("Rovara moved to position 1 of 2.");expect(position).not.toBeNull();expect(position?.getAttribute("aria-live")).toBe("polite");expect(position?.getAttribute("aria-atomic")).toBe("true");const down=screen.getByRole("button",{name:"Move down, Rovara"});expect(document.activeElement).toBe(down);expect(down).toHaveProperty("disabled",false);}finally{f.close();}
+});
+it("connects unavailable snapshot guidance to the disabled editor trigger",async()=>{
+ const f=mount("owner",true);const trigger=await screen.findByRole("button",{name:"Change source order"});try{expect(trigger).toHaveProperty("disabled",true);const description=trigger.getAttribute("aria-describedby");expect(description).toBeTruthy();expect(document.getElementById(description??"")?.textContent).toContain("Source-order editing is unavailable until a current company, sign-in and revision snapshot");}finally{f.close();}
+});
