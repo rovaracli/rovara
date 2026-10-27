@@ -52,6 +52,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { ReviewedSourceOrderBodySchema } from "./reviewed-order.js";
 import { finishRemovals, releaseSource, viaProxy } from "./release.js";
 import type { ModelSourceStore, StoredModelSources } from "./store.js";
 
@@ -210,7 +211,7 @@ async function listSources(deps: Deps, caller: AgentCaller): Promise<unknown> {
     return viewOf(deps, caller.orgId, stored, source, status);
   }));
   return {
-    sources, order: stored.order,
+    sources, order: stored.order, revision: stored.revision,
     ...(stored.assistantModel === undefined ? {} : { assistantModel: stored.assistantModel }),
     ...(stored.chatgptPreferredModel === undefined ? {} : { chatgptPreferredModel: stored.chatgptPreferredModel }),
   };
@@ -390,6 +391,13 @@ async function removeSource(deps: Deps, caller: AgentCaller, rawId: string, body
 
 async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
+  if (typeof body === "object" && body !== null && "expectedRevision" in body) {
+    const reviewed = ReviewedSourceOrderBodySchema.safeParse(body);
+    if (!reviewed.success) throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
+    const { requestId, order, expectedRevision } = reviewed.data;
+    // Independent reviewed receipts; legacy request lookup and cleanup cannot precede this write.
+    return deps.modelSources.store.setOrder({ orgId: caller.orgId, by: caller.developerId, order, expectedRevision, request: { orgId: caller.orgId, developerId: caller.developerId, requestId, fingerprint: fingerprintOf("reviewed-source-order", "", { order, expectedRevision }) } });
+  }
   await finishOwedRemovals(deps, caller, caller);
   const { requestId, order } = parseBody(OrderBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-order", "", requestId, { order });

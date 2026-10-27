@@ -52,7 +52,7 @@ for (const kind of ["missing", "misbound", "pointer", "closed", "foreign"]) it(`
 });
 for (const race of ["actor", "pointer", "org", "revision"]) it(`fences a concurrent ${race} change at the commit`, async () => {
  const f = fixture();f.beforeCommit(() => {
-  if (race === "actor") f.member(actor, "member");
+  if (race === "actor") f.db.set({ ...orgMemberKey(org, actor), orgId: org, developerId: actor, role: "member" });
   if (race === "pointer") f.db.set({ ...developerOrgKey(actor), orgId: foreign, role: "owner" });
   if (race === "org") f.db.set({ ...orgMetaKey(org), orgId: org, closingAt: "2026-10-27T12:00:00Z" });
   if (race === "revision") f.db.set({ ...modelSourcesKey(org), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedAt: "2026-10-27T12:00:00Z", updatedBy: other });
@@ -78,4 +78,36 @@ it("refuses disabled ChatGPT additions and invalid source order without writes",
 });
 it("does not accept malformed revisions or request IDs", async () => {
  const f = fixture();for (const expectedRevision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) expect((await f.request({ expectedRevision })).code).toBe("CONFIG_INVALID");expect((await f.request({ requestId: "bad" })).code).toBe("CONFIG_INVALID");expect(f.order()).toBeUndefined();
+});
+it("routes an expectedRevision body to the reviewed boundary and exposes only revision metadata on reads", async () => {
+ const { routeModelSourceRequest } = await import("../../packages/broker/src/model-sources/routes.js");
+ const f = fixture(), path = "/v1/app/org/model-sources-order", caller = { orgId: org, developerId: actor, orgRole: "owner" } as const;
+ const deps = { modelSources: { store: f.store } } as unknown as Parameters<typeof routeModelSourceRequest>[0];
+ const request = { method: "PUT", path, requestId: "fixture", headers: {}, body: JSON.stringify({ requestId: f.requestId, expectedRevision: 0, order: ["rovara"] }) };
+ expect(await routeModelSourceRequest(deps, caller, request, new URL(path, "https://cell.example"))).toEqual({ order: ["rovara"], revision: 1 });
+ const listPath = "/v1/app/org/model-sources", result = await routeModelSourceRequest(deps, caller, { ...request, method: "GET", path: listPath, body: "" }, new URL(listPath, "https://cell.example"));
+ expect(result).toEqual({ sources: [], order: ["rovara"], revision: 1 });
+});
+it("fails closed on malformed reviewed route input without echoing supplied fields", async () => {
+ const { routeModelSourceRequest } = await import("../../packages/broker/src/model-sources/routes.js");const f = fixture(), path = "/v1/app/org/model-sources-order";
+ const deps = { modelSources: { store: f.store } } as unknown as Parameters<typeof routeModelSourceRequest>[0];
+ for (const body of [{ requestId: f.requestId, expectedRevision: -1, order: ["rovara"] }, { requestId: f.requestId, expectedRevision: 0, order: ["rovara"], untrustedField: "fixture" }]) {
+  await expect(routeModelSourceRequest(deps, { orgId: org, developerId: actor, orgRole: "owner" }, { method: "PUT", path, headers: {}, requestId: "fixture", body: JSON.stringify(body) }, new URL(path, "https://cell.example"))).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: Review a valid company source order before submitting." });
+ }
+ expect(f.order()).toBeUndefined();
+});
+it("refuses a real pending-audit key conflict atomically", async () => {
+ const { auditModelSourceOrderChanged, auditOccurrence } = await import("../../packages/broker/src/audit/events.js"), { auditPendingItem } = await import("../../packages/broker/src/audit/outbox.js");
+ const f = fixture(), event = auditModelSourceOrderChanged({ orgId: org, actor: { kind: "member", id: actor }, occurredAt: "2026-10-27T12:00:00Z", occurrence: auditOccurrence("reviewed-source-order", org, f.requestId), count: 1 });
+ const pending = auditPendingItem(event, f.deps.now());f.db.set({ ...pending });
+ expect((await f.request()).code).toBe("AUDIT_UNAVAILABLE");expect(f.order()).toBeUndefined();expect(f.db.get({ pk: orgScoped(org, "SOURCE_ORDER_REVIEW"), sk: f.requestId })).toBeUndefined();expect(f.db.get(pending)).toEqual(pending);
+});
+it("never overwrites a physically retained expired receipt or reapplies a reversal", async () => {
+ const f = fixture();const first = await f.request();await f.request({ requestId: randomUUID(), expectedRevision: 1, order: ["personal-chatgpt", "rovara"] });
+ const key = { pk: orgScoped(org, "SOURCE_ORDER_REVIEW"), sk: f.requestId };f.db.set({ ...f.db.get(key), indexExpiresAt: 1 });
+ expect(await f.request()).toEqual(first);expect((await f.request({ order: ["personal-chatgpt", "rovara"], expectedRevision: 2 })).code).toBe("CONFIG_INVALID");expect(f.order()).toEqual(["personal-chatgpt", "rovara"]);
+});
+it("keeps another company's canonical source order unchanged", async () => {
+ const f = fixture();f.db.set({ ...modelSourcesKey(foreign), entityType: "ORG_MODEL_SOURCES", revision: 9, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: other, updatedAt: "2026-10-27T12:00:00Z" });const before = f.db.get(modelSourcesKey(foreign));
+ expect((await f.request()).code).toBeUndefined();expect(f.db.get(modelSourcesKey(foreign))).toEqual(before);
 });
