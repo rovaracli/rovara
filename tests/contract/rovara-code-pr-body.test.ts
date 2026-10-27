@@ -555,7 +555,7 @@ describe("the plan summary's file count", () => {
     const summary = summaryOf("# Plan\n\nGET /items takes limit and offset.\nFour files change; no schema migration is needed.\n");
     expect(summary).toContain("5 files change (the plan said four); no schema migration is needed.");
     expect(summary).not.toContain("Four files change");
-    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: fiveFiles } as never);
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: fiveFiles });
     expect(body).toContain("5 files changed (+15 -5).");
   });
 

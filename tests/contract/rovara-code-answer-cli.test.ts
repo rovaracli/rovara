@@ -52,7 +52,7 @@ describe("agentx session answer against the real broker", () => {
     const sent = cli.posts("/answers");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.path).toBe(`/v1/app/sessions/${task.sessionId}/answers`);
-    expect(sent[0]!.sent).toEqual({ requestId: expect.any(String), round: 1, answers: [{ questionId: "q1", optionId: "b" }, { questionId: "q2", text: "25 items" }] });
+    expect(sent[0]!.sent).toEqual({ requestId: expect.any(String) as string, round: 1, answers: [{ questionId: "q1", optionId: "b" }, { questionId: "q2", text: "25 items" }] });
     expect(sent[0]!.status).toBe(200);
     expect(h.meta(task.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING", intent: { rounds: 1, answers: [{ round: 1, source: "app", answers: [{ questionId: "q1", optionId: "b" }, { questionId: "q2", text: "25 items" }] }] } });
     expect(cli.text()).toMatch(/Answered/);

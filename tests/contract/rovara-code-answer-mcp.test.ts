@@ -128,7 +128,7 @@ describe("agentx_tell_session_agent on a task that waits for answers", () => {
     const { tool } = await signedInClient(h, MAYA);
     const told = await tool("agentx_tell_session_agent", { session_id: task.sessionId, text: "use the envelope" });
     expect(told.isError).toBe(false);
-    expect(told.value).toMatchObject({ delivery: "not_delivered", delivery_reason: expect.stringContaining("waiting for your answers") });
+    expect(told.value).toMatchObject({ delivery: "not_delivered", delivery_reason: expect.stringContaining("waiting for your answers") as string });
     expect(told.text).toContain("It was not delivered");
     expect(told.text).toContain("agentx_answer_task_questions");
     expect(told.text).not.toMatch(/queued/i);

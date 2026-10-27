@@ -798,8 +798,9 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       const shown = await context.client.getTask(taskId, 0);
       const asked = openQuestionsOf(shown);
       if (asked === undefined || shown.sessionId === undefined) throw new ToolError("SESSION_REFUSED", INTENT_NOT_WAITING_MESSAGE);
-      if (input.round !== undefined && input.round !== asked.round) {
-        throw new ToolError("INVALID_REQUEST", `round: the questions are in round ${String(asked.round)} now, not round ${String(input.round)}; read them again with agentx_get_task`);
+      const givenRound = input.round as number | undefined;
+      if (givenRound !== undefined && givenRound !== asked.round) {
+        throw new ToolError("INVALID_REQUEST", `round: the questions are in round ${String(asked.round)} now, not round ${String(givenRound)}; read them again with agentx_get_task`);
       }
       const known = new Map(asked.items.map((question) => [question.id, question]));
       const answers = (input.answers as Array<{ question_id: string; option_id?: string; text?: string }>).map((answer) => {
