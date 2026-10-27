@@ -288,6 +288,8 @@ import {
   type AdminChangeOutcome,
   type AdminChangePressEvent,
   AUDIT_SDK_REQUEST_TIMEOUT_MS,
+  type AuditActor,
+  type AuditEventInput,
   auditOperatorId,
   auditPullRequestId,
   INDEX_EXPIRY_ATTRIBUTE,
@@ -363,9 +365,11 @@ import type { AuditEraseDeps } from "../audit/erase.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditPullRequestOpened, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
+import { auditedWrite, modelSelectionAuditEvent, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "./slack-thread-key.js";
@@ -2387,7 +2391,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return json(await getProjectModels(dependencies, identity), request.requestId);
         }
         if (request.method === "PUT" && serviceUrl.pathname === "/v1/project/model") {
-          return json(await putProjectModel(dependencies, identity, parseBody(request.body)), request.requestId);
+          return json(await putProjectModel(dependencies, identity, parseBody(request.body), request.requestId), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/swebench") {
           await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
@@ -3181,7 +3185,7 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
 type RegistrationResult = { project: Omit<RegisteredProjectRecord, "pk" | "sk">; duplicate: boolean; warnings?: string[]; preflight?: RegistrationPreflight };
 
 /** Who registers a project, and in which org: the org it is written in and the owner key its records name. */
-interface RegistrationActor { orgId: OrgId; ownerKey: string; /** The signed-in subject, recorded when an instance administrator takes a project over (AUTH1). */ subject?: string }
+interface RegistrationActor { orgId: OrgId; ownerKey: string; /** The signed-in subject, recorded when an instance administrator takes a project over (AUTH1). */ subject?: string; /** Who the audit events of the revision name, when the owner key is not a member (the operator's admin route). */ auditActor?: AuditActor }
 
 /** The admin route's registration: an administrator registers a project in their own org and administers it. */
 async function registerProject(
@@ -3191,7 +3195,7 @@ async function registerProject(
   checked?: { preflight?: PreflightOutcome },
 ): Promise<RegistrationResult> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  return registerProjectFor(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey, subject: identity.subject }, value, { creatorMembership: "administrator", ...(checked === undefined ? {} : { checked }) });
+  return registerProjectFor(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey, subject: identity.subject, auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } }, value, { creatorMembership: "administrator", ...(checked === undefined ? {} : { checked }) });
 }
 
 /**
@@ -3371,6 +3375,10 @@ export async function registerProjectFor(
     // Judged against the project as it is on this attempt: an administrator who raced a first registration and lost finds the project there on the next one.
     const authority = await judgeAuthority(snapshot.newestRevision);
     const accounts = await planAccounts();
+    // H6: the models, checks and E2E capture this revision changes against the newest one are audited in this transaction. A revision registered late (older than the newest) changes nothing the project runs.
+    const audit = definition.revision < snapshot.newestRevision ? { items: [] as TransactItems, events: [] as AuditEventInput[] } : await auditedWrite(dependencies, () => projectDefinitionAuditEvents({
+      orgId, actor: actor.auditActor ?? auditActorOf(actor.ownerKey), occurredAt: now, before: snapshot.newestDefinition, after: definition,
+    }));
     // One transaction holds at most 100 items; the project revision, its membership, the catalog and the setup admission take the rest.
     if (accounts.items.length > 60) throw agentXError("CONFIG_INVALID", "the setup declares more synthetic test accounts than one registration can store");
     try {
@@ -3413,7 +3421,9 @@ export async function registerProjectFor(
       ...repositoryIndex,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
+      ...audit.items,
       ] }));
+      await flushAuditEvents(dependencies, audit.events);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
@@ -3594,7 +3604,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   return cloudProjectAnswer(registered);
 }
 
-async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number; newestRepositories: ProjectDefinition["repositories"] }> {
+async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number; newestRepositories: ProjectDefinition["repositories"]; newestDefinition?: ProjectDefinition }> {
   const catalog = await getItem<{ entityType?: string; name?: string; latestRevision?: number }>(dependencies, orgProjectCatalogKey(orgId, projectName));
   if (catalog !== undefined && (catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== projectName
     || (catalog.latestRevision !== undefined && (!Number.isSafeInteger(catalog.latestRevision) || catalog.latestRevision < 1)))) {
@@ -3602,10 +3612,12 @@ async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, o
   }
   let newestRevision = 0;
   let newestRepositories: ProjectDefinition["repositories"] = [];
+  let newestDefinition: ProjectDefinition | undefined;
   try {
     const newest = await requireLatestProject(dependencies, orgId, projectName);
     newestRevision = newest.definition.revision;
     newestRepositories = newest.definition.repositories;
+    newestDefinition = newest.definition;
     if (newest.definition.name !== projectName || !Number.isSafeInteger(newestRevision) || newestRevision < 1) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "registered project revision history is invalid");
     }
@@ -3615,7 +3627,7 @@ async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, o
   if (catalog?.latestRevision !== undefined && catalog.latestRevision > newestRevision) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "project catalog is ahead of registered revision history");
   }
-  return { catalog, newestRevision, newestRepositories };
+  return { catalog, newestRevision, newestRepositories, ...(newestDefinition === undefined ? {} : { newestDefinition }) };
 }
 
 async function repairProjectCatalogPointerFromHistory(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string, options: { createCatalogRow?: boolean } = {}): Promise<void> {
@@ -18013,6 +18025,7 @@ async function putProjectModel(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
   value: unknown,
+  requestId: string,
 ): Promise<ProjectModelOptions> {
   const projectName = identity.slack?.binding.projectName;
   const requester = identity.slack?.requester;
@@ -18032,7 +18045,14 @@ async function putProjectModel(
     updatedAt: new Date().toISOString(),
     updatedBy: requester,
   };
-  await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: record }));
+  // H6: choosing another model than the one selected is audited, in the transaction that stores it; choosing the same one again changes nothing.
+  const earlier = await getItem<ProjectModelSelectionRecord>(dependencies, projectModelSelectionKey(orgId, projectName));
+  const changed = earlier === undefined || modelKey(earlier.model) !== modelKey(selected);
+  const events = changed ? await tryAuditEvents(dependencies, () => [modelSelectionAuditEvent({
+    orgId, actor: auditActorOf(developerIdForSlackUser(requester.userId)), occurredAt: record.updatedAt, project: projectName, surface: "slack", cleared: false, requestId,
+  })]) : [];
+  await auditTransact(dependencies, { Put: { TableName: dependencies.tableName, Item: record } }, events);
+  await flushAuditEvents(dependencies, events);
   return ProjectModelOptionsSchema.parse({
     projectName,
     approved: policy.approved,

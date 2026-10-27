@@ -768,7 +768,7 @@ async function deleteRosterAgent(deps: AgentRouteDependencies, caller: AgentCall
   await checkRosterChange(deps, caller, project, { remove: agentId });
   const { mark, replay } = await markRequest(deps, caller, "roster-remove", `${project}/${agentId}`, input);
   if (replay !== undefined) return replay.result as Shown;
-  const removed = await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark });
+  const removed = await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, by: caller.developerId, request: mark });
   return withDisabled({ removed }, removed ? await recheck(deps, caller.orgId, agentId) : []);
 }
 
