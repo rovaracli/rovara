@@ -30,6 +30,7 @@ import {
 } from "@agentx/contracts";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { openQuestions } from "../rovara-code/question-answers.js";
 import { commandableDevice } from "../devices/local-facts.js";
 import { onlyTheEventCancelled } from "./events.js";
 import type { SessionAccessDependencies } from "./access.js";
@@ -48,6 +49,8 @@ export const NO_STEP_REASON = "no step of the chain is running right now";
 export const TASK_FULL_REASON = "this task already holds all the messages it keeps";
 export const SESSION_ENDED_REASON = "the session has ended";
 export const MAC_GONE_REASON = "this Mac isn't available";
+/** What a message to a task that waits for answers is told (Rovara Code asked questions and nothing reads a note until they are answered). */
+export const WAITING_FOR_ANSWERS_REASON = (sessionId: string): string => `it is waiting for your answers to its questions; answer them in the app, with agentx session answer ${sessionId}, or with agentx_answer_task_questions`;
 
 /**
  * Plan 4's chain run, as far as a message needs it: what the run is doing now. Injected where Plan 4 is merged; until it is, a message to a chain session is refused before anything is written.
@@ -97,6 +100,8 @@ const taskEnded = (task: DeveloperTaskRecord): boolean =>
 
 function taskRoute(session: AgentSessionRecord, task: DeveloperTaskRecord): Route {
   if (taskEnded(task)) return { kind: "ended", taskId: task.taskId };
+  // Rovara Code asked its questions and waits: no step runs to read a note, and the answers have their own route, so a message would sit "queued" for good. Say where to answer instead.
+  if (openQuestions(task.workflow).length > 0) return { kind: "not_delivered", reason: WAITING_FOR_ANSWERS_REASON(session.sessionId) };
   // A Rovara Code (workflow) task reads notes at its next planning or coding step: today's path, whatever the task is doing now (a task paused for budget or stopped takes it too: it is read when the work resumes, since a budget stop is a pause).
   if (task.workflow !== undefined) return { kind: "note", task };
   // An agent-step run reads them at its next agent step, or at the continuation of the step after its write approvals (Task 11b: `advanceAgentRun`'s dispatch gives the task's unfed notes).

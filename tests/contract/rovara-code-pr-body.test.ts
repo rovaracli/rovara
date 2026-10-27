@@ -205,6 +205,62 @@ describe("parseChangedFiles", () => {
   });
 });
 
+// Blind test 02 (staging 0.4.13): GET /items changed from a list to an envelope and the description said "Risk: Low" without a word about it. The diff says it: a route declaration and a response
+// schema changed. Rovara reads that from the diff itself (no model), and the risk then says that existing callers may see a different response.
+describe("a changed public API or response shape", () => {
+  const section = (diff: string[]) => ["## inventory", "", "### status", "### diff", ...diff].join("\n");
+  const change = (path: string, minus: string[], plus: string[]): string[] => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", ...minus.map((line) => `-${line}`), ...plus.map((line) => `+${line}`)];
+  const flagged = (path: string, minus: string[], plus: string[]) => parseChangedFiles(section(change(path, minus, plus))).files[0]?.apiShapeChanged === true;
+
+  it("is read from a route declaration or response model a change adds or removes, in the common frameworks", () => {
+    expect(flagged("inventory/app.py", ['    @app.get("/items", response_model=list[ItemView])'], ['    @app.get("/items", response_model=ItemPage)'])).toBe(true);
+    expect(flagged("src/routes/orders.ts", [], ["router.post('/orders', createOrder);"])).toBe(true);
+    expect(flagged("src/server.ts", ["app.get('/health', (req, res) => res.json({ ok: true }));"], [])).toBe(true);
+    expect(flagged("src/orders.controller.ts", [], ["  @Get(':id')"])).toBe(true);
+    expect(flagged("src/main/java/OrderController.java", [], ['  @GetMapping("/orders")'])).toBe(true);
+    expect(flagged("cmd/api/main.go", [], ['  r.GET("/orders", list)'])).toBe(true);
+  });
+
+  it("is read from a schema, serializer, OpenAPI or protobuf file that changed", () => {
+    for (const path of ["inventory/schemas.py", "src/schemas/item.ts", "api/serializers.py", "openapi.yaml", "docs/swagger.json", "proto/orders.proto", "api/schema.graphql", "src/dto/order.dto.ts"]) {
+      expect(flagged(path, ["old"], ["new"]), path).toBe(true);
+    }
+  });
+
+  it("is not read from a handler's body alone, an ordinary module, a test that declares a route, or a file that only looks like a schema", () => {
+    expect(flagged("inventory/catalog.py", ["    return session.scalars(select(Item)).all()"], ["    return session.scalars(select(Item).limit(5)).all()"])).toBe(false);
+    expect(flagged("src/retry.ts", ["const a = 1;"], ["const a = 2;"])).toBe(false);
+    expect(flagged("tests/test_api.py", [], ['    @app.get("/items")'])).toBe(false);
+    expect(flagged("src/schemas.test.ts", ["a"], ["b"])).toBe(false);
+    expect(flagged("src/reschedule.ts", ["a"], ["b"])).toBe(false);
+  });
+
+  it("makes the risk at least medium and says existing callers may see a different response, naming the files", () => {
+    const risk = assessRisk(riskInput({ changedFiles: [{ ...file("inventory/app.py"), apiShapeChanged: true }, { ...file("inventory/schemas.py"), apiShapeChanged: true }, file("inventory/catalog.py")] }));
+    expect(risk.level).toBe("medium");
+    expect(risk.reasons.join("\n")).toMatch(/public API route or response shape/);
+    expect(risk.reasons.join("\n")).toContain("inventory/app.py");
+    expect(risk.reasons.join("\n")).toMatch(/existing callers/);
+    // It raises nothing above medium by itself, and a high reason still leads.
+    expect(assessRisk(riskInput({ changedFiles: [{ ...file("src/payments/charge.ts"), apiShapeChanged: true }] })).level).toBe("high");
+    expect(assessRisk(riskInput({ changedFiles: [file("inventory/catalog.py")] })).level).toBe("low");
+  });
+
+  it("shows in the description's Risk section for the diff of the blind test's pull request", () => {
+    const diff = section([
+      ...change("inventory/app.py", ['    @app.get("/items", response_model=list[ItemView])'], ['    @app.get("/items", response_model=ItemPage)']),
+      ...change("inventory/catalog.py", ["def items(session):"], ["def all_items(session):"]),
+      ...change("inventory/schemas.py", [], ["class ItemPage(BaseModel):", "    total: int"]),
+    ]);
+    const read = parseChangedFiles(diff);
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: read });
+    const risk = body.slice(body.indexOf("## Risk:"), body.indexOf(END));
+    expect(risk).toContain("## Risk: Medium");
+    expect(risk).toMatch(/public API route or response shape/);
+    expect(risk).toContain("inventory/app.py");
+  });
+});
+
 describe("a file whose lines were not counted", () => {
   const entry = (path: string, more: Record<string, unknown> = {}) => ({ repository: "payments", path, ...more });
 
@@ -482,6 +538,39 @@ describe("the version 2 pull request description", () => {
     // Nothing else moved: putting the first lines back gives the first block again.
     const back = withStatusLines(next!, workflowPullRequestStatusLines(workflowWith(), context()));
     expect(back).toBe(edited);
+  });
+});
+
+// Blind test 02 (staging 0.4.13): the plan said "Four files change" and the pull request changed five. The count of files comes from the diff; a model's count that differs is corrected in place and
+// says what the plan had said.
+describe("the plan summary's file count", () => {
+  const fiveFiles = { files: ["a.py", "b.py", "c.py", "tests/test_a.py", "tests/test_b.py"].map((path) => file(path, 3, 1)), complete: true };
+  /** The summary the description quotes; `changedFiles` is the diff's list, left out when `undefined` is passed. */
+  const summaryOf = (plan: string, ...given: [unknown?]) => {
+    const body = workflowPullRequestBody(task, workflowWith(), plan, SESSION, (given.length === 0 ? { changedFiles: fiveFiles } : given[0] === undefined ? {} : { changedFiles: given[0] }) as never);
+    return body.slice(body.indexOf("## Plan summary"), body.indexOf(START));
+  };
+
+  it("is corrected to the diff's count, saying what the plan had said", () => {
+    const summary = summaryOf("# Plan\n\nGET /items takes limit and offset.\nFour files change; no schema migration is needed.\n");
+    expect(summary).toContain("5 files change (the plan said four); no schema migration is needed.");
+    expect(summary).not.toContain("Four files change");
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: fiveFiles });
+    expect(body).toContain("5 files changed (+15 -5).");
+  });
+
+  it("is corrected in the other common phrasing too, and for digits", () => {
+    expect(summaryOf("# Plan\n\nThe change touches 3 files and adds a test.\n")).toContain("touches 5 files (the plan said 3) and adds a test.");
+    expect(summaryOf("# Plan\n\nOne file changes.\n", { files: [file("a.py")], complete: true }).includes("(the plan said")).toBe(false);
+    expect(summaryOf("# Plan\n\nTwo files change.\n", { files: [file("a.py")], complete: true })).toContain("1 file change (the plan said two).");
+  });
+
+  it("is left as the plan wrote it when it matches the diff, when the diff's list is incomplete or missing, and when it counts something else", () => {
+    expect(summaryOf("# Plan\n\nFive files change.\n")).toContain("Five files change.");
+    expect(summaryOf("# Plan\n\nFour files change.\n", { ...fiveFiles, complete: false })).toContain("Four files change.");
+    expect(summaryOf("# Plan\n\nFour files change.\n", undefined)).toContain("Four files change.");
+    expect(summaryOf("# Plan\n\nThree test files change and two modules are renamed.\n")).toContain("Three test files change");
+    expect(summaryOf("# Plan\n\nFour files change.\n").includes("(the plan said")).toBe(true);
   });
 });
 

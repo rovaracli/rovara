@@ -5,7 +5,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { githubInstallationKey } from "../../packages/contracts/src/org-node.js";
-import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES } from "../../packages/contracts/src/rovara-code.js";
+import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_REVIEW_COALESCE_SECONDS } from "../../packages/contracts/src/rovara-code.js";
 import { authorizeLinkedGithubWebhook, handleGithubWebhook, type PullRequestWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
 import { runDueWorkflowMergeTracking, trackingRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -22,6 +22,7 @@ const INSTALLATION = 777;
 const REPOSITORY = 1234;
 const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as typeof TEST_ORG;
 const COALESCE = TRACKING_COALESCE_SECONDS * 1_000;
+const REVIEW_COALESCE = TRACKING_REVIEW_COALESCE_SECONDS * 1_000;
 const GATE = TRACKING_GATE_SECONDS * 1_000;
 const HEARTBEAT = TRACKING_HEARTBEAT_MINUTES * 60_000;
 const sign = (body: string): string => `sha256=${createHmac("sha256", SECRET).update(body, "utf8").digest("hex")}`;
@@ -64,12 +65,25 @@ describe("which pull request deliveries wake the tracking row", () => {
 });
 
 describe("wakeFromPullRequestEvent", () => {
-  it("wakes the tracking row of the task the pull request belongs to, to now plus 30 seconds", async () => {
+  // Approval-to-ready latency (0.4.13 rehearsal: 62 s, worst about 93 s): a person's review is waited for, so its wake is due in 10 seconds; the other deliveries keep the 30 seconds that lets a CI run's
+  // many jobs and a push's events coalesce.
+  it("wakes the tracking row of the task the pull request belongs to: a review to now plus 10 seconds, a pull request action to now plus 30", async () => {
+    expect(REVIEW_COALESCE).toBe(10_000);
     for (const event of [review("submitted"), review("edited"), review("dismissed"), pullRequest("ready_for_review"), pullRequest("synchronize"), pullRequest("reopened")]) {
       const s = await setup();
       expect(await wakeFromPullRequestEvent(s.deps, event), event.action).toBe("woken");
-      expect(row(s.w), event.action).toMatchObject({ wakeAt: NOW, nextAttemptAt: NOW + COALESCE });
+      expect(row(s.w), event.action).toMatchObject({ wakeAt: NOW, nextAttemptAt: NOW + (event.kind === "PR_COMMENT" ? REVIEW_COALESCE : COALESCE) });
     }
+  });
+
+  it("coalesces a burst of review deliveries into the first one's time, and a later, longer wake never pushes it back", async () => {
+    const s = await setup();
+    await wakeFromPullRequestEvent(s.deps, review("submitted"));
+    s.w.setNow(s.w.now() + 1_000);
+    await wakeFromPullRequestEvent(s.deps, review("edited"));
+    s.w.setNow(s.w.now() + 1_000);
+    await wakeFromPullRequestEvent(s.deps, pullRequest("synchronize"));
+    expect(row(s.w).nextAttemptAt).toBe(NOW + REVIEW_COALESCE);
   });
 
   it("leaves the row alone for an action that does not wake it, and for a plain comment", async () => {
@@ -161,9 +175,10 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
       verifyRepository: async () => true, orgOfInstallation: (id) => boundInstallationOrg({ documentClient: w.db, tableName: "state" }, id),
     };
     await w.db.send(new TransactWriteCommand({ TransactItems: [trackingRecoveryItem("state", w.taskId, new Date(now()).toISOString())] }));
-    const pass = () => runDueWorkflowMergeTracking({
-      documentClient: w.db, tableName: "state", now, reconcile: async (taskId) => { await trackTask(tracking, taskId); return { kind: "OBSERVED" }; },
-    });
+    const trackNow = async (taskId: string) => { await trackTask(tracking, taskId); };
+    const pass = (options: { wokenOnly?: true } = {}) => runDueWorkflowMergeTracking({
+      documentClient: w.db, tableName: "state", now, reconcile: async (taskId) => { await trackNow(taskId); return { kind: "OBSERVED" }; },
+    }, options);
     const merge = async () => {
       const items = [w.trackingOf({ repositoryId: "payments", number: 7 })!];
       return mergeViewOf(w.deps, w.db.get(taskKey(w.taskId))! as never, items, PRIYA);
@@ -178,7 +193,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
       const outcome = await handleGithubWebhook({
         documentClient: w.db, tableName: "state", rawBody: body, headers: { "x-hub-signature-256": sign(body), "x-github-delivery": deliveryId, "x-github-event": "pull_request_review" }, secret: SECRET,
         authorizeRepository: (scope) => "headSha" in scope ? Promise.resolve(false) : authorizeLinkedGithubWebhook({
-          documentClient: w.db, tableName: "state", scope, loadTask: async (id) => w.db.get(taskKey(id)) as never, repositoryUrl: (...args) => w.host.repositoryUrl(...args), verifyRepository: async () => true,
+          documentClient: w.db, tableName: "state", scope, loadTask: async (id) => w.db.get(taskKey(id)) as never, repositoryUrl: (...args) => w.host.repositoryUrl(...(args as Parameters<typeof w.host.repositoryUrl>)), verifyRepository: async () => true,
         }),
         process: async (event) => {
           if (event.kind === "HEAD_STATUS") throw new Error("a review is not a head event");
@@ -189,7 +204,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
       });
       return { outcome, processed };
     };
-    return { w, github, pass, merge, deliver, now };
+    return { w, github, pass, trackNow, merge, deliver, now };
   }
 
   it("shows Not ready before the approval, then ready by the next pass (a minute) after the review webhook, not a heartbeat later", async () => {
@@ -204,15 +219,64 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     expect(await c.pass()).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
     expect(await c.merge()).toMatchObject({ ready: false });
 
-    // GitHub's webhook arrives; the wake brings the row forward to 30 seconds from now, and the schedule (every minute, through the pass's 60-second gate) runs it.
+    // GitHub's webhook arrives; the wake brings the row forward to 10 seconds from now, and the schedule (every minute, through the pass's 60-second gate) runs it.
     const { outcome, processed } = await c.deliver("approved");
     expect(outcome.status).toBe("ACCEPTED");
     expect(processed).toHaveLength(1);
-    expect(c.w.db.get("WORKFLOW_MERGE_RECOVERY", `TASK#${c.w.taskId}`)).toMatchObject({ wakeAt: c.now(), nextAttemptAt: c.now() + COALESCE });
+    expect(c.w.db.get("WORKFLOW_MERGE_RECOVERY", `TASK#${c.w.taskId}`)).toMatchObject({ wakeAt: c.now(), nextAttemptAt: c.now() + REVIEW_COALESCE });
     c.w.clock.now += GATE;
     expect(await c.pass()).toMatchObject({ attempted: 1, reconciled: 1 });
     expect(await c.merge()).toEqual({ ready: true });
     expect(c.now() - started).toBeLessThan(HEARTBEAT);
+  });
+
+  // The pass for a woken row does not wait out the 60-second gate that rations the heartbeat passes, and costs no more GitHub calls: only woken rows are read, once, and the gate is left as it was.
+  it("passes a review-woken row within 15 seconds even while the heartbeat gate is closed, reads nothing else, and leaves the gate alone", async () => {
+    const c = await company();
+    const gate = () => c.w.db.get("WORKFLOW_MERGE_SWEEP", "TRACKING")?.nextSweepAt;
+    const read: string[] = [];
+    const passWith = (options: { wokenOnly?: true } = {}) => runDueWorkflowMergeTracking({
+      documentClient: c.w.db, tableName: "state", now: c.now, reconcile: async (taskId) => { read.push(taskId); if (taskId === c.w.taskId) await c.trackNow(taskId); return { kind: "OBSERVED" }; },
+    }, options);
+    expect(await passWith()).toMatchObject({ attempted: 1 });
+    const closedUntil = gate();
+    read.length = 0;
+    c.w.clock.now += 20_000;
+    // A second followed task whose heartbeat has come due since: the woken pass must not touch it (the gated heartbeat pass will).
+    const OTHER = "00000000-0000-4000-8000-0000000000c3";
+    c.w.db.set({ ...c.w.db.get(taskKey(c.w.taskId))!, pk: `DEVTASK#${OTHER}`, taskId: OTHER });
+    await c.w.db.send(new TransactWriteCommand({ TransactItems: [trackingRecoveryItem("state", OTHER, new Date(c.now() - 1_000).toISOString())] }));
+    const approvedAt = c.now();
+    c.github.statuses.set(7, status({ number: 7, headSha: HEAD_A, draft: false, requestedReviewers: 1, reviews: [{ ...arjun, state: "APPROVED", submittedAt: new Date(approvedAt).toISOString() }] }));
+    c.w.clock.now += 3_000;
+    await c.deliver("approved");
+    c.w.clock.now += REVIEW_COALESCE;
+    // The scheduled heartbeat pass is still behind its gate (the heartbeat gate is kept) ...
+    expect(await passWith()).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
+    expect(read).toEqual([]);
+    // ... and the pass for woken rows runs the one woken task, once.
+    expect(await passWith({ wokenOnly: true })).toMatchObject({ attempted: 1, reconciled: 1 });
+    expect(read).toEqual([c.w.taskId]);
+    expect(await c.merge()).toEqual({ ready: true });
+    expect(c.now() - approvedAt).toBeLessThanOrEqual(15_000);
+    expect(gate()).toBe(closedUntil);
+    // Nothing is woken now: a second woken pass reads nothing.
+    expect(await passWith({ wokenOnly: true })).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
+    expect(read).toEqual([c.w.taskId]);
+  });
+
+  it("makes one pass of a burst of review deliveries, however many arrive", async () => {
+    const c = await company();
+    await c.pass();
+    c.w.clock.now += 20_000;
+    c.github.statuses.set(7, status({ number: 7, headSha: HEAD_A, draft: false, requestedReviewers: 1, reviews: [{ ...arjun, state: "APPROVED", submittedAt: new Date(c.now()).toISOString() }] }));
+    for (const state of ["approved", "commented", "approved"]) {
+      await c.deliver(state);
+      c.w.clock.now += 700;
+    }
+    c.w.clock.now += REVIEW_COALESCE;
+    expect(await c.pass({ wokenOnly: true })).toMatchObject({ attempted: 1, reconciled: 1 });
+    expect(await c.pass({ wokenOnly: true })).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
   });
 
   it("is a no-op beyond one extra pass when GitHub redelivers the webhook", async () => {

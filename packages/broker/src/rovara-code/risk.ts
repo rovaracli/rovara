@@ -77,6 +77,8 @@ export interface RiskFile {
   testsSkipped?: true | undefined;
   /** package.json: the change adds or removes a line of the `test` scripts. */
   testCommandChanged?: true | undefined;
+  /** The diff changes a route declaration, a response model or a schema file (read from the diff, never from a model). */
+  apiShapeChanged?: true | undefined;
 }
 
 export interface RiskInput {
@@ -133,6 +135,9 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   const uncounted = input.changedFiles.filter((file) => file.added === undefined || file.removed === undefined).length;
   if (uncounted > 0) medium.push(`${uncounted} ${uncounted === 1 ? "file has" : "files have"} no line count (new or binary), so Rovara can't tell how large the change is.`);
   if (!input.changedFilesComplete) medium.push("Rovara couldn't list every changed file.");
+  // A route or a response schema changed: whoever calls it today may get a different answer. Read from the diff, so it is said whatever the plan or the reviewer thought.
+  const api = [...new Set(input.changedFiles.filter((file) => file.apiShapeChanged === true).map((file) => file.path))];
+  if (api.length > 0) medium.push(`Changes a public API route or response shape (${shown(api)}), so existing callers may get a different response; check that they still work.`);
   const manifests = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isManifestPath)))];
   if (manifests.length > 0) medium.push(`Changes dependencies or build files: ${shown(manifests)}.`);
   if (input.report.reviewOnly) medium.push("No automated check applied, so this change was checked by review only.");

@@ -141,7 +141,7 @@ const ADVISORY_RULE = 'Set "advisory": true only for (1) a remark about somethin
  * What a code reviewer of a version 2 task says about the change's risk: one word, judged on what the change can break if it is wrong. Rovara combines it with the paths, the size and the checks; it can raise the
  * level, never lower it.
  */
-const RISK_RULE = 'Also state "risk", the risk of this change if it is wrong: "high" when it could lose or expose data, break sign-in, payments or deployment, or cause an outage; "medium" when it changes behaviour that people or other systems depend on; otherwise "low".';
+const RISK_RULE = 'Also state "risk", the risk of this change if it is wrong: "high" when it could lose or expose data, break sign-in, payments or deployment, or cause an outage; "medium" when it changes behaviour that people or other systems depend on, including a public API route or the shape of a response that existing callers read; otherwise "low". A change to a public API route or response shape is at least "medium" even when the plan did not mention it.';
 
 /**
  * The JSON answer each reviewer is asked for. The security reviewer has no "advisory" field: a security finding is never

@@ -1989,16 +1989,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           reconcile: (taskId, budget) => reconcileWorkflowMergeRecoveryTask(dependencies, taskId, budget),
         });
         // The tracking pass (Rovara Code) runs after the merge pass with the time that is left, in its own partition, behind its own gate: neither starves the other.
-        const tracking = await runDueWorkflowMergeTracking({
-          documentClient: dependencies.documentClient,
-          tableName: dependencies.tableName,
-          now: Date.now,
-          reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
-        }, { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
+        const tracking = await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
           console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { attempted: 0, reconciled: 0, deferred: 0 };
         });
-        return json({ ...result, tracking }, "workflow-merge-recovery");
+        // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
+        const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
+        return json({ ...result, tracking, woken }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -2024,7 +2021,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
           });
-        return json({ ...dispatches, planEvidence, codeMilestones, releases }, "workflow-dispatch-recovery");
+        // This schedule ticks at its own moment of the minute, so rows a review woke are passed at whichever of the two ticks comes first.
+        const woken = await runWokenTrackingPass(dependencies, 12_000);
+        return json({ ...dispatches, planEvidence, codeMilestones, releases, woken }, "workflow-dispatch-recovery");
       }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
@@ -3444,8 +3443,9 @@ function projectCreateBodyHash(input: CreateProjectInput): string {
     repository: `${input.owner}/${input.repositoryName}`.toLowerCase(),
     ...(input.name === undefined ? {} : { name: input.name }),
     ...(input.description === undefined ? {} : { description: input.description }),
-    ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
-    ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+    // One command is hashed as the single field it always was, so a retry of a request made before lists existed is still the same request.
+    ...(input.setupCommands === undefined ? {} : input.setupCommands.length === 1 ? { setupCommand: input.setupCommands[0] } : { setupCommands: input.setupCommands }),
+    ...(input.testCommands === undefined ? {} : input.testCommands.length === 1 ? { testCommand: input.testCommands[0] } : { testCommands: input.testCommands }),
   }), "utf8").digest("hex");
 }
 
@@ -14684,6 +14684,25 @@ async function startWorkflowE2EChecksDispatch(
 }
 
 /** Run the task's dispatch rows right after the result that wrote them committed. Never throws. */
+function trackingPassDependencies(dependencies: AwsBrokerDependencies): Parameters<typeof runDueWorkflowMergeTracking>[0] {
+  return {
+    documentClient: dependencies.documentClient,
+    tableName: dependencies.tableName,
+    now: Date.now,
+    reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
+  };
+}
+
+/** The pass for rows a webhook woke (review-woken ones first of all): never throws, reads only woken rows, and does not move the heartbeat gate. */
+async function runWokenTrackingPass(dependencies: AwsBrokerDependencies, budgetMs: number): Promise<{ attempted: number; reconciled: number; deferred: number }> {
+  try {
+    return await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs, wokenOnly: true });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_woken_failed", error: error instanceof Error ? error.name : "unknown" }));
+    return { attempted: 0, reconciled: 0, deferred: 0 };
+  }
+}
+
 async function dispatchWorkflowContinuation(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
   try {
     const rows = await queryAllItems(dependencies, WORKFLOW_DISPATCH_PK, `${taskId}#`);
@@ -14884,11 +14903,13 @@ async function completedPullRequestUpdateItems(
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
   const countsAsMerged = current.pullRequest.state === "merged" && pullRequest.state !== "MERGED" && task.orgId !== undefined
     && next.pullRequests?.some((after) => after.repositoryId === pullRequest.repositoryId && after.number === pullRequest.number && after.state === "MERGED") === true;
+  const recordUpdated = record !== undefined && record.expectedHeadCommit !== head;
   return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []),
   // The pull request's link to the task now names the fix it holds (for a conflict round's, the fix on the new base).
   ...await candidateRekeyItems(dependencies, task, project, workflow, next, now),
-  // A push that landed without its update callback: the pull request's record learns its head, for the next push.
-  ...(record !== undefined && record.expectedHeadCommit !== head ? [{ Update: {
+  // A push that landed without its update callback: the pull request's record learns its head, for the next push, and GitHub's state (merged included: mergedStateItems below leaves this record to
+  // this one update, because a transaction may not touch one item twice, C59).
+  ...(recordUpdated ? [{ Update: {
     TableName: dependencies.tableName,
     Key: pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber),
     UpdateExpression: "SET expectedHeadCommit = :head, #state = :state, updatedAt = :now",
@@ -14901,7 +14922,8 @@ async function completedPullRequestUpdateItems(
   // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
   ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
   // ... and what was kept about the pull request (its tracking row and its record) says merged too (Bug H).
-  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
+  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now, [],
+    recordUpdated && current.pullRequest.state === "merged" ? [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number }] : []),
   // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
   ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
@@ -15956,7 +15978,7 @@ async function storePlanAnswer(
   }
   // The owner's real request (and the replies this step was given) is what the plan says it is for, not the planner's words.
   const step = await planStepComments(dependencies, task, artifactType);
-  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why) }, step, previousVersion);
+  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why, (developerId) => githubLoginOfDeveloper(dependencies, developerId)) }, step, previousVersion);
   const canonical = canonicalPlanJson(plan);
   if (Buffer.byteLength(canonical, "utf8") > WORKFLOW_PLAN_MAX_BYTES) return unreadable(["the plan is too long once saved"]);
 

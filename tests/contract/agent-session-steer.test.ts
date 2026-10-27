@@ -423,6 +423,24 @@ describe("a task that cannot take a message", () => {
     expect(f.events().filter((item) => item.type === "steer_not_delivered")).toHaveLength(2);
   });
 
+  // Blind test 02 (staging 0.4.13): `session tell` answered "Queued" for a task that waited for answers, and nothing ever read the message. A waiting task takes answers on the answers route, so
+  // a message is told plainly that it was not delivered and where to answer; it is queued nowhere and left no note.
+  it("tells the sender of a message to a task that waits for answers that it is not delivered, and where to answer, and queues nothing", async () => {
+    const f = steerWorld({ workflow: false, agentName: "Rovara Code" });
+    const questions = [{ id: "q1", text: "Which response shape?", options: [{ id: "a", label: "Array" }, { id: "b", label: "Envelope" }], recommended: "b" }];
+    f.w.db.set({ ...f.task(), workflow: { ...WORKFLOW, definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "WAITING", intent: { rounds: 1, pathFrom: "understand", answers: [], assessment: { kind: "questions", restatement: "x", questions } } } });
+    const message = await f.send(ARJUN, "use the envelope");
+    const reason = `it is waiting for your answers to its questions; answer them in the app, with agentx session answer ${f.sid}, or with agentx_answer_task_questions`;
+    expect(message.delivery).toMatchObject({ state: "not_delivered", reason });
+    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "not_delivered", reason } });
+    expect(f.notes()).toHaveLength(0);
+    expect(f.task()).not.toHaveProperty("threadNoteCount");
+    expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: `Rovara Code can't take messages right now: ${reason}.` });
+    // Once the questions are answered the task takes a message as before.
+    f.w.db.set({ ...f.task(), workflow: { ...WORKFLOW, definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "RUNNING", intent: { rounds: 1, pathFrom: "understand", answers: [] } } });
+    expect((await f.send(ARJUN, "and keep it small")).delivery).toMatchObject({ state: "queued" });
+  });
+
   it("says the agent when the session has no agent name", async () => {
     const f = steerWorld({ workflow: false });
     await f.send(ARJUN, "hello");

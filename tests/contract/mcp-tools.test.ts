@@ -48,7 +48,7 @@ describe("the tool list (FR-027, FR-028, SC-010)", () => {
     expect(tools.map((tool) => tool.name)).toEqual(DEVELOPER_TOOLS.map((tool) => tool.name));
     expect(tools.map((tool) => tool.name)).toEqual([
       "agentx_whoami", "agentx_list_projects", "agentx_start_task", "agentx_start_workflow", "agentx_get_task", "agentx_wait_for_task",
-      "agentx_list_tasks", "agentx_continue_task", "agentx_decide_workflow", "agentx_review_workflow_candidate", "agentx_retry_workflow",
+      "agentx_list_tasks", "agentx_continue_task", "agentx_decide_workflow", "agentx_answer_task_questions", "agentx_review_workflow_candidate", "agentx_retry_workflow",
       "agentx_send_workflow_back", "agentx_resolve_review_findings", "agentx_retry_workflow_publish", "agentx_keep_pull_request", "agentx_get_pr_feedback", "agentx_decide_pr_feedback", "agentx_cancel_task", "agentx_close_task", "agentx_share_task", "agentx_open_pull_request", "agentx_get_task_people", "agentx_get_task_people_request", "agentx_set_task_person", "agentx_take_task_ownership", "agentx_audit_status",
       "agentx_list_agents", "agentx_run_agent", "agentx_list_approvals", "agentx_open_approval",
       "agentx_list_sessions", "agentx_get_session", "agentx_comment_on_session", "agentx_tell_session_agent", "agentx_stop_session",
@@ -195,6 +195,34 @@ describe("ordered work approval digest (Spec059)", () => {
       expected_revision: 3, decision: "REQUEST_CHANGES", reason: "Please revise", artifact_digest: "a".repeat(64) } });
     expect(requestChanges.isError).not.toBe(true);
     expect(decideWorkflowTask.mock.calls.at(-1)?.[1]).not.toHaveProperty("workBreakdownDigest");
+  });
+
+  it("says in its text, which is all some clients show the model, the digest, revision and work breakdown digest the decide tool needs (blind test 02)", async () => {
+    const graph = { schemaVersion: 1 as const, taskId: TASK, version: 1, items: [
+      { id: "11111111-1111-4111-8111-111111111111", title: "Implement", description: "Implement the change", repository: "demo", dependsOn: [] },
+    ] };
+    const workflow = { stage: "PLAN_REVIEW", state: "WAITING", revision: 7, path: "QUICK", reviewPhase: "PLAN", workBreakdownDigest: taskGraphDigest(graph),
+      artifacts: [{ id: "plan-artifact", type: "plan", version: 2, sha256: "b".repeat(64), producer: "agentx", objectKey: "plan.json", createdAt: "2026-10-12T12:00:00.000Z" }],
+      planContent: planAnswer(planDocument({ workBreakdown: graph })) } as never;
+    const mcp = await connect({ getTask: async () => view("SUCCEEDED", { workflow }) });
+    const observed = await mcp.callTool({ name: "agentx_get_task", arguments: { task_id: TASK } });
+    expect(text(observed)).toContain(`artifact_digest ${"b".repeat(64)}`);
+    expect(text(observed)).toContain("expected_revision 7");
+    expect(text(observed)).toContain(`work_breakdown_digest ${taskGraphDigest(graph)}`);
+    // The structured answer already had them; the text and the structure agree.
+    expect(observed.structuredContent).toMatchObject({ workflow: { revision: 7, approval_document: { sha256: "b".repeat(64) }, work_breakdown_digest: taskGraphDigest(graph) } });
+  });
+
+  it("leaves the work breakdown digest out of the text when the plan has none, and shows nothing to approve once the gate is past", async () => {
+    const plain = { stage: "PLAN_REVIEW", state: "WAITING", revision: 4, path: "QUICK", reviewPhase: "PLAN",
+      artifacts: [{ id: "plan-artifact", type: "plan", version: 1, sha256: "c".repeat(64), producer: "agentx", objectKey: "plan.json", createdAt: "2026-10-12T12:00:00.000Z" }] } as never;
+    const waiting = text(await (await connect({ getTask: async () => view("SUCCEEDED", { workflow: plain }) })).callTool({ name: "agentx_get_task", arguments: { task_id: TASK } }));
+    expect(waiting).toContain(`artifact_digest ${"c".repeat(64)}`);
+    expect(waiting).toContain("expected_revision 4");
+    expect(waiting).not.toContain("work_breakdown_digest c");
+    const running = { ...(plain as object), stage: "IMPLEMENT", state: "RUNNING", revision: 5 } as never;
+    const past = text(await (await connect({ getTask: async () => view("RUNNING", { workflow: running }) })).callTool({ name: "agentx_get_task", arguments: { task_id: TASK } }));
+    expect(past).not.toContain("artifact_digest");
   });
 });
 

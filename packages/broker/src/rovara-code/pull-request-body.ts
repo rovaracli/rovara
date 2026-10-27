@@ -153,12 +153,34 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
   return lines;
 }
 
-/** The plan summary lines, each inert and cut, within their byte budget. */
-function summaryOf(lines: readonly string[]): string[] {
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
+const NUMBER = String.raw`\d{1,3}|${NUMBER_WORDS.join("|")}`;
+/** "Four files change", "3 files are touched": a statement of how many files the change touches, as the plan's words put it. */
+const FILES_THEN_VERB = new RegExp(String.raw`\b(${NUMBER})\s+files?\s+((?:will\s+(?:be\s+)?)?(?:change|changes|changed|are\s+(?:changed|touched|modified|edited|affected)|need\s+to\s+change|get\s+changed))\b`, "giu");
+/** "touches four files", "changing 3 files". */
+const VERB_THEN_FILES = new RegExp(String.raw`\b(touch(?:es|ing)?|chang(?:es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?|affect(?:s|ing)?)\s+(${NUMBER})\s+files?\b`, "giu");
+
+const numberOf = (word: string): number | undefined => (/^\d+$/u.test(word) ? Number(word) : NUMBER_WORDS.indexOf(word.toLowerCase()) === -1 ? undefined : NUMBER_WORDS.indexOf(word.toLowerCase()));
+
+/**
+ * A plan's count of the files it changes, set right by the diff. The plan is written before the code, and "Four files change" outlives the fifth file the work needed; the description's own count
+ * (What changed) is the diff's, so the quoted plan must not contradict it. Only a statement of the whole change's file count is touched ("<n> files change", "touches <n> files"), only when the list
+ * of changed files is whole, and only when the numbers differ; what the plan said stays in the line. A phrase with a word between the number and "files" ("three test files") counts something else and is left alone.
+ */
+export function withDiffFileCount(line: string, actual: number | undefined): string {
+  if (actual === undefined) return line;
+  const files = `${actual} ${actual === 1 ? "file" : "files"}`;
+  return line
+    .replace(FILES_THEN_VERB, (whole, said: string, verb: string) => (numberOf(said) === actual ? whole : `${files} ${verb} (the plan said ${said.toLowerCase()})`))
+    .replace(VERB_THEN_FILES, (whole, verb: string, said: string) => (numberOf(said) === actual ? whole : `${verb} ${files} (the plan said ${said.toLowerCase()})`));
+}
+
+/** The plan summary lines, each inert and cut, within their byte budget. `files` is the diff's count of changed files when the list is whole. */
+function summaryOf(lines: readonly string[], files?: number): string[] {
   const kept: string[] = [];
   let bytes = 0;
   for (const line of lines) {
-    const text = inertLine(line, SUMMARY_LINE_MAX);
+    const text = withDiffFileCount(inertLine(line, SUMMARY_LINE_MAX), files);
     if (text === "") continue;
     bytes += byteLength(text) + 1;
     if (bytes > SUMMARY_MAX_BYTES) break;
@@ -180,7 +202,8 @@ export function rovaraPullRequestBody(input: {
   pageUrl: string | undefined;
 }): string {
   // The plan's words are a model's: they sit under their own heading as a quotation (a quotation holds a heading, a fence or a rule inside it), so they cannot pose as one of Rovara's sections.
-  const summary = summaryOf(input.summary);
+  const read = input.context.changedFiles;
+  const summary = summaryOf(input.summary, read !== undefined && read.complete && read.files.length > 0 ? read.files.length : undefined);
   const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${neutralizeLinearWords(line)}`);
   const head = ["## Plan summary", ...quoted];
   const tail = [...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];

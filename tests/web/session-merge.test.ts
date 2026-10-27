@@ -42,7 +42,7 @@ function tracking(extra: Partial<MergeTrackingItem> = {}): MergeTrackingItem {
 }
 
 /** A task session waiting for its merge, as the server's version 2 task view shows it. */
-function mergeSession(merge: { ready: boolean; message?: string } | undefined, options: { items?: MergeTrackingItem[]; level?: "view" | "use" | "edit"; owner?: boolean } = {}) {
+function mergeSession(merge: { ready: boolean; message?: string } | undefined, options: { items?: MergeTrackingItem[]; level?: "view" | "use" | "edit"; owner?: boolean; mayMerge?: true } = {}) {
   const base = workspaceFixture();
   const level = options.level ?? "edit";
   const task = taskFixture({
@@ -50,7 +50,7 @@ function mergeSession(merge: { ready: boolean; message?: string } | undefined, o
     pullRequests: [{ repository: "payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" }],
     mergeTracking: options.items ?? [tracking()], ...(merge === undefined ? {} : { merge }),
   });
-  return sessionFixture({ kind: "task", status: "waiting", step: "Waiting for the merge", where: { kind: "cloud" }, body: { kind: "task", task }, you: { level, owner: options.owner ?? level === "edit", following: false, actions: ["watch", "comment"] } });
+  return sessionFixture({ kind: "task", status: "waiting", step: "Waiting for the merge", where: { kind: "cloud" }, body: { kind: "task", task }, you: { level, owner: options.owner ?? level === "edit", following: false, actions: ["watch", "comment"], ...(options.mayMerge === undefined ? {} : { mayMerge: options.mayMerge }) } });
 }
 
 function setup(initial: ReturnType<typeof sessionFixture>, mergeReply?: (request: ApiRequest) => Promise<ApiResponse>) {
@@ -148,6 +148,13 @@ it("gives a viewer the readiness but no button", async () => {
   const region = await screen.findByRole("region", { name: "Merge" });
   expect(region.textContent).toContain("Ready to merge");
   expect(screen.queryByRole("button", { name: "Merge" })).toBeNull();
+  f.close();
+});
+
+it("gives a viewer the server lets press (an inherited maintainer, an org admin) the button too (C59 minor)", async () => {
+  const f = setup(mergeSession({ ready: true }, { level: "view", owner: false, mayMerge: true }));
+  await screen.findByRole("region", { name: "Merge" });
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Merge" }).disabled).toBe(false);
   f.close();
 });
 

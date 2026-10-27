@@ -46,6 +46,8 @@ export const REVIEW_NUDGE_REPEAT_HOURS = 48;
 export const REVIEW_NUDGES_MAX = 3;
 export const CODE_REVIEWERS_MAX = 10;
 export const TRACKING_COALESCE_SECONDS = 30;
+/** A person's review is waited for: its wake is due this soon (approval-to-ready latency), where a push or a CI run keeps `TRACKING_COALESCE_SECONDS` to coalesce its many events. */
+export const TRACKING_REVIEW_COALESCE_SECONDS = 10;
 export const TRACKING_GATE_SECONDS = 60;
 export const TRACKING_MAX_ROWS = 25;
 /** What one pass may ask of GitHub for a task: sized from what one pull request really costs (status 8, a permission lookup for each of up to 8 reviewers, marking ready, asking for reviewers, with each kind of token minted once). */

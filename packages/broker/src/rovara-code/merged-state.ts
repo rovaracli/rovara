@@ -12,6 +12,11 @@ export interface MergedStateTable { documentClient: { send(command: unknown): Pr
 export interface MergedStateTask { taskId: string; orgId?: OrgId | undefined; sessionId?: string | undefined; workspaceId?: string | undefined }
 /** What GitHub said of a pull request this save finds merged. */
 export interface MergedObservation { repositoryId: string; number: number; mergedBy?: string | undefined }
+/**
+ * A pull request record the caller already updates in the same transaction, and whose update already sets its state to "merged" (the pushed fix's save, which records the head a push that landed
+ * without its callback left and GitHub's state in one update). DynamoDB refuses a transaction with two operations on one item, so the record is updated once, by the caller (C59).
+ */
+export interface MergedRecordWrittenByCaller { repositoryId: string; number: number }
 
 /** A login GitHub could have issued; anything else is left out of the timeline. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/u;
@@ -28,6 +33,7 @@ const isMerged = (workflow: WorkflowSnapshot, repositoryId: string, number: numb
  */
 export async function mergedStateItems(
   table: MergedStateTable, task: MergedStateTask, before: WorkflowSnapshot, after: WorkflowSnapshot, now: string, observed: readonly MergedObservation[] = [],
+  recordsWrittenByCaller: readonly MergedRecordWrittenByCaller[] = [],
 ): Promise<TransactItem[]> {
   const newly = (after.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "MERGED" && !isMerged(before, pullRequest.repositoryId, pullRequest.number));
   if (newly.length === 0 || task.orgId === undefined) return [];
@@ -47,7 +53,7 @@ export async function mergedStateItems(
       const fields = { ...rest, state: "merged" as const };
       items.push(trackingWriteItem(table.tableName, prior, { ...fields, decisionDigest: mergeTrackingDecisionDigest(fields), version: prior.version + 1, observedAt: now }));
     }
-    if (task.workspaceId !== undefined) {
+    if (task.workspaceId !== undefined && !recordsWrittenByCaller.some((written) => written.repositoryId === pullRequest.repositoryId && written.number === pullRequest.number)) {
       const key = pullRequestRecordKey(task.workspaceId, pullRequest.repositoryId, pullRequest.number);
       try {
         const stored = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: { state?: unknown } };

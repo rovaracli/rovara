@@ -320,6 +320,24 @@ describe("a taken-over session names its effective owner (review m-4)", () => {
   });
 });
 
+describe("who may press Merge, for a viewer whose level alone would hide the button (C59 minor)", () => {
+  it("tells an org admin with no share that they may press, and nobody else at view level", async () => {
+    const r = readWorld();
+    const { sessionId } = r.w.seedSession();
+    // The owner presses with `edit`; the page needs nothing more for them.
+    expect((await view(r, PRIYA, sessionId)).you).not.toHaveProperty("mayMerge");
+    // An org admin who was given no share reads the task at view level, and the server lets them press Merge (pressMerge: owner, maintainer of the project, or org admin).
+    const admin = await view(r, OLA, sessionId);
+    expect(admin.you.level).toBe("view");
+    expect(admin.you).toMatchObject({ mayMerge: true });
+    // A contributor or a viewer of the project who is neither the owner nor a maintainer is refused by the server, so the page is not told they may.
+    r.shareWith(sessionId, MIA);
+    expect((await view(r, MIA, sessionId)).you).not.toHaveProperty("mayMerge");
+    r.shareWith(sessionId, ARJUN);
+    expect((await view(r, ARJUN, sessionId)).you).not.toHaveProperty("mayMerge");
+  });
+});
+
 describe("reading a local session", () => {
   it("shows the tool and whether the Mac is offline, and only to the owner and the people it was shared with", async () => {
     const r = readWorld();

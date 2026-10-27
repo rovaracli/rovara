@@ -64,7 +64,8 @@ export const SessionViewSchema = z
     approvals: z.array(z.object({ approvalId: z.string().min(1).max(100), title: z.string().min(1).max(300), confirmUrl: LinkSchema }).strict()).max(50),
     followers: CountSchema,
     viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX),
-    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length) }).strict(),
+    // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
+    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional() }).strict(),
     link: LinkSchema,
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
