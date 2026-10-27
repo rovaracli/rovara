@@ -170,7 +170,7 @@ import { clearOrgConnections, type OrgConnectionStore } from "../connections/sto
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
-import { PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
+import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
 import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
 import { startCodeIntent } from "../rovara-code/intent.js";
@@ -2028,6 +2028,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     };
     if (playbookProcessRoute !== null) return routeProjectProcess(playbookDeps, caller, playbookProcessRoute[1]!);
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
+  }
+  // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
+  if (request.method === "GET" && howWeWorkRoute !== null) {
+    return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
   }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {

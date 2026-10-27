@@ -4,12 +4,14 @@ import {
   ProjectPlaybookBodySchema,
   agentXError,
   projectAllows,
+  type HowWeWorkView,
   type ProjectPlaybookResponse,
   type ProjectRole,
 } from "@agentx/contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
 import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer, type ProcessAgentReader } from "./project-process.js";
@@ -18,6 +20,10 @@ import { requireProcessLayer, type ProcessAgentReader } from "./project-process.
 export const PLAYBOOK_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook$/;
 /** `POST` here makes sure the project has its process layer (process-layer.ts). */
 export const PLAYBOOK_PROCESS_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook\/process$/;
+
+/** `GET` here is the effective view of the project's process (effective.ts). */
+export const HOW_WE_WORK_PATH = /^\/v1\/app\/projects\/([^/]+)\/how-we-work$/;
+export type { HowWeWorkDependencies };
 
 export interface ProjectPlaybookDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -65,4 +71,10 @@ export async function routeProjectProcess(deps: ProjectPlaybookDependencies, cal
 /** Routes one request on `PLAYBOOK_PATH`; the caller has matched the path and the method (GET or PUT). */
 export async function routeProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, method: "GET" | "PUT", rawProject: string, body: () => unknown): Promise<StatusReply | ProjectPlaybookResponse> {
   return method === "GET" ? getProjectPlaybook(deps, caller, rawProject) : putProjectPlaybook(deps, caller, rawProject, body());
+}
+
+/** `GET /v1/app/projects/{p}/how-we-work`: the project's process as stages, every value marked with where it comes from. To anyone who can see the project; nothing is written. */
+export async function getProjectHowWeWork(deps: HowWeWorkDependencies, caller: DeveloperCaller, rawProject: string): Promise<HowWeWorkView> {
+  const { name } = await deps.projectFor(caller, rawProject);
+  return computeHowWeWork(deps, caller.orgId, name);
 }
