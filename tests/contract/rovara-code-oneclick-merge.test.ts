@@ -170,13 +170,14 @@ describe("the risk a press has seen", () => {
   });
 
   it("riskOfTask: the recorded risk, or medium when none is recorded, the code changed since, or someone else pushed", () => {
-    const base = { definitionVersion: "1.1.0" } as never;
-    expect(riskOfTask({ ...base, risk: risk("low") }, [{ headByRovara: true }])).toEqual({ level: "low", reasons: ["A reason in words."] });
-    expect(riskOfTask({ ...base, risk: risk("high") }, [{ headByRovara: true }])).toEqual({ level: "high", reasons: ["A reason in words."] });
-    expect(riskOfTask(base, [{ headByRovara: true }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("hasn't judged")] });
-    expect(riskOfTask({ ...base, risk: risk("low"), candidate: { digest: "d".repeat(64) } } as never, [{ headByRovara: true }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("earlier code")] });
-    expect(riskOfTask({ ...base, risk: risk("low") }, [{ headByRovara: false }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("Someone else pushed"), "A reason in words."] });
-    expect(riskOfTask({ ...base, risk: risk("high") }, [{ headByRovara: false }]).level).toBe("high");
+    const base: Record<string, unknown> = { definitionVersion: "1.1.0" };
+    const of = (extra: Record<string, unknown>, items: Array<{ headByRovara: boolean }>) => riskOfTask({ ...base, ...extra } as never, items);
+    expect(of({ risk: risk("low") }, [{ headByRovara: true }])).toEqual({ level: "low", reasons: ["A reason in words."] });
+    expect(of({ risk: risk("high") }, [{ headByRovara: true }])).toEqual({ level: "high", reasons: ["A reason in words."] });
+    expect(of({}, [{ headByRovara: true }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("hasn't judged")] });
+    expect(of({ risk: risk("low"), candidate: { digest: "d".repeat(64) } }, [{ headByRovara: true }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("earlier code")] });
+    expect(of({ risk: risk("low") }, [{ headByRovara: false }])).toMatchObject({ level: "medium", reasons: [expect.stringContaining("Someone else pushed"), "A reason in words."] });
+    expect(of({ risk: risk("high") }, [{ headByRovara: false }]).level).toBe("high");
   });
 
   it("the task view carries the risk, in a shape the contract allows", async () => {
