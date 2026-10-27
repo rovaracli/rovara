@@ -242,6 +242,8 @@ const notOnProject = (name: string, project: string) => agentXError("AGENT_NOT_O
 
 /** A custom agent runs only where a maintainer has put it. */
 async function requireOnRoster(deps: RosterDependencies, orgId: OrgId, project: string, agent: AgentRecord): Promise<void> {
+  // A project's own process layer is never on the roster (it is kept out of every list of agents), and it is how the project works, so it works where it belongs.
+  if (agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project) return;
   if (await readEntry(deps, orgId, project, agent.agentId) === undefined) throw notOnProject(agent.name, project);
 }
 

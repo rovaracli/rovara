@@ -170,6 +170,7 @@ import { clearOrgConnections, type OrgConnectionStore } from "../connections/sto
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
+import { projectProcessOf } from "../playbook/project-process.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
 import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
@@ -1596,6 +1597,7 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
     starter: agentRunStarterOf(deps),
     startPlainTask: (who, body, thread) => startTask(developerTaskRouteDependencies(deps, who, thread), who, body),
     ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
+    projectProcess: (orgId, project) => projectProcessOf({ documentClient: deps.documentClient, tableName: deps.tableName, store: deps.agents?.store }, orgId, project),
     origin: new URL(deps.developer.issuer).origin,
     visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
     // A follow-up may follow only a task of the caller's own org, whose session they can see, that ended Answered (read now, never trusted from the request).
