@@ -7,7 +7,7 @@
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
 import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
+  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
   type SessionLevel,
 } from "@agentx/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
@@ -241,6 +241,71 @@ export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string |
     ...(typeof description.note === "string" && description.note.trim() !== "" ? [clean(description.note)] : []),
   ];
   return result(answer, answer.body, `${[what, ...note, linkOf(answer.url, id, view.link)].join("\n")}\n`);
+}
+
+// ---- Rovara Code's questions (Plan 6 Task 5, with the Task 25 slice)
+
+interface AskedQuestion { id: string; text: string; options: Array<{ id: string; label: string }>; recommended?: string }
+
+/** The round and the questions a task waits on, from its view; undefined when it is not waiting for answers. The questions are a model's words: they are made safe for a terminal where they are printed. */
+function askedQuestions(task: Body): { round: number; questions: AskedQuestion[] } | undefined {
+  const workflow = (task.workflow ?? {}) as Body;
+  const intent = (workflow.intent ?? {}) as Body;
+  const assessment = (intent.assessment ?? {}) as Body;
+  if (workflow.stage !== "UNDERSTAND" || workflow.state !== "WAITING" || assessment.kind !== "questions" || typeof intent.rounds !== "number") return undefined;
+  const questions = list(assessment.questions).flatMap((question): AskedQuestion[] => (typeof question.id === "string" && typeof question.text === "string" ? [{
+    id: question.id, text: question.text,
+    options: list(question.options).flatMap((option) => (typeof option.id === "string" && typeof option.label === "string" ? [{ id: option.id, label: option.label }] : [])),
+    ...(typeof question.recommended === "string" ? { recommended: question.recommended } : {}),
+  }] : []));
+  return questions.length === 0 ? undefined : { round: intent.rounds, questions };
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/**
+ * `session answer <task-or-session> [--q1 <option|text> [--q2 ...]]` answers the questions Rovara Code asked before it plans, on the route the app uses
+ * (`POST /v1/app/sessions/{id}/answers`): the person needs "can use" on the session, and the control plane decides every refusal and prints it as it wrote it. An answer that names an option (its
+ * letter or its words) picks it; anything else is the person's own words ("your call" leaves the question to Rovara). With no answer given the command only shows the questions and how to answer them.
+ * `answers[0]` is the answer to question 1.
+ */
+export async function sessionAnswer(
+  deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { answers: ReadonlyArray<string | undefined> },
+): Promise<AppResult> {
+  const id = await sessionOfRef(deps, env, ref);
+  const read = await appRequest(deps, env, sessionPath(id), { headers: { [TASK_VIEW_HEADER]: TASK_VIEW_VERSION } });
+  const view = (read.body.session ?? {}) as Body;
+  const body = (view.body ?? {}) as Body;
+  if (body.kind !== "task") throw agentXError("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  const asked = askedQuestions((body.task ?? {}) as Body);
+  if (asked === undefined) throw agentXError("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  const { round, questions } = asked;
+  const given = input.answers.flatMap((answer, index) => (answer === undefined ? [] : [{ index, answer }]));
+  const beyond = given.find((entry) => entry.index >= questions.length);
+  if (beyond !== undefined) throw agentXError("CONFIG_INVALID", `This task asks ${plural(questions.length, "question", "questions")}, so there is no --q${beyond.index + 1}.`);
+  if (given.length === 0) {
+    const flags = questions.map((question, index) => `--q${index + 1} <${[...question.options.map((option) => option.id), "your own words"].join("|")}>`).join(" ");
+    const lines = [
+      `Rovara has ${plural(questions.length, "question", "questions")} before it plans ${clean(str(view.title, "this task"))}:`,
+      ...questions.flatMap((question, index) => [
+        `  ${index + 1}. ${clean(question.text)}`,
+        ...question.options.map((option) => `     ${clean(option.id)}) ${clean(option.label)}${question.recommended === option.id ? " (recommended)" : ""}`),
+      ]),
+      `Answer them all: agentx session answer ${id} ${flags}`,
+      `Say "${YOUR_CALL_WORDS}" for any you don't mind.`,
+      linkOf(read.url, id, view.link),
+    ];
+    return result(read, { round, questions, link: linkOf(read.url, id, view.link) }, `${lines.join("\n")}\n`);
+  }
+  const answers = given.map(({ index, answer }) => {
+    const question = questions[index]!;
+    const said = answer.trim().toLowerCase();
+    const option = question.options.find((candidate) => candidate.id.toLowerCase() === said || candidate.label.trim().toLowerCase() === said);
+    return option === undefined ? { questionId: question.id, text: answer } : { questionId: question.id, optionId: option.id };
+  });
+  const sent = await appRequest(deps, env, sessionPath(id, "/answers"), { method: "POST", body: { requestId: randomUUID(), round, answers } });
+  const after = (sent.body.session ?? {}) as Body;
+  return result(sent, sent.body, `${[`Answered. Rovara is planning again with your ${plural(answers.length, "answer", "answers")}.`, linkOf(sent.url, id, after.link ?? view.link)].join("\n")}\n`);
 }
 
 // ---- Merge (Plan 6 Task 19, with the Task 25 slice)

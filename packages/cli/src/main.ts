@@ -14,6 +14,7 @@ import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_PLACEHOLDER,
   EnvironmentNameSchema,
+  INTENT_QUESTIONS_MAX,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
   OrgRoleSchema,
@@ -88,7 +89,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { homeCards, sessionControl, sessionFollow, sessionLinkIssue, sessionMerge, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
+import { homeCards, sessionAnswer, sessionControl, sessionFollow, sessionLinkIssue, sessionMerge, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -792,7 +793,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       }));
     });
-  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over, share it, link it to a Linear issue or press Merge on its pull request");
+  const session = program.command("session").description("look at one session, comment on it, tell its agent, answer its questions, stop it, retry it, take it over, share it, link it to a Linear issue or press Merge on its pull request");
   session
     .command("show")
     .description("show a session: its link, status, owner, cost and what waits for you")
@@ -813,10 +814,18 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "comment", text)));
   session
     .command("tell")
-    .description("send a message to the session's agent; it needs \"can use\" on the session")
+    .description("send a message to the session's agent; it needs \"can use\" on the session. To answer Rovara's questions use session answer")
     .argument("<session-id>", "the session's ID")
     .argument("<text>", "the message")
     .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "steer", text)));
+  // Rovara Code's questions (Plan 6 Task 5, Task 25): `--q1` answers question 1, `--q2` question 2 (an option's letter or words, or your own words).
+  const answerCommand = session
+    .command("answer")
+    .description("answer the questions Rovara Code asked before it plans; with no --qN it shows the questions. It needs \"can use\" on the session")
+    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID");
+  for (let number = 1; number <= INTENT_QUESTIONS_MAX; number += 1) answerCommand.option(`--q${number} <answer>`, `the answer to question ${number}: an option's letter or words, or your own words ("your call" leaves it to Rovara)`);
+  answerCommand.action(async (ref: string, options: Record<string, string | undefined>, command: Command) =>
+    printResult(command, await sessionAnswer(developerSession(), developerEnv(command), ref, { answers: Array.from({ length: INTENT_QUESTIONS_MAX }, (_unused, index) => options[`q${index + 1}`]) })));
   for (const action of ["stop", "retry"] as const) {
     session
       .command(action)

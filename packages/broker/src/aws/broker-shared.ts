@@ -54,6 +54,9 @@ export const UNEXPECTED_REQUEST_MESSAGE = "AgentX could not handle this request;
 export const SHARED_WORKSPACE_REREAD = "Other people also change this workspace between your turns. Read a file again before you change it.";
 
 /** Refuses an ordinary write-capable turn on a gated task (gap 10a); user-facing, so it avoids internal terms. */
+/** What more instructions to a Rovara Code task that waits for answers to its questions are told: only the answers resume it. */
+export const waitingForAnswersTurnRefusal = (sessionId: string | undefined): string =>
+  `This task is waiting for your answers to Rovara's questions, so it can't take more instructions yet. Answer them in the app, ${sessionId === undefined ? "with agentx session answer" : `with agentx session answer ${sessionId}`}, or with agentx_answer_task_questions.`;
 export const GATED_TASK_TURN_REFUSAL = "This task is waiting on its own approval steps. Use its approval buttons or the task's decision tool instead of sending more instructions.";
 /** Refuses a pull request anyone asks for on a gated task (ruling A): AgentX opens its draft itself. User-facing. */
 export const GATED_TASK_PULL_REQUEST_REFUSAL = "AgentX opens the draft pull request for this task itself once checks and reviews pass";

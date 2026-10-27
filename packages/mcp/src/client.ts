@@ -145,6 +145,8 @@ export interface ControlPlaneClient {
   /** A message to the session's agent; the caller needs "can use". */
   tellSessionAgent(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
   stopSession(sessionId: string, requestId: string): Promise<SessionViewRead>;
+  /** Rovara Code (Plan 6 Task 5): answers the questions a task waits on, in one call (every question needs an answer). The caller needs "can use" on the session. */
+  answerTaskQuestions(sessionId: string, request: { requestId: string; round: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }): Promise<SessionViewRead>;
 }
 
 /** An agent as the agent routes list it; the tool reads only the fields it shows. */
@@ -386,6 +388,7 @@ export function httpControlPlaneClient(options: {
     commentOnSession: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "comment", text: request.text }),
     tellSessionAgent: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "steer", text: request.text }),
     stopSession: async (sessionId, requestId) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session),
+    answerTaskQuestions: async (sessionId, request) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/answers"), request)).session),
     approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };
 }

@@ -116,7 +116,7 @@ export function isMeaningfulCode(code: string | undefined): boolean {
  * Sessions: broker codes that refuse an action on a session the person can see (a share too low for it, a session that has ended or runs on a Mac,
  * a local tool the company has not allowed). The server's own words are the answer, and the tool never retries.
  */
-const SESSION_REFUSALS = new Set<string>(["SESSION_LEVEL_REQUIRED", "LOCAL_AGENT_NOT_ALLOWED", "SESSION_ENDED", "SESSION_ON_MAC"]);
+const SESSION_REFUSALS = new Set<string>(["SESSION_LEVEL_REQUIRED", "LOCAL_AGENT_NOT_ALLOWED", "SESSION_ENDED", "SESSION_ON_MAC", "INTENT_NOT_WAITING"]);
 /** What the session routes say, word for word, for a session that is not there or not visible (the two look the same on purpose). */
 const SESSION_NOT_FOUND_TEXT = "session not found";
 
@@ -151,6 +151,8 @@ export function toolErrorFromResponse(status: number, value: unknown, signInComm
   if (code !== undefined && SESSION_REFUSALS.has(code)) return new ToolError("SESSION_REFUSED", message);
   if (status === 404 && code === "NOT_FOUND" && error?.message === SESSION_NOT_FOUND_TEXT) return new ToolError("SESSION_NOT_FOUND", message);
   if (code !== undefined && PASSED_THROUGH.has(code)) return new ToolError(code as ToolErrorCode, message, OWN_STEPS.get(`${code}:${message}`));
+  // A Rovara Code task that waits for answers is not busy running: the only way on is the answer tool, so waiting is not the next step.
+  if (code !== undefined && BUSY.has(code) && message.includes("agentx_answer_task_questions")) return new ToolError("TASK_BUSY", message, "answer the questions with agentx_answer_task_questions");
   if (code !== undefined && BUSY.has(code)) return new ToolError("TASK_BUSY", message, busyStep);
   if (code !== undefined && INVALID.has(code)) return new ToolError("INVALID_REQUEST", message);
   if (status >= 400 && status < 500) return new ToolError("CONTROL_PLANE_UNAVAILABLE", message, UNEXPECTED_ANSWER_STEP);
