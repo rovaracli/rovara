@@ -1,3 +1,4 @@
+import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey, orgMetaKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
@@ -78,6 +79,7 @@ export function createAdminDirectory() {
  } };
  return {
   setRole,
+  seedLaneB() { seedLaneB(put); },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
   async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
@@ -86,6 +88,7 @@ export function createAdminDirectory() {
   async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown) {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
    const deps = { ...base, documentClient, audit: runtime, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now }) };
+   if (method === "GET" && (path.startsWith("/v1/app/agents") || path.startsWith("/v1/app/org/agent-guardrails"))) return readLaneBAgents(deps, caller, path);
    return routeDeveloperRequest(deps, { method, path, headers: {}, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },
  };
