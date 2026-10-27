@@ -1,3 +1,4 @@
+import { takeRateAt } from "../developer/page-comments.js";
 // packages/broker/src/org/store.ts
 // Multi-tenancy: orgs, membership, invites and the Slack team binding. A developer belongs to at
 // most one org (the developer pointer's `attribute_not_exists(pk)` condition enforces it), and an
@@ -31,6 +32,7 @@ import {
   orgPk,
   orgRemovedKey,
   orgSettingsKey,
+  orgScoped,
   orgSlackTeamKey,
   budgetSyncedKey,
   slackTeamOrgKey,
@@ -302,6 +304,7 @@ export class OrgStore {
       const parsedEvent = AuditEventInputSchema.safeParse(auditOrgInviteCreated({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-created", input.orgId, inviteId), inviteId, role: input.role, targeted: input.email !== undefined }));
       if (!parsedEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
       const event = parsedEvent.data;
+      if (!await takeRateAt(this.input, { pk: orgScoped(input.orgId, "INVITE_CREATE_RATE"), sk: input.createdBy }, 20, 60_000)) throw coded("TOO_MANY_REQUESTS", "Too many invite creation attempts. Try again in a minute.");
       // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
       items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
       await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);

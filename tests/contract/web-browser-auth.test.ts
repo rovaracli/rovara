@@ -30,6 +30,26 @@ async function broker(extra: Record<string, unknown> = {}) {
  return { ...h, call, verify, methods };
 }
 describe("browser API boundary", () => {
+ it("shares create and revoke quotas across the real token and cookie request adapters", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-27T12:00:00Z"));
+  try {
+   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);
+   const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, token = { authorization: "Bearer test-only-bearer" };
+   for (let i = 0; i < 20; i++) expect((await h.call("POST", i % 2 === 0 ? "/v1/web/org/invites" : "/v1/app/org/invites", i % 2 === 0 ? headers : token, { requestId: randomUUID(), role: "member" })).status).toBe(200);
+   expect((await h.call("POST", "/v1/web/org/invites", headers, { requestId: randomUUID(), role: "member" })).status).toBe(429);
+   const ref = h.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!, body = { requestId: randomUUID(), expectedRevision: 0 }, path = `/org/invites/${String(ref.inviteId)}/revoke`;
+   for (let i = 0; i < 20; i++) expect((await h.call("POST", (i % 2 === 0 ? "/v1/web" : "/v1/app") + path, i % 2 === 0 ? headers : token, body)).status).toBe(200);
+   expect((await h.call("POST", "/v1/web" + path, headers, body)).status).toBe(429);expect(audit.flushed().filter(event => String(event.action) === "org.invite_revoked").length).toBe(1);
+  } finally { clock.mockRestore(); }
+ });
+ it("returns fixed accepted/revoked terminal codes through the real cookie error boundary", async () => {
+  for (const state of ["acceptedAt", "revokedAt"] as const) {
+   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+   expect((await h.call("POST", "/v1/web/org/invites", headers, { requestId: randomUUID(), role: "member", email: "private.person@example.test" })).status).toBe(200);
+   const invite = h.db.find(row => row.entityType === "ORG_INVITE")[0]!;h.db.set({ ...invite, [state]: new Date().toISOString() });const response = await h.call("POST", `/v1/web/org/invites/${String(invite.inviteId)}/revoke`, headers, { requestId: randomUUID(), expectedRevision: 0 });expect(response.status).toBe(409);expect(errorOf(response.body)).toEqual({ code: state === "acceptedAt" ? "INVITE_ALREADY_ACCEPTED" : "INVITE_ALREADY_REVOKED", message: state === "acceptedAt" ? "This invite has already been accepted." : "This invite has already been revoked." });
+  }
+ });
+
  it("revokes indexed invites through real cookie CSRF routes with atomic replay and live authority", async () => {
   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);
   const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
