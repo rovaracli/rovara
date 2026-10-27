@@ -1,6 +1,7 @@
 // Spec 025 FR-016 to FR-021: the developer task routes. Every task has its own workspace, reached
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
+import { personNameForText } from "../developer/requester-text.js";
 import { WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -655,8 +656,9 @@ function cutText(value: string, max: number): string {
 
 /** What a "who said it" reads when the owner's name is the Slack-ID fallback of a Slack-started task (or empty): no name anyone knows. */
 const OWNER_LABEL = TASK_OWNER_LABEL;
-export function ownerLabel(developerName: string): string {
-  return taskOwnerLabel(cutText(developerName, 80));
+export function ownerLabel(developerName: string, githubLogin?: string): string {
+  // C60: a person is named to others by their display name without any email address (a sign-in provider with no name for someone uses their address), else their linked GitHub login, else "the task owner".
+  return taskOwnerLabel(cutText(personNameForText(developerName, githubLogin) ?? "", 80));
 }
 
 /** The owner's request as a task keeps it: redacted and cut to 4,000 characters. */
@@ -677,11 +679,14 @@ export async function planWhyEntries(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">,
   task: Pick<DeveloperTaskRecord, "taskId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough"> & TaskOwnerSource,
   plannerEntries: PlanDocument["why"],
+  /** The GitHub login a person linked, for a name that is only an email address (C60); asked only then. */
+  loginOf?: (developerId: string) => Promise<string | undefined>,
 ): Promise<PlanDocument["why"]> {
   if (task.requestText === undefined) return plannerEntries.map((entry) => ({ text: entry.text, author: PLANNER_WHY_AUTHOR }));
   // The request is its creator's words; a reply from the owner is the owner's now (Plan 5 Task 12a): the person who took the task over, else the creator.
-  const requester = ownerLabel(task.developerName);
-  const owner = ownerLabel(ownerDisplayName(task));
+  const loginIfAddress = async (name: string, developerId: string | undefined) => loginOf === undefined || developerId === undefined || personNameForText(name) !== undefined ? undefined : loginOf(developerId);
+  const requester = ownerLabel(task.developerName, await loginIfAddress(task.developerName, task.developerId));
+  const owner = ownerLabel(ownerDisplayName(task), await loginIfAddress(ownerDisplayName(task), tryEffectiveTaskOwner(task)?.developerId));
   const through = task.threadNotesFedThrough;
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);

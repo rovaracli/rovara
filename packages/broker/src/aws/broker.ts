@@ -15959,7 +15959,7 @@ async function storePlanAnswer(
   }
   // The owner's real request (and the replies this step was given) is what the plan says it is for, not the planner's words.
   const step = await planStepComments(dependencies, task, artifactType);
-  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why) }, step, previousVersion);
+  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why, (developerId) => githubLoginOfDeveloper(dependencies, developerId)) }, step, previousVersion);
   const canonical = canonicalPlanJson(plan);
   if (Buffer.byteLength(canonical, "utf8") > WORKFLOW_PLAN_MAX_BYTES) return unreadable(["the plan is too long once saved"]);
 

@@ -313,6 +313,18 @@ describe("pressing Merge", () => {
     expect(await codeOf(press(w, ZED))).toMatchObject({ code: "NOT_FOUND" });
   });
 
+  // C60: the words that name who asked never carry an email address (a sign-in provider with no name for someone uses their address as the name).
+  it("names the requester without an email address in the refusal of a press", async () => {
+    const w = await ready();
+    const session = w.db.find((item) => item.pk === `ORG#${ORG_A}#AGENT_SESSION#${w.sessionId}` && item.sk === "META")[0]!;
+    w.db.set({ ...session, owner: { ...(session.owner as object), name: "priya@example.com" } });
+    const task = w.db.get(`DEVTASK#${w.taskId}`, "META")!;
+    w.db.set({ ...task, developerName: "priya@example.com" });
+    const forbidden = await codeOf(press(w, ARJUN));
+    expect(forbidden?.message).not.toContain("@");
+    expect(forbidden?.message).toContain("Only the person who asked, who asked for this");
+  });
+
   it("refuses a body with a field the route does not take, and a task that is not followed for its merge", async () => {
     const w = await ready();
     expect(await codeOf(pressMerge(w.shareDeps, w.caller(PRIYA), w.sessionId, { requestId: w.requestId(), payer: "x" }, w.deps))).toMatchObject({ code: "CONFIG_INVALID" });

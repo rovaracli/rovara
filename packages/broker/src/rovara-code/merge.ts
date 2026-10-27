@@ -37,6 +37,7 @@ import { parseControlBody } from "../agent-sessions/stop.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { createPendingChange, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../agents/approvals.js";
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";
+import { personNameForText } from "../developer/requester-text.js";
 import { ownerDisplayName, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { GitHubTokenScope, MergePullRequestResult } from "../github-app.js";
 import { parseGitHubRepository } from "../github-app.js";
@@ -188,10 +189,12 @@ export function requiredPullRequests(workflow: WorkflowSnapshot): PullRequestEnt
   return byRepository((workflow.pullRequests ?? []).filter((pr) => pr.required));
 }
 
-const requesterNameOf = (task: DeveloperTaskRecord): string => {
-  const name = ownerDisplayName(task);
-  return name.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 80) || "the person who asked";
+/** Who asked, for the words of a refusal: never an email address (C60; the display name without it, else "the person who asked"). */
+const requesterNameForWords = (name: string): string => {
+  const shown = personNameForText(name.replace(/[\p{Cc}\p{Cf}]/gu, " ")) ?? "";
+  return shown.slice(0, 80).trim() || "the person who asked";
 };
+const requesterNameOf = (task: DeveloperTaskRecord): string => requesterNameForWords(ownerDisplayName(task));
 
 // ---- readiness from what tracking stored (the press and the view)
 
@@ -286,7 +289,7 @@ export async function pressMerge(
   if (approvals === undefined || host === undefined) throw agentXError("RUNTIME_UNAVAILABLE", UNAVAILABLE);
   const access = await requireSessionLevel(deps, caller, sessionId, "view", "merge it");
   if (!access.owner && access.projectRole !== "maintainer" && !access.orgAdmin) {
-    throw agentXError("FORBIDDEN", `Only ${access.effectiveOwner.name}, who asked for this, or a maintainer of ${access.session.project ?? "its project"} can press Merge.`);
+    throw agentXError("FORBIDDEN", `Only ${requesterNameForWords(access.effectiveOwner.name)}, who asked for this, or a maintainer of ${access.session.project ?? "its project"} can press Merge.`);
   }
   if (access.session.subject.kind !== "task") throw agentXError("CONFIG_INVALID", "Only a task's pull requests are merged from Rovara.");
   const task = await host.loadTask(access.session.subject.taskId);

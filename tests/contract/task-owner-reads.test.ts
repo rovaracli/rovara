@@ -49,7 +49,7 @@ const ROWS: readonly Row[] = [
   ["developer/task-people.ts", "resolveTaskPeopleAccess", "owner-actor", "taskOwnerKey()"],
   ["developer/task-people.ts", "resolveTaskDispatchPeople", "owner-actor", ".developerId", "taskOwnerKey()"],
   ["aws/task-dispatch-access.ts", "guardTaskDispatchCore", "owner-actor", "taskOwnerKey()"],
-  ["aws/developer-tasks.ts", "planWhyEntries", "attribution", ".developerName"],
+  ["aws/developer-tasks.ts", "planWhyEntries", "attribution", ".developerName*2", ".developerId"],
   ["aws/developer-tasks.ts", "authorizeTaskAction", "caller-actor", "taskOwnerKey()"],
   // the session actor of a stop or retry (Plan 5 Task 13): a person's actor id on a task that is not theirs; it decides nothing about who owns it
   ["aws/developer-tasks.ts", "sessionActorAccess", "caller-actor", "taskOwnerKey()"],
