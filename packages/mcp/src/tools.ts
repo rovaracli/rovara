@@ -159,8 +159,7 @@ function taskOutput(shown: DeveloperTaskClientView, timedOut?: boolean): Record<
       workflow: { stage: "unknown", state: typeof workflow?.state === "string" ? workflow.state : "unknown", revision: typeof workflow?.revision === "number" ? workflow.revision : 0 },
     };
   }
-  const activeArtifactType = task.workflow?.path === "FULL" && task.workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
-    : task.workflow?.path === "FULL" && task.workflow.reviewPhase === "DESIGN" ? "design" : "plan";
+  const activeArtifactType = activeArtifactTypeOf(task.workflow);
   const activeArtifact = task.workflow?.artifacts.filter((artifact) => artifact.type === activeArtifactType).at(-1);
   const planArtifact = task.workflow?.artifacts.filter((artifact) => artifact.type === "plan").at(-1);
   const workBreakdownDigest = activeArtifact?.type === "plan" ? task.workflow?.workBreakdownDigest : undefined;
@@ -249,12 +248,28 @@ function planCheckOutput(critique: WorkflowCritique) {
   };
 }
 
+/** The kind of document a plan gate asks the owner to approve: the requirements or the design in a Full task's first two gates, otherwise the coding plan. */
+const activeArtifactTypeOf = (workflow: { path?: string | undefined; reviewPhase?: string | undefined } | undefined): "requirements" | "design" | "plan" =>
+  workflow?.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements" : workflow?.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "design" : "plan";
+
+/**
+ * The values `agentx_decide_workflow` needs for the document under review, said in words: some clients show a model only a tool's text and not its structured answer, and a model that
+ * cannot see the digest and revision cannot approve. Read only; the values are the ones the structured answer carries (`approval_document.sha256`, `workflow.revision`, `work_breakdown_digest`).
+ */
+function approvalValuesText(workflow: NonNullable<DeveloperTaskClientView["workflow"]>): string {
+  const type = activeArtifactTypeOf(workflow);
+  const document = workflow.artifacts.filter((artifact) => artifact.type === type).at(-1);
+  if (document === undefined) return "";
+  const breakdown = type === "plan" && workflow.workBreakdownDigest !== undefined ? `, and to approve also work_breakdown_digest ${workflow.workBreakdownDigest}` : "";
+  return ` To decide it, pass artifact_digest ${document.sha256} and expected_revision ${String(workflow.revision)}${breakdown}.`;
+}
+
 /** What the AI tool can do next with a task in this state. */
 function nextFor(shown: DeveloperTaskClientView): string {
   const task = knownTaskView(shown);
   if (task === undefined) return `This task is at a step this version of the AgentX tools doesn't know, so it can't say what to do next: ${UPGRADE_AGENTX_STEP}.`;
   if (task.workflow?.state === "WAITING" && task.workflow.stage === "PLAN_REVIEW") {
-    return "Review the current approval_document, then use agentx_decide_workflow with its exact sha256 and expected revision. If the task output includes work_breakdown_digest, include that exact value when choosing APPROVE; omit it for REQUEST_CHANGES. Quick has one approval; Full has requirements, design, and coding-plan approvals before implementation.";
+    return `Review the current approval_document, then use agentx_decide_workflow with its exact sha256 and expected revision. If the task output includes work_breakdown_digest, include that exact value when choosing APPROVE; omit it for REQUEST_CHANGES. Quick has one approval; Full has requirements, design, and coding-plan approvals before implementation.${approvalValuesText(task.workflow)}`;
   }
   if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "REVIEW") {
     const workflow = task.workflow;
