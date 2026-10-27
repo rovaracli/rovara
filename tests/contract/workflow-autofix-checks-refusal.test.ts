@@ -15,12 +15,15 @@ const ON: Config = { enabled: true, capUsd: 1000, roundEstimateUsd: 3 };
 const withoutLaunchRecipe = (files: Record<string, string>) => ({ ...files, "api-a/package.json": JSON.stringify({ name: "@acme/a", version: "1.0.0", dependencies: { express: "4.0.0" } }) });
 
 /** Runs the round to its first dispatch, which the candidate's missing recipe refuses; returns the harness the dispatch ran on. */
-async function refusedRound(autofix: Config | undefined) {
+async function refusedRound(autofix: Config | undefined, beforeRefusal?: (harness: RoundBrokerHarness, taskId: string) => void) {
   let seen: RoundBrokerHarness | undefined;
   await expect(startApplicationRound({
     candidateTree: withoutLaunchRecipe,
     ...(autofix === undefined ? {} : { brokerExtra: { autofix } }),
-    beforeDispatch: (harness) => { seen = harness; },
+    beforeDispatch: (harness) => {
+      seen = harness;
+      if (beforeRefusal !== undefined) beforeRefusal(harness, String(harness.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!.taskId));
+    },
   })).rejects.toThrow(/the dispatch started 0 CHECKS operations/);
   const harness = seen!;
   const record = harness.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!;
@@ -73,5 +76,39 @@ describe("a CHECKS dispatch refusal is decided by automatic fixing like any othe
     expect(round.rows()).toEqual([]);
     expect(round.task().autofixAsk).toBeUndefined();
     expect(round.task().workflow.decisions.filter((decision) => decision.actorRole === "AGENTX")).toEqual([]);
+  });
+});
+
+// Round 11, I1: the CHECKS dispatch writes its block before the round starts. Mainline's automatic fixing (#408) must stay out of Plan 6's fix rounds (fixSource set) and out of any task that
+// already has a pull request, at this trigger site as at the finished-run one (workflow-autofix-money.test.ts). Removing the guard in blockWorkflowE2EReadiness' sibling write (broker.ts, the
+// AUTOFIX row in the dispatch's block transaction) must fail these.
+describe("the CHECKS dispatch's block is not looked at by automatic fixing inside a fix round or once a pull request is open (Round 11, I1)", () => {
+  const taskNow = (harness: RoundBrokerHarness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; autofixAsk?: unknown };
+  const expectUntouched = (round: Awaited<ReturnType<typeof refusedRound>>) => {
+    expect(round.task().workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+    expect(round.task().workflow.blockReason).toContain("could not be started");
+    expect(round.rows().filter((row) => row.kind === "AUTOFIX")).toEqual([]);
+    expect(round.task().workflow.decisions.filter((decision) => decision.actorRole === "AGENTX")).toEqual([]);
+    expect(round.task().autofixAsk).toBeUndefined();
+  };
+
+  it("a refused round inside one of Plan 6's fix rounds (fixSource set): no row, no decision, no ask", async () => {
+    const round = await refusedRound(ON, (harness, taskId) => {
+      const task = taskNow(harness, taskId);
+      harness.db.set({ ...task, workflow: { ...task.workflow, fixSource: "ci" } });
+    });
+    expect(round.task().workflow.fixSource).toBe("ci");
+    expectUntouched(round);
+  });
+
+  it("a refused round on a task whose pull request is already open: no row, no decision, no ask", async () => {
+    const round = await refusedRound(ON, (harness, taskId) => {
+      const task = taskNow(harness, taskId);
+      const candidate = task.workflow.candidate!;
+      harness.db.set({ ...task, workflow: { ...task.workflow, pullRequests: [{ repositoryId: candidate.repositories[0]!.repositoryId, number: 7, url: "https://github.com/acme/demo/pull/7",
+        candidateDigest: candidate.digest, required: true, state: "OPEN" }] } });
+    });
+    expect(round.task().workflow.pullRequests).toHaveLength(1);
+    expectUntouched(round);
   });
 });

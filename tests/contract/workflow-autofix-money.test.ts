@@ -4,9 +4,9 @@
 //  3. Rovara's caller is scoped to the task's org with the plain member role, and acts as the task's effective owner.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, wholeTaskSpendUsd, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, createCandidateManifest, wholeTaskSpendUsd, type WorkflowSnapshot } from "@agentx/contracts";
 import { AutoFixAskSchema } from "../../packages/broker/src/developer/autofix-messages.js";
-import { automaticCaller, autoSendBackToCodingFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
+import { automaticCaller, autoRetryChecksFromSystem, autoSendBackToCodingFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call } from "../support/slack-broker.js";
@@ -114,6 +114,28 @@ describe("automatic fixing and the run limit's window (MONEY, owner ruling pendi
     const outcome = await autoSendBackToCodingFromSystem(deps, taskId, { expectedRevision: blocked.workflow.revision, reason: "Sent back by itself.", spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 } });
     expect(outcome).toBe("STARTED");
     expect(taskOf(harness, taskId).workflow.decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(1);
+    expect(taskOf(harness, taskId).budgetBaselineUsd).toBe(0);
+  });
+
+  // Round 11, I2: the retry path's own "keeps the window" guard (developer-tasks.ts, `automatic === undefined ? capWindowUpdate(...) : AUTOMATIC_KEEPS_WINDOW`), proven where the route HAS model
+  // access (production's autofix route has none today, which would hide a missing guard). The task's key spent SPENT before the block, so a retry that opened a window would set the baseline to SPENT.
+  it("even where the route has model access, Rovara's automatic Retry checks leaves the window alone (R38 is a person's retry only)", async () => {
+    const installed = await install(null);
+    const { harness, access } = installed;
+    const { taskId, approvedWindow } = await blockedOnFindings(installed);
+    expect(approvedWindow).toBe(0);
+    const reviewed = taskOf(harness, taskId);
+    // Checks that could not run on Rovara's side block the VERIFY step of the same candidate.
+    harness.db.set({ ...reviewed, workflow: { ...reviewed.workflow, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.checkRunnerFailed, revision: reviewed.workflow.revision + 1 } });
+    const blocked = taskOf(harness, taskId);
+    const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
+    const owner = { developerId: MAYA.developerId, sessionId: "s", amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const base = { documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions, modelAccess: access, cloud: true } as unknown as Parameters<typeof developerTaskRouteDependencies>[0];
+    const deps = developerTaskRouteDependencies(base, owner);
+    const outcome = await autoRetryChecksFromSystem(deps, taskId, { expectedRevision: blocked.workflow.revision, reason: "Retried by itself.", spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 } });
+    expect(outcome).toBe("STARTED");
+    expect(taskOf(harness, taskId).workflow.decisions.filter((decision) => decision.source === "AUTO_RETRY")).toHaveLength(1);
+    expect(taskOf(harness, taskId).workflow).toMatchObject({ stage: "VERIFY", state: "RUNNING" });
     expect(taskOf(harness, taskId).budgetBaselineUsd).toBe(0);
   });
 
