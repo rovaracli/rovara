@@ -1,3 +1,4 @@
+import { createInviteAdminApi } from "../../packages/ui/src/api/invite-admin.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -16,10 +17,10 @@ const CELL = "https://cell.example", SID = "11111111-1111-4111-8111-111111111111
 const COOKIE = `__Host-agentx_review_session=${SID}`;
 const PERSON = { userId: "U0WEB001", name: "Web member", email: "web-fixture@example.test" };
 const errorOf = (body: Record<string, unknown>) => body.error as { code: string; message: string };
-async function broker(extra: Record<string, unknown> = {}) {
+async function broker(extra: Record<string, unknown> = {}, webOrigin?: string) {
  const verify = vi.fn(async (authorization: string | undefined) => authorization === "Bearer test-only-bearer" ? { iss: CELL + "/v1/auth", aud: "agentx-developer", sub: WHO, sid: SID, amr: "cloud", env: "staging", org: TEST_ORG, org_role: "owner" } : {});
  const methods = { slack: false, oidc: false, cloud: true };
- const h = await createAdminBroker({ developer: { issuer: CELL + "/v1/auth", env: "staging", signInTableName: "signin", methods, verifyAccessToken: verify, channelMembers: async () => ({ ok: true, memberOf: [] }) }, extra });
+ const h = await createAdminBroker({ developer: { issuer: CELL + "/v1/auth", ...(webOrigin === undefined ? {} : { webOrigin }), env: "staging", signInTableName: "signin", methods, verifyAccessToken: verify, channelMembers: async () => ({ ok: true, memberOf: [] }) }, extra });
  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "owner" });
  h.db.set({ pk: `DEVELOPER#${WHO}`, sk: "META", developerId: WHO, displayName: "Web member", provider: "cloud" });
  h.db.set({ pk: `SESSION#${SID}`, sk: "META", sessionId: SID, developerId: WHO, amr: "cloud", startedAt: new Date(Date.now() - 60000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600 });
@@ -250,3 +251,5 @@ it("uses the real cookie Origin and CSRF boundary for reviewed creation and safe
  const first=await h.call("POST",path,headers,body);expect(first.status).toBe(200);expect(typeof first.body.inviteUrl==="string").toBe(true);const replay=await h.call("POST",path,headers,body);expect(replay.status).toBe(200);expect(replay.body.inviteUrl).toBeUndefined();expect(replay.body.receipt).toEqual(first.body.receipt);const recovery=await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`);expect(recovery.status).toBe(200);expect(recovery.body.receipt).toEqual(first.body.receipt);expect(Object.keys(recovery.body).sort()).toEqual(["receipt","requestId"]);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);
  seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`)).status).toBe(403);expect((await h.call("POST",path,headers,body)).status).toBe(403);
 });
+
+it("delivers a configured cloud join link across origins through the real cookie route and console client",async()=>{const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,cloud:true},"https://join.example.test");audit.attach(h.db);const host=fakeHost(async r=>h.call(r.method,r.path.replace("/v1/app/","/v1/web/"),{cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)},r.body));const result=await createInviteAdminApi(host.host,TEST_ORG).create({requestId:randomUUID(),role:"member",email:"private.person@example.test"});expect(new URL(result.inviteUrl!).origin).toBe("https://join.example.test");expect(result.receipt.orgId).toBe(TEST_ORG);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(1);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);});
