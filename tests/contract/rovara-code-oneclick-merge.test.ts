@@ -250,6 +250,14 @@ describe("code owners", () => {
     expect(w.github.mergeCalls).toEqual([]);
   });
 
+  it("fails closed when GitHub's list of changed paths is cut short", async () => {
+    const w = await ready();
+    w.github.codeOwners = "/docs/ @max-gh\n";
+    w.github.listChangedPaths = async () => ({ paths: ["src/index.ts"], complete: false });
+    expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.codeOwnersUnreadable });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
   it("applies to the confirmation page's merge too: the same gate on the same path", async () => {
     const w = await ready();
     w.github.codeOwners = "/src/ @max-gh\n";

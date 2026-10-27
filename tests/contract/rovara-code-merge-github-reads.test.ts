@@ -47,6 +47,7 @@ describe("reading CODEOWNERS", () => {
     const h = harness({});
     await expect(h.provider.readCodeOwners(REPO, "main?ref=evil", SCOPE)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(h.provider.readCodeOwners(REPO, "", SCOPE)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(h.provider.readCodeOwners(REPO, "a..b", SCOPE)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(h.requests).toEqual([]);
   });
 

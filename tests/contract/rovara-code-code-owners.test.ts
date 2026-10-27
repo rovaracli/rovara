@@ -81,7 +81,8 @@ describe("codeOwnerVerdict", () => {
   it("asks about a team once per login however many paths it owns", async () => {
     let asked = 0;
     const team = async () => { asked += 1; return "not_member" as const; };
-    await verdict("/src/ @acme/t", ["src/a", "src/b", "src/c"], ["x", "y"], team);
+    await verdict("/src/ @acme/t\n/docs/ @acme/t @other", ["src/a", "src/b", "docs/c"], ["x", "y"], team);
+    // Two sets of owners name the same team: each login is asked about once, not once per set.
     expect(asked).toBe(2);
   });
 });
