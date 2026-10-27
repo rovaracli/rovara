@@ -113,6 +113,6 @@ describe("the slack command", () => {
   it("is a top-level command with bind and unbind, beside admin slack bind", () => {
     const program = createCliProgram();
     expect(program.commands.find((command) => command.name() === "slack")?.commands.map((command) => command.name())).toEqual(["bind", "unbind"]);
-    expect(program.commands.find((command) => command.name() === "admin")?.commands.find((command) => command.name() === "slack")?.commands.map((command) => command.name())).toEqual(["bind", "unbind"]);
+    expect(program.commands.find((command) => command.name() === "admin")?.commands.find((command) => command.name() === "slack")?.commands.map((command) => command.name())).toEqual(["bind", "connect-team", "unbind"]);
   });
 });

@@ -33,6 +33,7 @@ import {
   TaskPeopleDisplayReadResponseSchema,
   AgentXError,
   agentXError,
+  projectArchivedMessage,
   LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
@@ -1335,6 +1336,8 @@ async function putProjectSlackChannel(deps: DeveloperRouteDependencies, caller: 
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
   const parsed = PutProjectSlackChannelBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
+  // Slack must not route new work to an archived project (an unbind is still allowed).
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
   const result = await bindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
   if (result.changed) logDeveloperEvent({ event: "developer.slack_channel_bound", orgId: caller.orgId, project: name });
   return result;

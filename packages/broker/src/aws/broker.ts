@@ -2705,6 +2705,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (request.method === "POST" && url.pathname === "/v1/admin/workspaces/prepare") {
         return json(await prepareWorkspace(dependencies, identity, body), request.requestId, 202);
       }
+      // Release 0.4.17: an operator connects a Slack workspace to a named org (an org of a cloud install has no other way to hold one).
+      const slackTeamRoute = /^\/v1\/admin\/slack\/teams\/([^/]+)$/.exec(url.pathname);
+      if (slackTeamRoute?.[1] && request.method === "PUT") {
+        return json(await connectSlackTeam(dependencies, identity, slackTeamRoute[1], body), request.requestId);
+      }
       const slackBinding = /^\/v1\/admin\/slack\/bindings\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (slackBinding?.[1] && slackBinding[2] && request.method === "PUT") {
         return json(await putSlackBinding(dependencies, identity, slackBinding[1], slackBinding[2], body), request.requestId);
@@ -4419,6 +4424,25 @@ function displayName(value: string | undefined): string | undefined {
   try {
     return cleanDisplayName(decodeURIComponent(value));
   } catch { return undefined; }
+}
+
+/**
+ * Release 0.4.17: `PUT /v1/admin/slack/teams/{teamId}` with `{ orgId }`. An operator (the admin pool, which belongs to no org) connects a Slack
+ * workspace to one named org, so its owner can then bind channels with the developer sign-in. Only an operator may: an org can never claim a
+ * workspace on a cloud install by itself. Repeating it for the same org changes nothing; a workspace another org holds is SLACK_TEAM_TAKEN.
+ */
+async function connectSlackTeam(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, teamIdValue: string, body: unknown): Promise<{ teamId: string; orgId: OrgId }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const teamId = SlackTeamIdSchema.safeParse(decodeURIComponent(teamIdValue));
+  const orgId = OrgIdSchema.safeParse(object(body, "Slack team connection").orgId);
+  if (!teamId.success) throw agentXError("CONFIG_INVALID", "teamId: not a Slack workspace ID");
+  if (!orgId.success) throw agentXError("CONFIG_INVALID", "orgId: not an organization ID");
+  const orgs = orgStoreOf(dependencies);
+  if (await orgs.getOrg(orgId.data) === undefined) throw agentXError("NOT_FOUND", "organization not found");
+  await orgs.bindSlackTeam({ orgId: orgId.data, teamId: teamId.data });
+  // The operator is named by a pseudonymous id, never by their identity.
+  console.log(JSON.stringify({ component: "broker", event: "admin.slack_team_connected", orgId: orgId.data, operator: auditOperatorId(identity.issuer, identity.subject) }));
+  return { teamId: teamId.data, orgId: orgId.data };
 }
 
 async function putSlackBinding(

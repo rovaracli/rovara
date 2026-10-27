@@ -35,7 +35,7 @@ import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pend
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
-import { bindSlackChannel, unbindSlackChannel } from "./admin/slack.js";
+import { bindSlackChannel, connectSlackTeam, unbindSlackChannel } from "./admin/slack.js";
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
 import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
@@ -1581,6 +1581,17 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         channelId: options.channel,
         projectName: AgentXNameSchema.parse(requireProject(globals)),
       }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  adminSlack
+    .command("connect-team")
+    .description("connect a Slack workspace to an organization, so its owner can bind channels with their own sign-in (Rovara operators)")
+    .requiredOption("--org <org-id>", "the organization's ID, for example org_abcdefghijklmnopqrst")
+    .requiredOption("--team <team-id>", "Slack workspace ID, for example T0123456789")
+    .action(async (options: { org: string; team: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await connectSlackTeam({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, teamId: options.team, orgId: options.org }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
   adminSlack

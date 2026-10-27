@@ -60,6 +60,9 @@ async function orgSlackTeams(deps: ProjectSlackChannelDependencies, orgId: OrgId
   return teams;
 }
 
+/** What an owner tells the Rovara operator, who alone connects a Slack workspace to an org on a cloud install. */
+const connectHint = (orgId: OrgId, teamId: string) => `Ask a Rovara operator to connect it: rovara admin slack connect-team --org ${orgId} --team ${teamId}`;
+
 /**
  * The Slack team a call is about: the one named, which must be the org's or the installation's, or the only one there is. Anything else is
  * SLACK_TEAM_NOT_BOUND (a team of another org, or of no one the org can reach) and nothing is written.
@@ -68,11 +71,11 @@ export async function resolveBindTeam(deps: ProjectSlackChannelDependencies, org
   const allowed = new Set(await orgSlackTeams(deps, orgId));
   if (deps.installSlackTeamId !== undefined) allowed.add(deps.installSlackTeamId);
   if (requested !== undefined) {
-    if (!allowed.has(requested)) throw agentXError("SLACK_TEAM_NOT_BOUND", "that Slack workspace is not connected to your organization");
+    if (!allowed.has(requested)) throw agentXError("SLACK_TEAM_NOT_BOUND", `that Slack workspace is not connected to your organization. ${connectHint(orgId, requested)}`);
     return requested;
   }
   const [only, ...others] = [...allowed];
-  if (only === undefined) throw agentXError("SLACK_TEAM_NOT_BOUND", "Slack is not connected to your organization yet");
+  if (only === undefined) throw agentXError("SLACK_TEAM_NOT_BOUND", `Slack is not connected to your organization yet. ${connectHint(orgId, "<Slack workspace ID>")}`);
   if (others.length > 0) throw agentXError("CONFIG_INVALID", "your organization has more than one Slack workspace; name the one with teamId");
   return only;
 }
