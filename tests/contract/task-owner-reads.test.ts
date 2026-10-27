@@ -57,6 +57,9 @@ const ROWS: readonly Row[] = [
   // Plan 6 Task 5: a person's answers to Understand's questions are recorded under their actor id on the task (the route checked that they may answer); it decides nothing about who owns the task
   ["aws/developer-tasks.ts", "answerIntentFromReply", "caller-actor", "taskOwnerKey()"],
   ["rovara-code/questions.ts", "answerIntentOnSession", "caller-actor", "taskOwnerKey()"],
+  // the test proof is read from the task's own object prefix (`private/<ownerKey>/<workspace>/<operation>/`): the task's principal, never changes
+  ["developer/test-proof-lines.ts", "loadTestProofLines", "principal", ".ownerKey"],
+  ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks.ts", "candidateChangedFiles", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],
