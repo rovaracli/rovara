@@ -51,15 +51,17 @@ export interface HowWeWorkDependencies extends Omit<ProjectPlaybookDependencies,
 
 type Lock = "company" | "rovara";
 const mark = <T>(value: T, source: HowWeWorkSource, lockedBy?: Lock): Marked<T> => (lockedBy === undefined ? { value, source, locked: false } : { value, source, locked: true, lockedBy });
-const rovara = (text: string, lockedBy?: Lock): Marked<string> => mark(text, "rovara", lockedBy);
-const project = (text: string): Marked<string> => mark(text, "project");
+/** A line of the page: redacted and cut to the contract's limit after it is composed, by code points. */
+const fit = (text: string): string => clip(redactText(text), HOW_WE_WORK_LINE_MAX);
+const rovara = (text: string, lockedBy?: Lock): Marked<string> => mark(fit(text), "rovara", lockedBy);
+const project = (text: string): Marked<string> => mark(fit(text), "project");
 
 const clip = (text: string, max: number): string => {
   const points = Array.from(text);
   return points.length <= max ? text : `${points.slice(0, max - 1).join("")}…`;
 };
 /** A line a person wrote, redacted and bounded for the page. */
-const line = (text: string): string => clip(redactText(text), HOW_WE_WORK_LINE_MAX);
+const line = fit;
 const sameJson = (left: unknown, right: unknown): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 
 /** The recipe the project runs, the built-in recipe it is built on (the baseline for "is this the company's"), and what the process layer itself wrote. */
@@ -91,7 +93,7 @@ interface Inputs {
 }
 
 const modelLabel = (model: { provider: string; modelId: string }): string => line(`${model.provider}/${model.modelId}`);
-const commandLabel = (command: { executable: string; args: string[] }): string => line(`${command.executable} ${command.args.join(" ")}`.trim()).slice(0, 80);
+const commandLabel = (command: { executable: string; args: string[] }): string => clip(fit(`${command.executable} ${command.args.join(" ")}`.trim()), 80);
 
 type StepSettings = { model?: { provider: string; modelId: string; thinkingLevel?: string } | null; thinkingLevel?: string | null; tools?: string[]; differentCompanyFrom?: string | null; instructions?: InstructionLayer[] };
 
@@ -169,9 +171,11 @@ function stageOf(step: ResolvedStep, inputs: Inputs): HowWeWorkStage {
   if (step.kind === "pull_request") {
     for (const section of ["Plan summary", "What changed", "Tests", "Reviews", "Risk"]) evidence.push(rovara(section));
     approves.push(rovara("Rovara never merges on its own: a person merges the pull request", "rovara"));
-    approves.push(project(`Self-approval: ${codeSettings.allowSelfApproval ? "allowed" : "not allowed"}`));
-    approves.push(project(`Merge method: ${codeSettings.mergeMethod}`));
-    if (codeSettings.codeReviewers.length > 0) approves.push(project(`Reviewers asked: ${line(codeSettings.codeReviewers.join(", "))}`));
+    // The code settings are the project's once it has saved them (a saved item has a revision); until then these are Rovara's defaults.
+    const own = (text: string): Marked<string> => (codeSettings.revision > 0 ? project(text) : rovara(text));
+    approves.push(own(`Self-approval: ${codeSettings.allowSelfApproval ? "allowed" : "not allowed"}`));
+    approves.push(own(`Merge method: ${codeSettings.mergeMethod}`));
+    if (codeSettings.codeReviewers.length > 0) approves.push(own(`Reviewers asked: ${codeSettings.codeReviewers.join(", ")}`));
   }
 
   return {

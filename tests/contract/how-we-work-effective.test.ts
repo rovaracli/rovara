@@ -78,10 +78,12 @@ describe("a project with no process layer", () => {
     expect(v).toMatchObject({ project: "web", playbookRevision: 0, process: { kind: "builtin", agentId: ROVARA_CODE_AGENT_ID }, modelsEditable: false, rules: [] });
     expect(v.process.version).toBeUndefined();
     expect(v.stages.map((s) => s.id)).toEqual(["plan", "plan_critic", "build", "check", "review", "pull_request"]);
-    const notRovara = markedValues(v).filter((entry) => entry.source !== "rovara");
-    // The only values that are not Rovara's are the code settings the project always has (self-approval and merge method), on the pull request stage.
-    expect(notRovara.map((entry) => entry.where).sort()).toEqual(["pull_request.approves.1", "pull_request.approves.2"]);
-    expect(notRovara.every((entry) => entry.source === "project")).toBe(true);
+    // The project never saved code settings, so even those rows show the defaults as Rovara's.
+    expect(markedValues(v).filter((entry) => entry.source !== "rovara")).toEqual([]);
+    expect(stage(v, "pull_request").approves.items.slice(1)).toEqual([
+      { value: "Self-approval: not allowed", source: "rovara", locked: false },
+      { value: "Merge method: squash", source: "rovara", locked: false },
+    ]);
     // Nothing is locked by the company.
     expect(markedValues(v).some((entry) => entry.lockedBy === "company")).toBe(false);
     for (const s of v.stages) {
@@ -161,6 +163,56 @@ describe("the project's own settings", () => {
       { value: "Self-approval: allowed", source: "project", locked: false },
       { value: "Merge method: merge", source: "project", locked: false },
     ]);
+  });
+});
+
+describe("code settings", () => {
+  it("are the project's once saved, and the defaults (Rovara's) until then", async () => {
+    const w = mergeWorld();
+    const rows = async () => stage(await view(w), "pull_request").approves.items.slice(1);
+    expect(await rows()).toEqual([{ value: "Self-approval: not allowed", source: "rovara", locked: false }, { value: "Merge method: squash", source: "rovara", locked: false }]);
+    // Saved with the same values as the defaults: still the project's choice.
+    w.settings({ allowSelfApproval: false, mergeMethod: "squash" });
+    expect(await rows()).toEqual([{ value: "Self-approval: not allowed", source: "project", locked: false }, { value: "Merge method: squash", source: "project", locked: false }]);
+    w.settings({ codeReviewers: ["acme/reviewers"] });
+    expect((await rows()).at(-1)).toEqual({ value: "Reviewers asked: acme/reviewers", source: "project", locked: false });
+  });
+
+  it("are the defaults, as Rovara's, when the saved item cannot be read", async () => {
+    const w = mergeWorld();
+    w.settings({ mergeMethod: "rebase" as never });
+    expect((await view(w)).stages.at(-1)!.approves.items.slice(1).map((entry) => entry.source)).toEqual(["rovara", "rovara"]);
+  });
+
+  it("keep every line inside the contract's limit, however long the reviewers list is", async () => {
+    const w = mergeWorld();
+    const reviewers = Array.from({ length: 10 }, (_, i) => `org${String(i)}/${"r".repeat(100)}`);
+    w.settings({ codeReviewers: reviewers });
+    const v = await view(w);
+    const asked = stage(v, "pull_request").approves.items.at(-1)!.value;
+    expect(asked.startsWith("Reviewers asked: org0/")).toBe(true);
+    expect(Array.from(asked).length).toBeLessThanOrEqual(400);
+    expect(HowWeWorkViewSchema.safeParse(v).success).toBe(true);
+  });
+
+  it("build a view that parses from oversized inputs of every kind", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    w.settings({ allowSelfApproval: true, codeReviewers: Array.from({ length: 10 }, (_, i) => `org${String(i)}/${"r".repeat(100)}`) });
+    const long = "\u{1F600}".repeat(300);
+    seedDefinition(w, {
+      readiness: Array.from({ length: 64 }, (_, i) => command("npm", ["run", `${long}${String(i)}`])),
+      models: { default: { provider: "p".repeat(128), modelId: "m".repeat(256), thinkingLevel: "high" }, approved: [{ provider: "p".repeat(128), modelId: "m".repeat(256) }] },
+      developerTasks: { optionalWorkflowChecks: Array.from({ length: 16 }, (_, i) => ({ id: `check-${String(i)}`, label: "L".repeat(80), command: command("npm", [long]) })) },
+    });
+    await withProcessLayer(w, { instructions: "R".repeat(8192), steps: { build: { instructions: "B".repeat(8192) } } });
+    const v = await view(w);
+    const parsed = HowWeWorkViewSchema.safeParse(v);
+    expect(parsed.success, JSON.stringify(parsed.success ? "" : parsed.error.issues.slice(0, 2))).toBe(true);
+    // The positive control: the oversized inputs did reach the view, clipped.
+    expect(stage(v, "check").checked.items).toHaveLength(80);
+    expect(Array.from(stage(v, "check").checked.items[0]!.value).length).toBeLessThanOrEqual(400);
+    expect(stage(v, "build").knows.instructions.some((entry) => entry.value.length === 8192)).toBe(true);
   });
 });
 
