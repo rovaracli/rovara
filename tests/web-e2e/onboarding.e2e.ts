@@ -1,7 +1,10 @@
 import { test,expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
-test("keyboard onboarding preserves real setup progress and ends at the project seam",async({page,context,request,baseURL})=>{
- await request.post("/__mock/scenario",{data:{name:"onboarding"}});await page.route("https://github.com/apps/rovara/installations/new",route=>route.fulfill({status:302,headers:{location:baseURL!+"/__mock/github-install"}}));await context.clearCookies();await page.goto("/app/signup");
+test("keyboard onboarding preserves real setup progress and ends at the project seam",async({page,context,request,baseURL,browserName})=>{
+ await request.post("/__mock/scenario",{data:{name:"onboarding"}});await page.route("https://github.com/apps/rovara/installations/new",route=>browserName==="webkit"
+  // Playwright cannot fulfil a request with a redirect status in WebKit ("Cannot fulfill with redirect status: 302"), so GitHub's hand-back is a page that moves on at once.
+  ?route.fulfill({status:200,contentType:"text/html",body:'<!doctype html><meta http-equiv="refresh" content="0;url='+baseURL!+'/__mock/github-install">'})
+  :route.fulfill({status:302,headers:{location:baseURL!+"/__mock/github-install"}}));await context.clearCookies();await page.goto("/app/signup");
  await page.getByRole("button",{name:"Sign up or sign in"}).focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading",{name:"Sign in to the mock cell"})).toBeVisible();await page.getByRole("button",{name:"Sign in",exact:true}).focus();await page.keyboard.press("Enter");
  await page.getByLabel("Company name").fill("Acme");await page.getByRole("button",{name:"Continue",exact:true}).focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading",{name:"Connect GitHub",exact:true})).toBeVisible();
  await page.getByRole("button",{name:"Connect GitHub",exact:true}).focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading",{name:"Choose repositories"})).toBeVisible();await page.getByLabel("acme/payments").focus();await page.keyboard.press("Space");await page.getByLabel("Project name",{exact:true}).fill("payments");await page.getByRole("button",{name:"Create project"}).focus();await page.keyboard.press("Enter");
