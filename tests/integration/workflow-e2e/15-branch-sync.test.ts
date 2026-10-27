@@ -123,7 +123,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(after.fixRounds).toBeUndefined();
     expect(milestones(e2e, "stuck")).toEqual([]);
     // The thread says so once, in its own words (a merge of the base is not a fix).
-    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Review it and merge it on GitHub; I'll finish this task when it's merged.`);
+    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.`);
     // The workspace is on the merge, with the base's file.
     expect(await e2e.repoFile("upstream.ts")).toBe("export const upstream = 1;\n");
     // It does not merge again: the next pass reads a branch that has the base, on a head that is Rovara's.
