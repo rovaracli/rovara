@@ -396,7 +396,7 @@ describe("a version 2 task starts by understanding", () => {
     const run = await t.understanding();
     await t.finish(run.workspaceId, run.operationId, "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
     const { workflow } = t.meta(run.taskId);
-    expect(workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
     expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
     await t.sweep();
     expect(t.operations(run.workspaceId).filter((item) => item.workflowMode === "UNDERSTAND")).toHaveLength(1);

@@ -27,6 +27,9 @@ function workflowOwnerAuthorized(legacyOwnerId: string, actorId: string, authori
 /** The worker's refusal when a coding run leaves every repository as it was when the task started: nothing to check or publish. */
 export const WORKFLOW_NO_CODE_CHANGE_MESSAGE = "the coding run left the code as it was when the task started";
 
+/** The worker's one fixed reason when a base commit was sent but its rule files could not be checked against the commit's own object ids. */
+export const WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE = "couldn't verify the base rule files";
+
 /** Shown to the owner when the code no longer descends from the commit the task started from. */
 export const WORKFLOW_HISTORY_REWRITTEN_MESSAGE = "The change history was rewritten past where this task started, so AgentX can't compare it. Ask for the change again in a new task.";
 

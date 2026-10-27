@@ -106,6 +106,7 @@ import {
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
   FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
+  WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   type IntentAssessment,
@@ -16328,7 +16329,9 @@ async function completedWorkflowItems(
     }
   } else if (operation.workflowMode === "REVIEW") {
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(task.workflow, workflowRunEndedReason("REVIEW", terminalStatus), now);
+      // A review that stopped because its base rule files could not be verified says so; any other stop keeps the generic reason.
+      next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.ruleFilesUnverified
+        : workflowRunEndedReason("REVIEW", terminalStatus), now);
     } else {
       const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
       const repositories = Array.isArray(reported.workflowCandidateRepositories) ? reported.workflowCandidateRepositories : [];
@@ -16443,7 +16446,10 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       // The step's budget ran out (a spend request is asked for at the end of this result, and its approval retries the step), or its worker could not read its own answer, or the run ended.
       next = blockWorkflow(current, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
-        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
+        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable
+        // The base rule files could not be verified: Understand stopped before it started, and says so. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified
+        : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
     } else {
       // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
       const understood = await readUnderstandingArtifact(dependencies, operation);
@@ -16671,6 +16677,9 @@ async function planCritiqueOutcome(
     if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
       return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now });
     }
+    // The base rule files could not be verified: the check never read the rules it is to apply, so it does not pass the plan on as unchecked (that would run without them). It stops
+    // here, visibly, with its own reason and the owner's Retry plan check. This is not a model failure, so the next-ranked model is not tried, and nothing starts the check again by itself.
+    if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, now);
     // Staging 0.4.10: the account could not use the check's model (Bedrock's 403). The check is made again on the next-ranked model, one try for each, up to CRITIC_MODEL_ATTEMPTS_MAX; the
     // next start leaves out the models that failed and, when none is left, closes the check as unavailable.
     if (terminalStatus === "FAILED" && criticModelUnusable(terminalError)) {

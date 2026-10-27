@@ -1311,7 +1311,7 @@ describe("a plan check whose base rule files could not be verified (C84)", () =>
     const { taskId, workspaceId } = await t.planned();
     await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
     const record = t.meta(taskId);
-    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
     expect(record.workflow.critique).toBeUndefined();
     const message = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!;
     expect(message.text).toContain("The plan check stopped before it finished.");
@@ -1327,16 +1327,25 @@ describe("a plan check whose base rule files could not be verified (C84)", () =>
     await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
     expect(t.dispatchRows(taskId)).toEqual([]);
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
   });
 
-  it("is a blocked step for the task page and the session, not a failed task and not a plan that went on", async () => {
+  it("shows on the task view as a blocked plan step with the fixed reason, and the session needs a person", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.planned();
     await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
-    const task = (await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { status: string; workflow: { stage: string; state: string; blockReason?: string } };
-    expect(task.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
-    expect(task.status).not.toBe("SUCCEEDED");
+    const task = (await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    // The task view shows the plan check as part of the plan step.
+    expect(task.workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
+    expect(taskPageStep(t.meta(taskId).workflow as never, false)).toBe("Coding plan");
+    const sessionId = String(t.meta(taskId).sessionId);
+    await refreshSessionSummary({ documentClient: t.h.db, tableName: "state", now: Date.now, log: () => undefined }, TEST_ORG, sessionId);
+    expect((t.h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as { summary: { status: string } }).summary).toMatchObject({ status: "needs_person" });
+  });
+
+  it("words the reason for the plan check and Understand as a step that did not run, apart from the review's wording", () => {
+    expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toBe("AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.");
+    expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toContain(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
   });
 });
 

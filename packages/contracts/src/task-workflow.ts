@@ -30,6 +30,10 @@ export const WORKFLOW_BLOCK_REASONS = {
   repositoriesIncomplete: "AgentX couldn't find every repository in the final code. Retry coding, or close the task.",
   /** The coding run finished, but the code is still what the task started from (WORKFLOW_NO_CODE_CHANGE_MESSAGE). */
   noCodeChanged: "Coding finished, but no code changed, so there is nothing to check or open as a pull request. Retry coding, or close the task.",
+  /** A review stopped before it started: the base commit's rule files could not be checked against the commit's own ids (WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE). */
+  ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
+  /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
+  stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
   /** An approved PR feedback fix left every repository's code as its open pull request holds it: nothing was pushed. */
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",
