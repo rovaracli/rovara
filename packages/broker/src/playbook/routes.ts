@@ -8,13 +8,19 @@ import {
   type ProjectPlaybookResponse,
   type ProjectRole,
 } from "@agentx/contracts";
+import type { ApprovalDependencies } from "../agents/approvals.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
 import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { registerPlaybookApprovals } from "./process-switch-approval.js";
+import { holdBuiltinSwitch } from "./process-switch.js";
 import { requireProcessLayer, type ProcessAgentReader } from "./project-process.js";
+
+// Loading this module registers what confirming a switch back to the built-in does (the agent routes register the rest of the approvals).
+registerPlaybookApprovals();
 
 /** The path this module owns under `/v1/app/projects/`. */
 export const PLAYBOOK_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook$/;
@@ -31,6 +37,8 @@ export interface ProjectPlaybookDependencies {
   now: () => number;
   store: ProcessAgentReader | undefined;
   audit?: AuditRuntime | undefined;
+  /** The approvals: a switch back to the built-in that loses something waits for a second person (process-switch.ts). Absent where agents are not set up. */
+  approvals?: ApprovalDependencies | undefined;
   /** The caller's role in the project: the project's name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another org's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
 }
@@ -45,7 +53,8 @@ export async function getProjectPlaybook(deps: ProjectPlaybookDependencies, call
 
 /**
  * `PUT /v1/app/projects/{p}/playbook`. A maintainer sets the project's default process under the revision they read (`PLAYBOOK_STALE` for another). A `project_process` must be
- * one of this project's own published, active process layers (`PROCESS_UNAVAILABLE`).
+ * one of this project's own published, active process layers (`PROCESS_UNAVAILABLE`). The built-in applies at once unless the project's process layer is stricter than it: then `202`, and a
+ * second person confirms (process-switch.ts).
  */
 export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string, rawBody: unknown): Promise<StatusReply> {
   const found = await deps.projectFor(caller, rawProject);
@@ -59,6 +68,11 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
   }
   const { expectedRevision, defaultProcess } = parsed.data;
   if (defaultProcess.kind === "project_process") await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
+  else {
+    // A switch back to the built-in that drops something stricter waits for a second person (follow-up M2).
+    const held = await holdBuiltinSwitch(deps, caller, found.name, expectedRevision);
+    if (held !== undefined) return held;
+  }
   const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess });
   return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
 }

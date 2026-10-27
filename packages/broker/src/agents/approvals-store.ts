@@ -141,8 +141,15 @@ export interface SessionOwnerSubject { kind: "session_owner"; sessionId: Session
  */
 export interface CodeSettingsSubject { kind: "code_settings"; project: string; settingsRevision: number; changes: { allowSelfApproval: true } }
 
-/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject;
+/**
+ * "How we work" follow-up M2: sets a project's playbook back to the built-in Rovara Code while the project's process layer `agentId` (at published version `layerVersion`) is stricter than
+ * the built-in. It applies only while the playbook is still at `expectedRevision` and the layer still at `layerVersion`; the layer is named so the process self-confirm rules and the
+ * `agent_publish` approvers apply to it as they do to a publish of the layer.
+ */
+export interface PlaybookDefaultProcessSubject { kind: "playbook_default_process"; project: string; agentId: AgentId; layerVersion: number; expectedRevision: number }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -157,7 +164,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -390,6 +397,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
   }).strict(),
+  z.object({ kind: z.literal("playbook_default_process"), project: z.string().min(1).max(63), agentId: AgentIdSchema, layerVersion: z.number().int().min(1), expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({

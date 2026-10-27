@@ -35,6 +35,7 @@ import {
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
+import { registerPlaybookApprovals } from "../playbook/process-switch-approval.js";
 import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
 import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
 import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
@@ -429,4 +430,5 @@ export function registerAgentApprovals(): void {
   registerApprovalSubjectHandler("builtin_adopt", confirmAdopt);
   registerApprovalSubjectHandler("agent_share", confirmShare);
   registerApprovalSubjectHandler("guardrails", confirmGuardrails);
+  registerPlaybookApprovals();
 }

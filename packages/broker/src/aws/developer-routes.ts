@@ -2025,7 +2025,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const playbookProcessRoute = PLAYBOOK_PROCESS_PATH.exec(url.pathname);
   if ((playbookRoute !== null && (request.method === "GET" || request.method === "PUT")) || (playbookProcessRoute !== null && request.method === "POST")) {
     const playbookDeps = {
-      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, audit: deps.agents?.audit,
+      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, audit: deps.agents?.audit, approvals: deps.agents,
       projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName),
     };
     if (playbookProcessRoute !== null) return routeProjectProcess(playbookDeps, caller, playbookProcessRoute[1]!);
