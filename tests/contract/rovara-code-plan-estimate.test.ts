@@ -753,7 +753,7 @@ describe("a version 2 plan's Checks section", () => {
     expect(workflow.state).toBe("WAITING");
     expect(commands(workflow)).toEqual(["CI: Lint and type-check npm run lint"]);
     expect(plan?.checks?.alsoRun).toEqual([PROJECT_NPM_TEST]);
-    expect(markdown.slice(markdown.indexOf("## Checks")).trimEnd().split("\n")).toEqual([
+    expect(markdown.slice(markdown.indexOf("## Checks"), markdown.indexOf("## Decisions")).trimEnd().split("\n")).toEqual([
       "## Checks",
       "- CI: Lint and type-check: `npm run lint` in `repo/demo`",
       "- npm test: `npm test` in `repo/demo` (a project check; it always runs)",
