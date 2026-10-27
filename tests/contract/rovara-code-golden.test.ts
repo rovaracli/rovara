@@ -29,7 +29,7 @@ beforeAll(async () => { await loadSlackBroker(); });
 // with no history), instead of the $25 per-task cap; approving a coding plan sets the run limit its estimate gave ($6 Quick with no history) and starts the
 // window at what planning spent. Change 4: a coding plan that reaches review carries that estimate (`task.runEstimate`), and the plan-ready message says it.
 const NO_HISTORY_ESTIMATE = { basis: "default", highUsd: 3, lowUsd: 1, runLimitUsd: 6, samples: 0, stopAtUsd: 6 };
-const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
+const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\n• d1: How many times should a payment be retried? Answer: Three times\n• Not checked by AgentX's plan check.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
 /** The limit each scenario's task has when the scenario is recorded; `baseline` and `estimate` are fields the task gains by then, `readyText` the post that gains the estimate line. */
 const RUN_LIMITS: Partial<Record<GoldenScenario, { budgetUsd: number; baseline?: true; estimate?: true; readyText?: true }>> = {
   "plan-quick": { budgetUsd: 2 },
@@ -111,11 +111,34 @@ function capabilityChanges(scenario: GoldenScenario, record: unknown): Array<{ p
   });
 }
 
+/**
+ * Change 7 (mainline #408 sync, plan quality): a coding plan's planning run is asked for the plan quality members, so (a) its operation record says `planQualityAsked`, (b) its prompt gains the
+ * "Plan quality guidance" block, wherever the prompt is recorded, and (c) the plan-ready card lists the answers Approve takes and what AgentX's plan check says of the plan ("Not checked" when it
+ * did not run). Each is checked by value: without its block or its lines the record must equal the fixture's, and the changed path is then listed with its exact new value.
+ */
+const GUIDANCE_BLOCK = /Plan quality guidance:\n[\s\S]*?End of plan quality guidance\.\n\n/u;
+const CARD_ADDED_LINES = /^\u2022 (?:d1: How many times should a payment be retried\? Answer: Three times|Not checked by AgentX's plan check\.)\n/gmu;
+function planQualityChanges(scenario: GoldenScenario, record: unknown, skipCard: readonly string[]): Array<{ path: string; expected: unknown; change: 7 }> {
+  const stored = JSON.parse(readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, `${scenario}.json`), "utf8")) as unknown;
+  const asked = nodePaths(record, (node) => node.planQualityAsked === true).map((path) => ({ path: path === "" ? "planQualityAsked" : `${path}.planQualityAsked`, expected: true, change: 7 as const }));
+  const prompts = stringPaths(record, (text) => text.includes("Plan quality guidance:\n")).map((path) => {
+    const now = valueAt(record, path) as string;
+    expect(now.replace(GUIDANCE_BLOCK, ""), `${scenario} ${path}: only the plan quality guidance block was added`).toBe(valueAt(stored, path));
+    return { path, expected: now, change: 7 as const };
+  });
+  const cards = stringPaths(record, (text) => text.includes("\u2022 d1: How many times should a payment be retried?")).filter((path) => !skipCard.includes(path)).map((path) => {
+    const now = valueAt(record, path) as string;
+    expect(`${now}\n`.replace(CARD_ADDED_LINES, "").replace(/\n$/u, ""), `${scenario} ${path}: only the answer and plan check lines were added`).toBe(valueAt(stored, path));
+    return { path, expected: now, change: 7 as const };
+  });
+  return [...asked, ...prompts, ...cards];
+}
+
 describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
     it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
       const record = await recordGolden(scenario);
-      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record)]);
+      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
     }, 120_000);
   }
 
@@ -254,6 +277,7 @@ describe("Rovara Code with agents switched on", () => {
       expectGolden(scenario, recorded, [
         ...runLimitChanges(scenario, recorded),
         ...capabilityChanges(scenario, recorded),
+        ...planQualityChanges(scenario, recorded, runLimitChanges(scenario, recorded).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path)),
         { path: `taskItems[${String(meta)}].sessionId`, expected: sessionId, change: 5 },
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },

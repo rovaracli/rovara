@@ -47,7 +47,7 @@ const findingsReview = (operationId: string, candidate: ReturnType<typeof candid
 };
 
 /** A Quick task approved and in coding; the coding run has spent `SPENT` on its key by the time it ends, and its reviews find an introduced problem (REVIEW blocks). */
-async function blockedOnFindings(installed: Installed) {
+async function blockedOnFindings(installed: Installed, options: { fixSource?: "ci" } = {}) {
   const { harness, access } = installed;
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
   const taskId = String((started.body.task as { taskId: string }).taskId);
@@ -61,6 +61,8 @@ async function blockedOnFindings(installed: Installed) {
   const digest = createHash("sha256").update(plan).digest("hex");
   await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskOf(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
   const approvedWindow = taskOf(harness, taskId).budgetBaselineUsd;
+  // Plan 6's own fix rounds carry their source (the pull request already exists); #408 must stay out of them.
+  if (options.fixSource !== undefined) harness.db.set({ ...taskOf(harness, taskId), workflow: { ...taskOf(harness, taskId).workflow, fixSource: options.fixSource } });
   // The coding run asks for its model key as the worker does, and spends SPENT on it.
   const coding = codingRuns(harness, workspaceId).at(-1)!;
   const outbox = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === coding.id)[0]!;
@@ -142,5 +144,18 @@ describe("automatic fixing and the run limit's window (MONEY, owner ruling pendi
     const task = taskOf(harness, taskId) as never;
     const caller = automaticCaller({ orgId: TEST_ORG }, task);
     expect(caller).toMatchObject({ sessionId: "workflow-autofix", orgId: TEST_ORG, orgRole: "member", developerId: MAYA.developerId });
+  });
+});
+
+describe("the two automatic fixers stay in their own phases (before a pull request: #408; after it: Plan 6)", () => {
+  it("a block inside one of Plan 6's fix rounds (fixSource set) is not looked at by #408's automatic fixing: no row, no decision, no ask", async () => {
+    const installed = await install({ ...ON });
+    const { harness } = installed;
+    const { taskId, workspaceId } = await blockedOnFindings(installed, { fixSource: "ci" });
+    expect(taskOf(harness, taskId).workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED", fixSource: "ci" });
+    expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind === "AUTOFIX")).toEqual([]);
+    expect(taskOf(harness, taskId).workflow.decisions.filter((decision) => decision.actorRole === "AGENTX")).toEqual([]);
+    expect(taskOf(harness, taskId).autofixAsk).toBeUndefined();
+    expect(codingRuns(harness, workspaceId)).toHaveLength(1);
   });
 });

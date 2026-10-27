@@ -7,7 +7,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-shared.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { slackSectionTexts, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { estimateDuration, noteDurationAtPullRequest, noteFinishedTaskDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import {
@@ -19,7 +19,7 @@ import type { OrgId } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, durationHistoryKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "../../packages/contracts/src/rovara-code.js";
 import { RUN_MINUTES_MAX, RunEstimateSchema, type RunEstimate } from "../../packages/contracts/src/spend.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -378,6 +378,20 @@ describe("the plan-ready message", () => {
     expect(textOf(estimate())).toContain("Estimated cost: about $2–$4. Run limit: $8.\nEstimated time: about 20–45 minutes to a pull request.");
   });
 
+  it("keeps the cost line, the time line, AgentX's plan check lines, the answers and the plan's checks together on one card, every Slack section within its limit (mainline #408 sync)", () => {
+    const decisions = [{ id: "d1", question: "Which cache should hold the retry state?", answer: "Reuse the existing one" }];
+    const checkLines = ["A browser test that a timed-out payment is retried once.", "A command that runs the unit tests of the payments package."];
+    const selfCheckLines = ["Not every claim is proved by a check that runs code."];
+    const message = workflowMessage({ taskId, workflow: workflowFor("1.1.0"), runEstimate: estimate(), agentName: "Rovara Code",
+      documentLink: { url: "https://agentx.example.test/review/x/task?version=1" }, taskPageUrl: "https://agentx.example.test/review/x/task",
+      structured: { claims: ["Payments that time out are retried."], claimCount: 3, decisionCount: 1, tiny: false, decisions, checkLines, selfCheckLines } })!;
+    expect(message.text).toContain("Estimated cost: about $2–$4. Run limit: $8.\nEstimated time: about 20–45 minutes to a pull request.");
+    expect(message.text).toContain("Not every claim is proved by a check that runs code.");
+    expect(message.text).toContain("Answer: Reuse the existing one");
+    expect(message.text).toContain("A browser test that a timed-out payment is retried once.");
+    for (const section of slackSectionTexts(message.text)) expect(section.length).toBeLessThanOrEqual(2_800);
+  });
+
   it("says hours for a long range", () => {
     expect(textOf(estimate({ minutes: { low: 60, high: 180, basis: "default", samples: 0 } }))).toContain("Estimated time: about 1–3 hours to a pull request.");
   });
@@ -549,7 +563,7 @@ const githubGateway = () => ({
 
 async function world(options: { v2?: boolean; proxy?: boolean } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
-  const h = await createDeveloperTaskBroker({
+  const h = await createSingleAnswerPlanBroker({
     brokerExtra: { agents: {}, githubPullRequests: githubGateway(), ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (access !== undefined) {

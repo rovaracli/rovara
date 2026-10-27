@@ -19,7 +19,7 @@ import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
@@ -444,7 +444,7 @@ const critiqueAnswer = (verdict: "ok" | "revise", points: Array<{ id: string; se
 
 async function world(options: { proxy?: boolean; models?: { default: ModelIdentifier; approved: ModelIdentifier[] } } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
-  const h = await createDeveloperTaskBroker({
+  const h = await createSingleAnswerPlanBroker({
     register: options.models === undefined,
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
@@ -558,7 +558,7 @@ describe("a version 2 plan goes to the plan check", () => {
 
   it("is not made for a version 1 task, whose plan goes to the person as it always did", async () => {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     const reply = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });

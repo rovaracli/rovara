@@ -33,7 +33,8 @@ import type { RealtimeConfig } from "../../packages/broker/src/realtime/publish.
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { ARJUN, MAX, MIA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { orgMemberKey } from "../../packages/contracts/src/index.js";
@@ -1258,7 +1259,7 @@ describe("through the real broker", () => {
   const promptOf = (harness: Harness, operationId: string) => String(((harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation) as { payload: { prompt: string } }).payload.prompt);
 
   async function started() {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const begun = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((begun.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string };
