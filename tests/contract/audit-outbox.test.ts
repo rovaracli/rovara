@@ -696,6 +696,7 @@ describe("I4: the builders", () => {
     ["auditOrgRenamed", (occurrence) => builders.auditOrgRenamed({ ...base, occurrence, details })],
     ["auditOrgInviteCreated", (occurrence) => builders.auditOrgInviteCreated({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member", targeted: true })],
     ["auditOrgInviteRevoked", (occurrence) => builders.auditOrgInviteRevoked({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member" })],
+    ["auditProjectRestored", (occurrence) => builders.auditProjectRestored({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
     ["auditProjectArchived", (occurrence) => builders.auditProjectArchived({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],

@@ -411,3 +411,8 @@ export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: stri
 export function auditProjectArchived(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
  return build("project.archived", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
 }
+
+// Lane B: reviewed restore uses the same safe facts and name-keyed target handling.
+export function auditProjectRestored(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
+ return build("project.restored", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
+}

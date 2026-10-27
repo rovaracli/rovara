@@ -193,3 +193,6 @@ export async function archiveOrgProjects(deps: ProjectArchiveDependencies, orgId
 // Lane B reviewed transaction and app effect adapter.
 export { readProjectArchivePreview, archiveProjectReviewed } from "./reviewed-project-archive.js";
 export { archiveProjectReviewedWithEffects } from "./reviewed-project-archive-app.js";
+
+// Lane B internal restore primitive; not wired to HTTP/UI.
+export { readProjectRestorePreview, restoreProjectReviewed } from "./reviewed-project-restore.js";

@@ -35,7 +35,7 @@ async function projectState(deps: Deps, caller: DeveloperCaller, name: string) {
  if (registered?.entityType !== "PROJECT" || !definition.success || definition.data.name !== name || definition.data.revision !== projectRevision.data) throw missing();
  if (meta !== undefined && (meta.entityType !== "PROJECT_META" || meta.name !== name || (meta.orgId !== undefined && meta.orgId !== caller.orgId) || (meta.status !== undefined && meta.status !== "active" && meta.status !== "archived"))) throw missing();
  const epoch = revision.safeParse(meta?.archiveRevision === undefined ? 0 : meta.archiveRevision);if (!epoch.success) throw unavailable();
- return { catalogKey, metaKey, registeredKey, meta, epoch: epoch.data, projectRevision: projectRevision.data, status: meta?.status === "archived" ? "archived" as const : "active" as const };
+ return { catalogKey, metaKey, registeredKey, meta, definition: definition.data, epoch: epoch.data, projectRevision: projectRevision.data, status: meta?.status === "archived" ? "archived" as const : "active" as const };
 }
 export async function readProjectArchivePreview(deps: Deps, caller: DeveloperCaller, name: string) {
  identifiers(caller, name);
@@ -86,3 +86,6 @@ export async function commitReviewedProjectArchive(deps: Deps, caller: Developer
   await flushAuditEvents(deps, [event]);return { receipt: result, replayed: false };
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }
+
+// Internal lifecycle readers shared by the reviewed restore primitive; no HTTP exports.
+export { read as readProjectLifecycleRecord, identifiers as validateProjectLifecycleIdentifiers, authority as readProjectLifecycleAuthority, projectState as readProjectLifecycleState };
