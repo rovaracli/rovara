@@ -62,3 +62,10 @@ it("independently rejects a canonical org, id or hash mismatch", async () => {
 it("caps a full directory page at 50 and leaves a resumable cursor", async () => {
  const f = fixture();for (let i = 0; i < 51; i++) await f.invite();const page = await f.request("?limit=50");expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(50);expect(page.body.nextCursor).toBeTruthy();const next = await f.request("?limit=50&cursor=" + page.body.nextCursor!);expect(next.body.invites).toHaveLength(1);
 });
+it("limits invite reads per org and caller before querying, resets next minute and fails closed on counter storage", async () => {
+ const f = fixture();await f.invite();for (let i = 0; i < 20; i++) expect((await f.request()).status).toBe(200);
+ const before = f.db.commandNames().filter(name => name === "QueryCommand").length;expect((await f.request()).status).toBe(429);expect(f.db.commandNames().filter(name => name === "QueryCommand")).toHaveLength(before);
+ expect((await f.request("", { ...f.caller, orgId: B, developerId: foreign })).status).toBe(200);
+ f.db.set({ ...orgMemberKey(A, joined), orgId: A, developerId: joined, role: "admin" });expect((await f.request("", { ...f.caller, developerId: joined })).status).toBe(200);
+ f.advance(60_000);expect((await f.request()).status).toBe(200);f.db.injectFault({ command: "UpdateCommand", error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);
+});

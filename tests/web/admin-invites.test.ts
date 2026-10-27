@@ -1,0 +1,43 @@
+// @vitest-environment jsdom
+import { it, expect } from "vitest";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { createMemoryRouter, RouterProvider } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { AppNavSchema } from "@agentx/contracts/web";
+import { appRoutes } from "../../packages/ui/src/routes.js";
+import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { ThemeProvider } from "../../packages/ui/src/theme.js";
+import { fakeHost } from "./support/fake-host.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
+import { expectNoAxeViolations } from "./support/axe.js";
+const orgId = "org_aaaaaaaaaaaaaaaaaaaa", developerId = "a".repeat(64), id = "11111111-1111-4111-8111-111111111111";
+const entry = { inviteId: id, role: "member", createdAt: "2026-10-26T12:00:00Z", expiresAt: "2026-11-02T12:00:00Z", createdBy: developerId, destination: { kind: "email", label: "***@example.test" } };
+const page = { invites: [entry], coverage: "indexed_only", checkedAt: "2026-10-26T12:00:00Z" };
+function mount(options: { role?: string; respond?: (r: ApiRequest) => Promise<ApiResponse>; theme?: "light" | "dark"; width?: number } = {}) {
+ const nav = AppNavSchema.parse({ me: { developerId, name: "Priya", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
+ const me = { developer: { id: developerId, name: "Priya", orgRole: options.role ?? "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
+ const f = fakeHost(async r => r.path.endsWith("/me") ? { status: 200, body: me } : options.respond?.(r) ?? { status: 200, body: r.path.endsWith("/me") ? me : r.path.endsWith("/nav") ? nav : page });f.host.kind = "web";if (options.width !== undefined) f.host.viewport = { width: () => options.width ?? 1280, subscribe: () => () => undefined };
+ f.storage.set("rovara.theme", options.theme ?? "light");const query = createQueryClient();query.setQueryData(["nav"], nav);const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/invites"] });const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+ return { ...f, ...view, query, router, me, close() { view.unmount();router.dispose();query.clear(); } };
+}
+for (const role of ["owner", "admin"]) it(`lets ${role} read masked indexed invites without create or revoke controls`, async () => {
+ const f = mount({ role });expect(await screen.findByRole("heading", { name: "Invites", exact: true })).toBeTruthy();await screen.findByText("***@example.test");expect(screen.getByText(/Older invite links may still exist/)).toBeTruthy();expect(screen.getByRole("table", { name: "Pending invites on this page" })).toBeTruthy();expect(screen.queryByRole("button", { name: /create|revoke|invite person/i })).toBeNull();expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);expect(f.container.textContent).not.toContain(developerId);expect(f.container.querySelector("time")?.dateTime).toBeTruthy();f.close();
+});
+it("keeps an empty evaluated page resumable without claiming there are no pending links", async () => {
+ let f!: ReturnType<typeof mount>;f = mount({ respond: async r => ({ status: 200, body: r.path.endsWith("/me") ? f.me : r.path.includes("cursor=") ? page : { ...page, invites: [], nextCursor: "fixture-cursor" } }) });await screen.findByText("No pending invites on this page.");expect(screen.queryByText("No pending invites.")).toBeNull();fireEvent.click(screen.getByRole("button", { name: "Next page" }));await screen.findByText("***@example.test");expect(f.request.mock.calls.some(([r]) => r.path.includes("cursor=fixture-cursor"))).toBe(true);fireEvent.click(screen.getByRole("button", { name: "Previous page" }));await screen.findByText("No pending invites on this page.");f.close();
+});
+it("keeps a temporary failed refresh stale and adjacent to retry and operator recovery guidance", async () => {
+ const f = mount();await screen.findByText("***@example.test");const table = f.container.querySelector("table");f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : { status: 400, body: { error: { code: "CONFIG_INVALID", message: "private diagnostics" } } });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "invites"] }); });await screen.findByText(/installation administrator/);expect(f.container.querySelector("table")).toBe(table);expect(screen.getByText(/stale/i)).toBeTruthy();expect(screen.queryByText("private diagnostics")).toBeNull();f.request.mockImplementation(async r => ({ status: 200, body: r.path.endsWith("/me") ? f.me : page }));fireEvent.click(screen.getByRole("button", { name: "Retry invites" }));await waitFor(() => expect(screen.queryByText(/stale/i)).toBeNull());f.close();
+});
+for (const status of [403, 401, 502]) it(`hides cached invites on terminal ${status} responses`, async () => {
+ const f = mount();await screen.findByText("***@example.test");f.request.mockImplementation(async () => status === 502 ? { status: 200, body: { invites: [{}] } } : { status, body: { error: { code: "FORBIDDEN", message: "upstream detail" } } });await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "invites"] }); });await waitFor(() => expect(screen.queryByText("***@example.test")).toBeNull());expect(screen.queryByRole("table")).toBeNull();f.close();
+});
+for (const field of ["org", "person"] as const) it(`never carries an old invite page across a mounted ${field} change`, async () => {
+ const f = mount();await screen.findByText("***@example.test");if (field === "org") f.me.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";else f.me.developer.id = "c".repeat(64);let resolve!: (r: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : pending);await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await waitFor(() => expect(screen.queryByText("***@example.test")).toBeNull());await act(async () => { resolve({ status: 200, body: { ...page, invites: [] } }); });await screen.findByText("No pending invites on this page.");expect(f.query.getQueryData(["admin", "invites", orgId, developerId, "first"])).toBeUndefined();f.close();
+});
+it("removes invites and cache on live role loss and never loads them on phones", async () => {
+ const f = mount();await screen.findByText("***@example.test");f.me.developer.orgRole = "member";await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByRole("heading", { name: "Administration unavailable" });expect(f.query.getQueriesData({ queryKey: ["admin", "invites"] })).toEqual([]);f.close();const phone = mount({ width: 390 });await screen.findByText(/Open this on a larger screen/);expect(phone.request.mock.calls.some(([r]) => r.path.includes("/invites"))).toBe(false);phone.close();
+});
+for (const theme of ["light", "dark"] as const) it(`has accessible read-only invites in ${theme}`, async () => { const f = mount({ theme });await screen.findByText("***@example.test");await expectNoAxeViolations(f.container);f.close(); });

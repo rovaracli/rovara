@@ -338,6 +338,7 @@ describe("rule 1b of resolveSignInDeveloper", () => {
       ["project grants", (w) => w.db.set(grant(w.raceOrg, D2, "api", "g"))],
       ["other members", (w) => w.db.set({ ...orgMemberKey(w.raceOrg, "d_other"), entityType: "ORG_MEMBER", orgId: w.raceOrg, developerId: "d_other", role: "member" })],
       ["invites", (w) => w.db.set({ pk: orgPk(w.raceOrg), sk: "INVITE_REQUEST#r1", entityType: "ORG_INVITE_REQUEST" })],
+      ["invite reference without request marker", (w) => w.db.set({ pk: orgPk(w.raceOrg), sk: "INVITE_DIRECTORY#11111111-1111-4111-8111-111111111111", entityType: "ORG_INVITE_DIRECTORY" })],
       ["GitHub owner", (w) => w.db.set({ ...w.db.get(orgMetaKey(w.raceOrg))!, githubOwner: "acme" })],
       ["budgets", (w) => w.db.set({ ...orgSettingsKey(w.raceOrg, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: {} })],
       ["spend", () => undefined, async () => 0.5],
