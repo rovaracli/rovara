@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { AppNavSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
@@ -46,4 +46,17 @@ it("does not label a future role Member or cache extra directory identity fields
 });
 it("preserves the page and focused pagination control while identity checks and refuses pagination until checked", async () => {
  const f = mount({ respond: async () => ({ status: 200, body: { ...page, nextCursor: "next" } }) });await screen.findByText("***@example.test");const button = screen.getByRole("button", { name: "Next page" });button.focus();let resolve!: (r: ApiResponse) => void;const pending = new Promise<ApiResponse>(done => { resolve = done; });f.request.mockImplementation(async r => r.path.endsWith("/me") ? pending : { status: 200, body: page });let refresh!: Promise<void>;act(() => { refresh = f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });await screen.findByText("Checking company access...");expect(button.hasAttribute("disabled")).toBe(false);expect(button.getAttribute("aria-disabled")).toBe("true");fireEvent.click(button);expect(f.request.mock.calls.some(([r]) => r.path.includes("cursor="))).toBe(false);expect(document.activeElement).toBe(button);await act(async () => { resolve({ status: 200, body: f.me });await refresh; });f.close();
+});
+
+for (const stale of [false, true]) it(`explains 429 on ${stale ? "stale" : "first-load"} invite data without claiming empty success`, async () => {
+ if (!stale) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+ const f = mount({ respond: async () => stale ? { status: 200, body: page } : { status: 429, body: { error: { code: "TOO_MANY_REQUESTS", message: "private upstream text" } } } });
+ try { if (stale) { await screen.findByText("***@example.test");f.request.mockImplementation(async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : { status: 429, body: { error: { code: "TOO_MANY_REQUESTS", message: "private upstream text" } } });vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });act(() => { void f.query.invalidateQueries({ queryKey: ["admin", "invites"] }); }); }for (let i = 0; i < 3; i++) await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });expect(screen.getByText(/Wait a minute before retrying/)).toBeTruthy();expect(screen.queryByText("No pending invites on this page.")).toBeNull();expect(screen.queryByText("private upstream text")).toBeNull();expect(screen.queryByRole("table") !== null).toBe(stale);if (stale) expect(screen.getByText(/Invite list is stale/)).toBeTruthy(); }finally { f.close();vi.useRealTimers(); }
+});
+
+it("spends invite read quota only on deliberate refresh or page changes rather than window focus", async () => {
+ const f = mount();await screen.findByText("***@example.test");const before = f.request.mock.calls.filter(([r]) => r.path.includes("/invites")).length;await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "invites"], refetchType: "none" });focusManager.setFocused(false);focusManager.setFocused(true);await new Promise(resolve => setTimeout(resolve, 0)); });expect(f.request.mock.calls.filter(([r]) => r.path.includes("/invites"))).toHaveLength(before);fireEvent.click(screen.getByRole("button", { name: "Refresh invites" }));await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path.includes("/invites"))).toHaveLength(before + 1));f.close();
+});
+for (const healthy of [false, true]) it(`shows explicit incomplete results with ${healthy ? "healthy rows" : "no usable rows"}`, async () => {
+ const f = mount({ respond: async () => ({ status: 200, body: { ...page, invites: healthy ? [entry] : [], unavailableCount: 1 } }) });await screen.findByText(/1 invite entry could not be checked/);expect(screen.queryByRole("table") !== null).toBe(healthy);if (!healthy) { expect(screen.getByText("No usable invites on this page.")).toBeTruthy();expect(screen.queryByText("No pending invites on this page.")).toBeNull(); }expect(screen.queryByRole("button", { name: /create|revoke/ })).toBeNull();f.close();
 });

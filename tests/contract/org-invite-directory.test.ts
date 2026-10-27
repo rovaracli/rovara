@@ -70,3 +70,9 @@ it("limits invite reads per org and caller before querying, resets next minute a
  f.db.set({ ...orgMemberKey(A, joined), orgId: A, developerId: joined, role: "admin" });expect((await f.request("", { ...f.caller, developerId: joined })).status).toBe(200);
  f.advance(60_000);expect((await f.request()).status).toBe(200);f.db.injectFault({ command: "UpdateCommand", error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);
 });
+it("does not charge unauthorized or invalid directory requests to a new or existing quota", async () => {
+ for (const existing of [false, true]) { const f = fixture();if (existing) expect((await f.request()).status).toBe(200);const counter = () => f.db.find(row => String(row.pk).includes("INVITE_DIRECTORY_RATE"));const before = structuredClone(counter());for (const query of ["?limit=0", "?cursor=bad"]) { expect((await f.request(query)).status).toBe(400);expect(counter()).toEqual(before); }f.db.set({ ...f.db.get(orgMemberKey(A, actor)), role: "member" });expect((await f.request()).status).toBe(403);expect(counter()).toEqual(before); }
+});
+it("keeps healthy invites when canonical data is corrupt and reports unavailable entries without leaking them", async () => {
+ const f = fixture();await f.invite(A, "healthy@example.test");const bad = await f.invite(A, "private.person@private.test"), key = orgInviteKey(hashOf(bad.token));f.db.set({ ...f.db.get(key), role: "future-role" });const result = await f.request();expect(result.status).toBe(200);expect(result.body.invites).toHaveLength(1);expect(result.body).toMatchObject({ unavailableCount: 1 });expect(JSON.stringify(result.body).includes("private.person") || JSON.stringify(result.body).includes(hashOf(bad.token)) || JSON.stringify(result.body).includes(bad.token)).toBe(false);
+});
