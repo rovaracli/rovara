@@ -97,6 +97,8 @@ describe("PUT /v1/admin/org/budget", () => {
 
   const put = (handler: Parameters<typeof adminCall>[0], body: unknown, admin = true) => adminCall(handler, { method: "PUT", path: "/v1/admin/org/budget", body, admin });
 
+  it("operator PUT refuses excessive decimal precision before storage or proxy changes with readable copy",async()=>{const access=fakeModelAccess();const {handler,db}=await createAdminBroker({extra:{modelAccess:{access,proxyUrl:PROXY_URL}}});for(const body of [{orgMonthlyUsd:12.3456789},{memberDefaultMonthlyUsd:0.30000000000000004},{memberOverrides:{dev1:0.0000001}}]){const response=await put(handler,{requestId:randomUUID(),...body});expect(response.status).toBe(400);expect(JSON.stringify(response.body).includes("at most 6 decimal places")).toBe(true);expect(db.get(orgSettingsKey(INSTALL_ORG,"BUDGET"))).toBeUndefined();expect(access.upsertOrg).not.toHaveBeenCalled();expect(access.upsertMember).not.toHaveBeenCalled();}});
+
   it("lets an operator set the single org's caps, which then apply and reach the proxy", async () => {
     const access = fakeModelAccess();
     const { handler, db } = await createAdminBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
