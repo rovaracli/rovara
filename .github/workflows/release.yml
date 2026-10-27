@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   test:
+    # Public repository only: never on the private PrepLabsAI/Rovara-cloud.
+    if: github.repository == 'PrepLabsAI/Rovara'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -27,7 +29,7 @@ jobs:
 
   images:
     needs: test
-    if: vars.AGENTX_PUBLISH_ENABLED == 'true'
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true')
     runs-on: ubuntu-24.04-arm
     permissions: { contents: read, id-token: write }
     outputs:
@@ -145,7 +147,7 @@ jobs:
 
   release:
     needs: images
-    if: vars.AGENTX_PUBLISH_ENABLED == 'true'
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true')
     runs-on: ubuntu-latest
     permissions: { contents: write }
     steps:
@@ -175,7 +177,7 @@ jobs:
 
   npm:
     needs: release
-    if: vars.AGENTX_PUBLISH_ENABLED == 'true'
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true')
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
     steps:
@@ -213,7 +215,7 @@ jobs:
   # points at them.
   installer:
     needs: npm
-    if: vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_INSTALLER_BUCKET != ''
+    if: github.repository == 'PrepLabsAI/Rovara' && (vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_INSTALLER_BUCKET != '')
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
     steps:
