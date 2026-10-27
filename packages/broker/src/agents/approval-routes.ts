@@ -15,6 +15,7 @@ import { endOfFailure, settleSession, type DecisionEnd } from "../developer/deci
 import { sameMember } from "./lifecycle.js";
 import { requestIdFor } from "./approval-decide-kind.js";
 import { decideWriteApproval } from "./write-gate.js";
+import { chosenOwnerNames, withChosenOwnerName } from "../agent-sessions/owner-names.js";
 
 const APPROVALS_PATH = /^\/v1\/app\/approvals(?:\/([^/]+)(?:\/(decide|confirm-link))?)?$/;
 // Only PENDING approvals are in a person's list: a record that ended PENDING is taken out of it.
@@ -30,6 +31,17 @@ function jsonBody(request: AdaptedHttpRequest): unknown {
   } catch {
     throw agentXError("CONFIG_INVALID", "the request body is not JSON");
   }
+}
+
+/**
+ * Release 0.4.18: a run's owner is named by the name they chose, read by the stored owner's id (an approval made before the rename stored the name they had then). One BatchGetItem
+ * for the whole list; best effort (a failed read shows the stored name); the name is email-safe, as everywhere. Only the views use it, so a list costs one read, not one per record.
+ */
+export async function withChosenOwners(deps: Pick<ApprovalDependencies, "documentClient" | "tableName">, records: AnyApprovalRecord[]): Promise<AnyApprovalRecord[]> {
+  const owners = records.flatMap((record) => (record.kind === "change" || record.owner === undefined ? [] : [record.owner.developerId]));
+  const names = await chosenOwnerNames(deps, owners);
+  if (names.size === 0) return records;
+  return records.map((record) => (record.kind === "change" || record.owner === undefined ? record : { ...record, owner: withChosenOwnerName(record.owner, names) }));
 }
 
 /** A record as a page lists it. The arguments of a write are shown only with `includeArguments` (to one approval's viewers, not in a list). */
@@ -83,12 +95,14 @@ export async function routeApprovalRequest(deps: ApprovalDependencies, caller: A
     if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
     const status = StatusQuerySchema.safeParse(url.searchParams.get("status") ?? "PENDING");
     if (!status.success) throw agentXError("CONFIG_INVALID", `status: one of ${STATUSES.join(", ")}`);
-    return { approvals: (await listApprovalsFor(deps, caller, status.data)).map((record) => approvalView(deps, record)) };
+    const records = await withChosenOwners(deps, await listApprovalsFor(deps, caller, status.data));
+    return { approvals: records.map((record) => approvalView(deps, record)) };
   }
   if (action === undefined) {
     if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
     // A read shows the bare link and mints nothing: tickets are limited, and a poll must not use them up (review I1).
-    return { approval: approvalView(deps, await readVisible(deps, caller, rawId), true) };
+    const [record] = await withChosenOwners(deps, [await readVisible(deps, caller, rawId)]);
+    return { approval: approvalView(deps, record!, true) };
   }
   if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
   if (action === "confirm-link") return confirmLink(deps, caller, rawId);

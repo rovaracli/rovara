@@ -35,6 +35,7 @@ import { safeDisplayName } from "../developer/person-name.js";
 import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
+import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { ChainControl, SessionControlHost } from "./stop.js";
 import type { SessionTakeOverDependencies } from "./take-over.js";
@@ -127,13 +128,13 @@ async function nameOf(deps: SessionReadDependencies, developerId: string): Promi
   }
 }
 
-async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<{ kind: "member" | "project" | "agent" | "chain"; name: string }> {
+async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecord, ownerName: string): Promise<{ kind: "member" | "project" | "agent" | "chain"; name: string }> {
   const payer = session.payer ?? { kind: "member" as const, developerId: session.owner.developerId };
   if (payer.kind === "project") return { kind: "project", name: payer.project };
   // Plan 4: a chain that pays for the runs its triggers start. The chain's own name is not on the session header, so the view names the chain by its id.
   if (payer.kind === "chain") return { kind: "chain", name: payer.chainId };
   if (payer.kind === "agent") return { kind: "agent", name: session.agent?.agentId === payer.agentId ? session.agent.name : payer.agentId };
-  return { kind: "member", name: payer.developerId === session.owner.developerId ? safeDisplayName(session.owner.name, session.owner.developerId) : await nameOf(deps, payer.developerId) ?? "A teammate" };
+  return { kind: "member", name: payer.developerId === session.owner.developerId ? ownerName : await nameOf(deps, payer.developerId) ?? "A teammate" };
 }
 
 function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; url: string } {
@@ -226,6 +227,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     };
   }
 
+  // Release 0.4.18: the owner's chosen name, read by the stored owner's id (a session started before the rename stores the name the person had then).
+  const ownerNames = await chosenOwnerNames(deps, [access.effectiveOwner.developerId, session.owner.developerId]);
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
   // Make this an agent (Task 10c): offered to a person who may create agents in the session's project, asked of the same check the route makes, with the org role read from their record. A task session only.
   const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
@@ -239,7 +242,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     title: session.title,
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
-    owner: access.effectiveOwner,
+    owner: withChosenOwnerName(access.effectiveOwner, ownerNames),
     startedBy: session.startedBy,
     where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
     status,
@@ -250,7 +253,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
       spentUsd: summary.costUsd,
       ...(runLimitUsd === undefined ? {} : { runLimitUsd }),
       ...(stopAtUsd === undefined ? {} : { stopAtUsd }),
-      payer: await payerOf(deps, session),
+      payer: await payerOf(deps, session, withChosenOwnerName({ developerId: session.owner.developerId, name: safeDisplayName(session.owner.name, session.owner.developerId) }, ownerNames).name),
       ...(paused === undefined ? {} : { paused }),
     },
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
@@ -377,6 +380,13 @@ export function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, cal
  * org's. `next` is opaque.
  */
 export async function listSessions(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
+  const list = await listSessionTiles(deps, caller, query);
+  // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
+  const names = await chosenOwnerNames(deps, list.sessions.map((tile) => tile.owner.developerId));
+  return names.size === 0 ? list : { ...list, sessions: list.sessions.map((tile) => ({ ...tile, owner: withChosenOwnerName(tile.owner, names) })) };
+}
+
+async function listSessionTiles(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
   const chosen = [query.owner !== undefined, query.project !== undefined, query.shared !== undefined].filter(Boolean).length;
   if (chosen !== 1) throw invalid("Choose one of owner, project or shared.");
   if (query.owner !== undefined && query.owner !== "me") throw invalid("owner: must be me");
