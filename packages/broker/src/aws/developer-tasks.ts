@@ -2,7 +2,7 @@
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
 import { personNameForText } from "../developer/requester-text.js";
-import { WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
+import { WORKFLOW_ACTIONABLE_REFUSALS, WORKFLOW_BREAKDOWN_REFUSALS } from "../developer/workflow-actions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -2924,22 +2924,22 @@ export async function decideTaskWorkflow(
   const planGraph = loaded?.format === "structured" ? loaded.plan.workBreakdown : undefined;
   let workBreakdownDigest: string | undefined;
   if (planGraph !== undefined && request.decision === "APPROVE") {
-    if (prior === undefined && !workflowDependenciesAllowed(deps, workflow)) throw agentXError("CONFIG_INVALID", "ordered work plans are saved but this broker is not enabled to start them");
+    if (prior === undefined && !workflowDependenciesAllowed(deps, workflow)) throw agentXError("CONFIG_INVALID", WORKFLOW_BREAKDOWN_REFUSALS.notEnabled);
     const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined || pinnedProject.definition.repositories.length !== 1) {
-      throw agentXError("CONFIG_INVALID", "ordered work is available only when this task is pinned to one registered repository");
+      throw agentXError("CONFIG_INVALID", WORKFLOW_BREAKDOWN_REFUSALS.onePinnedRepository);
     }
     const validated = validateTaskGraph(planGraph, { taskId, repositoryId: pinnedProject.definition.repositories[0]!.name });
     if (!validated.ok) throw agentXError("CONFIG_INVALID", `the approved work breakdown is invalid: ${validated.errors.join("; ")}`);
     workBreakdownDigest = taskGraphDigest(validated.graph);
     if (request.decision === "APPROVE" && request.workBreakdownDigest === undefined) {
-      throw agentXError("CONFIG_INVALID", "approve this exact ordered work plan by refreshing the plan and submitting its work breakdown digest");
+      throw agentXError("CONFIG_INVALID", WORKFLOW_BREAKDOWN_REFUSALS.digestMissing);
     }
     if (request.workBreakdownDigest !== undefined && request.workBreakdownDigest !== workBreakdownDigest) {
-      throw agentXError("CONFIG_INVALID", "the work breakdown changed; refresh the plan before deciding");
+      throw agentXError("CONFIG_INVALID", WORKFLOW_BREAKDOWN_REFUSALS.digestChanged);
     }
   } else if (request.workBreakdownDigest !== undefined) {
-    throw agentXError("CONFIG_INVALID", "the current plan has no work breakdown to approve");
+    throw agentXError("CONFIG_INVALID", WORKFLOW_BREAKDOWN_REFUSALS.noBreakdown);
   }
   const boundDecisionRequest = request;
 
@@ -5631,6 +5631,21 @@ export async function setPageSuggestion(deps: DeveloperTaskRouteDependencies, ca
   await setSuggestion(deps, await pageActor(deps, caller, taskId), input);
 }
 
+/** What the page says for each refusal of a work breakdown approval (the core's own sentences are written for Slack and AI tools). Any other error passes through. */
+const PAGE_BREAKDOWN_REFUSALS: ReadonlyMap<string, { pageReason: "changed" | "refused"; message: string }> = new Map([
+  [WORKFLOW_BREAKDOWN_REFUSALS.digestMissing, { pageReason: "changed", message: "This coding plan has a work breakdown. Refresh the page, look it over, and approve again." }],
+  [WORKFLOW_BREAKDOWN_REFUSALS.digestChanged, { pageReason: "changed", message: "The work breakdown changed since this page loaded. Refresh the page and look it over before approving." }],
+  [WORKFLOW_BREAKDOWN_REFUSALS.noBreakdown, { pageReason: "changed", message: "This plan has no work breakdown now. Refresh the page and approve again." }],
+  [WORKFLOW_BREAKDOWN_REFUSALS.notEnabled, { pageReason: "refused", message: "This plan has an ordered work breakdown, and this AgentX isn't set up to start those yet. Ask an AgentX admin." }],
+  [WORKFLOW_BREAKDOWN_REFUSALS.onePinnedRepository, { pageReason: "refused", message: "An ordered work breakdown needs a task pinned to exactly one repository." }],
+]);
+function pageBreakdownRefusal(error: unknown): unknown {
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  if (code !== "CONFIG_INVALID" || typeof message !== "string") return error;
+  const said = PAGE_BREAKDOWN_REFUSALS.get(message.startsWith("CONFIG_INVALID: ") ? message.slice("CONFIG_INVALID: ".length) : message);
+  return said === undefined ? error : Object.assign(agentXError("CONFIG_INVALID", said.message), { pageReason: said.pageReason });
+}
+
 /**
  * A decision from the page: only someone whose role may decide reaches the one transition, which Slack and MCP use too.
  * The note becomes the decision's reason; without one, the reason says where the decision was made.
@@ -5638,12 +5653,18 @@ export async function setPageSuggestion(deps: DeveloperTaskRouteDependencies, ca
 export async function decideOnPage(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, input: PageDecisionInput): Promise<{ revision: number }> {
   const access = await resolveTaskAccess(deps, caller, taskId);
   if (!can(access.role, "decide")) throw Object.assign(agentXError("FORBIDDEN", "Only owners decide."), { pageReason: "owners_only" });
-  await decideTaskWorkflow(deps, caller, taskId, {
-    requestId: input.requestId, expectedRevision: input.expectedRevision, decision: input.decision, artifactDigest: input.artifactDigest,
-    reason: input.note ?? (input.decision === "APPROVE" ? "Approved on the task page." : "See the included comments."),
-    answers: input.answers, includedCommentIds: input.includedCommentIds,
-    ...(input.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: input.selectedOptionalCheckIds }),
-  }, { via: "PAGE", ...(input.note === undefined ? {} : { note: input.note }) });
+  try {
+    await decideTaskWorkflow(deps, caller, taskId, {
+      requestId: input.requestId, expectedRevision: input.expectedRevision, decision: input.decision, artifactDigest: input.artifactDigest,
+      reason: input.note ?? (input.decision === "APPROVE" ? "Approved on the task page." : "See the included comments."),
+      answers: input.answers, includedCommentIds: input.includedCommentIds,
+      ...(input.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: input.selectedOptionalCheckIds }),
+      // The work breakdown's digest binds the approval to the exact ordered plan the owner saw; decideTaskWorkflow checks it, as for Slack and MCP.
+      ...(input.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: input.workBreakdownDigest }),
+    }, { via: "PAGE", ...(input.note === undefined ? {} : { note: input.note }) });
+  } catch (error) {
+    throw pageBreakdownRefusal(error);
+  }
   const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
   return { revision: stored.Item?.workflow?.revision ?? input.expectedRevision };
 }
