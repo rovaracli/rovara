@@ -1,3 +1,4 @@
+import { TaskStopCeilingReadSchema, calculateTaskStop } from "@agentx/contracts/web";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
@@ -150,5 +151,56 @@ for (const scope of ["member", "pointer", "org", "ceiling"] as const) {
       return asked?.pk === key.pk && asked.sk === key.sk ? { Item: { ...f.db.get(key), pk: "OTHER" } } : result;
     };
     expect((await f.call()).status).toBe(scope === "ceiling" ? 503 : 403);
+  });
+}
+
+it("keeps the narrow browser DTO honest about unknown policy layers", async () => {
+  const f = fixture(), result = await f.call();
+  expect(TaskStopCeilingReadSchema.safeParse(result.body).success).toBe(true);
+  for (const extra of [{ companyDefault: "inherit" }, { locks: "unlocked" }, { calculation: "resolved" }, { enforcement: "active" }, { source: "configured", revision: 0 }, { revision: 1 }, { source: "rovara_default", ceilingMicrousd: 1 }, { paidStartAllowed: true }]) {
+    expect(TaskStopCeilingReadSchema.safeParse({ ...result.body, ...extra }).success).toBe(false);
+  }
+});
+it("binds the digest to org even for identical configured values and revisions", async () => {
+  const f = fixture();f.record(23);f.record(23, {}, B);
+  const first = await f.call();f.member(B, "owner");
+  const second = await f.call({ ...f.caller, orgId: B });
+  expect(first.body?.ceilingMicrousd).toBe(second.body?.ceilingMicrousd);
+  expect(first.body?.revision).toBe(second.body?.revision);
+  expect(first.body?.ceilingDigest === second.body?.ceilingDigest).toBe(false);
+});
+it("does not mistake an unavailable ceiling read for record absence after valid authority", async () => {
+  const f = fixture(), send = f.db.send.bind(f.db);
+  f.db.send = async command => {
+    const key = (command.input as { Key?: { pk?: string; sk?: string } }).Key;
+    if (key?.pk === agentGuardrailsKey(A).pk && key.sk === agentGuardrailsKey(A).sk) throw new Error("private source failure");
+    return send(command);
+  };
+  const result = await f.call();
+  expect(result.status).toBe(503);expect(JSON.stringify(result).includes("private source failure")).toBe(false);
+});
+
+it("does not turn the partial ceiling response into a complete calculation", async () => {
+  const f = fixture(), result = await f.call();
+  expect(calculateTaskStop(result.body)).toEqual({ kind: "unavailable", reason: "INVALID_OR_MISSING_POLICY", enforcement: "not_connected" });
+});
+for (const method of ["POST", "PUT", "DELETE"]) {
+  it(`does not expose a ${method} writer at the read-only ceiling route`, async () => {
+    const f = fixture();let status: number;
+    try {
+      const value = await routeDeveloperRequest(f.deps, { method, path, headers: {}, requestId: "no-ceiling-write", body: JSON.stringify({ ceilingMicrousd: 0 }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" });
+      status = value === undefined ? 404 : 200;
+    } catch (error) {
+      if (!(error instanceof AgentXError)) throw error;
+      status = errorStatus(error.code);
+    }
+    expect(status).toBe(404);expect(f.db.get(agentGuardrailsKey(A))).toBeUndefined();expect(f.db.transactions().length).toBe(0);
+  });
+}
+for (const caller of [{ orgId: "bad" }, { developerId: "bad" }]) {
+  it("refuses malformed caller scope before state reads", async () => {
+    const f = fixture();
+    expect((await f.call({ ...f.caller, ...caller })).status).toBe(403);
+    expect(f.db.commandNames().length).toBe(0);
   });
 }

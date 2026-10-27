@@ -61,3 +61,6 @@ export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudget
 // Lane A G1: pure finite stop calculation and exact display; no runtime admission.
 export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
 export { formatUsdMicrodollars } from "./money-format.js";
+
+// Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
+export { TaskStopCeilingReadSchema, type TaskStopCeilingRead } from "./task-stop-ceiling.js";

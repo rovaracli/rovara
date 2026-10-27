@@ -3,7 +3,7 @@
 // the payable policy snapshot. Raw browser proposals are not an authoritative snapshot.
 // No caller may treat this result as paid-start permission: runtime enforcement is not wired.
 import { z } from "zod";
-export const TaskStopMicrousdSchema = z.number().int().min(0).max(1_000_000_000_000);
+export const TaskStopMicrousdSchema = z.number().int().min(0).max(1_000_000_000_000).transform(value => value === 0 ? 0 : value);
 export const TaskStopCalculationInputSchema = z.object({
  companyDefaultMicrousd: TaskStopMicrousdSchema,
  ceilingMicrousd: TaskStopMicrousdSchema,

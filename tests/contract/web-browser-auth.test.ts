@@ -255,3 +255,14 @@ it("uses the real cookie Origin and CSRF boundary for reviewed creation and safe
 it("delivers a configured cloud join link across origins through the real cookie route and console client",async()=>{const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,cloud:true},"https://join.example.test");audit.attach(h.db);const host=fakeHost(async r=>h.call(r.method,r.path.replace("/v1/app/","/v1/web/"),{cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)},r.body));const result=await createInviteAdminApi(host.host,TEST_ORG).create({requestId:randomUUID(),role:"member",email:"private.person@example.test"});expect(new URL(result.inviteUrl!).origin).toBe("https://join.example.test");expect(result.receipt.orgId).toBe(TEST_ORG);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(1);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);});
 
 it("reads only current-org monthly base settings through the real cookie boundary",async()=>{const h=await broker();const path="/v1/web/org/budget-settings";expect((await h.call("GET",path,{})).status).toBe(401);const first=await h.call("GET",path,{cookie:COOKIE});expect(first.status).toBe(200);expect(first.body.orgId).toBe(TEST_ORG);expect(first.body.coverage).toBe("monthly_base_settings_only");expect(first.body.usage).toBe("not_checked");seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",path,{cookie:COOKIE})).status).toBe(403);});
+
+it("reads only the narrow company ceiling through real cookie auth and refuses live role loss", async () => {
+ const h = await broker(), path = "/v1/web/org/task-stop-ceiling";
+ expect((await h.call("GET", path, {})).status).toBe(401);
+ const first = await h.call("GET", path, { cookie: COOKIE });
+ expect(first.status).toBe(200);expect(first.body.orgId).toBe(TEST_ORG);
+ expect(first.body.ceilingMicrousd).toBe(100_000_000);expect(first.body.enforcement).toBe("not_connected");
+ expect(first.body.companyDefault).toBe("not_loaded");
+ seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+ expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
