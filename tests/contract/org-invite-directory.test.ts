@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
-import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk, type OrgRole } from "@agentx/contracts";
+import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
@@ -9,7 +9,7 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", actor = "a
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 function fixture(role = "owner") {
  const db = new FakeDynamoDb();let now = Date.parse("2026-10-26T12:00:00Z");
- for (const [orgId, developerId, r] of [[A, actor, role], [B, foreign, "owner"]]) { db.set({ ...orgMemberKey(orgId!, developerId!), orgId, developerId, role: r, joinedAt: "2026-10-01T00:00:00Z" });db.set({ ...orgMetaKey(orgId!), orgId, name: "Company", plan: "team" }); }
+ for (const [orgId, developerId, r] of [[A, actor, role], [B, foreign, "owner"]] as const) { db.set({ ...orgMemberKey(orgId, developerId), orgId, developerId, role: r, joinedAt: "2026-10-01T00:00:00Z" });db.set({ ...orgMetaKey(orgId), orgId, name: "Company", plan: "team" }); }
  const store = new OrgStore({ tableName: "state", documentClient: db, now: () => now });
  const deps: DeveloperRouteDependencies = { tableName: "state", now: () => now, documentClient: db, orgs: store, developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) } };
  const caller: DeveloperCaller = { orgId: A, developerId: actor, orgRole: "owner", name: "Priya", amr: "cloud", sessionId: "fixture" };
@@ -51,4 +51,7 @@ it("keeps legacy invite replay refusal and acceptance compatible", async () => {
 });
 it("refuses reads when live membership, index or canonical storage is unavailable", async () => {
  for (const command of ["GetCommand", "QueryCommand"]) { const f = fixture();await f.invite();f.db.injectFault({ command, error: { name: "ServiceUnavailable" } });const result = await f.request();expect(result.status).toBe(503);expect(result.body.invites).toBeUndefined(); }
+});
+it("treats equivalent ISO expiry instants equally even without fractional seconds", async () => {
+ const f = fixture(), result = await f.invite();const key = orgInviteKey(hashOf(result.token));f.db.set({ ...f.db.get(key), expiresAt: "2026-10-26T12:00:00Z" });const page = await f.request();expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(0);
 });
