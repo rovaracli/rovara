@@ -10,11 +10,14 @@ import {
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { postProjectProcess } from "./process-layer.js";
 import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer, type ProcessAgentReader } from "./project-process.js";
 
 /** The path this module owns under `/v1/app/projects/`. */
 export const PLAYBOOK_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook$/;
+/** `POST` here makes sure the project has its process layer (process-layer.ts). */
+export const PLAYBOOK_PROCESS_PATH = /^\/v1\/app\/projects\/([^/]+)\/playbook\/process$/;
 
 export interface ProjectPlaybookDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -52,6 +55,11 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
   if (defaultProcess.kind === "project_process") await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
   const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess });
   return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
+}
+
+/** `POST /v1/app/projects/{p}/playbook/process`: 200 with the project's process layer (made now, or the one it already had). */
+export async function routeProjectProcess(deps: ProjectPlaybookDependencies, caller: DeveloperCaller, rawProject: string): Promise<StatusReply> {
+  return new StatusReply(200, await postProjectProcess(deps, caller, rawProject));
 }
 
 /** Routes one request on `PLAYBOOK_PATH`; the caller has matched the path and the method (GET or PUT). */

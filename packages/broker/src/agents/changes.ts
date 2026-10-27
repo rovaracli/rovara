@@ -33,6 +33,7 @@ import {
 } from "./approvals.js";
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -171,7 +172,11 @@ export async function publishDraft(
   const digest = recipeDigest(next);
   // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
-  if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) return { applied: true, value: running };
+  if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
+    // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId);
+    return { applied: true, value: running };
+  }
   await requireWithinGuardrails(deps, agent.orgId, next);
   const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
   if (changes.length === 0) {
@@ -181,6 +186,7 @@ export async function publishDraft(
       skillDigests: skillDigestsOf(next),
       ...(input.note === undefined ? {} : { note: input.note }), ...(input.request === undefined ? {} : { request: input.request }),
     });
+    await pointPlaybookAtFirstVersion(deps, agent, version.version, caller.developerId);
     return { applied: true, value: version };
   }
   requireActiveForConfirmation(agent);
@@ -302,7 +308,10 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
   if (agent.currentVersion !== subject.expectedCurrentVersion) {
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
-    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) return;
+    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) {
+      await pointPlaybookAtFirstVersion(deps, agent, agent.currentVersion, by);
+      return;
+    }
     throw stale("The published version changed after this was asked. Publish again.");
   }
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
@@ -310,11 +319,12 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
   // The guardrails may have tightened since this was asked.
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
-  await deps.store.publish({
+  const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
     skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe",
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
+  await pointPlaybookAtFirstVersion(deps, agent, published.version, by);
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
@@ -330,7 +340,7 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
-  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
+  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe" });
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 

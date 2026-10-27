@@ -54,7 +54,7 @@ import { SkillStore } from "./skills.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
 import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OverrideCap, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
-import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished } from "../audit/events.js";
+import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
 import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
@@ -543,9 +543,10 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...(input.note === undefined ? {} : { note: input.note }),
     };
     const event = this.newEvent(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) });
-    const audit = await this.audited(() => [auditPublished({
-      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe",
-    })]);
+    // A project's process layer audits `process.published` instead (the sole-owner confirmation is not built yet, so it is always false).
+    const audit = await this.audited(() => [agent.purpose === "process"
+      ? auditProcessPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.agentId, version, safety: input.safety ?? "safe", selfConfirmedSoleOwner: false })
+      : auditPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe" })]);
     const written: TransactItem[] = [
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),
       this.update(agentKey(input.orgId, input.agentId, "META"), {
@@ -570,7 +571,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<AgentRecord> {
+  rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe" }): Promise<AgentRecord> {
     const { agentId, ...rest } = input;
     return this.rollbackItem({ ...rest, id: agentId });
   }

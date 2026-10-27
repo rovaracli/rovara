@@ -312,6 +312,8 @@ export async function listVisibleAgents(deps: AgentAccessDeps, caller: AgentCall
 
   const needsShares = scope === "shared" || typeof scope === "object";
   for (const record of await deps.store.list(caller.orgId)) {
+    // A project's process layer is edited through "How we work", never chosen as an agent.
+    if (record.purpose === "process") continue;
     const found = await evaluate(lookups, record, needsShares);
     if (!atLeast(found.access, "view")) continue;
     let included: boolean;

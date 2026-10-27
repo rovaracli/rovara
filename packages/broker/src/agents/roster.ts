@@ -166,7 +166,7 @@ export async function checkRosterChange(deps: RosterDependencies, caller: AgentC
   if (isBuiltinAgentId(agentId)) throw agentXError("CONFIG_INVALID", "Built-in agents are on every project already.");
   if (!("add" in change)) return undefined;
   const { agent } = await requireAgentAccess(deps, caller, agentId, "use");
-  if (!("owner" in agent)) throw agentXError("NOT_FOUND", "no agent has that ID");
+  if (!("owner" in agent) || agent.purpose === "process") throw agentXError("NOT_FOUND", "no agent has that ID");
   requireNotArchived(agent);
   return agent;
 }
@@ -174,7 +174,8 @@ export async function checkRosterChange(deps: RosterDependencies, caller: AgentC
 /** One roster entry as the caller sees it, or undefined when the agent is gone or the caller cannot at least view it. */
 export async function rosterAgentView(deps: RosterDependencies, caller: AgentCaller, entry: RosterEntry): Promise<RosterAgentView | undefined> {
   const agent = await deps.store.get(caller.orgId, entry.agentId);
-  if (agent === undefined) return undefined;
+  // A process layer is not an agent a project works with, even if it was put on the roster.
+  if (agent === undefined || agent.purpose === "process") return undefined;
   // An agent the caller cannot see is left out entirely: nothing of it, not even that it is there.
   const access = await agentAccess(deps, caller, agent);
   if (!atLeast(access, "view")) return undefined;
