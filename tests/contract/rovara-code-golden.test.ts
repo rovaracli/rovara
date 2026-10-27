@@ -7,7 +7,7 @@ import type * as NodeCrypto from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -271,4 +271,70 @@ describe("Rovara Code with agents switched on", () => {
       for (const sent of [record.invocation, record.forWorker] as Array<{ payload?: Record<string, unknown> } | null>) expect(sent?.payload ?? {}).not.toHaveProperty("modelRoute");
     }, 120_000);
   }
+});
+
+// Plan quality (2026-10-27), change 7: three graded rehearsals scored the plan and the implementation for the same gaps, so Rovara Code version 2's plan and build steps now carry general guidance
+// (strict input rules, tests for a new option alone, combined and at the boundaries, and every CI check in the plan). That changes version 2's recipe, and so its digest, in exactly the two paths
+// listed here, by value. Version 1 is not touched: its digest, its fixtures and SHA256SUMS above are byte-identical, and the golden fixtures record version 1.
+const V2_DIGEST_BEFORE = "1b47c1f54341f67bf8c6d8292b42079ef756dc0c52f1c2710d7b1f2ffb9e3aea";
+const V2_DIGEST_AFTER = "c9381c97a2967f260ab3d16e48b2c3fddddc394fb15562fb61d62d74bf693812";
+const V1_DIGEST = "1f3d988f8f6c4ae406aca2a61c7afbc378a08f14d3ce47e8037228d9195c989b";
+const PLAN_QUALITY_CHANGES: Array<{ path: string; expected: unknown; change: 7 }> = [
+  {
+    path: "steps[0].settings.instructions", change: 7,
+    expected: [{
+      agentName: "Rovara Code",
+      text: [
+        "Plan the input rules, the tests and the checks as well as the code.",
+        "- Input: say exactly which values are accepted and which are rejected (empty, padded with spaces, signed, decimal, exponent, hex, below the minimum, above the maximum), and parse strictly. A loose conversion such as Number() or parseInt() accepts values the rule does not.",
+        "- Tests: for each new option, plan a test alone, one combined with each existing option it can meet (such as filters), and one at each boundary: the minimum, the maximum, one past each, and a value above the number of available items.",
+        "- Checks: list every check the repository's CI requires. Read its workflow files, and do not stop at lint.",
+      ].join("\n"),
+    }],
+  },
+  {
+    path: "steps[2].settings.instructions", change: 7,
+    expected: [{
+      agentName: "Rovara Code",
+      text: [
+        "Validate input strictly: accept only the documented form and reject everything else with a clear error before doing any work.",
+        "Do not rely on a loose conversion such as Number() or parseInt(), which accepts padding, exponents, hex and decimals.",
+        "Write tests for each new option alone, combined with the existing options, and at its boundaries (the minimum, the maximum, one past each, and above the number of available items).",
+        "Run the plan's checks and the repository's own test command before you finish.",
+      ].join("\n"),
+    }],
+  },
+];
+
+describe("Rovara Code version 2's recipe after the plan-quality change", () => {
+  const v2 = builtinRecipe("rovara-code", 2);
+
+  it("is the recipe it was before, apart from change 7's two paths, each listed by value", () => {
+    const before = structuredClone(v2) as unknown as Record<string, unknown>;
+    for (const { path, expected } of PLAN_QUALITY_CHANGES) {
+      expect(valueAt(v2, path), path).toEqual(expected);
+      const parts = path.split(/\.|(?=\[)/u).filter(Boolean);
+      const holder = parts.slice(0, -1).reduce<unknown>((node, part) => {
+        const index = /^\[(\d+)\]$/u.exec(part);
+        return (node as Record<string, unknown>)[index === null ? part : index[1]!];
+      }, before) as Record<string, unknown>;
+      holder[parts.at(-1)!] = [];
+    }
+    expect(recipeDigest(before as never), "version 2 before").toBe(V2_DIGEST_BEFORE);
+    expect(recipeDigest(v2), "version 2 now").toBe(V2_DIGEST_AFTER);
+    expect(BUILTIN_AGENTS["rovara-code"].versions[1]!.digest).toBe(V2_DIGEST_AFTER);
+  });
+
+  it("leaves version 1 untouched: its digest, and no instructions in any step", () => {
+    const v1 = builtinRecipe("rovara-code", 1);
+    expect(recipeDigest(v1)).toBe(V1_DIGEST);
+    expect(BUILTIN_AGENTS["rovara-code"].versions[0]!.digest).toBe(V1_DIGEST);
+    expect(JSON.stringify(v1)).not.toContain("Number()");
+    for (const step of v1.steps) expect((step.settings as { instructions: unknown[] }).instructions, step.id).toEqual([]);
+  });
+
+  it("is what the digest fixture records, for version 2 only", () => {
+    const recorded = JSON.parse(readFileSync(new URL("../fixtures/builtin-agent-digests.json", import.meta.url), "utf8")) as Record<string, Record<string, string>>;
+    expect(recorded["rovara-code"]).toEqual({ "1": V1_DIGEST, "2": V2_DIGEST_AFTER });
+  });
 });

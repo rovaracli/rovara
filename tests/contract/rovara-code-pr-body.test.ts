@@ -574,6 +574,44 @@ describe("the plan summary's file count", () => {
   });
 });
 
+describe("the Tests section names the commit that was tested", () => {
+  const testsOf = (body: string) => body.slice(body.indexOf("## Tests"), body.indexOf("## Reviews"));
+  const pushed = (letter: string, candidateDigest: string) => ({ repositoryId: "payments", number: 7, url: "https://github.com/example/payments/pull/7", headSha: letter.repeat(40), candidateDigest, required: true, state: "OPEN" });
+
+  it("says the short head commit (8 characters) of the checked code", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context());
+    expect(testsOf(body)).toContain("- Tested on head commit 11111111\n");
+    expect(testsOf(body)).not.toContain("1".repeat(9));
+  });
+
+  it("says where the pushed head differs from the commit the checks ran on, and the pull request head when it holds the same code", () => {
+    const code = candidate("1");
+    expect(testsOf(workflowPullRequestBody(task, workflowWith({ pullRequests: [pushed("2", code.digest)] }), planOf, SESSION, context()))).toContain("- Tested on head commit 11111111 (pushed as 22222222)");
+    // A pull request head that holds older code says nothing: it was not the code that was tested.
+    expect(testsOf(workflowPullRequestBody(task, workflowWith({ pullRequests: [pushed("2", candidate("3").digest)] }), planOf, SESSION, context()))).not.toContain("pushed as");
+    expect(testsOf(workflowPullRequestBody(task, workflowWith({ pullRequests: [pushed("1", code.digest)] }), planOf, SESSION, context()))).toContain("- Tested on head commit 11111111\n");
+  });
+
+  it("names each repository when the task changed more than one", () => {
+    const two = createCandidateManifest([
+      { repositoryId: "payments", commitSha: "a".repeat(40), treeSha: "a".repeat(40), baseCommitSha: "e".repeat(40) },
+      { repositoryId: "web", commitSha: "b".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) },
+    ]);
+    const workflow = workflowWith({ candidate: two, verification: { candidateDigest: two.digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [{ checkId: "unit", status: "PASS" }] },
+      reviews: (["CRITIC", "SECURITY"] as const).map((role) => ({ operationId: randomUUID(), candidateDigest: two.digest, role, provider: "test", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now })) });
+    expect(testsOf(workflowPullRequestBody(task, workflow, planOf, SESSION, context()))).toContain("- Tested on head commits: payments aaaaaaaa, web bbbbbbbb");
+  });
+
+  it("is in the regenerated block too, so a fix on the pull request names the new commit", () => {
+    const lines = workflowPullRequestStatusLines(workflowWith(), context());
+    expect(lines).toContain("- Tested on head commit 11111111");
+  });
+
+  it("is not in a version 1 description", () => {
+    expect(workflowPullRequestBody(task, workflowWith({}, "1.0.0"), planOf, SESSION)).not.toContain("Tested on head commit");
+  });
+});
+
 describe("which findings, reviews and recorded risk count", () => {
   const securityFinding = { text: "Retries can double-charge a card", origin: "INTRODUCED", severity: "HIGH", file: "src/retry.ts", line: 4 };
   const acceptedFor = (letter: string) => ({ candidateDigest: candidate(letter).digest, role: "SECURITY", fingerprint: workflowFindingFingerprint("SECURITY", securityFinding), text: securityFinding.text, reason: "ok", actorId: ownerId, at: now });

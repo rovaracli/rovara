@@ -67,6 +67,7 @@ import {
   readPlanCritique,
   parsePlanDocument,
   planAnswerMissingParts,
+  withCiChecks,
   parseCommentAnswers,
   commentRefInAuthor,
   commentIdInAuthor,
@@ -394,6 +395,7 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
+import { readCiChecks } from "../rovara-code/ci-checks.js";
 import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
@@ -15951,14 +15953,19 @@ async function storePlanAnswer(
       if (entry.type === artifactType) previousVersion = loaded.plan;
     }
   }
+  // Rovara Code version 2: the checks the repository's CI requires join the planner's proposals (a check the project already runs is not repeated, but the plan lists it), so the Checks section
+  // never depends on the planner remembering to look. Whether the plan names a test is still read from the answer as the planner wrote it (below).
+  const rovaraV2 = workflow.definitionVersion === "1.1.0";
+  const withCi = rovaraV2 && artifactType === "plan" && workflow.checkPolicy !== undefined ? await answerWithCiChecks(dependencies, task, project, content) : content;
   // A coding plan's `checks` member proposes its checks; they run only once the owner approves this plan.
-  const parsed = parsePlanDocument(content, {
+  const parsed = parsePlanDocument(withCi, {
     kind: artifactType,
     retiredClaimIds: retiredClaimIds(earlier),
     ...(artifactType === "plan" && workflow.checkPolicy !== undefined ? { checks: {
       repositoryPaths: project.definition.repositories.map((repository) => repository.path),
       required: workflow.checkPolicy.required,
       optionalCount: workflow.checkPolicy.optional.length,
+      ...(rovaraV2 ? { listRequired: true } : {}),
     } } : {}),
   });
   if (!parsed.ok) return unreadable(parsed.errors);
@@ -16025,6 +16032,41 @@ async function storePlanAnswer(
     bundle = { schemaVersion: 1, excerpts: [] };
   }
   return { next, planUnreadable: null, inlineEvidence: { artifactId, artifactSha256, bundle, prefix }, ...withReplies };
+}
+
+/** The most repositories whose CI is read for one plan, and how long the reading may take: a plan is never held up for it. */
+const CI_READ_REPOSITORIES_MAX = 3;
+const CI_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * The planner's answer with the checks the task's repositories' CI workflows require added to its proposed checks (Plan 6 plan quality). Read through the org's read-only GitHub reader of each
+ * repository's default branch; the answer comes back as it was when there is no reader (a private install), nothing can be read in time, or a workflow can't be understood.
+ */
+async function answerWithCiChecks(
+  dependencies: AwsBrokerDependencies,
+  task: DeveloperTaskRecord,
+  project: Awaited<ReturnType<typeof requireRecordProject>>,
+  content: string,
+): Promise<string> {
+  if (dependencies.cloud !== true || dependencies.githubPullRequests.agentRepositoryReader === undefined) return content;
+  const github = dependencies.githubPullRequests;
+  try {
+    const orgId = await orgOfRecord(dependencies, task);
+    const reading = Promise.all(project.definition.repositories.slice(0, CI_READ_REPOSITORIES_MAX).map(async (repository) => {
+      try {
+        const reader = await github.agentRepositoryReader!(repository.url, { orgId }, ...(repository.installationId === undefined ? [] : [{ installationId: repository.installationId }]));
+        return await readCiChecks(reader, repository.path);
+      } catch {
+        return [];
+      }
+    }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const found = await Promise.race([reading, new Promise<never[][]>((resolve) => { timer = setTimeout(() => resolve([]), CI_READ_TIMEOUT_MS); })]);
+    if (timer !== undefined) clearTimeout(timer);
+    return withCiChecks(content, found.flat());
+  } catch {
+    return content;
+  }
 }
 
 /** The planner's answers to the comments the owner sent with a decision, for the version just stored. */

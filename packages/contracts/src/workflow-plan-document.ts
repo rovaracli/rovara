@@ -4,7 +4,7 @@ import { canonicalJson, sortKeys } from "./canonical-json.js";
 import { redactText } from "./redaction.js";
 import { WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck } from "./task-workflow.js";
 import { type WorkflowCheckProposal } from "./task-workflow-node.js";
-import { extractProposedChecks, hasControlCharacter, isNotChangingReference, lastFencedBlock, notChangingReference, proposedCheckTextIssues } from "./workflow-proposed-checks.js";
+import { extractProposedChecks, hasControlCharacter, isNotChangingReference, lastFencedBlock, notChangingReference, proposedCheckProblem, proposedCheckTextIssues, replaceLastFencedBlock } from "./workflow-proposed-checks.js";
 import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema, type E2EApplicationPlanIntent } from "./e2e-application.js";
 import type { E2EFeaturePlanIntent } from "./e2e-node.js";
@@ -46,7 +46,11 @@ export interface PlanDocument {
   /** Optional strict ordered work breakdown for coding plans only. */
   workBreakdown?: TaskGraphV1 | undefined;
   /** Coding plans only. The validated checks the owner's approval covers, and the claims each proves. */
-  checks?: { proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]> };
+  checks?: {
+    proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]>;
+    /** Rovara Code version 2: the project's own checks, which always run. The Checks section lists them beside the proposed ones, so a check the plan didn't need to propose is not missing from it. */
+    alsoRun?: WorkflowCheck[] | undefined;
+  };
   /** Untrusted feature E2E intent, approved only as part of the canonical workflow artifact. */
   e2e?: WorkflowFeatureE2EIntent | undefined;
   /** Rovara Code version 2: the request needs no code change. The answer is a model's words (plain text, bounded); the owner closes the task as answered or asks for the change anyway. */
@@ -152,11 +156,15 @@ const DecisionSchema = z.object({
   recommended: OptionIdSchema,
 }).strict();
 
+/** The most project checks a version 2 plan lists in its Checks section (a task runs at most 64 checks). */
+const PROJECT_CHECKS_LISTED_MAX = 64;
+
 const StoredChecksSchema = z.object({
   proposed: z.array(WorkflowCheckSchema).max(WORKFLOW_PROPOSED_CHECKS_MAX),
   noneReason: z.string().min(1).max(300).optional(),
   proposalNote: z.string().min(1).max(200).optional(),
   proves: z.record(z.string().max(64), z.array(z.string().min(1).max(60)).max(PLAN_CLAIMS_MAX)),
+  alsoRun: z.array(WorkflowCheckSchema).max(PROJECT_CHECKS_LISTED_MAX).optional(),
 }).strict();
 
 const planBodyShape = {
@@ -395,7 +403,8 @@ function capErrors(errors: string[]): string[] {
  */
 export function parsePlanDocument(answer: string, input: {
   kind: PlanDocumentKind;
-  checks?: { repositoryPaths: string[]; required: WorkflowCheck[]; optionalCount?: number };
+  /** `listRequired` (Rovara Code version 2): the plan's Checks section also lists the project's required checks, which always run. */
+  checks?: { repositoryPaths: string[]; required: WorkflowCheck[]; optionalCount?: number; listRequired?: boolean };
   retiredClaimIds?: ReadonlySet<string>;
 }): PlanParseResult {
   const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
@@ -431,10 +440,12 @@ export function parsePlanDocument(answer: string, input: {
   if (errors.length > 0) return { ok: false, errors: capErrors(errors) };
 
   if (input.kind !== "plan" || input.checks === undefined) return { ok: true, plan };
+  const { listRequired, ...proposing } = input.checks;
   const { proves, ...proposal } = extractProposedChecks(Object.hasOwn(json, "checks") ? rawChecks : { checks: [] }, {
-    ...input.checks, allowProves: true, claimIds: new Set(planClaimIds(plan)), notChangingCount: plan.notChanging.length,
+    ...proposing, allowProves: true, claimIds: new Set(planClaimIds(plan)), notChangingCount: plan.notChanging.length,
   });
-  return { ok: true, plan: { ...plan, checks: { ...proposal, proves } }, proposal };
+  const alsoRun = listRequired === true && input.checks.required.length > 0 ? { alsoRun: input.checks.required.slice(0, PROJECT_CHECKS_LISTED_MAX) } : {};
+  return { ok: true, plan: { ...plan, checks: { ...proposal, proves, ...alsoRun } }, proposal };
 }
 
 /** Reads a stored plan document back (the JSON `canonicalPlanJson` wrote); undefined when it is not a valid plan document. */
@@ -530,6 +541,42 @@ export function planAnswerProposesChecks(answer: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** A check read from a repository's CI configuration, in the form a plan proposes it. */
+export interface CiCheckInput { label: string; cwd: string; executable: string; args: readonly string[]; timeoutSeconds?: number }
+
+/**
+ * A planner's answer with the checks the repository's CI requires added to its `checks` member (Rovara Code version 2). The planner's own checks come first and keep their labels and claims;
+ * a CI check that runs the same command in the same folder is not repeated, one the rules for a proposed check would refuse is left out (a refused check would make every check unreadable),
+ * and the member never holds more than the most a plan may propose. An answer with nothing to add, or one that can't be read, is returned exactly as it was.
+ */
+export function withCiChecks(answer: string, ci: readonly CiCheckInput[]): string {
+  if (ci.length === 0) return answer;
+  const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
+  if (typeof block !== "string") return answer;
+  let json: unknown;
+  try {
+    json = JSON.parse(block);
+  } catch {
+    return answer;
+  }
+  if (!isRecord(json)) return answer;
+  const raw = json["checks"];
+  if (raw !== undefined && !(isRecord(raw) && Array.isArray(raw["checks"]))) return answer;
+  const existing: unknown[] = raw === undefined ? [] : (raw as { checks: unknown[] }).checks;
+  const same = (entry: unknown, check: CiCheckInput): boolean => isRecord(entry) && entry["cwd"] === check.cwd && entry["executable"] === check.executable
+    && Array.isArray(entry["args"]) && entry["args"].length === check.args.length && check.args.every((arg, index) => (entry["args"] as unknown[])[index] === arg);
+  const added: Array<Record<string, unknown>> = [];
+  for (const check of ci) {
+    if (existing.length + added.length >= WORKFLOW_PROPOSED_CHECKS_MAX) break;
+    const entry = { label: check.label, cwd: check.cwd, executable: check.executable, args: [...check.args], ...(check.timeoutSeconds === undefined ? {} : { timeoutSeconds: check.timeoutSeconds }) };
+    if (proposedCheckProblem(entry) !== undefined || existing.some((other) => same(other, check)) || added.some((other) => same(other, check))) continue;
+    added.push({ ...entry, proves: [] });
+  }
+  if (added.length === 0) return answer;
+  const merged = { ...json, checks: { ...raw, checks: [...existing, ...added], none_reason: null } };
+  return replaceLastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING, JSON.stringify(merged, null, 2));
 }
 
 const SUMMARY_LINE_MAX_CHARS = 160;
@@ -772,12 +819,17 @@ export function planDocumentMarkdown(plan: PlanDocument, input: {
   out.push("## Not changing", ...plan.notChanging.map((entry) => `- ${line(entry)}`));
   out.push("## Risks", ...plan.risks.map((entry) => `- ${line(entry)}`));
   const checks = plan.checks;
-  if (checks !== undefined && checks.proposed.length > 0) {
+  const projectChecks = checks?.alsoRun ?? [];
+  if (checks !== undefined && (checks.proposed.length > 0 || projectChecks.length > 0)) {
     out.push("## Checks");
     for (const check of checks.proposed) {
       const proves = checks.proves[check.id] ?? [];
       const command = line([check.command.executable, ...check.command.args].join(" "));
       out.push(`- ${line(check.label)}: ${inlineCode(command)} in ${inlineCode(line(check.command.cwd))}${proves.length === 0 ? "" : ` — proves ${proves.map(provedItem).join(", ")}`}`);
+    }
+    for (const check of projectChecks) {
+      const command = line([check.command.executable, ...check.command.args].join(" "));
+      out.push(`- ${line(check.label)}: ${inlineCode(command)} in ${inlineCode(line(check.command.cwd))} (a project check; it always runs)`);
     }
   } else if (checks?.noneReason !== undefined) {
     out.push("## Checks", `- None apply: ${line(checks.noneReason)}`);
