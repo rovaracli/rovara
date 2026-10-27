@@ -1,10 +1,10 @@
-import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 // packages/broker/src/agents/store.ts
 // The agent store: an agent's META, its DRAFT, immutable numbered versions, the org's name and directory
 // items and one EVENT# item per notable write. Every multi-item write is one transaction, so a refused
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_DESCRIPTION_MAX,
