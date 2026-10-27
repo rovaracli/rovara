@@ -82,6 +82,10 @@ export class SessionLifecycle extends Construct {
     // proxy, whose URL is one more setting. Launching a worker without it fails; the legacy function is unchanged.
     // The stage 2 boot hash (Task 10) is one more named-environment setting, beside the worker image it checks; the legacy function never reads it.
     const settingNames: string[] = [...Object.values(WORKER_SETTING_PARAMETERS), ...(naming.env === undefined ? [] : [MODEL_PROXY_URL_PARAMETER, BOOT_STAGE2_SHA256_PARAMETER])];
+    // AUTOREQUALIFY AR-4: written by the requalifier (never by this construct's principals); read by
+    // the provisioner (to launch from it) and the reconciler (to recycle workers on another AMI).
+    const workerAmiParameterName = `${naming.ec2.workerSettingsPrefix}worker-qualified-ami`;
+    const workerAmiParameterArn = `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${workerAmiParameterName}`;
     const settingParameterArns = settingNames.map((name) =>
       `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}${name}`);
     this.steps = packagedFunction(this, "Steps", "packages/broker/src/aws/session-steps.ts", {
@@ -116,6 +120,7 @@ export class SessionLifecycle extends Construct {
       environmentTag: naming.environmentTagValue,
       ...(naming.env === undefined ? {} : { env: naming.env }),
       resourcePrefix: naming.resourcePrefix,
+      workerAmiParameterName,
     };
     const ec2Arn = (resource: string) => `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:${resource}`;
     // Only instances and volumes this environment's session lifecycle created.
@@ -153,6 +158,11 @@ export class SessionLifecycle extends Construct {
         sid: "ResolveWorkerAmi",
         actions: ["ssm:GetParameters", "ssm:GetParameter"],
         resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}::parameter${EC2_WORKER_AMI_PARAMETER}`],
+      }),
+      new iam.PolicyStatement({
+        sid: "ReadQualifiedWorkerAmi",
+        actions: ["ssm:GetParameter"],
+        resources: [workerAmiParameterArn],
       }),
       new iam.PolicyStatement({
         sid: "PassInstanceRole",
@@ -228,6 +238,7 @@ export class SessionLifecycle extends Construct {
       DELETER_ARN: this.deleter.stateMachineArn,
       ENVIRONMENT_TAG: naming.environmentTagValue,
       AGENTX_METRICS_NAMESPACE: naming.metricsNamespace,
+      WORKER_QUALIFIED_AMI_PARAMETER: workerAmiParameterName,
     }, Duration.minutes(4));
     if (naming.env !== undefined) this.reconciler.addEnvironment("AGENTX_ENV", naming.env);
     inVpc(this.reconciler);
@@ -239,6 +250,7 @@ export class SessionLifecycle extends Construct {
     // checks closes a stalled check's workspace, which starts the deleter for its session.
     if (naming.env !== undefined) this.deleter.grantStartExecution(this.reconciler);
     this.reconciler.addToRolePolicy(new iam.PolicyStatement({ sid: "Describe", actions: ["ec2:DescribeInstances", "ec2:DescribeVolumes"], resources: ["*"] }));
+    this.reconciler.addToRolePolicy(new iam.PolicyStatement({ sid: "ReadQualifiedWorkerAmi", actions: ["ssm:GetParameter"], resources: [workerAmiParameterArn] }));
     this.reconciler.addToRolePolicy(new iam.PolicyStatement({
       sid: "RepairOwn",
       actions: ["ec2:TerminateInstances", "ec2:DeleteVolume"],
@@ -271,6 +283,9 @@ export class SessionLifecycle extends Construct {
       "A READY EC2 worker's instance disappeared; its session was stopped and its running operation failed. Check the reconciler's logs and the instance's EC2 history.");
     findingAlarm("StuckProvisioningAlarm", "ReconcilerStuckProvisioning",
       "An EC2 session provisioning ended without finishing and was marked failed by the reconciler. Open the provisioner execution named in the reconciler's logs.");
+    // AR-4 review M3: the pin could not be read (denied, throttled, malformed), so no stale worker is recycled and the next renewal's pin is not applied. Task machines still launch from today's image.
+    findingAlarm("QualifiedAmiReadFailuresAlarm", "ReconcilerQualifiedAmiReadFailures",
+      "The reconciler could not read the qualified worker AMI setting, so workers on an older image are not being recycled. Check the setting's value and the reconciler's logs (reconciler.qualified_ami_unreadable).");
     new cloudwatch.Alarm(this, "ReconcilerErrorsAlarm", {
       alarmName: naming.alarmName("SessionReconcilerErrors"),
       alarmDescription: "The EC2 session reconciler failed twice in a row; drift is not being repaired. Check the reconciler's logs.",
