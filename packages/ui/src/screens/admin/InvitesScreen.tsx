@@ -21,10 +21,11 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), { checking, company, role } = useAdminContext();
  const [selected, setSelected] = useState<InviteRevokeTarget & { fromCreation?: boolean }>(), trigger = useRef<HTMLElement>(null), preferSummary = useRef(false), region = useRef<HTMLElement>(null);
  const [createOpen, setCreateOpen] = useState(false), [createSession, setCreateSession] = useState(false), [createKey, setCreateKey] = useState(0), [resumeCreate, setResumeCreate] = useState(false);
- const createTrigger = useRef<HTMLButtonElement>(null), blockingInvite = useRef<string | undefined>(undefined), activeRevokeId = useRef<string | undefined>(undefined), creatingRevoke = useRef(false);
+ const createTrigger = useRef<HTMLButtonElement>(null), blockingInvite = useRef<string | undefined>(undefined), activeRevokeId = useRef<string | undefined>(undefined), creatingRevoke = useRef(false), restartPending = useRef(false);
  const progress = useCallback((resume: boolean, inviteId?: string) => { setResumeCreate(resume);blockingInvite.current = resume ? inviteId : undefined; }, []);
  const closeCreate = useCallback(() => { setCreateOpen(false); }, []);
- const restoreCreate = useCallback(() => { if (creatingRevoke.current) { creatingRevoke.current = false;return; }if (createTrigger.current?.isConnected) createTrigger.current.focus();else summary.current?.focus(); }, []);
+ const restartCreate = useCallback(() => { restartPending.current = true;setCreateOpen(false); }, []);
+ const restoreCreate = useCallback(() => { if (restartPending.current) { restartPending.current = false;blockingInvite.current = undefined;setResumeCreate(false);setCreateKey(value => value + 1);setCreateOpen(true);return; } if (creatingRevoke.current) { creatingRevoke.current = false;return; }if (createTrigger.current?.isConnected) createTrigger.current.focus();else summary.current?.focus(); }, []);
  const revokeCreated = useCallback((target: InviteRevokeTarget) => { creatingRevoke.current = true;activeRevokeId.current = target.inviteId;preferSummary.current = true;setSelected({ ...target, fromCreation: true }); }, []);
  const [cursors, setCursors] = useState<string[]>([]), pageFocus = useRef(false), summary = useRef<HTMLParagraphElement>(null), cursor = cursors.at(-1);
  useEffect(() => () => { const key = ["admin", "invites", orgId, developerId];void query.cancelQueries({ queryKey: key });query.removeQueries({ queryKey: key }); }, [query, orgId, developerId]);
@@ -67,7 +68,7 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
     <div className="rv-admin-role-actions"><Button disabled={cursors.length === 0} aria-disabled={locked || cursors.length === 0} onClick={() => { if (locked) return;setCursors(old => old.slice(0, -1));pageFocus.current = true; }}>Previous page</Button><Button disabled={nextCursor === undefined} aria-disabled={locked || nextCursor === undefined} onClick={() => { if (!locked && nextCursor !== undefined) { setCursors(old => [...old, nextCursor]);pageFocus.current = true; } }}>Next page</Button></div>
    </>}
   </>}
-  {createSession && <InviteCreateDialog key={createKey} open={createOpen} orgId={orgId} company={company} role={role} accessAllowed={!terminal} checking={checking || read.isFetching} staleData={stale || hidden} onClose={closeCreate} restoreFocus={restoreCreate} onApplied={created} onDenied={denied} onProgress={progress} onRevoke={revokeCreated} />}
+  {createSession && <InviteCreateDialog key={createKey} open={createOpen} orgId={orgId} company={company} role={role} accessAllowed={!terminal} checking={checking || read.isFetching} staleData={stale || hidden} onClose={closeCreate} restoreFocus={restoreCreate} onApplied={created} onDenied={denied} onProgress={progress} onRevoke={revokeCreated} onRestart={restartCreate} />}
   {selected !== undefined && !terminal && <InviteRevokeDialog orgId={orgId} company={company} target={selected} checking={checking || read.isFetching} changed={changed} staleData={stale || hidden} onApplied={applied} onDenied={denied} onClose={close} restoreFocus={restore} />}
  </section>;
 }
