@@ -245,3 +245,24 @@ it("retains the explicit bearer CLI source-order compatibility path", async () =
  const h = await broker({ agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });
  expect((await h.call("PUT", "/v1/app/org/model-sources-order", { authorization: "Bearer test-only-bearer" }, { requestId: randomUUID(), order: ["rovara"] })).status).toBe(200);
 });
+function seedCompanySource(db: Awaited<ReturnType<typeof broker>>["db"]) {
+ const sourceId = "src_" + "a".repeat(20);
+ const item = { ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [{ sourceId, kind: "anthropic", label: "Company source", models: [{ catalog: { provider: "anthropic", modelId: "claude-sonnet-4-5" } }] }], order: [sourceId, "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" };db.set(item);return { sourceId, item };
+}
+for (const role of ["owner", "admin", "member"] as const) it(`refuses unreviewed cookie source deletion for ${role} without touching order or proxy`, async () => {
+ const audit = capturingAuditDeps(), access = fakeModelAccess(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const source = seedCompanySource(h.db), before = h.db.commandNames().length;
+ const response = await h.call("DELETE", `/v1/web/org/model-sources/${source.sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });
+ expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Removing a company AI source is not available in the console yet." });expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(source.item);expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);expect(audit.recorded()).toEqual([]);expect(access.removeSource).not.toHaveBeenCalled();
+});
+it("preserves bearer CLI source-removal compatibility while deleting its ordered ID", async () => {
+ const access = fakeModelAccess(), h = await broker({ agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } }), source = seedCompanySource(h.db);
+ expect((await h.call("DELETE", `/v1/app/org/model-sources/${source.sourceId}`, { authorization: "Bearer test-only-bearer" }, { requestId: randomUUID() })).status).toBe(200);expect(h.db.get(modelSourcesKey(TEST_ORG))?.order).toEqual(["rovara"]);expect(h.db.get(modelSourcesKey(TEST_ORG))?.sources).toEqual([]);expect(access.removeSource).toHaveBeenCalledWith(TEST_ORG, source.sourceId);
+});
+it("refuses cookie deletes uniformly for unknown and foreign-company source IDs", async () => {
+ const h = await broker({ agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), source = seedCompanySource(h.db), otherOrg = "org_bbbbbbbbbbbbbbbbbbbb";
+ h.db.delete(modelSourcesKey(TEST_ORG));const foreign = { ...source.item, ...modelSourcesKey(otherOrg) };h.db.set(foreign);const before = h.db.commandNames().length;
+ for (const sourceId of [source.sourceId, "src_" + "b".repeat(20)]) {
+  const response = await h.call("DELETE", `/v1/web/org/model-sources/${sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Removing a company AI source is not available in the console yet." });
+ }
+ expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.get(modelSourcesKey(TEST_ORG))).toBeUndefined();expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+});
