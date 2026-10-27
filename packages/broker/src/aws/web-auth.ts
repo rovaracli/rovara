@@ -11,6 +11,9 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  const read = method === "GET" || method === "HEAD";
  if (family === "tasks") return method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative);
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
+ // Lane B: legacy lifecycle writes remain on the token API for compatibility.
+ // Cookie callers must use the reviewed preview/commit routes.
+ if (family === "projects" && /^projects\/[^/]+\/(archive|restore)$/.test(relative)) return false;
  // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read only /me.
  if (family === "me") return read && relative === "me";
  if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
