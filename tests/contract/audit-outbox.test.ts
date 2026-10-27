@@ -730,6 +730,16 @@ describe("I4: the builders", () => {
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
     ["auditSubjectErased", (occurrence) => builders.auditSubjectErased({ ...base, occurrence, details, subject: "dev_2" })],
     ["auditShredScheduled", (occurrence) => builders.auditShredScheduled({ ...base, occurrence, details, shredAfterDays: 30 })],
+    // "How we work" playbook (H1)
+    ["auditProjectModelsChanged", (occurrence) => builders.auditProjectModelsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, approvedCount: 2, defaultChanged: true })],
+    ["auditProjectChecksChanged", (occurrence) => builders.auditProjectChecksChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, requiredCount: 2, optionalCount: 1 })],
+    ["auditProjectE2ePolicyChanged", (occurrence) => builders.auditProjectE2ePolicyChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, screenshots: true, traces: false, video: false, downloads: true })],
+    ["auditProjectModelSelectionChanged", (occurrence) => builders.auditProjectModelSelectionChanged({ ...base, occurrence, details, projectName: "Secret Project", surface: "slack", cleared: false })],
+    ["auditProjectRosterChanged", (occurrence) => builders.auditProjectRosterChanged({ ...base, occurrence, details, projectName: "Secret Project", added: 2, removed: 1 })],
+    ["auditProcessPublished", (occurrence) => builders.auditProcessPublished({ ...base, occurrence, details, agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: false })],
+    ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
+    ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
+    ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -761,6 +771,23 @@ describe("I4: the builders", () => {
       });
     });
   }
+
+  it("process events target kind process by the process layer's agent id, and carry the pinned actions", () => {
+    const published = builders.auditProcessPublished({ ...base, occurrence: "e1", agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: true });
+    expect(published).toMatchObject({ action: "process.published", target: { kind: "process", id: "agt_1" }, facts: { version: 2, safety: "safe", selfConfirmedSoleOwner: true } });
+    const rolled = builders.auditProcessRolledBack({ ...base, occurrence: "e1", agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" });
+    expect(rolled).toMatchObject({ action: "process.rolled_back", target: { kind: "process", id: "agt_1" }, facts: { fromVersion: 3, toVersion: 2, safety: "safe" } });
+    expect(published.eventId).not.toBe(builders.auditPublished({ ...base, occurrence: "e1", scope: "agent", targetId: "agt_1", version: 2, safety: "safe" }).eventId);
+  });
+
+  it("the project playbook events target the project by name and carry only their fixed facts", () => {
+    const models = builders.auditProjectModelsChanged({ ...base, occurrence: "p1", projectName: "web", revision: 3, approvedCount: 2, defaultChanged: false });
+    expect(models).toMatchObject({ action: "project.models_changed", target: { kind: "project", name: "web" }, facts: { revision: 3, approvedCount: 2, defaultChanged: false } });
+    const selection = builders.auditProjectModelSelectionChanged({ ...base, occurrence: "p1", projectName: "web", surface: "cli", cleared: true });
+    expect(selection.facts).toStrictEqual({ surface: "cli", cleared: true });
+    const company = builders.auditCompanyChangeAppliedToProject({ ...base, occurrence: "p1", projectName: "web", changeRevision: 5, settingCount: 0 });
+    expect(company.facts).toStrictEqual({ changeRevision: 5, settingCount: 0 });
+  });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {
     const decided = (decision: string) => builders.auditApprovalDecided({ ...base, occurrence: "apr_1", approvalId: "apr_1", kind: "write", decision, subjectKind: "write" }).eventId;
