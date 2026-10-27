@@ -95,8 +95,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname.startsWith("/v1/web/") || url.pathname === "/v1/auth/browser/sign-out") {
  if (url.pathname.startsWith("/v1/web/") && !webRouteAllowed(method, url.pathname)) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
  const webCaller = await authenticateWebRequest(deps, { method, path: url.pathname, headers, requestId: "mock-request" });
- // B7 exercises the reviewed route against the same persisted transaction/audit table.
- if (current.name === "admin" && ((method === "GET" && /^\/v1\/web\/projects\/[^/]+\/archive-preview$/.test(url.pathname)) || (method === "POST" && /^\/v1\/web\/projects\/[^/]+\/reviewed-archive$/.test(url.pathname)))) {
+ // B7/B11 exercise reviewed lifecycle routes against the persisted transaction/audit table.
+ if (current.name === "admin" && ((method === "GET" && /^\/v1\/web\/projects\/[^/]+\/(?:archive|restore)-preview$/.test(url.pathname)) || (method === "POST" && /^\/v1\/web\/projects\/[^/]+\/reviewed-(?:archive|restore)$/.test(url.pathname)))) {
   let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }
   const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body);json(200,result);return;
  }

@@ -18,10 +18,12 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Unconfirmed")), 30000); })]); }
  finally { clearTimeout(timer); }
 }
-export function ArchiveProject({ name, available }: { name: string; available: boolean }) {
+export function ArchiveProject({ name, available, observedStatus }: { name: string; available: boolean; observedStatus?: "active" | "archived" }) {
  const context = useAdminContext(), host = useAppHost(), query = useQueryClient(), api = useMemo(() => createApiClient(host), [host]);
  const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [ack, setAck] = useState(false);
- const [preview, setPreview] = useState<ReviewedProjectArchivePreview>(), [current, setCurrent] = useState<ReviewedProjectArchivePreview>();
+ const [preview, setPreview] = useState<ReviewedProjectArchivePreview>(), [checkedCurrent, setCurrent] = useState<ReviewedProjectArchivePreview>();
+ // Shared checked detail may supersede this snapshot; keep its receipt/history separate.
+ const current = checkedCurrent !== undefined && (observedStatus === undefined || checkedCurrent.status === observedStatus) ? checkedCurrent : undefined;
  const [receipt, setReceipt] = useState<ReviewedProjectArchiveOutcome>(), [message, setMessage] = useState(""), [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false);
  const [attempt, setAttempt] = useState<Attempt>(), [isWriting, setIsWriting] = useState(false);
  // Fresh review is a new intent, not confirmation of an earlier request. Keep their IDs scoped here.

@@ -12,6 +12,7 @@ const keyOf = (key: Row | { pk: string; sk: string } | undefined) => `${String(k
 export function createAdminDirectory() {
  const rows = new Map<string, Row>(), audit: Row[] = [];
  const archiveUpdate = "SET entityType = :type, #name = :name, #status = :archived, archivedAt = :at, archivedBy = :by, archiveRevision = :next, createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)";
+ const restoreUpdate = "SET #status = :active, archiveRevision = :next REMOVE archivedAt, archivedBy";
  const put = (row: Row) => rows.set(keyOf(row), structuredClone(row));
  function setRole(id: string, role: OrgRole, org: string = FIXTURE_ORG) {
   put({ ...orgMemberKey(org, id), orgId: org, developerId: id, role, joinedAt: "2026-10-01T00:00:00.000Z" });put({ ...developerOrgKey(id), orgId: org, role });
@@ -63,7 +64,7 @@ export function createAdminDirectory() {
   const checks = actions.map(action => {
    const write = action.Update ?? action.ConditionCheck ?? action.Put;
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
-   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", archiveUpdate].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
+   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", archiveUpdate, restoreUpdate].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
    const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write ? write.UpdateExpression ?? "" : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
    for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
@@ -77,6 +78,7 @@ export function createAdminDirectory() {
    if (action.Update !== undefined) {
     const update = action.Update, values = update.ExpressionAttributeValues ?? {}, row = rows.get(keyOf(update.Key));
     if (update.UpdateExpression === archiveUpdate) { put({ ...update.Key, ...row, entityType: values[":type"], name: values[":name"], status: values[":archived"], archivedAt: values[":at"], archivedBy: values[":by"], archiveRevision: values[":next"], createdAt: row?.createdAt ?? values[":at"], createdBy: row?.createdBy ?? values[":unknown"] });continue; }
+    if (update.UpdateExpression === restoreUpdate) { if (row === undefined) throw new Error("Missing restore fixture meta.");const next: Row = { ...row, status: values[":active"], archiveRevision: values[":next"] };delete next.archivedAt;delete next.archivedBy;put(next);continue; }
     if (row === undefined || values[":role"] === undefined) throw new Error("Unsupported fixture update.");
     put({ ...row, role: values[":role"], ...(values[":at"] === undefined ? {} : { roleUpdatedAt: values[":at"] }) });
    }
@@ -90,7 +92,7 @@ export function createAdminDirectory() {
   async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },
-  evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST"), audit }; },
+  evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST" || row.entityType === "REVIEWED_PROJECT_RESTORE_REQUEST"), audit }; },
   async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown) {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
    const deps = { ...base, documentClient, audit: runtime, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now }) };
