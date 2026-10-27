@@ -130,3 +130,7 @@ for (const [marker, revision, code] of [["revokedAt", 1, "INVITE_ALREADY_REVOKED
 it("refuses an unsafe canonical revision rather than trusting terminal state", async () => {
  const f = await fixture();f.db.set({ ...f.created.row, revision: Number.MAX_SAFE_INTEGER + 1, revokedAt: "2026-10-27T11:00:00Z" });expect((await f.call()).status).toBe(404);expect(f.events().length).toBe(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST").length).toBe(0);
 });
+
+it("refuses a revision whose next value cannot be represented safely before any write", async () => {
+ const f = await fixture();f.db.set({ ...f.created.row, revision: Number.MAX_SAFE_INTEGER });const transactions=f.db.transactions().length;expect((await f.call(f.created.id, { requestId: f.requestId, expectedRevision: Number.MAX_SAFE_INTEGER })).status).toBe(400);expect(f.db.transactions().length).toBe(transactions);expect(f.events().length).toBe(0);
+});
