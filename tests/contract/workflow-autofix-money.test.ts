@@ -105,10 +105,10 @@ describe("automatic fixing and the run limit's window (MONEY, owner ruling pendi
     const { harness, access } = installed;
     const { taskId } = await blockedOnFindings(installed);
     const blocked = taskOf(harness, taskId);
-    const input = harness.brokerInput as { documentClient: never; tableName: string; developer: never };
+    const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
     const owner = { developerId: MAYA.developerId, sessionId: "s", amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
-    const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions,
-      modelAccess: access, cloud: true }, owner);
+    const base = { documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: harness.actions, modelAccess: access, cloud: true } as unknown as Parameters<typeof developerTaskRouteDependencies>[0];
+    const deps = developerTaskRouteDependencies(base, owner);
     const outcome = await autoSendBackToCodingFromSystem(deps, taskId, { expectedRevision: blocked.workflow.revision, reason: "Sent back by itself.", spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 } });
     expect(outcome).toBe("STARTED");
     expect(taskOf(harness, taskId).workflow.decisions.filter((decision) => decision.source === "AUTO_FIX")).toHaveLength(1);
