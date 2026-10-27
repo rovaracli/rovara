@@ -228,9 +228,11 @@ async function runTask(
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
   const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // No agent step starts the project's devcontainer (its lifecycle commands are the repository's, and a read step's checkout may be a
-  // contributor's pull request head): it runs in the task sandbox, which also keeps R56's file-tool containment for it.
-  const devcontainer = step?.kind === "agent" ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
+  // A feedback review only reads (read, grep, find, ls) and runs no project command, and no agent step starts the project's
+  // devcontainer (its lifecycle commands are the repository's, and a read step's checkout may be a contributor's pull request
+  // head): they run in the task sandbox, whose file tools keep R56's containment.
+  const feedbackReview = invocation.payload.workflowMode === "FEEDBACK_REVIEW";
+  const devcontainer = step?.kind === "agent" || feedbackReview ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
   let devcontainerCli: DevcontainerCli | undefined;
@@ -242,6 +244,15 @@ async function runTask(
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
   }
+  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
+    // The review's own error handling starts after this; a start that fails still reports as the review does.
+    if (feedbackReview) {
+      const events = new EventBatcher(dependencies.eventSink);
+      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
+      await events.flush().catch(() => undefined);
+    }
+    throw error;
+  };
   // R56: without a devcontainer the agent's shell, the checks and the project's commands run in the task sandbox, never as
   // children of the worker. A sandbox that cannot start fails the task here, before the agent runs; it is not a reason to
   // fall back to the local shell.
@@ -256,7 +267,7 @@ async function runTask(
     sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
-      await sandbox.start();
+      await sandbox.start().catch((error: unknown) => reportFeedbackReviewStartFailure(error));
       bashOperations = sandbox.bashOperations();
     } else {
       // The local shell, chosen explicitly (taskShell or AGENTX_TASK_SHELL=local): tests and a developer's machine.

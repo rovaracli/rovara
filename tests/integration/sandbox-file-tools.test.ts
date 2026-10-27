@@ -447,7 +447,7 @@ describe("the devcontainer's file tools", () => {
       ["exec", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", "--version"],
     ]);
     expect(fake.execs).toHaveLength(1);
-    expect(fake.execs[0]!.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
+    expect(fake.execs[0]!.args.slice(0, 12)).toEqual(["exec", "-i", "--user", "vscode", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
   });
 
   it("refuses, with the reason, when the copied Node cannot start in the devcontainer", async () => {
