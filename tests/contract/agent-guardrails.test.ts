@@ -966,7 +966,7 @@ describe("canonical ceiling write precision compatibility", () => {
       const { db, deps } = await setup();
       const before = db.transactions().length;
       const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
-      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
       expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
       expect(db.transactions().length).toBe(before);
     });
@@ -985,7 +985,7 @@ describe("canonical ceiling write precision compatibility", () => {
     db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: old });
     expect((await readGuardrails(deps, TEST_ORG)).maxPerRunCeilingUsd).toBe(old.maxPerRunCeilingUsd);
     const error = await writeGuardrails(deps, TEST_ORG, old, DANA.developerId, { expectedRevision: 1 }).then(() => undefined, (e: Error) => e);
-    expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+    expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(1);
     await writeGuardrails(deps, TEST_ORG, guardrails({ maxPerRunCeilingUsd: 0.000001 }), DANA.developerId, { expectedRevision: 1 });
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(2);
@@ -1004,7 +1004,7 @@ describe("required ceiling authority-boundary regressions", () => {
       if (name === "missing") delete next.maxPerRunCeilingUsd;
       const before = db.transactions().length;
       const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: next as unknown as AgentGuardrails, expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
-      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must have at most 6 decimal places");
+      expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
       expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
       expect(db.transactions().length).toBe(before);
     });
@@ -1017,6 +1017,8 @@ describe("required ceiling authority-boundary regressions", () => {
     const before = db.transactions().length;
     const result = await call(DANA, "PUT", GUARDRAILS, { expectedRevision: 0, guardrails: next });
     expect(result.status).toBe(400);
+    expect(errorOf(result).code).toBe("CONFIG_INVALID");
+    expect(errorOf(result).message.startsWith("guardrails.maxPerRunCeilingUsd:")).toBe(true);
     expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
     expect(db.transactions().length).toBe(before);
   });
@@ -1038,7 +1040,7 @@ describe("required ceiling authority-boundary regressions", () => {
     expect((await decide(pending.approvalId)).status).toBe("APPROVED_FAILED");
     const ended = await getApproval(deps, TEST_ORG, pending.approvalId);
     expect(ended?.status).toBe("APPROVED_FAILED");
-    expect(ended?.failure).toBe("maxPerRunCeilingUsd: must have at most 6 decimal places");
+    expect(ended?.failure).toBe("maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     expect(await current()).toEqual(before);
     expect(capture.recorded().length).toBe(count);
     expect(capture.pending().length).toBe(0);
