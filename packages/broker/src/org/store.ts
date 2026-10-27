@@ -11,6 +11,7 @@ import {
   MEMBER_GRANT_SK_PREFIX,
   AgentXError,
   AuditEventInputSchema,
+  InviteCreateReceiptSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
@@ -275,7 +276,7 @@ export class OrgStore {
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
       const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
       if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
-      if (input.reviewed && (input.requestId === undefined || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.requestId))) throw coded("CONFIG_INVALID", "Review a valid invite request.");
+      if (input.reviewed && (input.requestId === undefined || !InviteCreateReceiptSchema.shape.requestId.safeParse(input.requestId).success)) throw coded("CONFIG_INVALID", "Review a valid invite request.");
       const token = randomBytes(32).toString("base64url");
       const tokenHash = sha256Hex(token), inviteId = randomUUID();
       const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;

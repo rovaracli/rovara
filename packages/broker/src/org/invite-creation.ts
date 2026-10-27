@@ -19,7 +19,7 @@ async function authority(deps: DeveloperRouteDependencies, caller: DeveloperCall
 async function receipt(deps: DeveloperRouteDependencies, caller: DeveloperCaller, requestId: string, bodyHash?: string) {
  const raw = await read(deps, { pk: orgScoped(caller.orgId, "INVITE_CREATE_REVIEWED"), sk: requestId });if (raw === undefined) return undefined;
  const parsed = receiptRecord.safeParse(raw);
- if (!parsed.success || parsed.data.orgId !== caller.orgId || parsed.data.requestId !== requestId || raw.pk !== orgScoped(caller.orgId, "INVITE_CREATE_REVIEWED") || raw.sk !== requestId) throw unavailable();
+ if (!parsed.success || parsed.data.orgId !== caller.orgId || parsed.data.requestId !== requestId || raw.pk !== orgScoped(caller.orgId, "INVITE_CREATE_REVIEWED") || raw.sk !== requestId) throw bodyHash === undefined ? missing() : unavailable();
  if (bodyHash !== undefined && (parsed.data.by !== caller.developerId || parsed.data.bodyHash !== bodyHash)) throw agentXError("CONFIG_INVALID", "That request was already used for a different invite intent.");
  if (parsed.data.by !== caller.developerId) throw missing();
  const { orgId, inviteId, role, createdAt, expiresAt } = parsed.data;return InviteCreateReceiptSchema.parse({ orgId, requestId, inviteId, role, createdAt, expiresAt });
@@ -38,7 +38,7 @@ export async function createReviewedOrganizationInvite(deps: DeveloperRouteDepen
    return { receipt: committed, inviteUrl: deps.cloud === true ? inviteUrl(`${deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN}/join`, result.token, "fragment") : inviteUrl(`${deps.developer.issuer}/join`, result.token, "query") };
   } catch (error) {
    // A response may be lost after commit. Never mint another invite or replay its bearer.
-   await authority(deps, caller, parsed.data.role);const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed !== undefined) return { receipt: committed };throw error;
+   await authority(deps, caller, parsed.data.role);if (error instanceof AgentXError && error.code === "TOO_MANY_REQUESTS") throw error;const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed !== undefined) return { receipt: committed };throw error;
   }
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }
@@ -46,6 +46,6 @@ export async function getInviteCreationReceipt(deps: DeveloperRouteDependencies,
  if (!z.string().uuid().safeParse(requestId).success) throw agentXError("CONFIG_INVALID", "Check a valid invite request.");
  try {
   await authority(deps, caller);if (!await takeRateAt(deps, { pk: orgScoped(caller.orgId, "INVITE_DIRECTORY_RATE"), sk: caller.developerId }, 20, 60_000)) throw agentXError("TOO_MANY_REQUESTS", "Too many invite checks. Try again in a minute.");
-  try { const value = await receipt(deps, caller, requestId);if (value === undefined) throw missing();return { receipt: value }; } catch (error) { if (error instanceof AgentXError && error.code === "RUNTIME_UNAVAILABLE") throw missing();throw error; }
+  const value = await receipt(deps, caller, requestId);if (value === undefined) throw missing();return { receipt: value };
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }
