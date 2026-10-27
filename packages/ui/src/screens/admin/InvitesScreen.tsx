@@ -29,7 +29,7 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
  const locked = checking || read.isFetching || read.isError, nextCursor = read.data?.nextCursor;
  const errorCopy = read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view company invites." : read.error instanceof ApiError && read.error.status === 429 ? "Too many invite checks. Wait a minute before retrying." : "Couldn't check invites. Try again. If this keeps happening, ask an installation administrator to check the invite directory.";
  return <section aria-busy={read.isFetching}>
-  <PageHeader focusOnMount title="Invites" description="Pending indexed invites for this company. Destinations are masked." />
+  <PageHeader focusOnMount title="Invites" description="Pending invites in this directory. Destinations are masked." />
   <p className="rv-admin-note">Older invite links may still exist outside this directory. An empty page does not mean there are no pending invites.</p>
   <p className="rv-muted">This directory is read-only. Creating or revoking invites is not available here.</p>
   {checking && <p role="status">Checking company access...</p>}{!checking && read.isFetching && read.data !== undefined && <p role="status">Checking invites...</p>}

@@ -32,7 +32,8 @@ export function createAdminDirectory() {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
   if (command instanceof QueryCommand) {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
-   const matches = [...rows.values()].filter(row => row.pk === values[":pk"] && String(row.sk).startsWith(String(values[":prefix"] ?? "")) && (after === undefined || String(row.sk) > String(after))).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1);
+   if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");
+   const matches = [...rows.values()].filter(row => row.pk === values[":pk"] && String(row.sk).startsWith(String(values[":prefix"] ?? "")) && (after === undefined || String(row.sk) > after)).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1);
    const page = limit === undefined ? matches : matches.slice(0, limit), last = page.at(-1);
    return { Items: page, ...(limit !== undefined && matches.length > limit && last !== undefined ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
   }
