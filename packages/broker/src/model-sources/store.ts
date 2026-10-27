@@ -256,7 +256,7 @@ export class ModelSourceStore {
   }
 
   /** Sets the order sources are tried in. It names at least one source, none twice, and only `rovara`, `personal-chatgpt` and sources the org has. */
-  async setOrder(input: { orgId: string; order: readonly string[]; by: string; request?: RequestMark | undefined; expectedRevision?: number | undefined; expectedOrgId?: string | undefined }): Promise<{ order: string[]; revision?: number }> {
+  async setOrder(input: { orgId: string; order: readonly string[]; by: string; request?: RequestMark | undefined; expectedRevision?: number | undefined; expectedOrgId?: string | undefined; expectedDeveloperId?: string | undefined }): Promise<{ order: string[]; revision?: number }> {
     if (input.expectedRevision !== undefined) return changeReviewedSourceOrder({ ...this.input, read: (orgId) => this.read(orgId) }, { ...input, expectedRevision: input.expectedRevision });
     const orgId = parseOrg(input.orgId);
     const adding = input.order.includes("personal-chatgpt");
