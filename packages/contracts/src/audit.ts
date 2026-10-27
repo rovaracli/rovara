@@ -151,6 +151,9 @@ export const AUDIT_ACTIONS = [
   "model_source.saved",
   "model_source.removed",
   "model_source.order_changed",
+  // Owner playbook model events: registered before any writer is introduced.
+  "project.models_changed",
+  "project.model_selection_changed",
   "audit.read",
   "audit.exported",
   "audit.staff_read",
@@ -257,12 +260,37 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "model_source.saved": ["kind", "change"],
   "model_source.removed": ["kind"],
   "model_source.order_changed": ["count"],
+  "project.models_changed": ["beforeModelIdsDigest", "afterModelIdsDigest", "beforeDefaultModelIdDigest", "afterDefaultModelIdDigest", "beforeCount", "afterCount", "definitionRevision"],
+  "project.model_selection_changed": ["beforeModelIdDigest", "afterModelIdDigest", "sourceSurface", "definitionRevision"],
   "audit.read": ["fromSeq", "toSeq", "count", "via"],
   "audit.exported": ["fromSeq", "toSeq", "withDetails"],
   "audit.staff_read": ["fromSeq", "toSeq", "count", "via"],
   "audit.subject_erased": [],
   "audit.org_shred_scheduled": ["shredAfterDays"],
 };
+
+// Owner playbook model events use the existing bounded scalar verifier format, not raw model lists/text.
+// Identity digest: SHA256(canonical JSON {provider,modelId}); set digest: SHA256(canonical JSON of
+// sorted unique identity digests). Labels, check messages and provider errors never contribute facts.
+const ModelAuditDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+const ModelAuditRevisionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const ProjectModelsChangedAuditFactsSchema = z.object({
+  beforeModelIdsDigest: ModelAuditDigestSchema,
+  afterModelIdsDigest: ModelAuditDigestSchema,
+  beforeDefaultModelIdDigest: ModelAuditDigestSchema.optional(),
+  afterDefaultModelIdDigest: ModelAuditDigestSchema.optional(),
+  beforeCount: z.number().int().nonnegative().max(16),
+  afterCount: z.number().int().nonnegative().max(16),
+  definitionRevision: ModelAuditRevisionSchema,
+}).strict();
+export type ProjectModelsChangedAuditFacts = z.infer<typeof ProjectModelsChangedAuditFactsSchema>;
+export const ProjectModelSelectionChangedAuditFactsSchema = z.object({
+  beforeModelIdDigest: ModelAuditDigestSchema.optional(),
+  afterModelIdDigest: ModelAuditDigestSchema.optional(),
+  sourceSurface: z.enum(["web", "slack", "cli", "api", "system"]),
+  definitionRevision: ModelAuditRevisionSchema,
+}).strict().refine(value => value.beforeModelIdDigest !== undefined || value.afterModelIdDigest !== undefined, "A selection change needs a before or after identity.");
+export type ProjectModelSelectionChangedAuditFacts = z.infer<typeof ProjectModelSelectionChangedAuditFactsSchema>;
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
 export function auditOperatorId(issuer: string, subject: string): string {
@@ -343,6 +371,12 @@ export const AuditEventInputSchema = z.object({
   proof: AuditProofSchema.optional(),
   details: z.array(AuditDetailPartSchema).max(AUDIT_DETAIL_PARTS_MAX).optional(),
 }).strict().superRefine((event, context) => {
+  const modelFacts = event.action === "project.models_changed" ? ProjectModelsChangedAuditFactsSchema : event.action === "project.model_selection_changed" ? ProjectModelSelectionChangedAuditFactsSchema : undefined;
+  if (modelFacts !== undefined) {
+    if (!modelFacts.safeParse(event.facts).success) context.addIssue({ code: "custom", path: ["facts"], message: "Invalid project model audit facts." });
+    if (event.target.kind !== "project" || !("id" in event.target)) context.addIssue({ code: "custom", path: ["target"], message: "Project model events require an opaque project target." });
+    if (event.details !== undefined) context.addIssue({ code: "custom", path: ["details"], message: "Project model events do not accept free-text details." });
+  }
   if (event.facts === undefined) return;
   const keys = Object.keys(event.facts);
   if (keys.length > AUDIT_MAX_FACTS) {

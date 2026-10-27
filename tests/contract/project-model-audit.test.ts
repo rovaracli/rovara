@@ -1,5 +1,5 @@
 import { expect,it } from "vitest";
-import { AUDIT_ACTIONS,AuditEventInputSchema } from "@agentx/contracts";
+import { AUDIT_ACTIONS,AuditEventInputSchema } from "../../packages/contracts/src/audit.js";
 import * as events from "../../packages/broker/src/audit/events.js";
 const base={orgId:"org_aaaaaaaaaaaaaaaaaaaa",actor:{kind:"member" as const,id:"a".repeat(64)},occurredAt:"2026-10-27T16:00:00.000Z",occurrence:"revision-2",projectId:"project_1",definitionRevision:2};
 const modelsFacts={beforeModelIdsDigest:"a".repeat(64),afterModelIdsDigest:"b".repeat(64),beforeDefaultModelIdDigest:"c".repeat(64),afterDefaultModelIdDigest:"d".repeat(64),beforeCount:1,afterCount:2,definitionRevision:2};
