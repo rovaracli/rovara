@@ -28,3 +28,11 @@ test("focuses stable progress through a held real committed archive response",as
   const evidence=await(await request.get("/__mock/admin-evidence")).json() as {projectReceipts:unknown[];audit:unknown[]};expect(evidence.projectReceipts).toHaveLength(1);expect(evidence.audit).toHaveLength(1);expect(posts).toBe(1);
  } finally { release(); }
 });
+
+test("a failed real preview read announces no archive submission",async({page,request})=>{
+ await page.route("**/v1/web/projects/payments/archive-preview",async route=>{const response=await route.fetch();expect(response.ok()).toBe(true);await route.fulfill({response,json:{project:"payments"}});});
+ await page.goto("/app/admin/projects/payments");await page.getByRole("button",{name:"Review archive",exact:true}).click();await expect(page.getByRole("alert")).toContainText("Couldn't check this project");const progress=page.getByRole("status",{name:"Archive request progress",exact:true});await expect(progress).toHaveText("Check finished. See the result below.");await expect(progress).not.toContainText(/submission/i);
+ await page.getByRole("dialog").evaluate(async node=>{await Promise.all(node.getAnimations({subtree:true}).map(animation=>animation.finished));});await page.screenshot({path:".superpowers/sdd/codex/b9-fixes-read-failure.png"});await checkA11y(page,{theme:"light"});
+ const requests=await(await request.get("/__mock/requests")).json() as Array<{method:string;path:string}>;expect(requests.filter(r=>r.path.startsWith("/v1/web/")).every(r=>r.method==="GET")).toBe(true);expect(requests.some(r=>r.path.endsWith("/archive-preview"))).toBe(true);
+ const evidence=await(await request.get("/__mock/admin-evidence")).json() as {projectReceipts:unknown[];audit:unknown[]};expect(evidence.projectReceipts).toHaveLength(0);expect(evidence.audit).toHaveLength(0);
+});
