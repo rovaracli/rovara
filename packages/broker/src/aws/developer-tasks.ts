@@ -333,6 +333,7 @@ import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
+import { loadTestProofLines } from "../developer/test-proof-lines.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -6130,12 +6131,12 @@ export function inertTaskTitle(title: string): string {
  * (or, first, that no automated check applied and why), where the task lives, and that a human merges it. At most
  * 30,000 bytes.
  */
-export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext): string {
+export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, plan: LoadedDocument | string | undefined, pageUrl: string | undefined, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string {
   // Rovara Code version 2 has its own description (sections, test results and a risk level); a version 1 task's is exactly as it was.
   if (workflow.definitionVersion === "1.1.0") {
     return rovaraPullRequestBody({
       summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
-      fallbackTitle: task.title, workflow, context: context ?? {}, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
+      fallbackTitle: task.title, workflow, context: proofLines.length === 0 ? context ?? {} : { ...context, proofLines }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
     });
   }
   // A structured plan's summary is its top claims; a legacy one's is its first lines (task 18: the same as the plan's
@@ -6153,7 +6154,7 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
     "",
     // Between markers, so a pushed PR feedback fix can bring them up to date and leave the rest as the person left it.
     PULL_REQUEST_STATUS_START,
-    ...workflowPullRequestStatusLines(workflow),
+    ...workflowPullRequestStatusLines(workflow, undefined, proofLines),
     PULL_REQUEST_STATUS_END,
     ...(pageUrl === undefined ? [] : [`AgentX task: ${pageUrl}`]),
     "",
@@ -6171,9 +6172,9 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
  * line is one line, redacted and made inert for GitHub. Rewritten after a pushed PR feedback fix, so it is always about
  * the code on the pull request.
  */
-export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, context?: PullRequestBodyContext): string[] {
+export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, context?: PullRequestBodyContext, proofLines: readonly string[] = []): string[] {
   // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk); version 1's lines are as they were.
-  if (workflow.definitionVersion === "1.1.0") return rovaraStatusLines(workflow, context ?? {}, (listed) => workflowReviewLines(workflow, listed));
+  if (workflow.definitionVersion === "1.1.0") return rovaraStatusLines(workflow, proofLines.length === 0 ? context ?? {} : { ...context, proofLines }, (listed) => workflowReviewLines(workflow, listed));
   const checks = [...(workflow.checkPolicy?.required ?? []), ...(workflow.checkPolicy?.proposed ?? []), ...(workflow.checkPolicy?.optional ?? [])];
   const passed = (workflow.verification?.results ?? []).filter((result) => result.status === "PASS")
     // A proposed check's label is model-written: one line, redacted and made inert like a plan line, as every label is.
@@ -6182,6 +6183,7 @@ export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, conte
   return [
     ...(reviewOnly ? [] : [`Checks: ${passed.length > 0 ? passed.join(", ") : "none recorded"}`]),
     ...workflowReviewLines(workflow, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED),
+    ...proofLines,
   ];
 }
 
@@ -6408,7 +6410,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
-  const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext);
+  const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext, await loadTestProofLines(deps.actions, task, workflow.candidate?.digest, inertPlanLine));
   const receivedAt = iso(deps);
   const unchanged = {
     ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",

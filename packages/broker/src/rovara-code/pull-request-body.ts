@@ -38,6 +38,8 @@ export interface PullRequestBodyContext {
   baseBranch?: string | undefined;
   /** The Linear issue key the task's session follows (Plan 6 Task 20): the block then says `Fixes <KEY>`, which Linear's GitHub integration closes the issue on. Anything that is not a key is ignored. */
   linearIssueKey?: string | undefined;
+  /** The test-proof lines (whether the new tests fail on the original code), already redacted and made inert; informational, listed at the end of the Tests section. */
+  proofLines?: readonly string[] | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -136,6 +138,9 @@ function testedCommitLine(workflow: WorkflowSnapshot, report: VerificationReport
   return `- Tested on head commits: ${listed.join(", ")}${more(entries.length, listed.length)}`;
 }
 
+/** A test-proof line: its quoted names are cut already, so this only bounds the whole line. */
+const PROOF_LINE_MAX = 600;
+
 function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, limit: number): string[] {
   const report: VerificationReport = verificationReport(workflow, context.changedFiles?.files ?? [], { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) });
   const base = context.baseBranch === undefined || context.baseBranch.trim() === "" ? "the base branch" : inertLine(context.baseBranch, 100);
@@ -151,6 +156,7 @@ function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, 
   if (context.changedFiles === undefined) lines.push("- Tests added: Rovara couldn't list the changed files, so it can't say.");
   else if (added.length === 0) lines.push(`- Tests added: none${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
   else lines.push(`- Tests added: ${joined(added, limit)}${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
+  for (const line of context.proofLines ?? []) lines.push(`- ${inertLine(line, PROOF_LINE_MAX)}`);
   return lines;
 }
 

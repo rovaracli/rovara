@@ -32,6 +32,9 @@ import type { FileOpsTarget } from "../file-ops-exec.js";
 import type { AgentSkillFile } from "../agent-step.js";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { withIsolatedGit } from "../isolated-git.js";
+import { isTestPath } from "./test-paths.js";
+
+export { isTestPath };
 
 const FEEDBACK_REVIEW_OUTPUT_MAX_BYTES = 2_000_000;
 const FEEDBACK_BUNDLE_MAX_BYTES = 5_000_000;
@@ -89,6 +92,8 @@ export async function runWorkflowFeedbackReview(input: {
    */
   taskChecks?: WorkflowFeedbackTaskChecks;
   artifactSink: ArtifactSink;
+  /** The broker's base commit per repository, for the reviewer's rule files. Required: no caller can fall back to a base the agent could write. */
+  ruleFileBaseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -153,7 +158,8 @@ export async function runWorkflowFeedbackReview(input: {
     if (status === "COMPLETE") {
       input.onProgress?.("AgentX is independently reviewing the current PR feedback.");
       session = await createWorkspacePiSession({ rootPath: input.rootPath, model: input.model,
-        workflowMode: "REVIEW", conversationId: randomUUID(),
+        workflowMode: "REVIEW", conversationId: randomUUID(), contextFilesAt: "base-commit",
+        baseCommits: input.ruleFileBaseCommits,
         ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
         ...(input.tools === undefined ? {} : { agentTools: input.tools }),
         ...(input.skills === undefined ? {} : { skills: input.skills }) }, input.piAdapter);
@@ -342,17 +348,6 @@ async function readCandidateFilePaths(
     result.set(identity.repositoryId, new Set(stdout.split("\0").filter(Boolean)));
   }
   return result;
-}
-
-/**
- * A path common test layouts use: a test/, tests/, __tests__/, spec/ or e2e/ directory, or a *.test.*, *.spec.*,
- * *_test.*, *_spec.* or test_*.py file.
- */
-export function isTestPath(path: string): boolean {
-  const parts = path.split("/");
-  const name = parts.at(-1) ?? "";
-  return parts.slice(0, -1).some(part => ["test", "tests", "__tests__", "spec", "e2e"].includes(part))
-    || /\.(?:test|spec)\.[^./]+$/.test(name) || /_(?:test|spec)\.[^./]+$/.test(name) || /^test_.+\.py$/.test(name);
 }
 
 /** Build and dependency files that are never documentation, whatever their extension or folder. */
@@ -659,6 +654,8 @@ export async function runWorkflowReviews(input: {
   reviewers?: readonly ("CRITIC" | "SECURITY")[];
   /** Rovara Code version 2: the code review also states a risk level (low, medium or high). Absent: the review is exactly as a version 1 review. */
   reviewRisk?: boolean;
+  /** The broker's base commit per repository, for the reviewers' rule files. Required: no caller can fall back to a base the agent could write. */
+  ruleFileBaseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -719,6 +716,8 @@ export async function runWorkflowReviews(input: {
         ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
         ...(input.tools === undefined ? {} : { agentTools: input.tools }),
         ...(input.skills === undefined ? {} : { skills: input.skills }),
+        contextFilesAt: "base-commit",
+        baseCommits: input.ruleFileBaseCommits,
       }, input.piAdapter);
       const actualModel = session.getModel();
       provider = actualModel.provider;
