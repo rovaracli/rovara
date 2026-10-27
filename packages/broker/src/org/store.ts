@@ -324,7 +324,7 @@ export class OrgStore {
   async peekInvite(tokenHash: string): Promise<{ orgId: OrgId; role: OrgRole; email?: string } | undefined> {
     const key = this.inviteKeyOf(tokenHash);
     const invite = key === undefined ? undefined : await this.get(key);
-    if (invite === undefined) return undefined;
+    if (invite === undefined || invite.revokedAt !== undefined) return undefined;
     return { orgId: invite.orgId as OrgId, role: invite.role as OrgRole, ...(typeof invite.email === "string" ? { email: invite.email } : {}) };
   }
 
@@ -340,7 +340,7 @@ export class OrgStore {
   async describeInviteByHash(tokenHash: string): Promise<InviteDescription | undefined> {
     const key = this.inviteKeyOf(tokenHash);
     const invite = key === undefined ? undefined : await this.get(key) as (Item & OrgInviteRecord) | undefined;
-    if (invite === undefined) return undefined;
+    if (invite === undefined || invite.revokedAt !== undefined) return undefined;
     const org = await this.getOrg(invite.orgId);
     if (org === undefined) return undefined;
     const state = invite.acceptedAt !== undefined ? "used" : invite.expiresAt <= this.iso() ? "expired" : "open";
@@ -356,7 +356,7 @@ export class OrgStore {
     if (inviteKey === undefined) throw inviteInvalid();
     const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
     const nowIso = this.iso();
-    if (invite === undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
+    if (invite === undefined || invite.revokedAt !== undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
     const { orgId, role } = invite;
     const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({
       orgId, actor: { kind: "member", id: input.developerId }, occurredAt: nowIso, occurrence: input.tokenHash,
@@ -370,7 +370,7 @@ export class OrgStore {
           TableName: this.input.tableName,
           Key: inviteKey,
           UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
-          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND expiresAt > :now",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND attribute_not_exists(revokedAt) AND expiresAt > :now",
           ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
         },
       },

@@ -401,3 +401,8 @@ export function auditSubjectErased(input: AuditBuilderBase & { subject: string }
 export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: number }): AuditEventInput {
   return build("audit.org_shred_scheduled", input, { kind: "org", id: input.orgId }, { shredAfterDays: input.shredAfterDays });
 }
+
+/** `occurrence`: reviewed org/request/public UUID, never bearer material. */
+export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
+  return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
+}

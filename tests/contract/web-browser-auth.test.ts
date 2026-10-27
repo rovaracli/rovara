@@ -1,3 +1,4 @@
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey } from "@agentx/contracts";
@@ -29,6 +30,19 @@ async function broker(extra: Record<string, unknown> = {}) {
  return { ...h, call, verify, methods };
 }
 describe("browser API boundary", () => {
+ it("revokes indexed invites through real cookie CSRF routes with atomic replay and live authority", async () => {
+  const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);
+  const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+  const created = await h.call("POST", "/v1/web/org/invites", headers, { requestId: randomUUID(), role: "member", email: "private.person@example.test" });expect(created.status).toBe(200);
+  const ref = h.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!, path = `/v1/web/org/invites/${String(ref.inviteId)}/revoke`, body = { requestId: randomUUID(), expectedRevision: 0 };
+  expect((await h.call("POST", path, { cookie: COOKIE, origin: CELL }, body)).status).toBe(403);
+  expect(h.db.find(row => row.entityType === "ORG_INVITE" && row.revokedAt !== undefined).length).toBe(0);
+  const revoked = await h.call("POST", path, headers, body);expect(revoked.status).toBe(200);expect(revoked.body).toMatchObject({ inviteId: ref.inviteId, revision: 1 });expect(await h.call("POST", path, headers, body)).toEqual(revoked);
+  expect((await h.call("GET", "/v1/web/org/invites")).body).toMatchObject({ invites: [], unavailableCount: 0 });
+  expect(audit.flushed().filter(event => String(event.action) === "org.invite_revoked").length).toBe(1);
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });expect((await h.call("POST", path, headers, body)).status).toBe(403);
+ });
+
  it("derives the app CSRF token from the exact session value", () => {
   expect(APP_CSRF_HEADER).toBe("x-rovara-csrf");expect(appCsrfTokenFor(SID)).toBe(createHash("sha256").update("rovara-app-csrf:" + SID).digest("base64url"));
  });

@@ -45,6 +45,9 @@ export interface OrgInviteRecord {
   expiresAt: string;
   acceptedBy?: string;
   acceptedAt?: string;
+  revokedAt?: string;
+  revokedBy?: string;
+  revision?: number;
 }
 
 const ORG_ID_BODY_LENGTH = 20;
