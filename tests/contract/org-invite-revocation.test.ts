@@ -8,8 +8,8 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", actor = "a".repeat(64), other = "b".repeat(64), newcomer = "d".repeat(64);
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
-async function fixture() {
- const db = new FakeDynamoDb();let now = Date.parse("2026-10-27T12:00:00Z");
+async function fixture(eventual = false) {
+ const db = new FakeDynamoDb(eventual ? { consistency: "eventual" } : undefined);let now = Date.parse("2026-10-27T12:00:00Z");
  for (const orgId of [A, B]) db.set({ ...orgMetaKey(orgId), orgId, name: "Company", plan: "team" });
  function member(who = actor, role = "owner", orgId = A) { db.set({ ...orgMemberKey(orgId, who), orgId, developerId: who, role });db.set({ ...developerOrgKey(who), orgId, role }); }
  member();member(other);
@@ -117,4 +117,9 @@ it("shares the list's admission quota for explicit status reads and validates be
 
 it("refuses independently misbound status authority before charging read quota", async () => {
  for (const state of ["actor-org", "actor-person", "pointer-role", "pointer-missing", "org-binding", "closingAt", "closedAt"] as const) { const f = await fixture();if (state === "actor-org") f.db.set({ ...f.db.get(orgMemberKey(A, actor)), orgId: B });else if (state === "actor-person") f.db.set({ ...f.db.get(orgMemberKey(A, actor)), developerId: other });else if (state === "pointer-role") f.db.set({ ...developerOrgKey(actor), orgId: A, role: "member" });else if (state === "pointer-missing") f.db.delete(developerOrgKey(actor));else f.db.set({ ...f.db.get(orgMetaKey(A)), ...(state === "org-binding" ? { orgId: B } : { [state]: "2026-10-27T12:00:00Z" }) });expect((await f.status()).status).toBe(403);expect(f.db.find(row => String(row.pk).includes("INVITE_DIRECTORY_RATE")).length).toBe(0); }
+});
+
+it("consistently observes real role loss and terminal changes despite eventual State reads", async () => {
+ const denied = await fixture(true);await denied.store.setRole({ orgId: A, developerId: actor, role: "member" });expect((await denied.status()).status).toBe(403);
+ const revoked = await fixture(true);expect((await revoked.call()).status).toBe(200);const result = await revoked.status();expect(result.status).toBe(200);expect(result.body?.status).toBe("revoked");
 });
