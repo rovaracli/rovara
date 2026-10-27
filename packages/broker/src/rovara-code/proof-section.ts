@@ -1,4 +1,4 @@
-// Playbook P1: the "### Proof" section of a Rovara Code (version 2) pull request description: a requirement-to-evidence table (Requirement | Evidence | Result), the test-proof lines, and "What wasn't tested".
+// Playbook P1: the "### Proof" section of a Rovara Code (version 2) pull request description: a requirement-to-evidence table (Requirement | Evidence | Result), and "What wasn't tested". (The test-proof lines are in the Tests section, once; this table only uses the per-check verdicts to mark a row "proven".)
 // `buildProofTable` (proof-table.ts) decides the rows and has already made every string inert and redacted; this module only lays them out in Markdown, in plain words, and shrinks them to fit.
 //
 // The shrink order, level by level (`proofSection(...)(level)`): 0 full evidence; 1 fewer and shorter evidence entries; 2 evidence as counts; 3 the same, and the proven and passed rows folded into one
@@ -14,9 +14,12 @@ export interface ProofContext {
   scenarioRows?: readonly ProofScenarioRow[] | undefined;
   /** The test proof read for this code; the table ignores it unless it is bound to the workflow's candidate digest. */
   testProof?: TestProof | undefined;
-  /** The Proof section lines the description already has (see proof-keep.ts), used as they are when the inputs above could not be read in time. Used instead of `plan`. */
-  kept?: readonly string[] | undefined;
+  /** The description already had a Proof section but the inputs above could not be read in time (see proof-keep.ts): the section shows `PROOF_STALE_LINE` instead of the old table. Used instead of `plan`. */
+  stale?: boolean | undefined;
 }
+
+/** The whole body of a Proof section whose table is out of date and could not be rebuilt in time. */
+export const PROOF_STALE_LINE = "Proof is being updated for the latest change.";
 
 /** The last shrink level (0 is the full section). */
 export const PROOF_LEVEL_LAST = 4;
@@ -69,8 +72,7 @@ function evidenceCell(row: ProofRow, level: number): string {
  * returned function with a shrink level (0..PROOF_LEVEL_LAST) for the lines at that level, without the blank line that separates the section from Tests.
  */
 export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | undefined): ((level: number) => string[]) | undefined {
-  const kept = proof?.kept;
-  if (kept !== undefined && kept.length > 0) return () => [...kept];
+  if (proof?.stale === true) return () => ["### Proof", "", PROOF_STALE_LINE];
   const plan = proof?.plan;
   if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
   const table = buildProofTable({ plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest });
@@ -87,7 +89,6 @@ export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | u
       const proven = folded.filter((row) => row.result === "proven").length;
       lines.push("", `${plural(folded.length, "more requirement")} proven or passed${proven > 0 ? ` (${proven} also fail${proven === 1 ? "s" : ""} on the original code)` : ""}; their rows are left out to keep this description short.`);
     }
-    if (table.testProofLines.length > 0) lines.push("", ...table.testProofLines);
     if (table.notTested.length > 0) {
       lines.push("", "What wasn't tested:", ...table.notTested.map((item) => {
         // Level 4 names the item by its ID only; the others by its words, cut.

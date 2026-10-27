@@ -1,9 +1,9 @@
-// Playbook P3: the proof table of the task page (`proofTable` in the version 2 task view). The rows, the not-tested list and the test-proof lines are exactly what `buildProofTable` gives the pull request's Proof
-// section, from the same inputs (`loadProofContext`). Two differences, both for the page: the strings are plain words (the table escapes `&` and `<` and puts a joiner after `@` for GitHub; the page shows text
+// Playbook P3: the proof table of the task page (`proofTable` in the version 2 task view). The rows and the not-tested list are exactly what `buildProofTable` gives the pull request's Proof
+// section, and the test-proof lines are the ones its Tests section lists, from the same inputs (`loadProofContext`). Two differences, both for the page: the strings are plain words (the table escapes `&` and `<` and puts a joiner after `@` for GitHub; the page shows text
 // as text, so those are undone), and when the checks were recorded for code that is no longer the candidate, the table reads those earlier results instead of calling every requirement untested (the page labels
 // it "earlier", the way it labels the recorded checks).
 import { redactText, type ProofTableView, type WorkflowSnapshot } from "@agentx/contracts";
-import { buildProofTable } from "./proof-table.js";
+import { buildProofTable, testProofLinesOf } from "./proof-table.js";
 import { earlierProofCheckResults, proofCheckResults, type ProofContext } from "./proof-section.js";
 
 /**
@@ -31,7 +31,7 @@ export function proofTableView(workflow: WorkflowSnapshot, proof: ProofContext |
         evidence: row.evidence.slice(0, 100).map((item) => ({ kind: item.kind, label: plain(item.label, 120), state: item.state })),
       })),
       notTested: table.notTested.slice(0, 200).map((item) => ({ kind: item.kind, id: plain(item.id, 64), text: plain(item.text, 300), reason: plain(item.reason, 100) })),
-      testProofLines: table.testProofLines.slice(0, 4).map((line) => plain(line, 600)),
+      testProofLines: testProofLinesOf(proof?.testProof, workflow.candidate?.digest).slice(0, 4).map((line) => plain(line, 600)),
     };
   } catch {
     return undefined;

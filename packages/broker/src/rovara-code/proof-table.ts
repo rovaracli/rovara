@@ -63,7 +63,6 @@ export interface NotTestedItem {
 export interface ProofTable {
   rows: ProofRow[];
   notTested: NotTestedItem[];
-  testProofLines: string[];
 }
 
 export interface ProofTableInput {
@@ -112,6 +111,15 @@ function boundTestProof(testProof: unknown, candidateDigest: string | undefined)
 }
 
 const oneLine = (text: string, max: number) => inertLine(text, max);
+
+/**
+ * The test-proof lines (#412's, from `testProofPullRequestLines`) for a proof bound to `candidateDigest`, made inert; none for any other proof. The pull request's Tests section lists them (once) and so does the task page's
+ * proof block; the Proof table does not repeat them.
+ */
+export function testProofLinesOf(testProof: unknown, candidateDigest: string | undefined): string[] {
+  const proof = boundTestProof(testProof, candidateDigest);
+  return proof === undefined ? [] : testProofPullRequestLines(proof, candidateDigest, (line) => inertLine(line, TEST_PROOF_LINE_MAX));
+}
 
 const PARTLY_IDS_MAX = 30;
 /** Which part of a partly tested claim is missing, in fixed words and the plan's claim IDs (inert), within the contract's 100 characters. */
@@ -220,6 +228,5 @@ export function buildProofTable(input: ProofTableInput): ProofTable {
     if (stateOfCheck(checkId) === "not_checked") notTested.push({ kind: "check", id: oneLine(checkId, 60), text: oneLine(labelOfCheck.get(checkId) ?? checkId, LABEL_MAX), reason: NOT_TESTED_REASONS.checkCouldNotRun });
   }
 
-  const testProofLines = proof === undefined ? [] : testProofPullRequestLines(proof, input.candidateDigest, (line) => inertLine(line, TEST_PROOF_LINE_MAX));
-  return { rows, notTested, testProofLines };
+  return { rows, notTested };
 }

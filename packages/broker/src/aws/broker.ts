@@ -410,7 +410,7 @@ import { mergedMilestoneItems } from "../rovara-code/merged.js";
 import { mergedStateItems } from "../rovara-code/merged-state.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
-import { keptProofLines, proofReadLimitMs, withinTime } from "../rovara-code/proof-keep.js";
+import { hadProofSection, proofReadLimitMs, withinTime } from "../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
@@ -12131,10 +12131,10 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
     const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
     const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
-    // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow, the section the description has is kept.
+    // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow and the description had a Proof section, that section's body becomes a one-line marker (its old table describes the code before this fix).
     const proofResult = proofRead === undefined ? undefined : await proofRead;
-    const kept = proofResult !== undefined && !proofResult.done ? keptProofLines(current) : undefined;
-    const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : kept === undefined ? undefined : { kept };
+    const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
+    const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel ? undefined : {
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }),

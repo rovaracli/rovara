@@ -915,7 +915,7 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body).toContain("A note from Priya, kept.");
   });
 
-  it("Playbook: a slow proof read leaves the Proof section as it was, and the rest of the description is still updated (the read is not allowed to abandon the update)", async () => {
+  it("Playbook: a slow proof read replaces the old Proof table with a short marker, and the rest of the description is still updated (the read is not allowed to abandon the update)", async () => {
     // The whole update may take 3 seconds; the proof read is given a third of that.
     const t = await fixPassed({ descriptionUpdateMaxMs: 3_000, structuredPlan: true });
     const proofBefore = proofPart(t.state.body);
@@ -935,7 +935,10 @@ describe("a pushed fix on a version 2 task", () => {
     release();
     expect(delayed).toBeGreaterThan(0);
     expect(t.state.body).toContain("infra/queue.ts");
-    expect(proofPart(t.state.body)).toBe(proofBefore);
+    // The old table described the code before the fix: the heading stays, its body is exactly the marker, and nothing of the old table is left.
+    expect(proofPart(t.state.body).trimEnd()).toBe("### Proof\n\nProof is being updated for the latest change.");
+    expect(t.state.body).not.toContain("| Requirement | Evidence | Result |");
+    expect(t.state.body.split("### Proof")).toHaveLength(2);
     expect(t.state.body).toContain("A note from Priya, kept.");
   }, 30_000);
 

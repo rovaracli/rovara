@@ -8,6 +8,7 @@ import { inertLine } from "./inert-text.js";
 import { reviewModelLines } from "./review-model-lines.js";
 import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { PROOF_LEVEL_LAST, proofSection, type ProofContext } from "./proof-section.js";
+import { testProofLinesOf } from "./proof-table.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -162,7 +163,8 @@ function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, 
   if (context.changedFiles === undefined) lines.push("- Tests added: Rovara couldn't list the changed files, so it can't say.");
   else if (added.length === 0) lines.push(`- Tests added: none${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
   else lines.push(`- Tests added: ${joined(added, limit)}${context.changedFiles.complete ? "" : " (the list of changed files may be incomplete)"}`);
-  for (const line of context.proofLines ?? []) lines.push(`- ${inertLine(line, PROOF_LINE_MAX)}`);
+  // The test-proof lines have one home, this section. The publication passes the lines it read; the rewrite after a pushed fix has the proof the Proof section's reads gave it and derives the same lines from it.
+  for (const line of context.proofLines ?? testProofLinesOf(context.proof?.testProof, workflow.candidate?.digest)) lines.push(`- ${inertLine(line, PROOF_LINE_MAX)}`);
   return lines;
 }
 

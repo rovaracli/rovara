@@ -55,7 +55,8 @@ describe("buildProofTable", () => {
     const table = buildProofTable({ plan: plan(), checkResults: passing("unit", "lint"), scenarioRows: [], testProof: proofFor(CODE.digest), candidateDigest: CODE.digest });
     expect(rowOf(table, "1.1").result).toBe("proven");
     expect(rowOf(table, "2").result).toBe("passed");
-    expect(table.testProofLines.join("\n")).toContain("1 check fails on the original code and passes now");
+    // The lines themselves live in the Tests section (the description) and on the task page's proof block; the table only uses the verdicts.
+    expect(table).not.toHaveProperty("testProofLines");
   });
 
   it("a test proof bound to another candidate digest is ignored, as if it were absent", () => {
@@ -63,7 +64,6 @@ describe("buildProofTable", () => {
     const absent = buildProofTable({ plan: plan(), checkResults: passing("unit", "lint"), scenarioRows: [], testProof: undefined, candidateDigest: CODE.digest });
     expect(stale).toEqual(absent);
     expect(rowOf(stale, "1.1").result).toBe("passed");
-    expect(stale.testProofLines).toEqual([]);
     // No current digest at all: nothing can be bound to it.
     expect(rowOf(buildProofTable({ plan: plan(), checkResults: passing("unit"), scenarioRows: [], testProof: proofFor(CODE.digest), candidateDigest: undefined }), "1.1").result).toBe("passed");
   });
@@ -233,7 +233,17 @@ describe("the Proof section of the version 2 pull request description", () => {
     expect(section).toContain("| Requirement | Evidence | Result |");
     expect(section).toMatch(/\| 1\.1: The retry waits longer each time\. \|[^|\n]*Unit tests[^|\n]*\| ✅ proven \|/);
     expect(section).toMatch(/\| 2: A payment is never charged twice\. \|[^|\n]*Lint[^|\n]*\| ✅ passed \|/);
-    expect(section).toContain("1 check fails on the original code and passes now");
+    // One home for the test-proof lines: the Tests section carries them, the Proof section only marks the row "proven".
+    expect(section).not.toContain("Test proof:");
+    expect(body.match(/Test proof:/gu)).toHaveLength(1);
+    expect(body.slice(body.indexOf("## Tests"), body.indexOf("### Proof"))).toContain("Test proof: 1 check fails on the original code and passes now");
+  });
+
+  it("lists the test-proof lines once in Tests when the publication passed them and the Proof inputs carry the same proof", () => {
+    const lines = ["Test proof: 1 check fails on the original code and passes now"];
+    const body = bodyOf({ plan: plan(), testProof: proofFor(CODE.digest) }, workflowWith(), { proofLines: lines });
+    expect(body.match(/Test proof:/gu)).toHaveLength(1);
+    expect(proofPart(body)).not.toContain("Test proof:");
   });
 
   it("shows a requirement with no linked check as not tested and lists it under What wasn't tested", () => {
@@ -357,7 +367,10 @@ describe("the Proof section of the version 2 pull request description", () => {
     expect(today).not.toContain("### Proof");
     expect(bodyOf({ plan: undefined })).toBe(today);
     expect(bodyOf({ plan: plan({ claims: [] }) })).toBe(today);
-    expect(bodyOf({ plan: undefined, testProof: proofFor(CODE.digest) })).toBe(today);
+    // A test proof without a plan with claims adds only its Tests line (as the publication's own hook does); there is still no Proof section.
+    const withProofOnly = bodyOf({ plan: undefined, testProof: proofFor(CODE.digest) });
+    expect(withProofOnly).not.toContain("### Proof");
+    expect(withProofOnly.replace("\n- Test proof: 1 check fails on the original code and passes now", "")).toBe(today);
     expect(workflowPullRequestStatusLines(workflowWith(), { changedFiles: files, proof: { plan: undefined } })).toEqual(workflowPullRequestStatusLines(workflowWith(), { changedFiles: files }));
   });
 
@@ -365,6 +378,9 @@ describe("the Proof section of the version 2 pull request description", () => {
     const lines = workflowPullRequestStatusLines(workflowWith(), { changedFiles: files, proof: { plan: plan(), testProof: proofFor(CODE.digest) } }).join("\n");
     expect(lines).toContain("### Proof");
     expect(lines).toContain("✅ proven");
+    // The rewrite brings the Tests lines back too (once), from the proof it just read; the Proof section has none.
+    expect(lines.match(/Test proof:/gu)).toHaveLength(1);
+    expect(lines.slice(lines.indexOf("## Tests"), lines.indexOf("### Proof"))).toContain("Test proof: 1 check fails");
   });
 });
 
@@ -406,9 +422,9 @@ describe("a version 2 task's published pull request through the broker", () => {
     getCommitTree: vi.fn(async () => "b".repeat(40)), getBranchHead: vi.fn(async () => "d".repeat(40)), getCommitParents: vi.fn(async () => ["e".repeat(40)]),
     verifyWebhookRepository: vi.fn(async () => true),
   });
-  const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" });
+  const passingChecks = (count = 1) => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: Array.from({ length: count }, (_, index) => ({ id: `readiness:${index}`, label: index === 0 ? "npm test" : "retry tests", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 })), extraTry: "not_needed", agentClaim: "success" });
 
-  async function published(testProofFor?: (digest: string) => unknown) {
+  async function published(testProofFor?: (digest: string, proposedCheckId: string | undefined) => unknown, planText = planAnswer(testedPlanDocument())) {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const id = String((started.body.task as { taskId: string }).taskId);
@@ -419,14 +435,14 @@ describe("a version 2 task's published pull request through the broker", () => {
     await harness.finish(workspaceId, String(operations().find((item) => item.kind === "prepare")?.id), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
     // The plan stays a structured document (the only form a new task's planning step ends with), so the approved plan has claims.
     const planning = operations().find((item) => item.workflowMode === "PLAN")!;
-    await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(testedPlanDocument()));
+    await harness.artifact(workspaceId, String(planning.id), "plan.md", planText);
     await harness.finish(workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
     const planArtifact = record().workflow.artifacts.filter((artifact) => artifact.type === "plan").at(-1)!;
     await harness.dev(MAYA, "POST", `/v1/dev/tasks/${id}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: planArtifact.sha256 });
     const implementation = operations().find((item) => item.workflowMode === "IMPLEMENT")!;
     const built = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
-    if (testProofFor !== undefined) await harness.artifact(workspaceId, String(implementation.id), "test-proof.json", JSON.stringify(testProofFor(built.digest)));
-    await harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: built.repositories, workflowCheckCandidateRepositories: built.repositories, checks: passingChecks() } });
+    if (testProofFor !== undefined) await harness.artifact(workspaceId, String(implementation.id), "test-proof.json", JSON.stringify(testProofFor(built.digest, record().workflow.checkPolicy?.proposed?.[0]?.id)));
+    await harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: built.repositories, workflowCheckCandidateRepositories: built.repositories, checks: passingChecks(record().workflow.checkPolicy?.proposed?.length ? 2 : 1) } });
     const review = operations().find((item) => item.workflowMode === "REVIEW")!;
     await harness.finish(workspaceId, String(review.id), "SUCCEEDED", { result: { workflowCandidateRepositories: built.repositories,
       workflowReviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: review.id, candidateDigest: built.digest, role, provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now })) } });
@@ -445,11 +461,25 @@ describe("a version 2 task's published pull request through the broker", () => {
     expect(bytes(body)).toBeLessThanOrEqual(PULL_REQUEST_BODY_MAX_BYTES);
   });
 
-  it("reads test-proof.json the way the mainline hook does: a proof bound to the candidate adds its line, one bound to other code is ignored", async () => {
+  it("reads test-proof.json the way the synced worker writes it: the proof line is in Tests once, and none in Proof", async () => {
     const proofItems = (digest: string) => ({ ...proofFor(digest), items: [{ checkId: "readiness:0", label: "npm test", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }] });
     const bound = await published(proofItems);
-    expect(proofPart(bound.body)).toContain("Test proof: 1 check fails on the original code and passes now");
+    expect(bound.body.match(/Test proof:/gu)).toHaveLength(1);
+    expect(bound.body.slice(bound.body.indexOf("## Tests"), bound.body.indexOf("### Proof"))).toContain("Test proof: 1 check fails on the original code and passes now");
+    expect(proofPart(bound.body)).not.toContain("Test proof:");
     const other = await published(() => proofItems(OTHER.digest));
     expect(other.body).not.toContain("Test proof:");
+  });
+
+  it("marks a requirement proven when the check that proves it has a proves_change verdict in the test-proof.json the worker wrote for this code", async () => {
+    const linked = planAnswer(testedPlanDocument(), { checks: { checks: [{ label: "retry tests", cwd: "repo/demo", executable: "npm", args: ["run", "retry"], proves: ["1"] }] } });
+    const proofItems = (digest: string, checkId: string | undefined) => ({ ...proofFor(digest), items: [{ checkId: checkId ?? "missing", label: "retry tests", granularity: "check", verdict: "proves_change", reason: "assertion_failed_on_old" }] });
+    const bound = await published(proofItems, linked);
+    expect(proofPart(bound.body)).toMatch(/\| 1: Payments that fail with a timeout are retried\. \|[^|\n]*retry tests[^|\n]*\| ✅ proven \|/u);
+    expect(bound.body.match(/Test proof:/gu)).toHaveLength(1);
+    expect(proofPart(bound.body)).not.toContain("Test proof:");
+    // The same check with a proof for other code is only "passed".
+    const stale = await published((_digest, checkId) => proofItems(OTHER.digest, checkId), linked);
+    expect(proofPart(stale.body)).toMatch(/\| 1: Payments that fail with a timeout are retried\. \|[^|\n]*\| ✅ passed \|/u);
   });
 });

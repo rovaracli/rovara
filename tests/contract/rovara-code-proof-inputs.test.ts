@@ -1,10 +1,10 @@
 // Playbook P1/P3 (final review I2): reading the Proof section's inputs must stay cheap. The task's operations are passed in, not read again; the newest operations' artifact listings are read together;
-// no listing is made for a task with no checks recorded for the current code; and a slow read inside the PR-feedback rewrite leaves the section as the description has it.
+// no listing is made for a task with no checks recorded for the current code; and a slow read inside the PR-feedback rewrite replaces an old Proof table with a one-line marker.
 import { describe, expect, it, vi } from "vitest";
 import type { PlanDocument, TestProof } from "../../packages/contracts/src/index.js";
 import { loadProofContext } from "../../packages/broker/src/rovara-code/proof-inputs.js";
 import { loadTestProof } from "../../packages/broker/src/rovara-code/test-proof-reader.js";
-import { keptProofLines, proofReadLimitMs, withinTime } from "../../packages/broker/src/rovara-code/proof-keep.js";
+import { hadProofSection, proofReadLimitMs, withinTime } from "../../packages/broker/src/rovara-code/proof-keep.js";
 import { proofSection } from "../../packages/broker/src/rovara-code/proof-section.js";
 import { proofContextOfTask } from "../../packages/broker/src/aws/developer-tasks.js";
 
@@ -119,30 +119,29 @@ describe("withinTime", () => {
   });
 });
 
-describe("keptProofLines", () => {
+describe("hadProofSection", () => {
   const START = "<!-- rovara:checks-and-reviews -->";
   const END = "<!-- /rovara:checks-and-reviews -->";
-  const block = ["## Tests", "- Checks: 1 passed", "", "### Proof", "", "| Requirement | Evidence | Result |", "| --- | --- | --- |", "| 1: Retried | none | ⚠ not tested |", "", "What wasn't tested:", "- Requirement 1: Retried (no check or scenario names it)", "", "## Reviews", "- ok"];
+  const block = ["## Tests", "- Checks: 1 passed", "", "### Proof", "", "| Requirement | Evidence | Result |", "| --- | --- | --- |", "| 1: Retried | none | ⚠ not tested |", "", "## Reviews", "- ok"];
   const body = (eol = "\n", lines = block) => `A note.\n\n${START}${eol}${lines.join(eol)}${eol}${END}\nRovara session: x`;
 
-  it("takes the Proof section out of the marked block, up to the next heading", () => {
-    expect(keptProofLines(body())).toEqual(["### Proof", "", "| Requirement | Evidence | Result |", "| --- | --- | --- |", "| 1: Retried | none | ⚠ not tested |", "", "What wasn't tested:", "- Requirement 1: Retried (no check or scenario names it)"]);
-    expect(keptProofLines(body("\r\n"))).toEqual(keptProofLines(body()));
+  it("is true when the marked block has a Proof section, whatever its size", () => {
+    expect(hadProofSection(body())).toBe(true);
+    expect(hadProofSection(body("\r\n"))).toBe(true);
+    expect(hadProofSection(body("\n", ["### Proof", ...Array.from({ length: 500 }, (_, index) => `line ${index}`), "## Reviews"]))).toBe(true);
   });
 
-  it("is nothing when there is no Proof section, the markers are not exactly one pair in order, or the section is huge", () => {
-    expect(keptProofLines(body("\n", block.filter((line) => line !== "### Proof")))).toBeUndefined();
-    expect(keptProofLines("no markers\n### Proof\n")).toBeUndefined();
-    expect(keptProofLines(`${body()}\n${START}`)).toBeUndefined();
-    expect(keptProofLines(`${END}\n### Proof\n${START}`)).toBeUndefined();
-    expect(keptProofLines(body("\n", ["### Proof", ...Array.from({ length: 500 }, (_, index) => `line ${index}`), "## Reviews"]))).toBeUndefined();
+  it("is false when there is no Proof section in the block, or the markers are not exactly one pair in order", () => {
+    expect(hadProofSection(body("\n", block.filter((line) => line !== "### Proof")))).toBe(false);
+    expect(hadProofSection("no markers\n### Proof\n")).toBe(false);
+    expect(hadProofSection(`${body()}\n${START}`)).toBe(false);
+    expect(hadProofSection(`${END}\n### Proof\n${START}`)).toBe(false);
     // Text outside the block is not the block's.
-    expect(keptProofLines(`### Proof\nA person's own words\n\n${START}\n## Tests\n${END}`)).toBeUndefined();
+    expect(hadProofSection(`### Proof\nA person's own words\n\n${START}\n## Tests\n${END}`)).toBe(false);
   });
 
-  it("is what the section shows when the inputs could not be read, at every size level", () => {
-    const lines = keptProofLines(body())!;
-    const section = proofSection({} as never, { kept: lines })!;
-    for (let level = 0; level <= 4; level += 1) expect(section(level)).toEqual(lines);
+  it("is the marker the section shows when the inputs could not be read, at every size level, with no table", () => {
+    const section = proofSection({} as never, { stale: true })!;
+    for (let level = 0; level <= 4; level += 1) expect(section(level)).toEqual(["### Proof", "", "Proof is being updated for the latest change."]);
   });
 });
