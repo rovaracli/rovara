@@ -47,3 +47,7 @@ export { ChainRunViewReaderSchema } from "./chain-session.js";
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
+
+// Lane A: canonical invite review/recovery, isolated from other admin lanes.
+export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
+export { OrgIdSchema } from "./org.js";

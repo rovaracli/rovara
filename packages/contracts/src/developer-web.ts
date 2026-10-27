@@ -1,6 +1,6 @@
 import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
-import { OrgRoleSchema } from "./org.js";
+import { OrgRoleSchema, OrgIdSchema } from "./org.js";
 import { forwardReader } from "./session-views.js";
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
 export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
@@ -55,3 +55,12 @@ export const AppOrgInvitesResponseSchema = z.object({
  unavailableCount: z.number().int().min(0).max(50).optional(), coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
 }).strict();
 export const AppOrgInvitesResponseReaderSchema = forwardReader(AppOrgInvitesResponseSchema);
+
+
+// Lane A: explicit canonical invite review/recovery; no destination, bearer or acceptor data.
+export const OrgInvitePublicIdSchema = z.string().uuid();
+export const AppOrgInviteStatusSchema = z.object({
+ orgId: OrgIdSchema, inviteId: OrgInvitePublicIdSchema,
+ revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), role: z.enum(["admin", "member"]),
+ status: z.enum(["pending", "accepted", "revoked", "expired"]), expiresAt: z.string().datetime(), checkedAt: z.string().datetime(), revokedAt: z.string().datetime().optional(),
+}).strict().superRefine((value, context) => { if ((value.status === "revoked") !== (value.revokedAt !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Invite status could not be verified." }); });

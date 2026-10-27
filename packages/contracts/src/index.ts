@@ -138,3 +138,6 @@ export * from "./setup-draft.js";
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
+
+// Lane A: canonical invite review/recovery, isolated from other admin lanes.
+export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
