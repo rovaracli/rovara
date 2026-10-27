@@ -73,7 +73,9 @@ export async function readProjectAiWithRevision(deps: SpendSettingsDependencies,
   const item = await getItem(deps, projectAiKey(orgId, project));
   if (item === undefined) return { settings: defaultProjectAiSettings(), revision: 0 };
   const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd, taskStopPolicy } = item;
-  if (Object.hasOwn(item, "taskStopPolicy") && taskStopPolicy === undefined) throw unreadable(`${project}'s AI settings`);
+  if (Object.hasOwn(item, "taskStopPolicy") && !TaskStopProjectPolicySchema.safeParse(taskStopPolicy).success) {
+    throw agentXError("CONFIG_INVALID", `The per-task stop for project ${project} is invalid. Ask an org owner or admin to fix it before starting work.`);
+  }
   const parsed = ProjectAiSettingsSchema.safeParse({
     ...(taskStopPolicy === undefined ? {} : { taskStopPolicy }),
     projectPays, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(sourceOrder === undefined ? {} : { sourceOrder }), ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }),

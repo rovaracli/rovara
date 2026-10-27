@@ -153,3 +153,11 @@ it("names the project and org owner/admin remedy when malformed stop settings bl
   expect(error?.message?.includes("Ask an org owner or admin")).toBe(true);
   expect(f.db.transactions().length).toBe(0);
 });
+
+it("preserves an explicit zero stop during an ordinary edit instead of turning it into unset", async () => {
+  const f = fixture();
+  f.db.set({ ...f.db.get(projectAiKey(A, "web")), taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+  const result = await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 });
+  expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 0 });
+  expect(result.settings).toMatchObject({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+});

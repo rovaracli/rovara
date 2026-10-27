@@ -1130,6 +1130,9 @@ it("preserves future task-stop intent during an ordinary project AI PUT and expo
   const changed = await call(DANA, "PUT", "/v1/app/projects/web/ai", { monthlyBudgetUsd: 300 });
   expect(changed.status).toBe(200);
   expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
+  const visible = await call(VIV, "GET", "/v1/app/projects/web/ai");
+  expect(visible.status).toBe(200);
+  expect(visible.body).toMatchObject({ settings: { taskStopPolicy: policy } });
   const forbidden = await call(DANA, "PUT", "/v1/app/projects/web/ai", { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
   expect(forbidden.status).toBe(400);
   expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
