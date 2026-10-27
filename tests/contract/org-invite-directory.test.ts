@@ -100,3 +100,7 @@ it("identifies a corrupt reference by its scoped public key UUID rather than an 
  const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
  try { const f = fixture();await f.invite();const ref = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!;f.db.set({ ...ref, inviteId: "private-corrupt-value" });expect((await f.request()).status).toBe(200);const entry = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;expect(entry.inviteId).toBe(ref.inviteId);expect(JSON.stringify(entry).includes("private-corrupt-value")).toBe(false); }finally { warn.mockRestore(); }
 });
+
+it("projects canonical invite revisions and marks malformed revisions unavailable instead of inventing zero", async () => {
+ for (const revision of [undefined, 7, -1, 1.5, "7", Number.MAX_SAFE_INTEGER + 1]) { const f = fixture(), created = await f.invite(), key = orgInviteKey(hashOf(created.token));if (revision !== undefined) f.db.set({ ...f.db.get(key), revision });const page = await f.request();expect(page.status).toBe(200);if (revision === undefined || revision === 7) { expect(page.body.invites?.[0]?.revision).toBe(revision ?? 0);expect(page.body.coverage).toBe("indexed_only"); }else expect(page.body).toMatchObject({ invites: [], unavailableCount: 1, coverage: "indexed_only_partial" }); }
+});

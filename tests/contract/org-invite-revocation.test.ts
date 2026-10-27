@@ -60,10 +60,10 @@ it("serializes a winning revoke before acceptance and exposes no usable link or 
  const beforeRetry = f.db.transactions().length;expect(await f.store.acceptInvite({ tokenHash: inviteTokenHash(f.created.token), developerId: newcomer }).then(() => "accepted", error => error instanceof AgentXError ? error.code : "unknown" )).toBe("INVITE_INVALID");expect(f.db.transactions().length).toBe(beforeRetry);
 });
 it("refuses revoke when real acceptance wins between its read and commit", async () => {
- const f = await fixture();f.beforeCommit(async () => { await f.store.acceptInvite({ tokenHash: inviteTokenHash(f.created.token), developerId: newcomer }); });expect((await f.call()).status).toBe(409);expect(f.db.get(developerOrgKey(newcomer))?.orgId).toBe(A);expect(f.db.get(f.created.key)?.revokedAt).toBeUndefined();expect(f.events().length).toBe(0);
+ const f = await fixture();f.beforeCommit(async () => { await f.store.acceptInvite({ tokenHash: inviteTokenHash(f.created.token), developerId: newcomer }); });const lost = await f.call();expect(lost.status).toBe(409);expect(lost.code).toBe("INVITE_ALREADY_ACCEPTED");expect(f.db.get(developerOrgKey(newcomer))?.orgId).toBe(A);expect(f.db.get(f.created.key)?.revokedAt).toBeUndefined();expect(f.events().length).toBe(0);
 });
 it("refuses expired, used and revoked invites without inventing a new receipt", async () => {
- for (const state of ["expired", "used", "revoked"] as const) { const f = await fixture();f.db.set({ ...f.created.row, ...(state === "expired" ? { expiresAt: "2026-10-27T11:00:00Z" } : state === "used" ? { acceptedAt: "2026-10-27T11:00:00Z" } : { revokedAt: "2026-10-27T11:00:00Z" }) });expect((await f.call()).status).toBe(409);expect(f.events().length).toBe(0); }
+ for (const state of ["expired", "used", "revoked"] as const) { const f = await fixture();f.db.set({ ...f.created.row, ...(state === "expired" ? { expiresAt: "2026-10-27T11:00:00Z" } : state === "used" ? { acceptedAt: "2026-10-27T11:00:00Z" } : { revokedAt: "2026-10-27T11:00:00Z" }) });expect((await f.call()).code).toBe(state === "expired" ? "INVITE_EXPIRED" : state === "used" ? "INVITE_ALREADY_ACCEPTED" : "INVITE_ALREADY_REVOKED");expect(f.events().length).toBe(0); }
 });
 it("validates public UUID and strict request body before writes", async () => {
  const f = await fixture();for (const body of [{}, { requestId: "bad" }, { requestId: f.requestId, token: "private-value" }]) expect((await f.call(f.created.id, body)).status).toBe(400);expect((await f.call("not-a-public-uuid")).status).toBe(400);expect(f.events().length).toBe(0);
@@ -88,4 +88,11 @@ it("binds the canonical hash and role and the scoped reference org and ID at com
 
 it("fences an explicitly stored nonzero revision and returns the incremented revision", async () => {
  for (const race of [false, true]) { const f = await fixture();f.db.set({ ...f.created.row, revision: 1 });if (race) f.beforeCommit(async () => { f.db.set({ ...f.created.row, revision: 2 }); });const result = await f.call(f.created.id, { requestId: f.requestId, expectedRevision: 1 });expect(result.status).toBe(race ? 409 : 200);if (!race) expect(result.body?.revision).toBe(2); }
+});
+
+it("reports the actual already-revoked result when a different request wins at commit", async () => {
+ const f = await fixture();f.beforeCommit(async () => { expect((await f.call(f.created.id, { requestId: randomUUID(), expectedRevision: 0 }, { ...f.caller, developerId: other })).status).toBe(200); });const result = await f.call();expect(result.status).toBe(409);expect(result.code).toBe("INVITE_ALREADY_REVOKED");expect(f.events().length).toBe(1);expect(f.db.find(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST").length).toBe(1);expect(f.db.get({ pk: orgScoped(A, "INVITE_REVOKE"), sk: f.requestId }) === undefined).toBe(true);
+});
+it("does not guess a terminal result when its consistent recheck fails or loses authority", async () => {
+ for (const state of ["read-down", "demoted", "foreign"] as const) { const f = await fixture();f.beforeCommit(async () => { await f.store.acceptInvite({ tokenHash: inviteTokenHash(f.created.token), developerId: newcomer });if (state === "read-down") f.db.injectFault({ command: "GetCommand", match: input => (input.Key as { pk?: string }).pk === f.created.key.pk, error: { name: "ServiceUnavailable" } });else if (state === "foreign") f.db.set({ ...f.db.get(f.created.key), orgId: B }); });if (state === "demoted") { const send = f.db.send.bind(f.db);f.db.send = async command => { try { return await send(command); }catch (error) { if (command.constructor.name === "TransactWriteCommand") f.member(actor, "member");throw error; } }; }const result = await f.call();expect(result.status).toBe(state === "read-down" ? 503 : state === "demoted" ? 403 : 404);expect(f.events().length).toBe(0); }
 });
