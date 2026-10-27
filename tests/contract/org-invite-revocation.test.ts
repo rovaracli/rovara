@@ -25,8 +25,13 @@ async function fixture() {
   try { const value = await routeDeveloperRequest(deps, { method: "POST", path, headers: {}, requestId: "revoke-fixture", body: JSON.stringify(body) }, new URL(path, "https://cell.example"), { caller: as, csrf: "" });return { status: value === undefined ? 404 : 200, body: value as Record<string, unknown> | undefined, code: undefined as string | undefined }; }
   catch (error) { if (!(error instanceof AgentXError)) throw error;return { status: errorStatus(error.code), code: error.code, body: undefined }; }
  }
+ async function status(id = created.id, as = caller) {
+  const path = `/v1/app/org/invites/${id}`;
+  try { const value = await routeDeveloperRequest(deps, { method: "GET", path, headers: {}, requestId: "invite-status" }, new URL(path, "https://cell.example"), { caller: as, csrf: "" });return { status: value === undefined ? 404 : 200, body: value as Record<string, unknown> | undefined, code: undefined as string | undefined }; }
+  catch (error) { if (!(error instanceof AgentXError)) throw error;return { status: errorStatus(error.code), code: error.code, body: undefined }; }
+ }
  const events = () => [...capture.pending(), ...capture.flushed()].filter(event => String(event.action) === "org.invite_revoked");
- return { db, deps, capture, store, caller, created, requestId, member, invite, call, events, beforeCommit(run: () => Promise<void>) { before = run; }, advance(ms: number) { now += ms; } };
+ return { db, deps, capture, store, caller, created, requestId, member, invite, call, status, events, beforeCommit(run: () => Promise<void>) { before = run; }, advance(ms: number) { now += ms; } };
 }
 for (const [role, status] of [["owner", 200], ["admin", 200], ["member", 403], ["maintainer", 403], ["viewer", 403], ["future-role", 403]] as const) it(`allows revocation only with live ${role} authority`, async () => {
  const f = await fixture();f.member(actor, role);const result = await f.call();expect(result.status).toBe(status);expect(f.db.get(f.created.key)?.revokedAt !== undefined).toBe(status === 200);expect(f.events().length).toBe(status === 200 ? 1 : 0);
@@ -95,4 +100,17 @@ it("reports the actual already-revoked result when a different request wins at c
 });
 it("does not guess a terminal result when its consistent recheck fails or loses authority", async () => {
  for (const state of ["read-down", "demoted", "foreign"] as const) { const f = await fixture();f.beforeCommit(async () => { await f.store.acceptInvite({ tokenHash: inviteTokenHash(f.created.token), developerId: newcomer });if (state === "read-down") f.db.injectFault({ command: "GetCommand", match: input => (input.Key as { pk?: string }).pk === f.created.key.pk, error: { name: "ServiceUnavailable" } });else if (state === "foreign") f.db.set({ ...f.db.get(f.created.key), orgId: B }); });if (state === "demoted") { const send = f.db.send.bind(f.db);f.db.send = async command => { try { return await send(command); }catch (error) { if (command.constructor.name === "TransactWriteCommand") f.member(actor, "member");throw error; } }; }const result = await f.call();expect(result.status).toBe(state === "read-down" ? 503 : state === "demoted" ? 403 : 404);expect(f.events().length).toBe(0); }
+});
+
+for (const role of ["owner", "admin", "member", "maintainer", "viewer", "future-role"]) it(`reads canonical invite status only with live ${role} authority`, async () => {
+ const f = await fixture();f.member(actor, role);const result = await f.status();expect(result.status).toBe(role === "owner" || role === "admin" ? 200 : 403);
+});
+it("returns only safe canonical status for pending, accepted, revoked and expired invites", async () => {
+ for (const state of ["pending", "accepted", "revoked", "expired"] as const) { const f = await fixture();f.db.set({ ...f.created.row, ...(state === "accepted" ? { acceptedAt: "2026-10-27T12:00:00Z", acceptedBy: other } : state === "revoked" ? { revokedAt: "2026-10-27T12:00:00Z", revokedBy: other, revision: 1 } : state === "expired" ? { expiresAt: "2026-10-27T11:00:00Z" } : {}) });const result = await f.status();expect(result.status).toBe(200);const text = JSON.stringify(result.body);expect(text.includes(f.created.token) || text.includes(hashOf(f.created.token)) || text.includes("private.person") || text.includes("example.test") || text.includes(other)).toBe(false);expect(result.body).toMatchObject({ orgId: A, inviteId: f.created.id, status: state, revision: state === "revoked" ? 1 : 0, role: "member", checkedAt: "2026-10-27T12:00:00.000Z" });expect(Object.keys(result.body!).sort()).toEqual(["checkedAt", "expiresAt", "inviteId", "orgId", "revision", "role", "status", ...(state === "revoked" ? ["revokedAt"] : [])].sort()); }
+});
+it("refuses a foreign/misbound status target and unavailable reads without leaking terminal state", async () => {
+ for (const state of ["foreign", "pointer", "canonical", "read"] as const) { const f = await fixture();if (state === "foreign") { f.member(actor, "owner", B);expect((await f.status(f.created.id, { ...f.caller, orgId: B })).status).toBe(404);continue; }if (state === "pointer") f.db.set({ ...developerOrgKey(actor), orgId: B, role: "owner" });else if (state === "canonical") f.db.set({ ...f.created.row, orgId: B, acceptedAt: "2026-10-27T12:00:00Z" });else f.db.injectFault({ command: "GetCommand", error: { name: "ServiceUnavailable" } });expect((await f.status()).status).toBe(state === "pointer" ? 403 : state === "canonical" ? 404 : 503); }
+});
+it("shares the list's admission quota for explicit status reads and validates before admission", async () => {
+ const f = await fixture();expect((await f.status("bad-id")).status).toBe(400);expect(f.db.find(row => String(row.pk).includes("INVITE_DIRECTORY_RATE")).length).toBe(0);for (let i = 0; i < 20; i++) expect((await f.status()).status).toBe(200);expect((await f.status()).status).toBe(429);const path = "/v1/app/org/invites";const result = await routeDeveloperRequest(f.deps, { method: "GET", path, headers: {}, requestId: "status-list-quota" }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" }).then(() => "listed", error => error instanceof AgentXError ? error.code : "unknown");expect(result).toBe("TOO_MANY_REQUESTS");
 });
