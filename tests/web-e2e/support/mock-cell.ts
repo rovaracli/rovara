@@ -6,6 +6,7 @@ import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedRespo
 import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
+import { understandSession } from "../../web/support/understand-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
 import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -169,6 +170,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
  if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }
+ // Understand's questions (playbook S3): answers are taken against the revision the page read; a workflow that moved on is INTENT_NOT_WAITING, as the broker answers.
+ if (url.pathname === path + "/answers" && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 12000) throw new Error("Mock body limit."); }
+  const input = JSON.parse(body) as { revision?: number; round?: number };evidence.body = input;
+  if (input.revision !== session.revision || input.round !== 1) { json(409, { error: { code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." } });return; }
+  current.session = understandSession({ waiting: false, revision: session.revision + 1 });json(200, { session: current.session });return;
+ }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
  if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
  if ((url.pathname === path + "/messages" && method === "POST") || (url.pathname === path + "/shares" && method === "PUT")) {
