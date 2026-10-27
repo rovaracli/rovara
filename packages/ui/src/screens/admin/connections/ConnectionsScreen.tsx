@@ -20,7 +20,7 @@ function ConnectionGuidance({ connection: c }: { connection: ConnectionInfo }) {
  <p>Missing permissions, affected projects and last event delivery: Not returned.</p>
  <ol><li>{c.type === "linear" ? "Ask the workspace administrator to confirm the configured account has the intended workspace and team access." : c.type === "cloudwatch" ? "Ask the installation administrator to review the externally managed setup through the approved operator process." : "Ask a company administrator to review the integration account and vendor permissions through the approved setup process."}</li>
  <li>Review account and credential configuration through the approved setup workflow. A configured flag does not prove validity; do not paste credentials into this page.</li>
- <li>Arrange delivery verification through the existing approved integration workflow before relying on this connection. This view cannot perform that verification.</li></ol>
+ <li>Verify delivery through your team's usual review process before relying on this connection. This page does not perform that check.</li></ol>
  <p>Opening this guidance does not run a vendor check or change configuration.</p>
  </details>;
 }
@@ -33,7 +33,12 @@ function GitHubGuidance({ installation: i }: { installation: GitHubInfo }) {
  </details>;
 }
 function SlackGuidance() {
- return <details className="rv-connection-guidance"><summary>Slack setup guidance</summary><p>No company-scoped Slack installation, permission or event data is available to this page.</p><ol><li>Ask the installation administrator to confirm which workspace is authorized for this company; installation-wide configuration is not proof of that association.</li><li>Review permissions and delivery through the approved Slack administration workflow. This page cannot verify them or expand access.</li></ol><p>Opening this guidance makes no Slack request and changes no configuration.</p></details>;
+ return <details className="rv-connection-guidance"><summary>Slack setup guidance</summary>
+ <p>No company-scoped Slack installation, permission or event data is available to this page.</p><p>Installation-wide configuration is not proof of association with this company.</p>
+ <ol><li>First, the Slack workspace must be connected to this company. A Rovara operator handles workspace connection; <code>connect-team</code> is operator work.</li>
+ <li>On installations with company Slack channel binding support, a company owner or admin binds each channel to a project using the CLI <code>slack bind</code>. This page has no bind control and cannot confirm that support is installed.</li>
+ <li>Invite the Rovara bot into that channel with <code>/invite</code>.</li></ol>
+ <p>This page cannot see the workspace connection, channel binding or delivery. Permissions and current health remain unknown.</p><p>Opening this guidance makes no Slack request and changes no configuration.</p></details>;
 }
 export function ConnectionsScreen() {
  const context = useAdminContext();return <ConnectionsView key={`${context.orgId}:${context.developerId}:${context.role}`} />;
