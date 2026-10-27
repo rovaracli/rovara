@@ -893,8 +893,9 @@ describe("a pushed fix on a version 2 task", () => {
   }
 
   /** The worker's push of the fix is recorded: the broker rewrites the description. */
-  async function pushFix(t: Awaited<ReturnType<typeof fixPassed>>) {
+  async function pushFix(t: Awaited<ReturnType<typeof fixPassed>>, afterReviews?: () => void) {
     await t.finishReviews();
+    afterReviews?.();
     const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
     t.state.head = PUSHED;
     t.state.tree = FIX_TREE;
@@ -913,6 +914,29 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body).toContain("infra/queue.ts");
     expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
     expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  it("Playbook P2: the rewritten description keeps the Proof section and A2's reviewer-model lines, each once, the Proof section before Reviews", async () => {
+    const t = await fixPassed({ structuredPlan: true });
+    // The reviews of the fixed code ran on the build's own model: the flag A2's dispatch leaves on the task record for this candidate.
+    await pushFix(t, () => t.harness.db.set({ ...t.record(), reviewSameModel: { candidateDigest: t.fix.digest } }));
+    const body = t.state.body;
+    expect(body).toContain("infra/queue.ts");
+    expect(proofPart(body)).toContain("| Requirement | Evidence | Result |");
+    expect(body.match(/Review used the same model as Build\. Enable another model for an independent review\./gu)).toHaveLength(1);
+    expect(body.match(/Reviewed by t\/1/gu)).toHaveLength(1);
+    expect(body.split("### Proof")).toHaveLength(2);
+    expect(body.indexOf("### Proof")).toBeLessThan(body.indexOf("## Reviews"));
+    expect(proofPart(body)).not.toMatch(/Reviewed by|same model/iu);
+    expect(body).toContain("A note from Priya, kept.");
+  });
+
+  it("Playbook P2: with no same-model flag the rewritten description names the reviewer model and has no note", async () => {
+    const t = await fixPassed({ structuredPlan: true });
+    await pushFix(t);
+    expect(t.state.body.match(/Reviewed by t\/1/gu)).toHaveLength(1);
+    expect(t.state.body).not.toContain("Review used the same model as Build");
+    expect(proofPart(t.state.body)).toContain("| Requirement | Evidence | Result |");
   });
 
   it("Playbook: a slow proof read replaces the old Proof table with a short marker, and the rest of the description is still updated (the read is not allowed to abandon the update)", async () => {

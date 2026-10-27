@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { PlanDocument, TestProof } from "../../packages/contracts/src/index.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { REVIEW_SAME_MODEL_NOTE } from "../../packages/broker/src/rovara-code/review-model-lines.js";
 import { PULL_REQUEST_BODY_MAX_BYTES } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { buildProofTable, checkIdOfProofItem, type ProofCheckResult, type ProofScenarioRow } from "../../packages/broker/src/rovara-code/proof-table.js";
 import { PROOF_LEVEL_LAST, proofSection } from "../../packages/broker/src/rovara-code/proof-section.js";
@@ -547,5 +548,42 @@ describe("a test proof is read against the checks recorded with its results (P5)
     expect(section(workflowWith({ verification: verification("unit") }), two)).not.toContain("proven");
     expect(section(workflowWith({ ...blocked, verification: { ...verification("unit", "lint"), candidateDigest: OTHER.digest } }), two)).not.toContain("proven");
     expect(section(workflowWith({ ...blocked, verification: undefined }), two)).not.toContain("proven");
+  });
+});
+
+// Playbook P2: reviewer models have one source, Trust fix A2's Reviews lines. The Proof section is about requirements and evidence and names no reviewer model.
+describe("the reviewer model in a description that has a Proof section", () => {
+  const reviewsPart = (body: string) => body.slice(body.indexOf("## Reviews"), body.indexOf("## Risk:"));
+  const sameModelTask = { title: "Add a retry flag", reviewSameModel: { candidateDigest: CODE.digest } } as never;
+
+  it("names the reviewer model once, in the Reviews section (A2's lines), and the Proof section has no model line", () => {
+    const body = bodyOf({ plan: plan(), testProof: proofFor(CODE.digest) });
+    expect(proofPart(body)).toContain("| Requirement | Evidence | Result |");
+    expect(body.match(/Reviewed by test\/1/gu)).toHaveLength(1);
+    expect(reviewsPart(body)).toContain("Reviewed by test/1");
+    expect(body.indexOf("### Proof")).toBeLessThan(body.indexOf("## Reviews"));
+    expect(proofPart(body)).not.toMatch(/Reviewed by|test\/1|same model/iu);
+  });
+
+  it("says A2's same-model note once, in Reviews, and not in the Proof section", () => {
+    const body = workflowPullRequestBody(sameModelTask, workflowWith(), "# Plan\n\n1. Add the retry flag.\n", SESSION, { changedFiles: files, proof: { plan: plan(), testProof: proofFor(CODE.digest) }, reviewSameModel: true });
+    expect(body.match(new RegExp(REVIEW_SAME_MODEL_NOTE.replace(/[.]/gu, "\\."), "gu"))).toHaveLength(1);
+    expect(reviewsPart(body)).toContain(REVIEW_SAME_MODEL_NOTE);
+    expect(proofPart(body)).not.toContain(REVIEW_SAME_MODEL_NOTE);
+  });
+
+  it("the rewritten status block (a pushed fix) has the same: the model line once, in Reviews, after the Proof section", () => {
+    const lines = workflowPullRequestStatusLines(workflowWith(), { changedFiles: files, proof: { plan: plan(), testProof: proofFor(CODE.digest) }, reviewSameModel: true }).join("\n");
+    expect(lines.match(/Reviewed by test\/1/gu)).toHaveLength(1);
+    expect(lines.match(/Review used the same model as Build/gu)).toHaveLength(1);
+    expect(lines.indexOf("### Proof")).toBeLessThan(lines.indexOf("## Reviews"));
+    expect(lines.slice(lines.indexOf("### Proof"), lines.indexOf("## Reviews"))).not.toMatch(/Reviewed by|same model/iu);
+  });
+
+  it("a Proof section with the kept or stale marker still leaves A2's lines in Reviews", () => {
+    const lines = workflowPullRequestStatusLines(workflowWith(), { changedFiles: files, proof: { stale: true }, reviewSameModel: true }).join("\n");
+    expect(lines).toContain("Proof is being updated for the latest change.");
+    expect(lines.slice(lines.indexOf("## Reviews"))).toContain("Reviewed by test/1");
+    expect(lines.slice(lines.indexOf("## Reviews"))).toContain("Review used the same model as Build");
   });
 });

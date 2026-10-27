@@ -84,3 +84,39 @@ it("shows hostile requirement text as text and makes hidden characters visible",
  expect(screen.getByText(/<img src=x onerror=alert\(1\)> a\[U\+202E\]b/u)).toBeTruthy();
  f.close();
 });
+
+// Playbook P2: the Tests tab shows the reviewer model lines the broker passes on from Trust fix A2 (`reviewModelLines`), word for word; the page works out nothing itself.
+const SAME_MODEL_NOTE = "Review used the same model as Build. Enable another model for an independent review.";
+it("shows the reviewer model under Reviews, in the words the view carries", () => {
+ const f = setup(withProof(digest, { reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6"] }));
+ const heading = screen.getByRole("heading", { name: "Reviews" });
+ const list = heading.nextElementSibling as HTMLElement;
+ expect(list.tagName).toBe("UL");
+ expect(within(list).getAllByRole("listitem").map(item => item.textContent)).toEqual(["Reviewed by anthropic/claude-opus-4-6"]);
+ expect(screen.queryByText(SAME_MODEL_NOTE)).toBeNull();
+ f.close();
+});
+it("shows the same-model note exactly as the view carries it, once", () => {
+ const f = setup(withProof(digest, { reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6", SAME_MODEL_NOTE] }));
+ expect(screen.getAllByText(SAME_MODEL_NOTE)).toHaveLength(1);
+ expect(screen.getAllByText(/Reviewed by anthropic\/claude-opus-4-6/u)).toHaveLength(1);
+ f.close();
+});
+it("shows the reviewer model without a proof table (a task whose plan has no claims), and nothing when the view has no lines", async () => {
+ const f = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: { ...workflow(), candidate, verification: verification(digest) }, reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6"] }) } }));
+ expect(screen.getByText("Reviewed by anthropic/claude-opus-4-6")).toBeTruthy();
+ expect(screen.queryByRole("table", { name: /Proof/u })).toBeNull();
+ f.close();
+ const g = setup(withProof(digest));
+ expect(screen.queryByRole("heading", { name: "Reviews" })).toBeNull();
+ g.close();
+ const h2 = setup(withProof(digest, { reviewModelLines: ["Reviewed by anthropic/claude-opus-4-6", SAME_MODEL_NOTE] }));
+ await expectNoAxeViolations(h2.container);
+ h2.close();
+});
+it("shows a hostile model name as text and makes hidden characters visible", () => {
+ const f = setup(withProof(digest, { reviewModelLines: ["Reviewed by <img src=x onerror=alert(1)> a‮b"] }));
+ expect(f.container.querySelector("img")).toBeNull();
+ expect(screen.getByText(/<img src=x onerror=alert\(1\)> a\[U\+202E\]b/u)).toBeTruthy();
+ f.close();
+});

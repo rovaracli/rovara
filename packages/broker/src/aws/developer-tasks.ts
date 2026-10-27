@@ -332,7 +332,7 @@ import { branchSyncRequestId, conflictFixPrompt } from "../rovara-code/branch-sy
 import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
-import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
+import { reviewModelLines, reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { proofTableView } from "../rovara-code/proof-view.js";
@@ -1746,6 +1746,8 @@ export async function taskView(
   // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out. A blocked task keeps it:
   // a failed requirement matters most there. (A plan whose document could not be verified is blocked only while it waits for approval, when no plan is approved and the table is absent anyway.)
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
+  // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
+  const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   return {
     taskId: task.taskId,
     title: task.title,
@@ -1754,6 +1756,7 @@ export async function taskView(
     ...(workflow === undefined ? {} : { workflow }),
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(proofTable === undefined ? {} : { proofTable }),
+    ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),
