@@ -456,3 +456,52 @@ export function auditSubjectErased(input: AuditBuilderBase & { subject: string }
 export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: number }): AuditEventInput {
   return build("audit.org_shred_scheduled", input, { kind: "org", id: input.orgId }, { shredAfterDays: input.shredAfterDays });
 }
+
+// "How we work" playbook ------------------------------------------------------------------------------------------------
+// One block, so a merge with another branch's additions stays easy. The project is a name-keyed target (pseudonymized by the
+// appender); a process is targeted by the process layer's agent id. Facts are counts, revisions, flags and fixed words.
+
+/** `occurrence`: `auditOccurrence(project, new definition revision)`. The project's definition commits once per revision; `approvedCount` is the approved models after the change. */
+export function auditProjectModelsChanged(input: AuditBuilderBase & { projectName: string; revision: number; approvedCount: number; defaultChanged: boolean }): AuditEventInput {
+  return build("project.models_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, approvedCount: input.approvedCount, defaultChanged: input.defaultChanged });
+}
+
+/** `occurrence`: as `auditProjectModelsChanged`. The counts are of the required and optional checks after the change. */
+export function auditProjectChecksChanged(input: AuditBuilderBase & { projectName: string; revision: number; requiredCount: number; optionalCount: number }): AuditEventInput {
+  return build("project.checks_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, requiredCount: input.requiredCount, optionalCount: input.optionalCount });
+}
+
+/** `occurrence`: as `auditProjectModelsChanged`. The flags are the capture settings after the change. */
+export function auditProjectE2ePolicyChanged(input: AuditBuilderBase & { projectName: string; revision: number; screenshots: boolean; traces: boolean; video: boolean; downloads: boolean }): AuditEventInput {
+  return build("project.e2e_policy_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, screenshots: input.screenshots, traces: input.traces, video: input.video, downloads: input.downloads });
+}
+
+/** `occurrence`: the request id of the selection change. `surface` is a fixed word for where it was set (`slack`, `app`, `cli`); `cleared` says the selection was removed. */
+export function auditProjectModelSelectionChanged(input: AuditBuilderBase & { projectName: string; surface: string; cleared: boolean }): AuditEventInput {
+  return build("project.model_selection_changed", input, { kind: "project", name: input.projectName }, { surface: input.surface, cleared: input.cleared });
+}
+
+/** `occurrence`: the request id of the roster change. `added` and `removed` are counts; who they are belongs in `details`. */
+export function auditProjectRosterChanged(input: AuditBuilderBase & { projectName: string; added: number; removed: number }): AuditEventInput {
+  return build("project.roster_changed", input, { kind: "project", name: input.projectName }, { added: input.added, removed: input.removed });
+}
+
+/** `occurrence`: the store's `EVENT#` sort key, as `auditPublished`. `agentId` is the process layer's agent id; `selfConfirmedSoleOwner` says the publisher confirmed they were the only owner. */
+export function auditProcessPublished(input: AuditBuilderBase & { agentId: string; version: number; safety: string; selfConfirmedSoleOwner: boolean }): AuditEventInput {
+  return build("process.published", input, { kind: "process", id: input.agentId }, { version: input.version, safety: input.safety, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
+}
+
+/** `occurrence`: the store's `EVENT#` sort key, as `auditRolledBack`. */
+export function auditProcessRolledBack(input: AuditBuilderBase & { agentId: string; fromVersion: number; toVersion: number; safety: string }): AuditEventInput {
+  return build("process.rolled_back", input, { kind: "process", id: input.agentId }, { fromVersion: input.fromVersion, toVersion: input.toVersion, safety: input.safety });
+}
+
+/** `occurrence`: `auditOccurrence(project, playbook revision)`. `processKind` is `builtin` or `project_process`; the process itself is never named. */
+export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { projectName: string; revision: number; processKind: "builtin" | "project_process" }): AuditEventInput {
+  return build("playbook.default_process_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, processKind: input.processKind });
+}
+
+/** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
+export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
+  return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
+}

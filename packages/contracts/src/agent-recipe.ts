@@ -171,6 +171,8 @@ export const ResolvedRecipeSchema = z.object({
     name: z.string().min(1).max(AGENT_NAME_MAX),
     version: z.union([z.number().int().min(1), z.literal("draft")]),
     builtin: z.boolean(),
+    /** Set on the layer of a project's process ("How we work"); a recipe frozen before it existed has none. */
+    process: z.literal(true).optional(),
   }).strict()).max(8),
   instructions: z.array(InstructionLayerSchema),
   steps: z.array(ResolvedStepSchema).max(MAX_RECIPE_STEPS),

@@ -807,6 +807,11 @@ export function codeSettingsKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `CODE_SETTINGS#${keyPart(project, "a project name")}`), sk: "META" };
 }
 
+/** A project's playbook ("How we work"): the process the project runs by default. */
+export function projectPlaybookKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `PROJECT_PLAYBOOK#${keyPart(project, "a project name")}`), sk: "META" };
+}
+
 /** How long recent tasks of one project took, per path (`QUICK` or `FULL`), for the plan's time estimate. */
 export function durationHistoryKey(orgId: OrgId, project: string, path: "QUICK" | "FULL"): OrgKey {
   return { pk: orgScoped(orgId, `DURATION_HISTORY#${keyPart(project, "a project name")}`), sk: path };

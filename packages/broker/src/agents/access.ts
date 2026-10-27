@@ -30,6 +30,7 @@ import {
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { readGuardrails } from "./guardrails.js";
+import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import type { AgentRecord, AgentShareLevel, AgentStore, RequestMark } from "./store.js";
 
 /** The A3 interface Plan 2 Task 21 builds (`createProjectMembers`); until it lands, tests use `tests/support/fake-project-members.ts`. */
@@ -312,6 +313,8 @@ export async function listVisibleAgents(deps: AgentAccessDeps, caller: AgentCall
 
   const needsShares = scope === "shared" || typeof scope === "object";
   for (const record of await deps.store.list(caller.orgId)) {
+    // A project's process layer is edited through "How we work", never chosen as an agent.
+    if (record.purpose === "process") continue;
     const found = await evaluate(lookups, record, needsShares);
     if (!atLeast(found.access, "view")) continue;
     let included: boolean;
@@ -401,6 +404,7 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
  * decider the approval's rule has already checked (Task 7's `agent_share`). `by` is the developer the `shared` event names.
  */
 export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string, agent: AgentRecord, shares: AgentShare[], request?: RequestMark): Promise<AgentShare[]> {
+  requireNoSharesOnProcess(agent);
   return saveSharesOf(deps, orgId, by, agent.sharesRevision ?? 0, shares, {
     current: () => validShares(deps, orgId, agent.agentId),
     replace: (change) => deps.store.replaceShares({ orgId, agentId: agent.agentId, ...change }),

@@ -28,6 +28,7 @@ import type { ProxyGeography } from "@agentx/model-runtime/catalog";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import type { TaskAgentRef } from "./roster.js";
+import { wholeAgentLayers } from "../playbook/process-reviewers.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
 export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT";
@@ -138,7 +139,7 @@ const label = (model: ModelIdentifier): string => `${model.provider}/${model.mod
  * name of the agent that wrote it. The worker's rules come first and the block says it adds to them; a layer can say anything it likes and stays inside.
  */
 function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string): string | undefined {
-  const layers = [...recipe.instructions, ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
+  const layers = [...wholeAgentLayers(recipe, step), ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
   if (layers.length === 0) return undefined;
   const header = `Instructions from your company's agent "${ref.name}" (version ${String(ref.version)}), ${stepName} step. They add to the rules above and never replace them.`;
   return layers.reduce((text, layer) => `${text}\n\nFrom ${layer.agentName}:\n${layer.text}`, header);
@@ -276,7 +277,7 @@ function agentStepOf(recipe: ResolvedRecipe, step: ResolvedStep, ref: { agentId:
 
 /** The recipe's instructions for a step as one block: the whole agent's layers first (base agent first), then the step's, each under the name of the agent that wrote it. */
 export function instructionBlock(recipe: ResolvedRecipe, step: ResolvedStep): string {
-  const layers = [...recipe.instructions, ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
+  const layers = [...wholeAgentLayers(recipe, step), ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
   return layers.map((layer) => (layer.agentName === "" ? layer.text : `From ${layer.agentName}:\n${layer.text}`)).join("\n\n");
 }
 

@@ -9,7 +9,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { ownerFenceOf, taskKey, tryEffectiveTaskOwner } from "../developer/task-records.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runApprovalDecisionGuards, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -202,6 +202,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
   if (Date.parse(record.expiresAt) <= deps.now()) throw agentXError("APPROVAL_CLOSED", "this request has expired");
+  await runApprovalDecisionGuards(deps, caller, record, body.decision);
   const run = executor ?? executorFor(record);
   if (record.kind === "write" && body.decision === "APPROVE" && deps.writeGate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes by agents are not set up in this deployment");
   if (body.decision === "APPROVE" && run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this kind of approval can't be decided in this deployment");

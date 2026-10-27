@@ -330,6 +330,22 @@ export async function approverRefusalFor(deps: ApprovalDependencies, record: Any
   }
 }
 
+/**
+ * A check a decision passes after the record's rule says the caller may decide it, before anything is claimed: it throws (in the words the person is told) to refuse. Guards are registered
+ * by name, so registering again replaces. "How we work" registers the one that stops the person who asked for a change to a project's process from confirming it themselves.
+ */
+export type ApprovalDecisionGuard = (deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, decision: "APPROVE" | "DECLINE") => Promise<void>;
+const decisionGuards = new Map<string, ApprovalDecisionGuard>();
+
+export function registerApprovalDecisionGuard(name: string, guard: ApprovalDecisionGuard): void {
+  decisionGuards.set(name, guard);
+}
+
+/** Runs every registered guard; the first to throw refuses the decision. */
+export async function runApprovalDecisionGuards(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, decision: "APPROVE" | "DECLINE"): Promise<void> {
+  for (const guard of decisionGuards.values()) await guard(deps, caller, record, decision);
+}
+
 export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);

@@ -26,6 +26,9 @@ import { readProjectMeta, requireNewWorkAllowed } from "../developer/project-rol
 import { agentAccess, listVisibleAgents, requireAgentAccess, type AgentCaller } from "./access.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { resolveRecipe, versionSafety } from "./changes.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
+import { auditedWrite, rosterAuditEvent } from "../playbook/project-settings-audit.js";
 import { requireAgentEnabled, validateRecipeForOrg } from "./guardrails.js";
 import { EXISTS, coded, commit, putNew, strip, type Item, type RequestMark, type TransactItem } from "./table-writes.js";
 import type { AgentDraft, AgentRecord } from "./store.js";
@@ -128,18 +131,22 @@ export async function addToRoster(deps: RosterDependencies, input: { orgId: OrgI
   const entry: RosterEntry = { orgId: input.orgId, project: input.project, agentId: input.agentId, addedBy: input.by, addedAt: new Date(deps.now()).toISOString() };
   const { orgId: _orgId, project: _project, agentId: _agentId, ...fields } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- the key carries them; the item repeats them for reading
   const item = putNew(deps, projectAgentKey(input.orgId, input.project, input.agentId), "PROJECT_AGENT", { orgId: input.orgId, project: input.project, agentId: input.agentId, ...fields });
-  await commit(deps, [item], () => rosterConflict(), input.request, entry);
+  const audit = await auditedWrite(deps, () => [rosterAuditEvent({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: entry.addedAt, project: input.project, agentId: input.agentId, change: "added", requestId: input.request?.requestId })]);
+  await commit(deps, [item, ...audit.items], () => rosterConflict(), input.request, entry);
+  await flushAuditEvents(deps, audit.events);
   return entry;
 }
 
 /** Takes the agent off the project's roster, in one transaction with the request's item. False when it was not on it (only the request's item is written). */
-export async function removeFromRoster(deps: RosterDependencies, input: { orgId: OrgId; project: string; agentId: AgentId; request?: RequestMark }): Promise<boolean> {
+export async function removeFromRoster(deps: RosterDependencies, input: { orgId: OrgId; project: string; agentId: AgentId; by: string; request?: RequestMark }): Promise<boolean> {
   if (await readEntry(deps, input.orgId, input.project, input.agentId) === undefined) {
     if (input.request !== undefined) await commit(deps, [], () => undefined, input.request, { removed: false });
     return false;
   }
   const drop: TransactItem = { Delete: { TableName: deps.tableName, Key: projectAgentKey(input.orgId, input.project, input.agentId), ConditionExpression: EXISTS } };
-  await commit(deps, [drop], () => rosterConflict(), input.request, { removed: true });
+  const audit = await auditedWrite(deps, () => [rosterAuditEvent({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: new Date(deps.now()).toISOString(), project: input.project, agentId: input.agentId, change: "removed", requestId: input.request?.requestId })]);
+  await commit(deps, [drop, ...audit.items], () => rosterConflict(), input.request, { removed: true });
+  await flushAuditEvents(deps, audit.events);
   return true;
 }
 
@@ -166,7 +173,7 @@ export async function checkRosterChange(deps: RosterDependencies, caller: AgentC
   if (isBuiltinAgentId(agentId)) throw agentXError("CONFIG_INVALID", "Built-in agents are on every project already.");
   if (!("add" in change)) return undefined;
   const { agent } = await requireAgentAccess(deps, caller, agentId, "use");
-  if (!("owner" in agent)) throw agentXError("NOT_FOUND", "no agent has that ID");
+  if (!("owner" in agent) || agent.purpose === "process") throw agentXError("NOT_FOUND", "no agent has that ID");
   requireNotArchived(agent);
   return agent;
 }
@@ -174,7 +181,8 @@ export async function checkRosterChange(deps: RosterDependencies, caller: AgentC
 /** One roster entry as the caller sees it, or undefined when the agent is gone or the caller cannot at least view it. */
 export async function rosterAgentView(deps: RosterDependencies, caller: AgentCaller, entry: RosterEntry): Promise<RosterAgentView | undefined> {
   const agent = await deps.store.get(caller.orgId, entry.agentId);
-  if (agent === undefined) return undefined;
+  // A process layer is not an agent a project works with, even if it was put on the roster.
+  if (agent === undefined || agent.purpose === "process") return undefined;
   // An agent the caller cannot see is left out entirely: nothing of it, not even that it is there.
   const access = await agentAccess(deps, caller, agent);
   if (!atLeast(access, "view")) return undefined;

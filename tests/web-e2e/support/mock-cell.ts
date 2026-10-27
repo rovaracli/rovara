@@ -23,6 +23,7 @@ import { BROWSER_RETURN_TO } from "../../../packages/broker/src/developer/server
 import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
+import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { mockCellOrigin, mockCellPort } from "./port.js";
 const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls");
 mkdirSync(directory, { recursive: true });
@@ -55,7 +56,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);resetHowWeWork();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
@@ -131,6 +132,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, AppProjectsResponseSchema.parse({ projects: ["payments", "checkout"].map(name => ({ name, status: "active", latestRevision: 1, repositories: [], myRole: "contributor", setup: { status: "ready" } })) }));return; }
  }
  if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
+ if (current.project !== undefined && current.project.project.name === "payments" && await howWeWorkMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
   let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }

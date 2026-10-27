@@ -45,3 +45,7 @@ export * from "./onboarding.js";
 
 export { ChainRunViewReaderSchema } from "./chain-session.js";
 export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";
+
+// "How we work": the project playbook and its effective view (the How we work tab).
+export * from "./project-playbook.js";
+export * from "./how-we-work.js";
