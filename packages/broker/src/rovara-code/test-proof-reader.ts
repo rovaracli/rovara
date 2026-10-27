@@ -4,18 +4,25 @@
 // returns undefined.
 import { TEST_PROOF_ARTIFACT, TestProofSchema, type TestProof } from "@agentx/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
-import { byCreated } from "../developer/task-records.js";
+import { byCreated, type OperationFacts } from "../developer/task-records.js";
 
 const OPERATIONS_READ = 10;
 const PROOF_READ_BYTES = 256 * 1024;
 
-/** The newest test proof among the task's latest operations that is bound to `candidateDigest`; undefined when there is none, it does not parse, or storage fails. */
-export async function loadTestProof(actions: TestProofActions, task: { ownerKey: string; workspaceId: string }, candidateDigest: string | undefined): Promise<TestProof | undefined> {
+/**
+ * The newest test proof among the task's latest operations that is bound to `candidateDigest`; undefined when there is none, it does not parse, or storage fails. `operations`: the task's operations when the
+ * caller has already read them (the task view and the description update hold them), so they are not read again. The newest operations' artifact listings are independent, so they are read together; the
+ * newest operation that has a valid proof still wins.
+ */
+export async function loadTestProof(
+  actions: TestProofActions, task: { ownerKey: string; workspaceId: string }, candidateDigest: string | undefined, operations?: readonly OperationFacts[],
+): Promise<TestProof | undefined> {
   if (candidateDigest === undefined) return undefined;
   try {
-    const newest = (await actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, OPERATIONS_READ);
-    for (const operation of newest) {
-      const artifact = (await actions.artifacts(task.workspaceId, operation.id)).find((entry) => entry.name === TEST_PROOF_ARTIFACT);
+    const newest = [...(operations ?? await actions.operations(task.workspaceId))].filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, OPERATIONS_READ);
+    const listings = await Promise.all(newest.map(async (operation) => ({ operation, artifacts: await actions.artifacts(task.workspaceId, operation.id) })));
+    for (const { operation, artifacts } of listings) {
+      const artifact = artifacts.find((entry) => entry.name === TEST_PROOF_ARTIFACT);
       const prefix = `private/${task.ownerKey}/${task.workspaceId}/${operation.id}/`;
       if (artifact === undefined || !artifact.objectKey.startsWith(prefix)) continue;
       const parsed = TestProofSchema.safeParse(JSON.parse(await actions.readArtifact(artifact.objectKey, PROOF_READ_BYTES)) as unknown);

@@ -14,6 +14,8 @@ export interface ProofContext {
   scenarioRows?: readonly ProofScenarioRow[] | undefined;
   /** The test proof read for this code; the table ignores it unless it is bound to the workflow's candidate digest. */
   testProof?: TestProof | undefined;
+  /** The Proof section lines the description already has (see proof-keep.ts), used as they are when the inputs above could not be read in time. Used instead of `plan`. */
+  kept?: readonly string[] | undefined;
 }
 
 /** The last shrink level (0 is the full section). */
@@ -67,6 +69,8 @@ function evidenceCell(row: ProofRow, level: number): string {
  * returned function with a shrink level (0..PROOF_LEVEL_LAST) for the lines at that level, without the blank line that separates the section from Tests.
  */
 export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | undefined): ((level: number) => string[]) | undefined {
+  const kept = proof?.kept;
+  if (kept !== undefined && kept.length > 0) return () => [...kept];
   const plan = proof?.plan;
   if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
   const table = buildProofTable({ plan, checkResults: proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest });

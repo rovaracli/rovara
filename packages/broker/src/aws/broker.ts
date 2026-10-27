@@ -410,6 +410,7 @@ import { mergedMilestoneItems } from "../rovara-code/merged.js";
 import { mergedStateItems } from "../rovara-code/merged-state.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
+import { keptProofLines, proofReadLimitMs, withinTime } from "../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
@@ -12081,6 +12082,13 @@ async function settleRecordedPullRequest(dependencies: AwsBrokerDependencies, ta
 /** How long the description update may hold up the worker's callback; past it the push is answered and the update gives up. */
 const DESCRIPTION_UPDATE_MAX_MS = 5_000;
 
+/** Playbook P1: the Proof section's inputs for the description rewrite after a pushed fix. The task's operations are read once and shared by the reads that need them. */
+async function proofContextForRewrite(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<Awaited<ReturnType<typeof loadProofContext>>> {
+  const actions = developerTaskActions(dependencies);
+  const [operations, approvedPlan] = await Promise.all([actions.operations(task.workspaceId), approvedPlanForPullRequest({ actions }, workflow).catch(() => undefined)]);
+  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner") }, task, workflow, approvedPlan, operations);
+}
+
 /**
  * D2: once an approved PR feedback fix is on the pull request, its description lists briefly what was changed for which
  * of that pull request's comments ("Fixes from PR feedback"), kept up to date across rounds. Best effort and bounded in
@@ -12103,6 +12111,9 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
     if (late() || task?.workflow === undefined || task.workspaceId !== operation.workspaceId) return;
+    // Playbook P1: the Proof section's reads start now, beside the reads below, with a short time of their own: a slow read leaves the Proof section as the description has it, never the whole update abandoned.
+    const proofRead = task.workflow.definitionVersion === "1.1.0" && task.workflow.candidate?.digest === candidateDigest && task.workflow.verification?.candidateDigest === candidateDigest
+      ? withinTime(proofReadLimitMs(dependencies.descriptionUpdateMaxMs ?? DESCRIPTION_UPDATE_MAX_MS), () => proofContextForRewrite(dependencies, task, task.workflow!)) : undefined;
     const { fixes, earlier } = await approvedFeedbackFixes(task.workflow, { repositoryId: record.repository, number: record.number },
       (key, maxBytes) => (late() ? Promise.resolve(undefined) : readObjectText(dependencies, key, maxBytes)), `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`);
     if (late()) return;
@@ -12120,10 +12131,10 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
     const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
     const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
-    // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request).
-    const proof = pushedChecked && workflow.definitionVersion === "1.1.0" ? await loadProofContext({ actions: developerTaskActions(dependencies),
-      scenarioResults: async () => loadWorkflowE2EScenarioResults(dependencies, task, await developerTaskActions(dependencies).operations(task.workspaceId), "owner") }, task, workflow,
-    await approvedPlanForPullRequest({ actions: developerTaskActions(dependencies) }, workflow).catch(() => undefined)) : undefined;
+    // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow, the section the description has is kept.
+    const proofResult = proofRead === undefined ? undefined : await proofRead;
+    const kept = proofResult !== undefined && !proofResult.done ? keptProofLines(current) : undefined;
+    const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : kept === undefined ? undefined : { kept };
     const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel ? undefined : {
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }),

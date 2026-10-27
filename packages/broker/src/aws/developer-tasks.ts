@@ -262,6 +262,7 @@ import {
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
   type DeveloperTaskRecord,
+  type OperationFacts,
   type TaskOwnerSource,
   type TaskShare,
   type TurnParty,
@@ -1606,9 +1607,9 @@ function statusOfRun<T extends { status: DeveloperTaskStatus; failure?: Develope
   return derived;
 }
 
-async function taskProofTable(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, actor: "owner" | "viewer"): Promise<DeveloperTaskView["proofTable"]> {
+async function taskProofTable(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, actor: "owner" | "viewer", operations: readonly OperationFacts[]): Promise<DeveloperTaskView["proofTable"]> {
   try {
-    return proofTableView(workflow, await proofContextOfTask(deps, task, workflow, await approvedPlanForPullRequest(deps, workflow), actor));
+    return proofTableView(workflow, await proofContextOfTask(deps, task, workflow, await approvedPlanForPullRequest(deps, workflow), actor, operations));
   } catch (error) {
     log(deps, { event: "developer.task_proof_table_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
     return undefined;
@@ -1744,7 +1745,7 @@ export async function taskView(
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
   // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out. A blocked task keeps it:
   // a failed requirement matters most there. (A plan whose document could not be verified is blocked only while it waits for approval, when no plan is approved and the table is absent anyway.)
-  const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner") : undefined;
+  const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   return {
     taskId: task.taskId,
     title: task.title,
@@ -6227,10 +6228,12 @@ function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string
 }
 
 /** Playbook P1/P3: the Proof inputs of a task (the approved plan, the browser/API rows, the test proof): the pull request's description and the task page's proof table read them through this one call. */
-export function proofContextOfTask(
+export async function proofContextOfTask(
   deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults">, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
+  /** The task's operations when the caller has already read them (the task view has), so they are not read again. */
+  operations?: readonly OperationFacts[],
 ): ReturnType<typeof loadProofContext> {
-  return loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: await deps.actions.operations(task.workspaceId), actor }) }, task, workflow, approvedPlan);
+  return loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: operations ?? await deps.actions.operations(task.workspaceId), actor }) }, task, workflow, approvedPlan, operations);
 }
 
 /**

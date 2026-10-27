@@ -106,6 +106,25 @@ describe("the task view's proof table", () => {
     expect(viewer.proofTable!.testProofLines).toHaveLength(1);
   });
 
+  it("reads the task's operations once for a full read: the table uses the operations the view already holds", async () => {
+    const reads = async (options: Parameters<typeof task>[0]) => {
+      const { harness, record } = await task(options);
+      const input = harness.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
+      const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+      const counts = { operations: 0 };
+      const tasks = { ...harness.actions, operations: (...args: Parameters<typeof harness.actions.operations>) => { counts.operations += 1; return harness.actions.operations(...args); } };
+      const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: tasks }, caller);
+      const view = await taskView(deps, record() as never, { events: 0, details: true, actor: "owner" });
+      return { counts, view };
+    };
+    const without = await reads({ withPlan: false });
+    const withProof = await reads({});
+    expect(without.view.proofTable).toBeUndefined();
+    expect(withProof.view.proofTable).toBeDefined();
+    // The table is built from what the view already read: no extra read of the operations.
+    expect(withProof.counts.operations).toBe(without.counts.operations);
+  });
+
   it("is absent when the approved plan is a legacy Markdown document, which has no claims", async () => {
     const { harness, id } = await task({ legacyPlan: true });
     expect(await readTask(harness, id)).not.toHaveProperty("proofTable");
