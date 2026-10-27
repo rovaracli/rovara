@@ -5,6 +5,7 @@
 import type { RiskAssessment, VerificationReport, WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
+import { reviewModelLines } from "./review-model-lines.js";
 import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
@@ -173,7 +174,7 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
     lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
-      "## Reviews", ...reviewLines(limit), "",
+      "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow).map((line) => inertLine(line, ITEM_MAX)), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
       ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
     ], linearKey);

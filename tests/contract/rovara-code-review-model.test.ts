@@ -222,11 +222,12 @@ describe("the reviewer model, as people read it", () => {
   });
 
   it("makes a model name from a report inert: no mention, link or hidden comment reaches the pull request", () => {
-    const hostile = reviewed({ reviews: [{
-      operationId: randomUUID(), candidateDigest: code.digest, role: "CRITIC", provider: "evil", version: "@everyone <!-- x --> https://example.test/x\nnext line", status: "PASS", findings: [], readOnly: true, recordedAt: NOW }] });
+    const hostileVersion = "@everyone <!-- x --> https://example.test/x\nnext line";
+    const hostile = reviewed({ reviews: reviewed().reviews!.map((review) => ({ ...review, provider: "evil", version: hostileVersion })) });
     const section = reviewsSection(workflowPullRequestBody(task, hostile, "# Plan\n\n1. Add the flag.\n", SESSION, {}));
     expect(section).toContain("evil/");
-    expect(section).not.toMatch(/@everyone|<!--|https?:\/\//u);
+    // The inert helper breaks a mention or a link with a zero-width joiner, so GitHub neither notifies nor links it.
+    expect(section).not.toMatch(/@(?!\u200D)\w|<!--|:\/\/(?!\u200D)/u);
     expect(section.split("\n").some((line) => line.trim() === "next line")).toBe(false);
   });
 

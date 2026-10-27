@@ -539,7 +539,8 @@ import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.j
 import { taskRunCache } from "../agents/run-cache.js";
 import { githubLoginOf, personNameForText } from "../developer/requester-text.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
-import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
+import { applyAgentStep, crossCompanyTargets, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -6017,7 +6018,7 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
-): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true }) | undefined> {
+): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true; reviewSameModel?: true }) | undefined> {
   if (task?.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
@@ -6028,14 +6029,66 @@ async function dispatchAgentStep(
   // Plan 6 Task 8: the plan check is an ordinary step. The model the company set on it stands; with none set, Rovara recommends one the project may use (a different one from the planner's by default).
   const critic = input.workflowMode === "PLAN_CRITIQUE" && input.agentRun === undefined
     ? await criticModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
-  const recipe = critic?.recipe ?? frozen.recipe;
+  // Trust fix A2: the reviews of a version 2 task default to a different model from the build's, chosen like the plan check's; a model the company set on the step stands.
+  const reviewer = input.workflowMode === "REVIEW" && input.agentRun === undefined && task.workflow?.definitionVersion === "1.1.0"
+    ? await reviewerModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
+  const recipe = critic?.recipe ?? reviewer?.recipe ?? frozen.recipe;
   const stepIds = priorStepIds({ recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, stepIds);
   const applied = applyAgentStep({
     recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
     projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations, agentRun: input.agentRun,
   });
-  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}) };
+  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}), ...(reviewer?.sameModelAsBuilder === true ? { reviewSameModel: true as const } : {}) };
+}
+
+/**
+ * Trust fix A2: the recipe the reviews run under. With no model set on the review step, `reviewerModelFor` chooses one for this one operation (a different model from the build's by default, only another
+ * company's when the company requires it), set as the step's model so the step's ordinary checks and routing apply to it. A choice that can't be made leaves the recipe as it was, so the dispatch checks decide
+ * exactly as before (the cross-company refusal included). The build's model is the one its latest operation recorded, else the project's; the models earlier reviews of this task found unusable are left out.
+ */
+async function reviewerModelOfStep(
+  dependencies: AwsBrokerDependencies, orgId: OrgId, workspace: WorkspaceInstance, task: DeveloperTaskRecord, recipe: ResolvedRecipe, programStepId: string | undefined,
+  guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
+): Promise<{ recipe: ResolvedRecipe; sameModelAsBuilder: boolean }> {
+  const unchanged = { recipe, sameModelAsBuilder: false };
+  const step = stepForOperation(recipe, "REVIEW", programStepId);
+  if (step === undefined) return unchanged;
+  const operations = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+  const builder = operations
+    .filter((item) => item.workflowMode === "IMPLEMENT" && item.conversationId === task.conversationId)
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
+  const recorded = ModelSelectionSchema.safeParse(builder?.model);
+  const history = reviewFailures(operations, builder);
+  if (history.sinceLatestBuild >= CRITIC_MODEL_ATTEMPTS_MAX) return unchanged;
+  // The models of the steps this review must differ in company from; one that recorded none can't be shown to differ, so nothing is chosen and the dispatch's own check decides.
+  const targets = crossCompanyTargets(recipe, step, guardrails);
+  const priors = targets.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, targets);
+  if (priors.some((prior) => prior.model === undefined)) return unchanged;
+  const routing = routingOf(dependencies);
+  const chosen = reviewerModelFor({
+    step, builderModel: recorded.success ? recorded.data : projectModel ?? defaultWorkerModel(routing?.rovaraGeography),
+    project: { approved }, guardrails, differentCompanyFrom: priors.flatMap((prior) => (prior.model === undefined ? [] : [prior.model])),
+    sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
+    unusable: history.models, lastAttempt: history.sinceLatestBuild + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
+  });
+  if (chosen === undefined || chosen.chosenBy === "company") return unchanged;
+  return {
+    recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
+    sameModelAsBuilder: chosen.sameModelAsBuilder,
+  };
+}
+
+/** The reviews of one workspace that failed because their model could not serve this account (`criticModelUnusable`): the models they ran on, and how many came after the latest build. */
+function reviewFailures(operations: ReadonlyArray<Record<string, unknown>>, latestBuild: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestBuild: number } {
+  const failed = operations.filter((item) => item.workflowMode === "REVIEW" && item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined));
+  const models: ModelSelection[] = [];
+  for (const item of failed) {
+    const model = ModelSelectionSchema.safeParse(item.model);
+    if (model.success) models.push(model.data);
+  }
+  const from = typeof latestBuild?.createdAt === "string" ? latestBuild.createdAt : "";
+  return { models, sinceLatestBuild: failed.filter((item) => String(item.createdAt) >= from).length };
 }
 
 /**
@@ -6186,6 +6239,8 @@ async function taskOperationParts(
   operation.settingsRevision = settings.definition.revision;
   // Plan 6 Task 8: the project allows only one model, so the same model that wrote the plan checks it; the plan view says so.
   if (applied?.criticSameModel === true) operation.criticSameModel = true;
+  // Trust fix A2: only the build's own model was usable for the reviews; their reports say so.
+  if (applied?.reviewSameModel === true) operation.reviewSameModel = true;
   // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
   if (input.planRevision === true) operation.planRevision = true;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
@@ -16268,7 +16323,12 @@ async function completedWorkflowItems(
           throw new Error("review result does not hold one code review and one security review");
         }
         next = task.workflow;
-        for (const review of reviews) next = submitWorkflowReview(next, review, now);
+        // The same-model flag is the broker's own record of the dispatch, never the worker's say: a worker's copy is dropped.
+        for (const review of reviews) {
+          const { sameModelAsBuild: _reported, ...report } = review as Record<string, unknown>;
+          void _reported;
+          next = submitWorkflowReview(next, operation.reviewSameModel === true ? { ...report, sameModelAsBuild: true } : report, now);
+        }
       } catch {
         next = blockWorkflow(task.workflow, reviewFailure, now);
       }

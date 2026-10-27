@@ -106,7 +106,7 @@ export function givesAgentTools(applied: Pick<AppliedAgentStep, "agentStep" | "t
 const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => modelKey(left) === modelKey(right);
 
 /** Whether `left` is from a known AI company other than `right`'s. A model of an unrecognised company can never be shown to differ. */
-function differentCompany(left: ModelIdentifier | undefined, right: ModelIdentifier | undefined): boolean {
+export function differentCompany(left: ModelIdentifier | undefined, right: ModelIdentifier | undefined): boolean {
   if (left === undefined || right === undefined) return false;
   const a = modelCompany(left);
   const b = modelCompany(right);

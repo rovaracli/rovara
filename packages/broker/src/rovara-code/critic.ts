@@ -108,7 +108,7 @@ export function criticModelUnusable(error: string | undefined): boolean {
  * The models a plan check could run on, strongest first (`sources` already holds only what the project's sources serve for this org, and the order they list them in decides nothing): those the
  * limits allow and no earlier check found unusable. When no source list is known (an install with no model proxy) the project's approved models, in their order, stand in for it.
  */
-function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
+export function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
   const pool = sources.length > 0 ? sources : limits.approved ?? [];
   const ranked = rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))));
   return failedTiersLast(limits, ranked);

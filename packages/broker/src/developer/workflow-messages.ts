@@ -10,6 +10,7 @@ import { critiqueLines } from "../rovara-code/critique-lines.js";
 import { mergedLines } from "../rovara-code/merged-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
+import { reviewModelLines } from "../rovara-code/review-model-lines.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
 import { PLAN_UNREADABLE_SENTENCES, type PlanUnreadableCategory } from "./plan-check-summary.js";
 import { autoFixCardLines, type AutoFixAsk } from "./autofix-messages.js";
@@ -536,6 +537,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
     if (introduced.length > FINDINGS_SHOWN) lines.push(`And ${introduced.length - FINDINGS_SHOWN} more.`);
     if (older > 0) lines.push(`${older} older ${older === 1 ? "issue was" : "issues were"} noted but ${older === 1 ? "doesn't" : "don't"} block.`);
     if (workflowReviewsSawPartialDiff(context.workflow)) lines.push(PARTIAL_REVIEW);
+    lines.push(...reviewModelNotes(context.workflow));
     if (context.findingsUrl !== undefined) lines.push(link(context.findingsUrl, "See all findings"));
     // Resolve findings answers up to 20 at once; with more open, only sending the whole change back to coding is left.
     const first = introduced.length <= WORKFLOW_RESOLVE_FINDINGS_MAX ? exits.resolveFindings() : exits.sendBack();
@@ -545,7 +547,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
   const text = unfinished.length > 0
     ? `A review couldn't finish (${unfinished.map((review) => `${review.role === "SECURITY" ? "security" : "code"} review: ${plainReviewFailure(review.failureReason, review.status)}`).join("; ")}). Nothing was sent to GitHub.`
     : `${context.workflow.verification?.reviewOnly === true && workflowIsReviewOnly(context.workflow.checkPolicy) ? "No automated check applied, and" : "The checks passed, but"} the reviews couldn't finish. ${plainBlockReason(context.workflow.blockReason)} Nothing was sent to GitHub.`;
-  return { text, buttons: [...exits.retryReviews(), exits.close] };
+  return { text: [text, ...reviewModelNotes(context.workflow)].join("\n"), buttons: [...exits.retryReviews(), exits.close] };
 }
 
 function verifyBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
@@ -949,7 +951,7 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     case "PULL_REQUEST/READY": case "PULL_REQUEST/RUNNING": {
       const pushing = pushingFixTo(workflow);
       if (pushing === undefined && workflow.state === "RUNNING") return undefined;
-      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}`);
+      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}${reviewModelNotes(workflow).map((line) => `\n${line}`).join("")}`);
     }
     case "PULL_REQUEST/BLOCKED": return { text: `${checksAndReviewsPassed} ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.retryPublish, exits.close] };
     // The owner can close the task while its pull request is open (the pull request stays on GitHub).
@@ -1052,6 +1054,8 @@ export function workflowMessageKey(workflow: WorkflowSnapshot, options: { planAu
 
 /** Said when a review saw only part of the change: its diff was too large to show in full. */
 const PARTIAL_REVIEW = "The change was too large to show the reviewers in full, so they reviewed only part of it.";
+/** The lines naming the model that reviewed the current code, and the same-model note when it was the build's (Rovara Code version 2 only; a model name is a report's text, so each line is cleaned). */
+const reviewModelNotes = (workflow: WorkflowSnapshot): string[] => reviewModelLines(workflow).map((line) => cleanLine(line, 300));
 const partialReviewNote = (workflow: WorkflowSnapshot) => (workflowReviewsSawPartialDiff(workflow) ? ` ${PARTIAL_REVIEW}` : "");
 
 /**
