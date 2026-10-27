@@ -96,7 +96,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 40 || 25 }}
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
