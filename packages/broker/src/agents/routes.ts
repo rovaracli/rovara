@@ -64,6 +64,7 @@ import {
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
+import { requireNotCurrentProcess } from "../playbook/process-in-use.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
@@ -567,7 +568,8 @@ async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agent
 
 async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
   const input = parseBody(RequestOnlySchema, body);
-  const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  if (archive && "owner" in agent) await requireNotCurrentProcess(deps, agent);
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {

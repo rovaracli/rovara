@@ -298,3 +298,42 @@ describe("a process layer's draft cannot be test-run (follow-up M4)", () => {
     expect(t.taskCount()).toBe(1);
   });
 });
+
+describe("archiving a process layer (fix round 1, I2)", () => {
+  const IN_USE = "Switch the project to another way of working before archiving this one.";
+  const archive = (t: Awaited<ReturnType<typeof setup>>, agentId: string) => t.dev(MAYA, "POST", `/v1/app/agents/${agentId}/archive`, { requestId: randomUUID() });
+
+  it("is refused while the layer is the project's current default process (409 PROCESS_IN_USE, fixed words), and nothing is archived", async () => {
+    const t = await setup();
+    maintainer(t);
+    const agentId = await t.processLayer();
+    t.point(agentId);
+    const reply = await archive(t, agentId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(409);
+    expect(reply.body.error).toMatchObject({ code: "PROCESS_IN_USE", message: IN_USE });
+    expect((await t.store.get(TEST_ORG, agentId))!.status).toBe("active");
+  });
+
+  it("still archives a process layer the playbook does not point at, and an ordinary agent", async () => {
+    const t = await setup();
+    maintainer(t);
+    const layer = await t.processLayer();
+    const other = await t.processLayer();
+    t.point(other);
+    expect((await archive(t, layer)).status).toBe(200);
+    expect((await t.store.get(TEST_ORG, layer))!.status).toBe("archived");
+    const created = await t.store.create({
+      orgId: TEST_ORG, name: `ordinary ${randomUUID().slice(0, 6)}`, owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId },
+      extends: ROVARA_CODE_AGENT_ID, overlay: {}, createdBy: MAYA.developerId,
+    });
+    expect((await archive(t, created.agentId)).status).toBe(200);
+  });
+
+  it("archives the layer once the project has been switched to the built-in", async () => {
+    const t = await setup();
+    maintainer(t);
+    const agentId = await t.processLayer();
+    t.point(undefined);
+    expect((await archive(t, agentId)).status).toBe(200);
+  });
+});

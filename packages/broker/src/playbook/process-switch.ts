@@ -34,7 +34,7 @@ export async function switchLosses(approvals: ApprovalDependencies, orgId: strin
 
 /**
  * The reply that holds a switch of `project` to the built-in, or undefined when it may apply at once. The caller has checked the role and that `expectedRevision` is what the maintainer read.
- * A layer that is not running (archived, not published, gone) loses nothing: the project is not running it. When the layer must be compared and the approvals are not available the switch
+ * A layer with no published version, or one that is gone, loses nothing. An archived layer that still has a published version is compared like any other: archiving it is no way round the second person (and the archive of the project's current default is refused anyway, process-in-use.ts). When the layer must be compared and the approvals are not available the switch
  * is refused (`RUNTIME_UNAVAILABLE`), never applied.
  */
 export async function holdBuiltinSwitch(
@@ -45,7 +45,7 @@ export async function holdBuiltinSwitch(
   if (expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
   const { agentId } = current.defaultProcess;
   const layer = await deps.store?.get(caller.orgId, agentId);
-  if (layer === undefined || layer.status !== "active" || layer.currentVersion === undefined) return undefined;
+  if (layer === undefined || layer.currentVersion === undefined) return undefined;
   const approvals = deps.approvals;
   if (approvals === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Switching back to the built-in way of working needs a second person's confirmation, which isn't available right now.");
   const lost = await switchLosses(approvals, caller.orgId, agentId, layer.currentVersion);

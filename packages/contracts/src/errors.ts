@@ -78,6 +78,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "PROCESS_UNAVAILABLE",
   "PLAYBOOK_STALE",
   "PROCESS_SELF_CONFIRM",
+  "PROCESS_IN_USE",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
@@ -107,6 +108,9 @@ export const GITHUB_INSTALLATION_TAKEN_MESSAGE = "This GitHub account is already
 
 /** What PROCESS_SELF_CONFIRM (403) says: the person who asked for a change to a project's process cannot confirm it themselves while someone else could. */
 export const PROCESS_SELF_CONFIRM_MESSAGE = "Someone else who can approve changes in this project must confirm this.";
+
+/** What PROCESS_IN_USE (409) says: a project's process layer can't be archived while it is the project's default process. */
+export const PROCESS_IN_USE_MESSAGE = "Switch the project to another way of working before archiving this one.";
 
 export class AgentXError extends Error {
   constructor(

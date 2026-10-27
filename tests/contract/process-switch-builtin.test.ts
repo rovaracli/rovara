@@ -238,11 +238,29 @@ describe("switching back to the built-in when nothing is lost stays immediate", 
     expect((await toBuiltin(idle)).statusCode).toBe(200);
   });
 
-  it("a layer that is archived is not running, so nothing is lost", async () => {
+  it("a layer that is archived but still the project's default is compared all the same (fix round 1, I2): archiving it first is no way round the second person", async () => {
     const w = world();
     const layer = await layerWith(w, STRICT);
+    // The route refuses to archive the current default now; a layer archived before that rule is still held to the compare.
     await w.store.archive(ORG_A, layer, MAX);
+    expect((await toBuiltin(w)).statusCode).toBe(202);
+  });
+
+  it("a layer with no published version, or one that is gone, loses nothing", async () => {
+    const w = world();
+    const { agentId } = await postProjectProcess(playbookDeps(w), w.caller(MAX), "web");
+    expect(agentId).toBeDefined();
     expect((await toBuiltin(w)).statusCode).toBe(200);
+  });
+
+  it("a layer that caps a step's time is stricter than the built-in's no limit, whatever the cap (fix round 1, I1)", async () => {
+    const w = world();
+    const layer = await layerWith(w, { build: { timeoutMinutes: 30 } });
+    await setDraft(w, layer, { build: { timeoutMinutes: 200 } });
+    await decide(w, OLA, approvalIdOf(w, await publish(w, MAX, layer)));
+    const reply = await toBuiltin(w);
+    expect(reply.statusCode).toBe(202);
+    expect((reply.body as { changes: string[] }).changes.join("\n")).toContain('Removes the time limit of the step "Build"');
   });
 
   it("a stale revision is still PLAYBOOK_STALE (409) and a non-maintainer still cannot", async () => {

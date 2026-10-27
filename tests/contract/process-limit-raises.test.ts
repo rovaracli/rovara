@@ -87,6 +87,21 @@ describe("a process layer's raise of a step's time or spending limit", () => {
     expect(await publish(w, layer)).toMatchObject({ applied: true, value: { version: 2 } });
   });
 
+  it("taking away a time limit of 60 minutes or more waits too (an unset step time means no limit); an ordinary agent's does not", async () => {
+    const w = world();
+    const layer = await layerWith(w, { build: { timeoutMinutes: 30 } });
+    await setDraft(w, layer, { build: { timeoutMinutes: 200 } });
+    await decideApproval(w.deps, callerOf(w, OLA), approvalIdOf(w, await publish(w, layer)), { requestId: randomUUID(), decision: "APPROVE" });
+    await setDraft(w, layer, { build: { timeoutMinutes: null } });
+    expect(await publish(w, layer)).toMatchObject({ applied: false, changes: ['Removes the time limit of the step "Build"'] });
+
+    const created = await w.store.create({ orgId: ORG_A, name: "reviewer", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, createdBy: MAX });
+    await setDraft(w, created.agentId, { build: { timeoutMinutes: 200 } });
+    expect(await publish(w, created.agentId)).toMatchObject({ applied: true });
+    await setDraft(w, created.agentId, { build: { timeoutMinutes: null } });
+    expect(await publish(w, created.agentId)).toMatchObject({ applied: true, value: { version: 2 } });
+  });
+
   it("an ordinary agent raising the same limits publishes at once", async () => {
     const w = world();
     const created = await w.store.create({ orgId: ORG_A, name: "reviewer", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, createdBy: MAX });

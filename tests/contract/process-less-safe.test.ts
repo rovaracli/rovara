@@ -174,10 +174,16 @@ describe("(f) a step's time or step budget is raised (follow-up M1)", () => {
     expect(reasons(flow(), flow({ build: { timeoutMinutes: 30 } }))).toEqual([]);
     expect(reasons(flow({ build: { timeoutMinutes: null } }), flow({ build: { timeoutMinutes: PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES + 1 } }))).toHaveLength(1);
   });
-  it("judges a timeout that is taken away against the current value: back to the default is a raise only when the default is higher", () => {
-    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow())).toEqual(['Raises the time the step "Build" may run, from 30 to 60 minutes']);
-    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow({ build: { timeoutMinutes: null } }))).toHaveLength(1);
-    expect(reasons(flow({ build: { timeoutMinutes: 200 } }), flow())).toEqual([]);
+  it("flags a timeout that is taken away, whatever its value: an unset step time means no per-step limit (fix round 1, I1)", () => {
+    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow())).toEqual(['Removes the time limit of the step "Build"']);
+    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow({ build: { timeoutMinutes: null } }))).toEqual(['Removes the time limit of the step "Build"']);
+    expect(reasons(flow({ build: { timeoutMinutes: PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES } }), flow())).toHaveLength(1);
+    expect(reasons(flow({ build: { timeoutMinutes: 200 } }), flow())).toEqual(['Removes the time limit of the step "Build"']);
+    expect(reasons(flow({ review: { timeoutMinutes: 240 } }), flow({ review: { timeoutMinutes: null } }))).toHaveLength(1);
+  });
+  it("does not flag unset to unset, or a timeout that was null before and is still not set", () => {
+    expect(reasons(flow(), flow())).toEqual([]);
+    expect(reasons(flow({ build: { timeoutMinutes: null } }), flow())).toEqual([]);
   });
   it("does not flag a lowered or unchanged timeout", () => {
     expect(reasons(flow({ build: { timeoutMinutes: 90 } }), flow({ build: { timeoutMinutes: 30 } }))).toEqual([]);
