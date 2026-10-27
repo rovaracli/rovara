@@ -942,7 +942,16 @@ describe("a built-in agent turned off", () => {
 
 
 describe("canonical ceiling write precision compatibility", () => {
-  for (const [name, value] of [["sub-micro", 0.0000001], ["fractional micro", 0.0000015], ["float noise", 0.30000000000000004]] as const) {
+  it("accepts an exact micro ceiling through PUT without changing another org", async () => {
+    const { call, GUARDRAILS } = await setup();
+    const result = await call(DANA, "PUT", GUARDRAILS, { expectedRevision: 0, guardrails: guardrails({ maxPerRunCeilingUsd: 0.000001 }) });
+    expect(result.status).toBe(200);
+    const local = await call(DANA, "GET", GUARDRAILS);
+    expect((local.body.guardrails as AgentGuardrails).maxPerRunCeilingUsd).toBe(0.000001);
+    const foreign = await call(OMAR, "GET", GUARDRAILS);
+    expect((foreign.body.guardrails as AgentGuardrails).maxPerRunCeilingUsd).toBe(DEFAULT_MAX_PER_RUN_CEILING_USD);
+  });
+  for (const [name, value] of [["sub-micro", 0.0000001], ["fractional micro", 0.0000015], ["float noise", 0.30000000000000004], ["widening sub-micro", 100.0000001]] as const) {
     it(`refuses ${name} at PUT before request or approval persistence`, async () => {
       const { db, call, GUARDRAILS } = await setup();
       const before = db.transactions().length;

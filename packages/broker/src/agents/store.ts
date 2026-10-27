@@ -1,3 +1,4 @@
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 // packages/broker/src/agents/store.ts
 // The agent store: an agent's META, its DRAFT, immutable numbered versions, the org's name and directory
 // items and one EVENT# item per notable write. Every multi-item write is one transaction, so a refused
@@ -835,6 +836,10 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     /** Whether this write makes anything less safe, which a person confirmed; the audit event says so. Default: no. */
     widened?: boolean;
   }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
+    // Validate writes only: historical read/enforcement semantics remain unchanged.
+    if (usdToWholeMicrodollars(input.guardrails.maxPerRunCeilingUsd) === undefined) {
+      throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must have at most 6 decimal places");
+    }
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };
     const aliases = new Aliases();

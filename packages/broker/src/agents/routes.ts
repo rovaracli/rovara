@@ -1,3 +1,4 @@
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
@@ -200,7 +201,7 @@ const ProjectAiBodySchema = z.object({
   memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
-const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
+const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema.refine(value => usdToWholeMicrodollars(value.maxPerRunCeilingUsd) !== undefined, { path: ["maxPerRunCeilingUsd"], message: "must have at most 6 decimal places" }) }).strict();
 
 export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
