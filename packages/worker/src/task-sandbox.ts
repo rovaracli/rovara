@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
-import { resolve } from "node:path";
+import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
-import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
+import { containerBashOperations, runContainerCommand, type ContainerCommandOptions, type ContainerExec } from "./devcontainer.js";
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
@@ -56,6 +57,13 @@ export function sandboxCpuLimit(hostCpus: number): string | undefined {
  * whose own `env` sets it. The image's other ENV (PORT, AGENTX_WORKSPACE_ROOT, AGENTX_WORKER_PROCESS_SCOPE) is left as it is.
  */
 export const SANDBOX_UNSET_ENVIRONMENT: readonly string[] = ["NODE_ENV"];
+/**
+ * Where the sandbox's commands keep Python packages installed with `pip install --user` (what `pip install --break-system-packages` does for the non-root sandbox user), under the
+ * workspace root and outside every repository. Without it they went to the container's own HOME, which is gone with the container: setup ran in one throw-away container and the
+ * agent, the checks and the next send-back each got a new one from the image, with no `pytest` or `ruff` in it (Bug K). Node needs nothing like it: `npm ci` writes `node_modules`
+ * into the repository. The folder holds a `.gitignore` of `*`, so a repository at the workspace root never sees it as a change.
+ */
+export const SANDBOX_PYTHON_USER_BASE_DIRECTORY = ".agentx-python";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -201,9 +209,15 @@ export class TaskSandbox {
     return this.starting;
   }
 
+  /** What every customer command in the sandbox starts without (NODE_ENV, Bug F) and with (the Python user site, Bug K), unless the command sets it itself. */
+  private commandOptions(): ContainerCommandOptions {
+    const base = join(resolve(this.options.rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
+    return { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathPrefix: [join(base, "bin")] };
+  }
+
   /** The agent's shell in the sandbox. */
   bashOperations(): BashOperations {
-    return containerBashOperations(this.exec, { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT });
+    return containerBashOperations(this.exec, this.commandOptions());
   }
 
   /** Where the agent's file tools run for this sandbox: as the sandbox's user, with the workspace as the only reachable root. */
@@ -216,7 +230,7 @@ export class TaskSandbox {
 
   /** A project command (setup, readiness) in the sandbox. */
   runCommand(command: ProjectCommand, signal?: AbortSignal): Promise<CommandResult> {
-    return runContainerCommand(this.exec, this.options.rootPath, command, signal, { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT });
+    return runContainerCommand(this.exec, this.options.rootPath, command, signal, this.commandOptions());
   }
 
   /** Removes the container. Safe to call again, and when nothing started. */
@@ -257,8 +271,28 @@ export class TaskSandbox {
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-5).join(" ").slice(0, 800);
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not start the task sandbox${result.timedOut === true ? " (timed out)" : ""}: ${detail || `exit ${String(result.exitCode)}`}`);
     }
+    await this.prepareUserBase(root);
     // A write the file tools' helper was killed in leaves a `.agentx-file-ops-*` file; an earlier task's must not reach this one's snapshots.
     await fileOpsExec(this.fileOpsTarget(), { root, op: "sweep", path: root }).catch(() => undefined);
+  }
+
+  /**
+   * The Python user site's folder, made before the first command: a real directory with a `.gitignore` of `*`. A link or file a task left at its name is removed (the link
+   * itself, never its target), as the worker's state directories are (workspace-state.ts). A folder that cannot be made is logged, not fatal: pip makes it, without the `.gitignore`.
+   */
+  private async prepareUserBase(root: string): Promise<void> {
+    const path = join(root, SANDBOX_PYTHON_USER_BASE_DIRECTORY);
+    try {
+      const found = await lstat(path).catch((error: unknown) => {
+        if ((error as { code?: unknown }).code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (found !== undefined && (found.isSymbolicLink() || !found.isDirectory())) await rm(path, { force: true });
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, ".gitignore"), "*\n", { flag: "wx" }).catch(() => undefined);
+    } catch (error) {
+      (this.options.log ?? logEvent)({ event: "task-sandbox.python-user-base.failed", taskId: this.options.taskId, reason: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) });
+    }
   }
 
   /**

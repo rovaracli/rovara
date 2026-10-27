@@ -456,8 +456,9 @@ export async function runContainerCommand(
     args: [command.executable, ...command.args],
     timeoutMs: command.timeoutSeconds * 1_000,
     // The command's own variables (#54) reach the command only, never the TERM and KILL execs.
-    ...(command.env !== undefined ? { env: { ...command.env } } : {}),
+    ...(command.env !== undefined || options.defaultEnvironment !== undefined ? { env: { ...options.defaultEnvironment, ...command.env } } : {}),
     ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+    ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
     ...(signal !== undefined ? { signal } : {}),
   });
   const { result } = run;
@@ -480,6 +481,13 @@ export interface ContainerCommandOptions {
    * command's `env`, #54). The agent's shell sets none of them: the project's `env` belongs to its setup and readiness commands.
    */
   unsetEnvironment?: readonly string[];
+  /**
+   * Variables the command starts with unless it sets them itself (a project command's `env`, #54; the agent's shell sets none of them). The task sandbox uses this for
+   * the Python user site (Bug K).
+   */
+  defaultEnvironment?: Readonly<Record<string, string>>;
+  /** Folders put in front of the command's PATH, unless the command sets its own PATH. The sandbox's Python user bin (Bug K). */
+  pathPrefix?: readonly string[];
 }
 
 /** The command's stderr, then a line for each step of the stop sequence that failed. */
@@ -529,8 +537,9 @@ export function containerBashOperations(exec: ContainerExec, options: ContainerC
         cwd,
         args: [command],
         ...(timeout !== undefined && timeout > 0 ? { timeoutMs: timeout * 1_000 } : {}),
-        env: sessionEnvironment(env),
+        env: { ...options.defaultEnvironment, ...sessionEnvironment(env) },
         ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+        ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
         ...(signal !== undefined ? { signal } : {}),
         onStdout: onData,
         onStderr: onData,
@@ -554,9 +563,18 @@ interface ContainerGroupCommand {
   env?: Record<string, string>;
   /** Names removed from the environment before the command starts, except those `env` sets (see ContainerCommandOptions). */
   unsetEnvironment?: readonly string[];
+  /** Folders put in front of PATH before the command starts, unless `env` sets PATH (see ContainerCommandOptions). */
+  pathPrefix?: readonly string[];
   signal?: AbortSignal;
   onStdout?: (data: Buffer) => void;
   onStderr?: (data: Buffer) => void;
+}
+
+/** `export PATH='dir':"$PATH";` for the folders the command asks to have first on PATH, or "" when it sets its own PATH (or asks for none). */
+function pathStatement(command: ContainerGroupCommand): string {
+  if ((command.pathPrefix ?? []).length === 0 || Object.hasOwn(command.env ?? {}, "PATH")) return "";
+  const quoted = (command.pathPrefix ?? []).map((folder) => `'${folder.replaceAll("'", "'\\''")}'`).join(":");
+  return `export PATH=${quoted}:"$PATH"; `;
 }
 
 /** `unset NAME ...;` for the names the command does not set itself, or "" when there are none. */
@@ -618,7 +636,7 @@ async function runInContainerGroup(
       "bash", "-c",
       // Job control only while starting the command, which puts it in its own process group; left
       // on, bash would also print a "Done" line into the output.
-      `${unsetStatement(command)}set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
+      `${unsetStatement(command)}${pathStatement(command)}set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
       "bash", command.cwd, groupFile, ...command.args,
     ], {
       ...(command.env !== undefined ? { env: command.env } : {}),
