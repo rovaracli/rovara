@@ -19,17 +19,17 @@ function failure(error: unknown, reading = false) {
  return "The outcome is unknown. Check the current invite before making another change.";
 }
 export function InviteRevokeDialog({ orgId, company, target, checking, changed, staleData, onApplied, onDenied, onClose, restoreFocus }: Props) {
- const host = useAppHost(), alive = useRef(true), api = useMemo(() => createInviteAdminApi(host, orgId, () => alive.current), [host, orgId]);
+ const host = useAppHost(), alive = useRef(true), api = useMemo(() => createInviteAdminApi(host, orgId), [host, orgId]);
  const [open, setOpen] = useState(true), [current, setCurrent] = useState<InviteStatus>(), [busy, setBusy] = useState(true), [sent, setSent] = useState(false), [settled, setSettled] = useState(false), [verified, setVerified] = useState(false), [message, setMessage] = useState<string>();
  const sending = useRef(false), attempted = useRef(false), recovery = useRef<HTMLButtonElement>(null), receipt = useRef<HTMLParagraphElement>(null), reasonId = useId();
  useEffect(() => {
-  alive.current = true;let active = true;
+  alive.current = true;api.setScopeActive(true);let active = true;
   void bounded(api.status(target.inviteId)).then(value => {
    if (!active || !alive.current) return;setCurrent(value);
    if (value.status !== "pending") { setMessage(terminalCopy(value.status));setSettled(true);onApplied(); }
    else if (value.revision !== target.revision || value.role !== target.role) setMessage("Invite details changed. Close and review the directory again.");
   }).catch(error => { if (active && alive.current) { if (error instanceof ApiError && error.status === 403) onDenied();setMessage(error instanceof ApiError && [403, 404, 429].includes(error.status) ? failure(error, true) : "The current invite could not be checked. Check again before confirming."); } }).finally(() => { if (active && alive.current) setBusy(false); });
-  return () => { active = false;alive.current = false; };
+  return () => { active = false;alive.current = false;api.setScopeActive(false); };
  }, [api, target, onDenied, onApplied]);
  useEffect(() => { if (!busy && verified) receipt.current?.focus();else if (!busy && sent && !settled && message) recovery.current?.focus(); }, [busy, verified, sent, settled, message]);
  const ready = current?.status === "pending" && current.revision === target.revision && current.role === target.role;

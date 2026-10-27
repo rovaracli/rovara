@@ -5,8 +5,8 @@ import type { ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 export type InviteStatus = z.infer<typeof AppOrgInviteStatusSchema>;
 function unreadable() { return new ApiError(502, "INVALID_RESPONSE", "The invite response could not be verified."); }
-export function createInviteAdminApi(host: AppHost, orgId: string, isCurrent: () => boolean = () => true) {
- let redirected = false;
+export function createInviteAdminApi(host: AppHost, orgId: string) {
+ let redirected = false, scopeActive = true;
  function path(inviteId: string) {
   if (!OrgIdSchema.safeParse(orgId).success || !OrgInvitePublicIdSchema.safeParse(inviteId).success) throw new ApiError(400, "CONFIG_INVALID", "Check a valid company invite.");
   return `/v1/app/org/invites/${inviteId}`;
@@ -15,12 +15,12 @@ export function createInviteAdminApi(host: AppHost, orgId: string, isCurrent: ()
   let response: ApiResponse;
   try { response = await host.transport.request(request); }catch (error) {
    if (error instanceof ApiError) {
-    if (error.status === 401 && isCurrent() && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
+    if (error.status === 401 && scopeActive && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
     const code = AgentXErrorCodeSchema.safeParse(error.code);throw new ApiError(error.status, code.success ? code.data : "REQUEST_FAILED", "The invite action could not be completed.");
    }
    throw new ApiError(0, "NETWORK_ERROR", "The invite action's outcome could not be confirmed.");
   }
-  if (response.status === 401 && isCurrent() && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
+  if (response.status === 401 && scopeActive && !redirected) { redirected = true;host.signIn(host.currentPath(), { automatic: true }); }
   if (response.status === 202) throw new ApiError(409, "PENDING", "The invite action is pending. Check its status.");
   if (response.status < 200 || response.status >= 300) {
    const body = response.body as { error?: { code?: unknown } } | null, code = AgentXErrorCodeSchema.safeParse(body?.error?.code);
@@ -29,6 +29,7 @@ export function createInviteAdminApi(host: AppHost, orgId: string, isCurrent: ()
   return response.body;
  }
  return {
+  setScopeActive(active: boolean) { scopeActive = active; },
   async status(inviteId: string): Promise<InviteStatus> {
    const value = AppOrgInviteStatusSchema.safeParse(await once({ method: "GET", path: path(inviteId) }));
    if (!value.success || value.data.orgId !== orgId || value.data.inviteId !== inviteId) throw unreadable();return value.data;

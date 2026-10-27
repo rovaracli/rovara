@@ -29,11 +29,11 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
  } });
  useEffect(() => { if (pageFocus.current && read.isSuccess && !read.isFetching) { summary.current?.focus();pageFocus.current = false; } }, [cursor, read.isSuccess, read.isFetching]);
  const denied = useCallback(() => { void query.invalidateQueries({ queryKey: ["admin", "identity"] }); }, [query]);
- const applied = useCallback(() => { preferSummary.current = true;void read.refetch(); }, [read.refetch]);
+ const refetchInvites = read.refetch;
+ const applied = useCallback(() => { preferSummary.current = true;void refetchInvites(); }, [refetchInvites]);
  const close = useCallback(() => { setSelected(undefined); }, []);
  const restore = useCallback(() => { if (!preferSummary.current && trigger.current?.isConnected) trigger.current.focus();else if (summary.current?.isConnected) summary.current.focus();else region.current?.querySelector<HTMLElement>("h1")?.focus(); }, []);
  const terminal = read.error instanceof ApiError && ([401, 403, 404].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
- useEffect(() => { if (terminal) setSelected(undefined); }, [terminal]);
  const stale = read.isError && read.data !== undefined && !terminal, hidden = read.isError && !stale;
  const selectedRow = selected === undefined ? undefined : read.data?.invites.find(invite => invite.inviteId === selected.inviteId);
  const changed = selected !== undefined && read.data !== undefined && !read.isError && (selectedRow === undefined || selectedRow.revision !== selected.revision || selectedRow.role !== selected.role || Date.parse(selectedRow.expiresAt) !== Date.parse(selected.expiresAt));

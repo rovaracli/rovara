@@ -16,7 +16,7 @@ const orgId = "org_aaaaaaaaaaaaaaaaaaaa", developerId = "a".repeat(64), id = "11
 const entry = { inviteId: id, revision: 0, role: "member", createdAt: "2026-10-26T12:00:00Z", expiresAt: "2026-11-02T12:00:00Z", createdBy: developerId, destination: { kind: "email", label: "***@example.test" } };
 function mount(options: { role?: "owner" | "admin"; revision?: number | false; theme?: "light" | "dark" } = {}) {
  const nav = AppNavSchema.parse({ me: { developerId, name: "Priya", orgRole: options.role ?? "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
- const me = { developer: { id: developerId, name: "Priya", orgRole: options.role ?? "owner" as string }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
+ const me: { developer: { id: string; name: string; orgRole: string }; org: { orgId: string; name: string; plan: string }; identities: unknown[] } = { developer: { id: developerId, name: "Priya", orgRole: options.role ?? "owner" }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
  const state: Record<string, unknown> = { orgId, inviteId: id, revision: typeof options.revision === "number" ? options.revision : 0, role: "member", status: "pending", expiresAt: entry.expiresAt, checkedAt: "2026-10-27T12:00:00Z" };
  async function respond(r: ApiRequest): Promise<ApiResponse> {
   if (r.path.endsWith("/me")) return { status: 200, body: me };if (r.path.endsWith("/nav")) return { status: 200, body: nav };
