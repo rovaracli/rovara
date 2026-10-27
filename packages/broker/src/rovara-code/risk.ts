@@ -10,11 +10,11 @@ export type RiskLevel = RiskAssessment["level"];
 
 /**
  * The paths that make a change high risk. Each pattern is tested against the whole path, lower-cased and written with `/`, so a directory name must be a whole path segment
- * (`src/author.ts` and `src/diamond.ts` are not `auth` or `iam`). Directory names: migrations, auth, authn, authz, payments, billing, secrets, iam, infra, terraform, cdk and
+ * (`src/author.ts` and `src/diamond.ts` are not `auth` or `iam`). Directory names: migrations, auth, authn, authz, security, oauth, saml, sso, jwt, crypto, permissions, credentials, payments, billing, secrets, iam, infra, terraform, cdk and
  * `.github/workflows`. File patterns: `*.sql`, `*.tf` and `Dockerfile`.
  */
 export const RISK_SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
-  /(^|\/)(migrations|auth|authn|authz|payments|billing|secrets|iam|infra|terraform|cdk)(\/|$)/,
+  /(^|\/)(migrations|auth|authn|authz|security|oauth|saml|sso|jwt|crypto|permissions|credentials|payments|billing|secrets|iam|infra|terraform|cdk)(\/|$)/,
   /(^|\/)\.github\/workflows(\/|$)/,
   /\.(sql|tf)$/,
   /(^|\/)dockerfile$/,
@@ -124,6 +124,13 @@ export function assessRisk(input: RiskInput): RiskAssessment {
     const command = [...new Set(input.changedFiles.filter((file) => file.testCommandChanged === true).map((file) => file.path))];
     if (command.length > 0) high.push(`A fix changes the command that runs the tests (${shown(command)}), so a check may pass because the tests no longer run.`);
     if (ci.length > 0) high.push(`A fix changes CI configuration (${shown(ci)}), so a check may pass because CI changed.`);
+  }
+  if (input.fix !== true) {
+    // Owner decision 2026-10-27: the risk is shown next to Merge for every change, so CI configuration and the tests a change removes or skips are named for an ordinary change too (a fix has its own, stronger words above).
+    const ci = [...new Set(input.changedFiles.flatMap((file) => named(file).filter((path) => CI_CONFIG_PATH_PATTERNS.some((pattern) => pattern.test(normalized(path))) && !isSensitivePath(path))))];
+    if (ci.length > 0) high.push(`Changes CI configuration (${shown(ci)}), which decides what is checked before a merge.`);
+    const hidden = [...new Set(input.changedFiles.filter((file) => file.testsRemoved === true || file.testsSkipped === true).map((file) => file.path))];
+    if (hidden.length > 0) medium.push(`Removes or skips tests (${shown(hidden)}).`);
   }
   if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");
   else if (input.securityFindings > 0) high.push("The security review reported a problem with this change.");
