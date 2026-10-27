@@ -334,6 +334,7 @@ import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
+import { proofTableView } from "../rovara-code/proof-view.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../developer/test-proof-lines.js";
 
@@ -1605,6 +1606,15 @@ function statusOfRun<T extends { status: DeveloperTaskStatus; failure?: Develope
   return derived;
 }
 
+async function taskProofTable(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, actor: "owner" | "viewer"): Promise<DeveloperTaskView["proofTable"]> {
+  try {
+    return proofTableView(workflow, await proofContextOfTask(deps, task, workflow, await approvedPlanForPullRequest(deps, workflow), actor));
+  } catch (error) {
+    log(deps, { event: "developer.task_proof_table_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+    return undefined;
+  }
+}
+
 /** The live view of a task (R4), with the result details once it has ended. Callers load the owned task first. */
 export async function taskView(
   deps: DeveloperTaskRouteDependencies,
@@ -1732,6 +1742,8 @@ export async function taskView(
   const verification = rovaraCodeV2 && detailsLoaded && task.workflow?.verification !== undefined && task.workflow.stage !== "IMPLEMENT"
     ? verificationReport(task.workflow, details.changedFiles ?? [], { ...(ciBasis === undefined ? {} : { ciBasis }) }) : undefined;
   const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
+  // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out.
+  const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner") : undefined;
   return {
     taskId: task.taskId,
     title: task.title,
@@ -1739,6 +1751,7 @@ export async function taskView(
     status: derived.status,
     ...(workflow === undefined ? {} : { workflow }),
     ...(verification === undefined ? {} : { verificationReport: verification }),
+    ...(proofTable === undefined ? {} : { proofTable }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),
@@ -6212,6 +6225,13 @@ function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string
   ];
 }
 
+/** Playbook P1/P3: the Proof inputs of a task (the approved plan, the browser/API rows, the test proof): the pull request's description and the task page's proof table read them through this one call. */
+export function proofContextOfTask(
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults">, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
+): ReturnType<typeof loadProofContext> {
+  return loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: await deps.actions.operations(task.workspaceId), actor }) }, task, workflow, approvedPlan);
+}
+
 /**
  * The owner-approved coding plan, for the pull request's description: read through its recorded key and used only when
  * an owner approval names its digest and the text read back has that digest. Anything else (no plan, no approval of
@@ -6409,7 +6429,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   // A session bound to a Linear issue gets `Fixes <KEY>` once in the description, so Linear's own GitHub integration closes the issue when the pull request merges (Plan 6 Task 20).
   const linearIssueKey = rovaraV2 ? await linearIssueKeyOfTask({ documentClient: deps.documentClient, tableName: deps.tableName }, task) : undefined;
   // Playbook P1: the Proof section's inputs (the approved plan, the browser/API rows, the test proof); each one that cannot be read is left out.
-  const proof = rovaraV2 ? await loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: await deps.actions.operations(task.workspaceId), actor: "owner" }) }, task, workflow, approvedPlan) : undefined;
+  const proof = rovaraV2 ? await proofContextOfTask(deps, task, workflow, approvedPlan, "owner") : undefined;
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }) } : undefined;
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.

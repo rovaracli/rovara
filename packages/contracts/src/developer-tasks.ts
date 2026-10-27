@@ -7,7 +7,7 @@ import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotRe
 import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
-import { MergeTrackingItemSchema, MergeViewSchema, VerificationReportSchema } from "./rovara-code.js";
+import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
@@ -151,6 +151,8 @@ export const DeveloperTaskViewSchema = z.object({
    * text that every reader escapes for its own markup.
    */
   verificationReport: VerificationReportSchema.optional(),
+  /** Playbook P3 (version 2 only, full reads only, like `verificationReport`): the proof table of the approved plan's requirements, as the pull request's Proof section has it. Absent when there is no approved plan with claims. */
+  proofTable: ProofTableViewSchema.optional(),
   /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
   reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
   /**

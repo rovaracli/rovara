@@ -1,0 +1,32 @@
+// Playbook P3: the proof table of the task page (`proofTable` in the version 2 task view). The rows, the not-tested list and the test-proof lines are exactly what `buildProofTable` gives the pull request's Proof
+// section, from the same inputs (`loadProofContext`). Two differences, both for the page: the strings are plain words (the table escapes `&` and `<` and puts a joiner after `@` for GitHub; the page shows text
+// as text, so those are undone), and when the checks were recorded for code that is no longer the candidate, the table reads those earlier results instead of calling every requirement untested (the page labels
+// it "earlier", the way it labels the recorded checks).
+import { redactText, type ProofTableView, type WorkflowSnapshot } from "@agentx/contracts";
+import { buildProofTable } from "./proof-table.js";
+import { earlierProofCheckResults, proofCheckResults, type ProofContext } from "./proof-section.js";
+
+/** The page's words for a string `buildProofTable` made inert for GitHub: its escapes undone (`&lt;` before `&amp;`, so `&amp;lt;` stays `&lt;`), its joiners dropped, and anything secret-shaped redacted again. */
+const plain = (text: string): string => redactText(text.replaceAll("\u200D", "").replaceAll("&lt;", "<").replaceAll("&amp;", "&"));
+
+/** The table for the task view, or undefined when there is no approved structured plan with claims. Reads nothing; a fault in the plan's shape gives undefined (the page then has no table). */
+export function proofTableView(workflow: WorkflowSnapshot, proof: ProofContext | undefined): ProofTableView | undefined {
+  const plan = proof?.plan;
+  if (plan === undefined || !Array.isArray(plan.claims) || plan.claims.length === 0) return undefined;
+  try {
+    const earlier = earlierProofCheckResults(workflow);
+    const table = buildProofTable({
+      plan, checkResults: earlier.length > 0 ? earlier : proofCheckResults(workflow), scenarioRows: proof?.scenarioRows ?? [], testProof: proof?.testProof, candidateDigest: workflow.candidate?.digest,
+    });
+    return {
+      rows: table.rows.slice(0, 50).map((row) => ({
+        claimId: row.claimId, requirement: plain(row.requirement), result: row.result,
+        evidence: row.evidence.slice(0, 100).map((item) => ({ kind: item.kind, label: plain(item.label), state: item.state })),
+      })),
+      notTested: table.notTested.slice(0, 200).map((item) => ({ kind: item.kind, id: plain(item.id), text: plain(item.text), reason: item.reason })),
+      testProofLines: table.testProofLines.slice(0, 4).map(plain),
+    };
+  } catch {
+    return undefined;
+  }
+}

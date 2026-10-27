@@ -22,16 +22,26 @@ export const PROOF_LEVEL_LAST = 4;
 const RESULT_WORDS: Record<ProofResult, string> = { proven: "✅ proven", passed: "✅ passed", failed: "❌ failed", not_tested: "⚠ not tested" };
 const STATE_WORDS: Record<ProofEvidence["state"], string> = { proven: "passed, fails on the original code", passed: "passed", failed: "failed", not_checked: "not checked" };
 
-/** The check results recorded for the workflow's current code; none for results recorded for other code or a review-only task. */
-export function proofCheckResults(workflow: WorkflowSnapshot): ProofCheckResult[] {
-  const digest = workflow.candidate?.digest;
-  const recorded = digest !== undefined && workflow.verification?.candidateDigest === digest ? workflow.verification : undefined;
-  if (recorded === undefined) return [];
+/** The workflow's recorded check results as the table reads them. */
+function recordedCheckResults(workflow: WorkflowSnapshot, recorded: NonNullable<WorkflowSnapshot["verification"]>): ProofCheckResult[] {
   const labels = new Map(workflowSelectedChecks(workflow.checkPolicy).map((check) => [check.id, check.label]));
   return recorded.results.map((result) => ({
     checkId: result.checkId, label: labels.get(result.checkId), status: result.status,
     couldNotRun: workflowCheckResultBroken(result) || result.neverStarted === true,
   }));
+}
+
+/** The check results recorded for the workflow's current code; none for results recorded for other code or a review-only task. */
+export function proofCheckResults(workflow: WorkflowSnapshot): ProofCheckResult[] {
+  const digest = workflow.candidate?.digest;
+  const recorded = digest !== undefined && workflow.verification?.candidateDigest === digest ? workflow.verification : undefined;
+  return recorded === undefined ? [] : recordedCheckResults(workflow, recorded);
+}
+
+/** The results recorded for code that is no longer the candidate (the task page shows them, labelled as earlier); none when the results are for the current code or there are none. */
+export function earlierProofCheckResults(workflow: WorkflowSnapshot): ProofCheckResult[] {
+  const recorded = workflow.verification;
+  return recorded === undefined || recorded.candidateDigest === workflow.candidate?.digest ? [] : recordedCheckResults(workflow, recorded);
 }
 
 const cut = (text: string, max: number) => {

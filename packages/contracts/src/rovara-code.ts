@@ -555,6 +555,25 @@ export const VerificationReportSchema = z
   .strict();
 export type VerificationReport = z.infer<typeof VerificationReportSchema>;
 
+/**
+ * Playbook P3: the task page's proof table (the same rows, not-tested list and test-proof lines the pull request's Proof section has). Plain text for the page, redacted and cut by the broker; every reader escapes it
+ * for its own markup. At most 50 rows (the plan's claim limit); the lists are bounded so a view stays small.
+ */
+export const PROOF_RESULT_VALUES = ["proven", "passed", "failed", "not_tested"] as const;
+export const ProofTableViewSchema = z
+  .object({
+    rows: z.array(z.object({
+      claimId: z.string().min(1).max(64),
+      requirement: z.string().max(300),
+      evidence: z.array(z.object({ kind: z.enum(["check", "scenario"]), label: z.string().max(120), state: z.enum(["proven", "passed", "failed", "not_checked"]) }).strict()).max(100),
+      result: z.enum(PROOF_RESULT_VALUES),
+    }).strict()).min(1).max(50),
+    notTested: z.array(z.object({ kind: z.enum(["claim", "scenario", "check"]), id: z.string().min(1).max(64), text: z.string().max(300), reason: z.string().min(1).max(100) }).strict()).max(200),
+    testProofLines: z.array(z.string().max(600)).max(4),
+  })
+  .strict();
+export type ProofTableView = z.infer<typeof ProofTableViewSchema>;
+
 export const SetupDraftSchema = z
   .object({
     basedOnRevision: CountSchema,
