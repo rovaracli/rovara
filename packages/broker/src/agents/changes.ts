@@ -38,6 +38,7 @@ import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
 import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
 import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
 import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
+import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
@@ -262,6 +263,7 @@ export async function shareAgent(
   deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; shares: unknown; request?: RequestMark },
 ): Promise<ChangeResult<AgentShare[]>> {
   // Refused now, not when it is confirmed: a change nobody could apply is not worth asking a person about.
+  requireNoSharesOnProcess(agent);
   const shares = await checkShares(deps, agent.orgId, caller.developerId, input.shares);
   const wantedCompany = shares.find((share) => share.principal.kind === "org");
   const storedCompany = (await deps.store.listShares(agent.orgId, agent.agentId)).find((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");

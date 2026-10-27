@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  AgentXErrorCodeSchema, DEFAULT_PROJECT_PLAYBOOK, PLAYBOOK_STALE_MESSAGE, ProjectPlaybookBodySchema, ProjectPlaybookSchema, ROVARA_CODE_AGENT_ID, agentXError, errorStatus, projectPlaybookKey,
+  AgentXErrorCodeSchema, DEFAULT_PROJECT_PLAYBOOK, PLAYBOOK_STALE_MESSAGE, ProjectPlaybookBodySchema, ProjectPlaybookSchema, ROVARA_CODE_AGENT_ID, agentKey, agentXError, errorStatus, projectPlaybookKey,
   type AgentId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
@@ -237,7 +237,8 @@ describe("projectProcessOf", () => {
     const agentId = await makeAgent(w);
     await put(w, MAX, processBody(agentId));
     // Moved to another project.
-    await w.store.setOwner(ORG_A, agentId, { kind: "project", project: "ops" }, MAX, { developerId: MAX });
+    // (A person can't move a layer any more, H8; one that was moved before then is stored directly.)
+    w.db.set({ ...w.db.get(agentKey(ORG_A, agentId, "META"))!, owner: { kind: "project", project: "ops" } });
     expect(await failure(projectProcessOf(readerOf(w), ORG_A, "web"))).toMatchObject({ code: "PROCESS_UNAVAILABLE" });
     // A pointer at an id that holds no agent.
     const key = projectPlaybookKey(ORG_A, "web");

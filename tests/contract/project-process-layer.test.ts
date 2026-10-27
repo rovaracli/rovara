@@ -2,7 +2,7 @@
 // (the publish, immediate or confirmed), its own audit events, and keeping process layers out of every list of agents a person chooses from.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentXError, projectPlaybookKey, recipeDigest, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, projectPlaybookKey, recipeDigest, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
 import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { listVisibleAgents, saveShares } from "../../packages/broker/src/agents/access.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
@@ -255,7 +255,12 @@ describe("process layers are never offered as agents", () => {
     const w = mergeWorld();
     const { layer, ordinary } = await both(w, "ops");
     for (const id of [layer, ordinary]) {
+      // A layer can't be shared any more (H8); one shared before then is stored here by sharing it while it is still unmarked.
+      const meta = w.db.get(agentKey(ORG_A, id, "META"))!;
+      const { purpose: _purpose, ...unmarked } = meta; // eslint-disable-line @typescript-eslint/no-unused-vars -- the mark comes off for the write
+      w.db.set(unmarked);
       await saveShares(w.deps, ORG_A, MAX, (await w.store.get(ORG_A, id))!, [{ principal: { kind: "member", developerId: ARJUN }, level: "view" }]);
+      w.db.set({ ...w.db.get(agentKey(ORG_A, id, "META"))!, ...(meta["purpose"] === undefined ? {} : { purpose: meta["purpose"] }) });
     }
     const shared = ids(await listVisibleAgents(w.deps, callerOf(w, ARJUN), "shared"));
     expect(shared).toContain(ordinary);

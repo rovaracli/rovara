@@ -57,6 +57,7 @@ import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
 import { inertProcessOverlay } from "../playbook/inert-rule-text.js";
 import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
+import { requireBaseIsNotProcess, requireNoOwnerMoveOnProcess, requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
@@ -369,6 +370,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   private async pinTarget(orgId: OrgId, baseId: AgentId, child?: string): Promise<BaseRef> {
     if (isBuiltinAgentId(baseId)) return { agentId: baseId, version: (await this.ensureBuiltinSettings(orgId, baseId)).pinnedVersion };
     const base = await this.require(orgId, baseId);
+    // Nothing is built on a project's How we work.
+    requireBaseIsNotProcess(base);
     if (base.status === "archived") {
       throw coded("AGENT_UNAVAILABLE", child === undefined ? `${base.name} is archived, so it can't start new work.` : `${child} builds on ${base.name}, which is archived. Ask ${child}'s owner to pick another base.`);
     }
@@ -462,6 +465,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     else if (input.extends !== undefined && input.extends !== draft.extends?.agentId) {
       if (input.extends === input.agentId) throw coded("CONFIG_INVALID", "extends: an agent can't build on itself");
       base = await this.pinTarget(input.orgId, input.extends, agent.name);
+    } else if (base !== undefined && !isBuiltinAgentId(base.agentId)) {
+      // The same base keeps its pin; one stored before this rule that is a process layer is not kept.
+      requireBaseIsNotProcess(await this.get(input.orgId, base.agentId));
     }
     const revision = draft.revision + 1;
     const updatedAt = this.iso();
@@ -723,6 +729,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (owner.kind === "project" && accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (owner.kind === "member" && accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const agent = await this.require(orgId, agentId);
+    requireNoOwnerMoveOnProcess(agent, options);
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
@@ -772,6 +779,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       return;
     }
     const agent = await this.require(orgId, agentId);
+    requireNoOwnerMoveOnProcess(agent, options);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
@@ -825,7 +833,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * (0 before the first share), so of two concurrent saves one wins and the other conflicts. Who may share, and that the principals
    * exist, are the caller's checks (access.ts).
    */
-  replaceShares(input: {
+  async replaceShares(input: {
     orgId: OrgId;
     agentId: AgentId;
     upsert: Array<{ principal: AgentPrincipal; level: AgentShareLevel }>;
@@ -835,6 +843,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     request?: RequestMark;
   }): Promise<void> {
     const { agentId, ...rest } = input;
+    // A process layer is never shared on its own: whoever the route or a confirmation was, the share is not written.
+    requireNoSharesOnProcess(await this.get(input.orgId, agentId));
     return this.replaceItemShares({ ...rest, id: agentId });
   }
 
@@ -842,9 +852,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Takes `from`'s share of one agent away and, when `to` is given, gives `to` the share instead (the higher level when `to` already has
    * one). Rovara's own move after a member merge or removal (Task 11); see `OwnedStore.reassignItemShare`.
    */
-  reassignShare(input: { orgId: OrgId; agentId: AgentId; from: AgentPrincipal; to?: AgentPrincipal; by: string; cause: MoveCause }): Promise<void> {
-    const { agentId, ...rest } = input;
-    return this.reassignItemShare({ ...rest, id: agentId });
+  async reassignShare(input: { orgId: OrgId; agentId: AgentId; from: AgentPrincipal; to?: AgentPrincipal; by: string; cause: MoveCause }): Promise<void> {
+    const { agentId, to, ...rest } = input;
+    // A process layer's share of a departed member is dropped, never handed to someone else.
+    const dropOnly = (await this.get(input.orgId, agentId))?.purpose === "process";
+    return this.reassignItemShare({ ...rest, ...(to === undefined || dropOnly ? {} : { to }), id: agentId });
   }
 
   /**
