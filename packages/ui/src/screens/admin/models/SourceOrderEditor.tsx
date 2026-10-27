@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
@@ -19,9 +19,12 @@ export function SourceOrderEditor(props: Props) {
  const context=useAdminContext();return <OrderEditor key={`${context.orgId}:${context.developerId}:${context.role}`} {...props} />;
 }
 function OrderEditor({available}: Props) {
- const context=useAdminContext(),host=useAppHost(),query=useQueryClient(),api=useMemo(()=>createApiClient(host),[host]);
+ const context=useAdminContext(),host=useAppHost(),query=useQueryClient(),api=useMemo(()=>createApiClient(host),[host]),unavailableId=useId();
  const schema=useMemo(()=>sourceOrderSnapshot(context.orgId,context.developerId),[context.orgId,context.developerId]);
  const [open,setOpen]=useState(false),[base,setBase]=useState<SourceOrderSnapshot>(),[draft,setDraft]=useState<string[]>([]),[attempt,setAttempt]=useState<Attempt>(),[busy,setBusy]=useState(false),[sent,setSent]=useState(false),[verified,setVerified]=useState(false),[message,setMessage]=useState<string>(),[checked,setChecked]=useState<SourceOrderSnapshot>();
+ const [announcement,setAnnouncement]=useState<string>();
+ const draftList=useRef<HTMLOListElement>(null),focusIndex=useRef<number|undefined>(undefined);
+ useLayoutEffect(()=>{const index=focusIndex.current;if(index!==undefined){focusIndex.current=undefined;draftList.current?.children[index]?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();}},[draft]);
  const alive=useRef(true),version=useRef(0),sending=useRef(false),submitted=useRef(false),ack=useRef<{order:string[];revision:number}|undefined>(undefined),notice=useRef<HTMLParagraphElement>(null);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  useEffect(()=>{if(message&&!busy)notice.current?.focus();},[message,busy]);
@@ -34,15 +37,15 @@ function OrderEditor({available}: Props) {
   if(me.org.orgId!==context.orgId||me.developer.id!==context.developerId||(me.developer.orgRole!=="owner"&&me.developer.orgRole!=="admin")){recheckIdentity();throw new Error("Company access changed.");}
  }
  async function fresh(){await identity();const snapshot=await api.get("/v1/app/org/model-sources",schema);await identity();return snapshot;}
- function stale(snapshot:SourceOrderSnapshot){setBase(snapshot);setDraft([...snapshot.order]);setAttempt(undefined);setMessage("Sources changed. Review the current order again.");}
+ function stale(snapshot:SourceOrderSnapshot){setAnnouncement(undefined);setBase(snapshot);setDraft([...snapshot.order]);setAttempt(undefined);setMessage("Sources changed. Review the current order again.");}
  function refused(error:unknown){if(error instanceof ApiError&&([401,403].includes(error.status)||error.code==="INVALID_RESPONSE"))recheckIdentity();}
  async function load(ticket:number){try{const snapshot=await bounded(fresh());if(valid(ticket)){setBase(snapshot);setDraft([...snapshot.order]);}}catch(error){refused(error);if(valid(ticket))setMessage("Couldn't verify the current source order. Close and try again.");}finally{if(valid(ticket))setBusy(false);}}
  function changeOpen(value:boolean){
   if(sending.current&&submitted.current)return;if(value&&!allowed)return;
   const ticket=++version.current;setOpen(value);
-  if(value){setBase(undefined);setDraft([]);setAttempt(undefined);setMessage(undefined);setChecked(undefined);setVerified(false);setSent(false);submitted.current=false;ack.current=undefined;setBusy(true);void load(ticket);}
+  if(value){setAnnouncement(undefined);focusIndex.current=undefined;setBase(undefined);setDraft([]);setAttempt(undefined);setMessage(undefined);setChecked(undefined);setVerified(false);setSent(false);submitted.current=false;ack.current=undefined;setBusy(true);void load(ticket);}
  }
- function move(index:number,delta:number){if(busy||attempt||!allowed)return;const next=[...draft],other=index+delta;if(other<0||other>=next.length)return;[next[index],next[other]]=[next[other]!,next[index]!];setDraft(next);}
+ function move(index:number,delta:number){if(busy||attempt||!allowed)return;const next=[...draft],other=index+delta;if(other<0||other>=next.length)return;[next[index],next[other]]=[next[other]!,next[index]!];focusIndex.current=other;setDraft(next);setAnnouncement(`${visibleText(label(next[other]))} moved to position ${other+1} of ${next.length}.`);}
  async function review(){
   if(busy||!allowed||!base||!changed)return;const ticket=version.current;setBusy(true);setMessage(undefined);
   try{const snapshot=await bounded(fresh());if(!valid(ticket))return;if(snapshot.revision!==base.revision||!sameSourceOrder(snapshot.order,base.order)){stale(snapshot);return;}setBase(snapshot);setAttempt({requestId:crypto.randomUUID(),snapshot,order:[...draft]});}
@@ -72,16 +75,16 @@ function OrderEditor({available}: Props) {
  async function manualCheck(){if(busy||!attempt)return;const ticket=version.current;setBusy(true);try{await check(ticket,attempt);}catch(error){refused(error);if(valid(ticket))setMessage("The current order could not be verified. Close and reload before another change.");}finally{if(valid(ticket))setBusy(false);}}
  const label=(id:string)=>id==="rovara"?"Rovara":id==="personal-chatgpt"?"Personal ChatGPT":base?.sources.find(s=>s.sourceId===id)?.label??"Unknown source";
  const list=(ids:readonly string[])=> <ol>{ids.map(id=><li key={id}><VisibleText text={label(id)} /></li>)}</ol>;
- return <><Dialog title="Change source order" description="Reorder the sources already in use. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed}>Change source order</Button>}>
+ return <><Dialog title="Change source order" description="Reorder the sources already in use. Cancel discards the proposal." open={open} onOpenChange={changeOpen} trigger={<Button disabled={!allowed} aria-describedby={!available?unavailableId:undefined}>Change source order</Button>}>
  <div aria-busy={busy}><p>Company: <VisibleText text={context.company} /></p><p>Costs can change. Price estimates are unavailable. This does not verify provider or model access.</p><p>Applies when a new route is resolved. Running tasks keep their resolved routes.</p>
  {!base&&busy&&<p role="status">Loading current source order...</p>}
  {base&&busy&&<p role="status">{sent?"Checking the source-order outcome...":"Checking current source order..."}</p>}
- {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{attempt?list(attempt.order):<ol>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} aria-label={`Move ${visibleText(label(id))} up`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} aria-label={`Move ${visibleText(label(id))} down`} onClick={()=>move(index,1)}>Move down</Button></li>)}</ol>}</>}
+ {base&&<><h3>Order at review</h3>{list(base.order)}<h3>Proposed order</h3>{!attempt&&<p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>}{attempt?list(attempt.order):<ol ref={draftList}>{draft.map((id,index)=><li key={id}><VisibleText text={label(id)} /> <Button disabled={busy||!allowed||index===0} aria-label={`Move up, ${visibleText(label(id))}`} onClick={()=>move(index,-1)}>Move up</Button> <Button disabled={busy||!allowed||index===draft.length-1} aria-label={`Move down, ${visibleText(label(id))}`} onClick={()=>move(index,1)}>Move down</Button></li>)}</ol>}</>}
  {checked&&<><h3>Checked current order</h3>{list(checked.order)}</>}
  {context.checking&&<p role="status">Checking company access...</p>}
  {message&&<p ref={notice} tabIndex={-1} role={verified?"status":"alert"}>{message}</p>}
  {!sent&&(attempt?<Button disabled={busy||!allowed} onClick={()=>{void confirm();}}>Confirm source order</Button>:<Button disabled={busy||!allowed||!changed} onClick={()=>{void review();}}>Review order</Button>)}
  {sent&&!verified&&<Button disabled={busy} onClick={()=>{void manualCheck();}}>Check current order</Button>}
  <Button disabled={busy} onClick={()=>changeOpen(false)}>{sent?"Close":"Cancel"}</Button>
- </div></Dialog>{!available&&<p>Source-order editing is unavailable until a current company, sign-in and revision snapshot with at least two ordered sources is available.</p>}</>;
+ </div></Dialog>{!available&&<p id={unavailableId}>Source-order editing is unavailable until a current company, sign-in and revision snapshot with at least two ordered sources is available.</p>}</>;
 }
