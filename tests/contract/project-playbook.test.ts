@@ -36,7 +36,7 @@ const stored = (w: MergeWorld, project = "web") => w.db.get(projectPlaybookKey(O
 async function makeAgent(w: MergeWorld, options: { project?: string; process?: boolean; publish?: boolean; archive?: boolean; name?: string } = {}): Promise<AgentId> {
   const project = options.project ?? "web";
   const agent = await w.store.create({
-    orgId: ORG_A, name: options.name ?? `agent ${randomUUID().slice(0, 8)}`, owner: { kind: "project", project }, accountable: { developerId: MAX }, createdBy: MAX,
+    orgId: ORG_A, name: options.name ?? `agent ${randomUUID().slice(0, 8)}`, owner: { kind: "project", project }, accountable: { developerId: MAX }, createdBy: MAX, extends: ROVARA_CODE_AGENT_ID,
     ...(options.process === false ? {} : { purpose: "process" as const }),
   });
   if (options.publish !== false) await w.store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: agent.draftRevision, digest: "a".repeat(64), by: MAX });
@@ -179,7 +179,7 @@ describe("which agents can be the project's process", () => {
   it("refuses an agent that does not exist, and a member-owned one, with the same fixed answer", async () => {
     const w = mergeWorld();
     expect(await failure(put(w, MAX, processBody(`agt_${"z".repeat(20)}`)))).toMatchObject(unavailable);
-    const member = await w.store.create({ orgId: ORG_A, name: "mine", owner: { kind: "member", developerId: MAX }, createdBy: MAX, purpose: "process" });
+    const member = await w.store.create({ orgId: ORG_A, name: "mine", owner: { kind: "member", developerId: MAX }, createdBy: MAX, extends: ROVARA_CODE_AGENT_ID, purpose: "process" });
     await w.store.publish({ orgId: ORG_A, agentId: member.agentId, expectedDraftRevision: member.draftRevision, digest: "a".repeat(64), by: MAX });
     expect(await failure(put(w, MAX, processBody(member.agentId)))).toMatchObject(unavailable);
   });
@@ -196,7 +196,7 @@ describe("which agents can be the project's process", () => {
     const w = mergeWorld();
     const ordinary = await w.store.create({ orgId: ORG_A, name: "ordinary", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, createdBy: MAX });
     expect("purpose" in ordinary).toBe(false);
-    const process = await w.store.create({ orgId: ORG_A, name: "layer", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, createdBy: MAX, purpose: "process" });
+    const process = await w.store.create({ orgId: ORG_A, name: "layer", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, createdBy: MAX, extends: ROVARA_CODE_AGENT_ID, purpose: "process" });
     expect((await w.store.get(ORG_A, process.agentId))?.purpose).toBe("process");
   });
 });

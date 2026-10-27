@@ -123,6 +123,27 @@ describe("(d) the instructions of a plan check or review change", () => {
   });
 });
 
+describe("(e) a plan check or review that is taken out (final review C1, belt and braces)", () => {
+  const without = (kind: string, from: ResolvedRecipe = flow()) => recipe(from.steps.filter((step) => step.kind !== kind));
+  it("flags a removed plan check", () => {
+    expect(reasons(flow(), without("plan_critic"))).toEqual(['Removes the plan check "Plan check"']);
+  });
+  it("flags a removed review step, and a review step that loses a reviewer", () => {
+    expect(reasons(flow(), without("review"))).toEqual(['Removes the review step "Review"']);
+    const fewer = flow();
+    (fewer.steps[4] as { reviewers: string[] }).reviewers = ["code"];
+    expect(reasons(flow(), fewer)).toEqual(['Gives the review step "Review" fewer reviewers']);
+  });
+  it("does not flag one that stays, or a recipe that never had one", () => {
+    expect(reasons(flow(), flow())).toEqual([]);
+    expect(reasons(without("plan_critic"), without("plan_critic"))).toEqual([]);
+  });
+  it("an ordinary agent is still not flagged for a removed plan check", () => {
+    expect(lessSafeChangesFor({}, flow(), without("plan_critic"), ctx)).toEqual([]);
+    expect(lessSafeChangesFor({ purpose: "process" }, flow(), without("plan_critic"), ctx)).toEqual(['Removes the plan check "Plan check"']);
+  });
+});
+
 describe("which rule applies to which agent", () => {
   const current = flow({ build: { model: OPUS }, review: { model: SONNET, instructions: ["a"] } });
   const next = flow({ build: { model: OPUS }, review: { model: OPUS, instructions: ["b"], fallbackModel: GPT } });

@@ -2,12 +2,13 @@
 // `purpose: "process"`; the document points at it. A pointer that no longer holds (archived, deleted, moved, unpublished) is `PROCESS_UNAVAILABLE`: work for the project does not
 // quietly run on the built-in instead.
 import { PROCESS_UNAVAILABLE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgId } from "@agentx/contracts";
-import type { AgentRecord } from "../agents/store.js";
+import type { AgentRecord, AgentVersion } from "../agents/store.js";
 import { readProjectPlaybook, type ProjectPlaybookReader } from "./project-playbook-store.js";
 
-/** The one thing the playbook needs of the agent store: an agent's record, or nothing. */
+/** What the playbook needs of the agent store: an agent's record, and one of its published versions (for the base it builds on), or nothing. */
 export interface ProcessAgentReader {
   get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | undefined>;
+  getVersion(orgId: OrgId, agentId: AgentId, version: number): Promise<AgentVersion | undefined>;
 }
 
 export interface ProjectProcessDependencies extends ProjectPlaybookReader {
@@ -22,12 +23,15 @@ export type ProjectProcess =
 const unavailable = () => agentXError("PROCESS_UNAVAILABLE", PROCESS_UNAVAILABLE_MESSAGE);
 
 /**
- * The agent's current version when it can be the process of `project`: it exists in the org, belongs to this project, is marked as a process, is active and has a published
- * version. Otherwise `PROCESS_UNAVAILABLE`, with the same words whatever the reason.
+ * The agent's current version when it can be the process of `project`: it exists in the org, belongs to this project, is marked as a process, is active, has a published
+ * version, and that version builds on Rovara Code (final review C1: anything stored before the base was checked is not run). Otherwise `PROCESS_UNAVAILABLE`, with the same
+ * words whatever the reason.
  */
 export async function requireProcessLayer(store: ProcessAgentReader | undefined, orgId: OrgId, project: string, agentId: AgentId): Promise<number> {
   const agent = await store?.get(orgId, agentId);
   if (agent === undefined || agent.owner.kind !== "project" || agent.owner.project !== project || agent.purpose !== "process" || agent.status !== "active" || agent.currentVersion === undefined) throw unavailable();
+  const current = await store?.getVersion(orgId, agentId, agent.currentVersion);
+  if (current?.extends?.agentId !== ROVARA_CODE_AGENT_ID) throw unavailable();
   return agent.currentVersion;
 }
 

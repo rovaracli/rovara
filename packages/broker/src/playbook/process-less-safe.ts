@@ -77,6 +77,7 @@ const instructionTexts = (step: ResolvedStep): string[] => (settingsOf(step).ins
  *       same model, or no longer has `differentCompanyFrom`;
  *   (b) one whose weakest model moves to a weaker tier (`criticCapabilityTier`; its fallback counts);
  *   (d) one whose instructions change in any way.
+ *   (e) one that `next` takes out, or a review step that loses a reviewer.
  * And for any step of `next`:
  *   (c) a model, or a fallback model, from a company that no step of `current` used.
  * Empty when none of these apply.
@@ -96,6 +97,14 @@ export function processLessSafeChanges(current: ResolvedRecipe | undefined, next
     const tierAfter = weakestTier(step);
     if (tierBefore !== undefined && tierAfter !== undefined && tierAfter > tierBefore) found.push(`Moves the ${labelOf(step)} "${step.name}" to a weaker model`);
     if (JSON.stringify(instructionTexts(was)) !== JSON.stringify(instructionTexts(step))) found.push(`Changes the instructions of the ${labelOf(step)} "${step.name}"`);
+  }
+  // (e) A plan check or review step of `current` that `next` takes out, or a review step that loses a reviewer (final review C1: belt and braces; the ordinary rules flag a removed
+  // review step but not a removed plan check). The words match the ordinary rules', so a reason both find is listed once.
+  for (const was of before.steps) {
+    if (!checks(was)) continue;
+    const now = next.steps.find((candidate) => sameStep(candidate, was));
+    if (now === undefined) found.push(`Removes the ${labelOf(was)} "${was.name}"`);
+    else if (was.kind === "review" && now.kind === "review" && was.reviewers.some((reviewer) => !now.reviewers.includes(reviewer))) found.push(`Gives the review step "${was.name}" fewer reviewers`);
   }
   const used = new Set(before.steps.flatMap((step) => modelsOf(step).map(companyKey)));
   for (const step of next.steps) {

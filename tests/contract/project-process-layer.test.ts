@@ -188,7 +188,7 @@ describe("publishing a process layer", () => {
 describe("process layers are never offered as agents", () => {
   async function both(w: MergeWorld, project = "web") {
     const layer = project === "web" ? (await post(w, MAX, project)).agentId
-      : (await w.store.create({ orgId: ORG_A, name: `${project} process`, owner: { kind: "project", project }, accountable: { developerId: MAX }, purpose: "process", createdBy: MAX })).agentId;
+      : (await w.store.create({ orgId: ORG_A, name: `${project} process`, owner: { kind: "project", project }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX })).agentId;
     const ordinary = (await w.store.create({ orgId: ORG_A, name: "reviewer", owner: { kind: "project", project }, accountable: { developerId: MAX }, createdBy: MAX })).agentId;
     return { layer, ordinary };
   }

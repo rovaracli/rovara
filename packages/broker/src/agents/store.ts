@@ -56,6 +56,7 @@ import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, w
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
 import { inertProcessOverlay } from "../playbook/inert-rule-text.js";
+import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
@@ -406,6 +407,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const parsed = parseOverlay(input.overlay ?? {});
     requireNoSequenceForProcess({ purpose: input.purpose }, parsed);
+    requireRovaraCodeBaseForProcess({ purpose: input.purpose }, input.extends);
     const overlay = inertProcessOverlay({ purpose: input.purpose }, parsed);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     const base = input.extends === undefined ? undefined : await this.pinTarget(input.orgId, input.extends);
@@ -453,6 +455,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
+    // A process layer stays on Rovara Code: checked before the new base is read.
+    requireRovaraCodeBaseForProcess(agent, input.extends === undefined ? draft.extends : input.extends);
     let base: BaseRef | undefined = draft.extends;
     if (input.extends === null) base = undefined;
     else if (input.extends !== undefined && input.extends !== draft.extends?.agentId) {
@@ -579,8 +583,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe" }): Promise<AgentRecord> {
+  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe" }): Promise<AgentRecord> {
     const { agentId, ...rest } = input;
+    // A process layer is never rolled back to a version that does not build on Rovara Code, whatever stored it.
+    const agent = await this.require(input.orgId, agentId);
+    if (agent.purpose === "process") requireRovaraCodeBaseForProcess(agent, (await this.getVersion(input.orgId, agentId, input.version))?.extends);
     return this.rollbackItem({ ...rest, id: agentId });
   }
 
@@ -791,6 +798,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
+    requireRovaraCodeBaseForProcess(agent, draft.extends);
     if (draft.extends === undefined) throw coded("CONFIG_INVALID", `${agent.name} is built from scratch, so it has no base to update`);
     const target = await this.pinTarget(input.orgId, draft.extends.agentId, agent.name);
     if (target.version === draft.extends.version) return draft;
