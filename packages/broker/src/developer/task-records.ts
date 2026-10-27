@@ -121,6 +121,8 @@ export interface DeveloperTaskRecord {
   /** When that release claimed the workspace (CLOSING) before deleting its compute; removed once it is released. */
   releaseClaimedAt?: string;
   workflow?: WorkflowSnapshot;
+  /** Trust fix A2: the latest reviews ran on the build's own model, for the code with this digest. Kept here, never in the (strict) workflow, so an older broker still reads the workflow after a rollback; it ignores this key. */
+  reviewSameModel?: { candidateDigest: string };
   /** The commit each repository's preparation checked out, from the prepare result; the task's base until one is pinned. */
   preparedBase?: WorkflowReviewBase;
   /** Spec 061: why the planner's last answer could not be read, kept for Retry planning; `workflowRevision` is the blocked step's revision. */

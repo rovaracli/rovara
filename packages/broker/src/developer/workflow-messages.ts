@@ -44,6 +44,8 @@ export interface WorkflowMessageContext {
   /** PLANREADMSG: AgentX already asked the planner a second time by itself and the answer could not be read either. */
   planUnreadableAutoRetried?: boolean | undefined;
   findingsUrl?: string | undefined;
+  /** The reviews of the current code ran on the build's own model (`reviewSameModelOf`): the message says so. */
+  reviewSameModel?: boolean | undefined;
   /** The task page, where every thread reply can be read. */
   taskPageUrl?: string | undefined;
   /** Thread replies saved and not yet given to a step. */
@@ -537,7 +539,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
     if (introduced.length > FINDINGS_SHOWN) lines.push(`And ${introduced.length - FINDINGS_SHOWN} more.`);
     if (older > 0) lines.push(`${older} older ${older === 1 ? "issue was" : "issues were"} noted but ${older === 1 ? "doesn't" : "don't"} block.`);
     if (workflowReviewsSawPartialDiff(context.workflow)) lines.push(PARTIAL_REVIEW);
-    lines.push(...reviewModelNotes(context.workflow));
+    lines.push(...reviewModelNotes(context));
     if (context.findingsUrl !== undefined) lines.push(link(context.findingsUrl, "See all findings"));
     // Resolve findings answers up to 20 at once; with more open, only sending the whole change back to coding is left.
     const first = introduced.length <= WORKFLOW_RESOLVE_FINDINGS_MAX ? exits.resolveFindings() : exits.sendBack();
@@ -547,7 +549,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
   const text = unfinished.length > 0
     ? `A review couldn't finish (${unfinished.map((review) => `${review.role === "SECURITY" ? "security" : "code"} review: ${plainReviewFailure(review.failureReason, review.status)}`).join("; ")}). Nothing was sent to GitHub.`
     : `${context.workflow.verification?.reviewOnly === true && workflowIsReviewOnly(context.workflow.checkPolicy) ? "No automated check applied, and" : "The checks passed, but"} the reviews couldn't finish. ${plainBlockReason(context.workflow.blockReason)} Nothing was sent to GitHub.`;
-  return { text: [text, ...reviewModelNotes(context.workflow)].join("\n"), buttons: [...exits.retryReviews(), exits.close] };
+  return { text: [text, ...reviewModelNotes(context)].join("\n"), buttons: [...exits.retryReviews(), exits.close] };
 }
 
 function verifyBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
@@ -951,7 +953,7 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     case "PULL_REQUEST/READY": case "PULL_REQUEST/RUNNING": {
       const pushing = pushingFixTo(workflow);
       if (pushing === undefined && workflow.state === "RUNNING") return undefined;
-      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}${reviewModelNotes(workflow).map((line) => `\n${line}`).join("")}`);
+      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}${reviewModelNotes(context).map((line) => `\n${line}`).join("")}`);
     }
     case "PULL_REQUEST/BLOCKED": return { text: `${checksAndReviewsPassed} ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.retryPublish, exits.close] };
     // The owner can close the task while its pull request is open (the pull request stays on GitHub).
@@ -1055,7 +1057,7 @@ export function workflowMessageKey(workflow: WorkflowSnapshot, options: { planAu
 /** Said when a review saw only part of the change: its diff was too large to show in full. */
 const PARTIAL_REVIEW = "The change was too large to show the reviewers in full, so they reviewed only part of it.";
 /** The lines naming the model that reviewed the current code, and the same-model note when it was the build's (Rovara Code version 2 only; a model name is a report's text, so each line is cleaned). */
-const reviewModelNotes = (workflow: WorkflowSnapshot): string[] => reviewModelLines(workflow).map((line) => cleanLine(line, 300));
+const reviewModelNotes = (context: Pick<WorkflowMessageContext, "workflow" | "reviewSameModel">): string[] => reviewModelLines(context.workflow, context.reviewSameModel === true).map((line) => cleanLine(line, 300));
 const partialReviewNote = (workflow: WorkflowSnapshot) => (workflowReviewsSawPartialDiff(workflow) ? ` ${PARTIAL_REVIEW}` : "");
 
 /**

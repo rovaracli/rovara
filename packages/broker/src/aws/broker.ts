@@ -540,6 +540,7 @@ import { taskRunCache } from "../agents/run-cache.js";
 import { githubLoginOf, personNameForText } from "../developer/requester-text.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
+import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { applyAgentStep, crossCompanyTargets, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
@@ -12117,8 +12118,9 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       ? (await readMergeTracking(dependencies, task.taskId, task.orgId).catch(() => [])).find((item) => item.repositoryId === record.repository && item.number === record.number) : undefined;
     // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
     const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined ? undefined : {
-      ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+    const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && !reviewSameModel ? undefined : {
+      ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }),
     };
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
@@ -15999,6 +16001,8 @@ async function completedWorkflowItems(
   let next: WorkflowSnapshot;
   // The planning answer's own outcome for the task record: why it could not be read, or `null` to forget an old reason.
   let planUnreadable: DeveloperTaskRecord["planUnreadable"] | null | undefined;
+  /** Trust fix A2: what a review on the build's own model leaves on the task (`reviewSameModel`): the flag for this code, null to clear an earlier one, undefined to leave it. */
+  let reviewSameModel: DeveloperTaskRecord["reviewSameModel"] | null | undefined;
   // Plan self-check: the answer was not shown (unreadable once, or its own checks found a problem); the planner is asked again by itself, once per document version.
   let planSelfCheck: PlanSelfCheckState | undefined;
   let planRevision: { prompt: string } | undefined;
@@ -16336,29 +16340,31 @@ async function completedWorkflowItems(
           e2eAuthorityChecks = e2eDiagnostic.authorityChecks ?? [];
           if (e2eAuthorityChecks.length === 0) throw new Error("current E2E authority snapshot could not be fenced at review persistence");
         }
+        // What the workflow keeps of a report: neither the same-model flag (the broker's own record of the dispatch, never the worker's say) nor the model-failure sentence (it stays on the operation's
+        // result, where the next dispatch reads it) is stored. The workflow's review record is strict, so a key an older broker does not know would fail it after a rollback.
+        const kept = reviews.map((review) => {
+          const { sameModelAsBuild: _reported, modelFailure: _failure, ...report } = (review ?? {}) as Record<string, unknown>;
+          void _reported; void _failure;
+          return report;
+        });
         // Validate every report's complete contract and provenance before deciding that a role is missing.
-        for (const review of reviews) {
-          if (review === null || typeof review !== "object" || (review as Record<string, unknown>).operationId !== operation.id) {
-            throw new Error("review result is stale, incomplete, or came from another operation");
-          }
+        for (const review of kept) {
+          if (review.operationId !== operation.id) throw new Error("review result is stale, incomplete, or came from another operation");
           submitWorkflowReview(task.workflow, review, now);
         }
         // Exactly the reviews the step asks for (one code review and one security review, unless a custom sequence's review
         // step asks for fewer): two of one kind would leave the stage waiting for the other.
-        const roles = reviews.map((review) => (review as Record<string, unknown>).role).sort();
+        const roles = kept.map((review) => review.role).sort();
         const asked = workflowReviewRoles(task.workflow);
         if (roles.length !== asked.length || roles.some((role, index) => role !== asked[index])) {
           reviewFailure = WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE;
           throw new Error("review result does not hold one code review and one security review");
         }
         next = task.workflow;
-        // The same-model flag is the broker's own record of the dispatch, never the worker's say: a worker's copy is dropped.
-        for (const review of reviews) {
-          // The model-failure sentence stays on the operation's result, where the next dispatch reads it; it is not kept in the task's workflow.
-          const { sameModelAsBuild: _reported, modelFailure: _failure, ...report } = review as Record<string, unknown>;
-          void _reported; void _failure;
-          next = submitWorkflowReview(next, operation.reviewSameModel === true ? { ...report, sameModelAsBuild: true } : report, now);
-        }
+        for (const review of kept) next = submitWorkflowReview(next, review, now);
+        // The note about the model belongs to the reviews just taken: set for this code when they ran on the build's own model, cleared when an earlier review of it had left one.
+        if (operation.reviewSameModel === true && next.candidate !== undefined) reviewSameModel = { candidateDigest: next.candidate.digest };
+        else if (task.reviewSameModel !== undefined) reviewSameModel = null;
       } catch {
         next = blockWorkflow(task.workflow, reviewFailure, now);
       }
@@ -16591,7 +16597,7 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planSelfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${planHold === undefined ? "" : ", planGrounding = :grounding"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planSelfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${planHold === undefined ? "" : ", planGrounding = :grounding"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${reviewSameModel === undefined || reviewSameModel === null ? "" : ", reviewSameModel = :reviewSameModel"}${forget || dropStaleEstimate || reviewSameModel === null ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : []), ...(reviewSameModel === null ? ["reviewSameModel"] : [])].join(", ")}` : ""}`,
     ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${raisedPlanningLimit === undefined ? "" : " AND budgetUsd = :seenLimit"}${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
@@ -16601,6 +16607,7 @@ async function completedWorkflowItems(
       ...(planHold === undefined ? {} : { ":grounding": planHold }),
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
       ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
+      ...(reviewSameModel === undefined || reviewSameModel === null ? {} : { ":reviewSameModel": reviewSameModel }),
       ...(graphApproval === undefined || graphCancelTarget?.workflowDependencies === undefined ? {} : {
         ":graphOperationId": graphCancelTarget.id,
         ":graphDigest": graphApproval.graphDigest,

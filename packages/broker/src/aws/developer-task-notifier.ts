@@ -18,6 +18,7 @@ import { PLAN_UNREADABLE_CATEGORIES, planCheckSummary, planUnreadableCategory } 
 import { SELF_CHECK_NOT_APPLICABLE, loadPlanSelfCheck, planRevisionsUsed, type PlanSelfCheckView } from "../developer/plan-self-check.js";
 import { readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
+import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
 import { AUTOFIX_CARD_HOLD_MS, AutoFixAskSchema, autoFixCardLines } from "../developer/autofix-messages.js";
 import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
@@ -897,6 +898,7 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   const reopened = reopenedPullRequests !== undefined && workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING";
   const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: tryEffectiveTaskOwner(task)?.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
     ...(page === undefined ? {} : { findingsUrl: `${page}#findings`, taskPageUrl: page }), ...(reopened ? { pullRequestReopened: reopenedPullRequests } : {}),
+    ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}),
     // Plan 3, Task 34: what the coding plan is expected to cost, kept on the task when the plan reached review.
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate, agentName: task.agent?.name ?? "Rovara Code" }), project: task.project };
   let approval: WorkflowArtifact | undefined;

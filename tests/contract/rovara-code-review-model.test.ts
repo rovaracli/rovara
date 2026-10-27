@@ -187,7 +187,7 @@ describe("dispatching the review step of a version 2 task with no model set for 
     for (const report of t.record().workflow.reviews!) expect(report).toMatchObject({ provider: CLAUDE_DEFAULT.provider, version: CLAUDE_DEFAULT.modelId });
     // The flag is kept on the task, beside the workflow, never inside it (see "rollback" below); it names the code it is about.
     expect(t.record().reviewSameModel).toEqual({ candidateDigest: t.candidate.digest });
-    expect(workflowPullRequestBody({ ...task, ...pick(t.record(), "reviewSameModel") }, t.record().workflow, "# Plan\n\n1. Add the flag.\n", SESSION, {})).toContain(REVIEW_SAME_MODEL_NOTE);
+    expect(workflowPullRequestBody({ ...task, reviewSameModel: t.record().reviewSameModel } as never, t.record().workflow, "# Plan\n\n1. Add the flag.\n", SESSION, {})).toContain(REVIEW_SAME_MODEL_NOTE);
   });
 
   it("a review on another model clears the flag an earlier review of the same code left", async () => {
@@ -236,7 +236,6 @@ function reviewed(extra: Record<string, unknown> = {}, more: Record<string, unkn
 }
 /** What the task record carries after a review on the build's model: the flag, for the code the reviews were about. */
 const sameModelTask = { ...task, reviewSameModel: { candidateDigest: code.digest } } as never;
-const pick = (record: Record<string, unknown>, name: string) => (name in record ? { [name]: record[name] } : {});
 const reviewsSection = (body: string) => body.slice(body.indexOf("## Reviews"), body.indexOf("## Risk:"));
 const SESSION = "https://rovara.example/review/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/task";
 

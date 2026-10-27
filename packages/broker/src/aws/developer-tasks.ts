@@ -331,6 +331,7 @@ import { branchSyncRequestId, conflictFixPrompt } from "../rovara-code/branch-sy
 import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
+import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../developer/test-proof-lines.js";
@@ -6136,7 +6137,7 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
   if (workflow.definitionVersion === "1.1.0") {
     return rovaraPullRequestBody({
       summary: typeof plan === "object" && plan.format === "structured" ? planSummaryLines(plan.plan) : documentSummaryLines(typeof plan === "string" ? plan : plan?.markdown ?? ""),
-      fallbackTitle: task.title, workflow, context: proofLines.length === 0 ? context ?? {} : { ...context, proofLines }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
+      fallbackTitle: task.title, workflow, context: { ...(context ?? {}), ...(proofLines.length === 0 ? {} : { proofLines }), ...(reviewSameModelOf(task, workflow) ? { reviewSameModel: true } : {}) }, reviewLines: (listed) => workflowReviewLines(workflow, listed), pageUrl,
     });
   }
   // A structured plan's summary is its top claims; a legacy one's is its first lines (task 18: the same as the plan's

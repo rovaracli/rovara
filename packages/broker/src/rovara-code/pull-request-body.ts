@@ -41,6 +41,8 @@ export interface PullRequestBodyContext {
   linearIssueKey?: string | undefined;
   /** The test-proof lines (whether the new tests fail on the original code), already redacted and made inert; informational, listed at the end of the Tests section. */
   proofLines?: readonly string[] | undefined;
+  /** The reviews of this code ran on the build's own model (`reviewSameModelOf`): the Reviews section says so. */
+  reviewSameModel?: boolean | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -174,7 +176,7 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
     lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
-      "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow).map((line) => inertLine(line, ITEM_MAX)), "",
+      "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow, context.reviewSameModel === true).map((line) => inertLine(line, ITEM_MAX)), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
       ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
     ], linearKey);

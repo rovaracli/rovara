@@ -467,6 +467,24 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     }), expect.objectContaining({ action_id: "agentx_workflow_close" })] }));
   });
 
+  it.each([[false], [true]])("names the reviewer model in the message, and says so only when it was the build's (flag on the task: %s)", async (sameModel) => {
+    const h = await notifierHarness({ shareToChannel: true, workflow: true, workflowPath: "QUICK" });
+    await h.pump();
+    const candidateDigest = "a".repeat(64);
+    const review = (role: "CRITIC" | "SECURITY") => ({ operationId: randomUUID(), candidateDigest, role, provider: "anthropic", version: "claude-opus-4-6", status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() });
+    // The flag is on the task record beside the workflow, where an older broker ignores it; the reports carry nothing of it.
+    await h.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${h.taskId}`, sk: "META" },
+      UpdateExpression: `SET workflow = :workflow, updatedAt = :now${sameModel ? ", reviewSameModel = :same" : ""}`, ExpressionAttributeValues: { ":now": new Date().toISOString(), ":workflow": {
+        definitionVersion: "1.1.0", artifacts: [], candidate: { digest: candidateDigest, repositories: [{ repositoryId: "demo", commitSha: "c".repeat(40), treeSha: "b".repeat(40) }] },
+        reviews: [review("CRITIC"), review("SECURITY")], revision: 8, stage: "PULL_REQUEST", state: "READY",
+      }, ...(sameModel ? { ":same": { candidateDigest } } : {}) } }));
+    await h.pump();
+    const posted = h.posts.at(-1)!;
+    expect(posted.text).toContain("anthropic/claude-opus-4-6");
+    if (sameModel) expect(posted.text).toContain("Review used the same model as Build. Enable another model for an independent review.");
+    else expect(posted.text).not.toContain("Review used the same model as Build");
+  });
+
   it("offers Retry opening the pull request in plain words when the draft did not open or AgentX gave up starting it", async () => {
     const h = await notifierHarness({ shareToChannel: true, workflow: true, workflowPath: "QUICK" });
     await h.pump();

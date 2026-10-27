@@ -100,7 +100,10 @@ describe("a review whose model the account cannot call", () => {
   it("carries no failure when a later call answered, even if that answer could not be read: the earlier failure is stale", async () => {
     // The positive control: the same failure with no later answer is reported.
     const stale = await review([refused("AccessDeniedException", 403)]);
-    for (const report of stale) expect(report).toMatchObject({ status: "UNKNOWN", modelFailure: expect.stringMatching(/^the model call failed: key-rejected /) });
+    for (const report of stale) {
+      expect(report.status).toBe("UNKNOWN");
+      expect((report as { modelFailure?: string }).modelFailure).toMatch(/^the model call failed: key-rejected /);
+    }
     // The call failed, a retry answered, and the answer was not a review: UNKNOWN, but not because of the model call.
     const reports = await review([refused("AccessDeniedException", 403), answeredBadly]);
     expect(reports).toHaveLength(2);

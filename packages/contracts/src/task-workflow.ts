@@ -181,8 +181,6 @@ export const WorkflowReviewReportSchema = z.object({
   risk: z.enum(["low", "medium", "high"]).optional(),
   /** The reviewer's model call failed and the review has no answer: why, as a fixed sentence (see `WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN`). The model that failed is this report's provider and version. Optional, so reports stored before it parse. */
   modelFailure: z.string().max(300).regex(WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN).optional(),
-  /** Rovara Code v2: the review ran on the same model that wrote the code, because it was the only one the project allowed or the account could use. Set by the broker from the review operation, never by the worker. */
-  sameModelAsBuild: z.literal(true).optional(),
 }).strict().superRefine((report, context) => {
   if (report.risk !== undefined && report.role !== "CRITIC") context.addIssue({ code: "custom", path: ["risk"], message: "only the code review states a risk level" });
   const introduced = report.findings.some((finding) => findingBlocks(finding, report.role));
