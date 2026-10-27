@@ -1,3 +1,4 @@
+import { usdToWholeMicrodollars } from "./budget-amount.js";
 // Monthly AI budgets (ruling R29 for the numbers). An org has one monthly limit and each member one, with
 // per-member overrides; the model proxy enforces them, and this module keeps the proxy told what they are
 // (syncBudgets), asks it what has been spent (ModelAccess, ruling R28; the broker never talks to LiteLLM itself),
@@ -211,7 +212,7 @@ export async function syncBudgets(
   }
 }
 
-const BudgetAmountSchema = z.number().refine(isBudgetAmount, "must be a number from 0 to 1000000");
+const BudgetAmountSchema = z.number().refine(value => usdToWholeMicrodollars(value) !== undefined, "must be a whole-microdollar amount from 0 to 1000000 USD");
 /** The body of a budget change, from an org owner or admin (`PUT /v1/dev/org/budget`) or an operator (`PUT /v1/admin/org/budget`). */
 export const PutBudgetBodySchema = z.object({
   requestId: z.string().uuid(),

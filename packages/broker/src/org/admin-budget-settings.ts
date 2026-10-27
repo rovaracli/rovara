@@ -1,3 +1,4 @@
+import { usdToWholeMicrodollars } from "./budget-amount.js";
 // Strict read projection. Do not call legacy ensureSynced/readBudgets here: a GET must
 // neither mutate the proxy nor turn corrupt persisted values into plausible defaults.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -30,14 +31,7 @@ async function authority(deps: Dependencies, caller: DeveloperCaller) {
 }
 /** Exact decimal USD boundary, not binary multiplication/rounding or clamping. */
 function microdollars(value: unknown): number {
- if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000) throw unavailable();
- const [coefficient = "", exponent = "0"] = value.toString().toLowerCase().split("e");
- const [whole = "", fraction = ""] = coefficient.split(".");
- const digits = BigInt(whole + fraction), shift = 6 + Number(exponent) - fraction.length;
- let micros: bigint;
- if (shift >= 0) micros = digits * 10n ** BigInt(shift);
- else { const divisor = 10n ** BigInt(-shift);if (digits % divisor !== 0n) throw unavailable();micros = digits / divisor; }
- return Number(micros);
+ const result = usdToWholeMicrodollars(value);if (result === undefined) throw unavailable();return result;
 }
 function monthly(raw: Record<string, unknown> | undefined, field: string, cloud: boolean | undefined, defaultUsd: number): AdminBudgetSettings["orgMonthly"] {
  // Presence matters: null/undefined in an existing field is corrupt, not absence.
