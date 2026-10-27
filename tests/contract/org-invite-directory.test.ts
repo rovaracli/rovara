@@ -80,3 +80,7 @@ it("keeps healthy invites when canonical data is corrupt and reports unavailable
 it("marks partial coverage distinctly so older indexed-only readers cannot treat unavailable entries as complete", async () => {
  const f = fixture(), bad = await f.invite(), key = orgInviteKey(hashOf(bad.token));f.db.set({ ...f.db.get(key), role: "future-role" });const result = await f.request();expect(result.status).toBe(200);expect(result.body.coverage).toBe("indexed_only_partial");expect(result.body).toMatchObject({ unavailableCount: 1 });
 });
+
+it("keeps all-bad evaluated pages resumable and treats canonical storage failure as unavailable service", async () => {
+ const f = fixture();for (let i = 0; i < 2; i++) { const invite = await f.invite(), key = orgInviteKey(hashOf(invite.token));f.db.set({ ...f.db.get(key), role: "future-role" }); }const first = await f.request("?limit=1");expect(first.status).toBe(200);expect(first.body.invites).toEqual([]);expect(first.body).toMatchObject({ unavailableCount: 1, coverage: "indexed_only_partial" });expect(first.body.nextCursor).toBeTruthy();const last = await f.request("?limit=1&cursor=" + first.body.nextCursor!);expect(last.body.invites).toEqual([]);expect(last.body.nextCursor).toBeUndefined();f.db.injectFault({ command: "GetCommand", match: input => String((input.Key as { pk?: unknown } | undefined)?.pk).startsWith("ORG_INVITE#"), error: { name: "ServiceUnavailable" } });expect((await f.request()).status).toBe(503);
+});
