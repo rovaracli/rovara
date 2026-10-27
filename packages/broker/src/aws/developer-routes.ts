@@ -1,3 +1,4 @@
+import { listOrganizationInvites } from "../org/invite-directory.js";
 import { changeReviewedMemberRole } from "../org/role-changes.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
@@ -1969,6 +1970,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return getOrganization(deps, caller);
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/members/lookup") return lookupOrganizationMember(deps, caller, jsonBody(request));

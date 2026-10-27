@@ -13,7 +13,7 @@ function fixture(role = "owner") {
  const store = new OrgStore({ tableName: "state", documentClient: db, now: () => now });
  const deps: DeveloperRouteDependencies = { tableName: "state", now: () => now, documentClient: db, orgs: store, developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) } };
  const caller: DeveloperCaller = { orgId: A, developerId: actor, orgRole: "owner", name: "Priya", amr: "cloud", sessionId: "fixture" };
- async function request(query = "", as = caller) { const path = "/v1/app/org/invites" + query;try { return { status: 200, body: await routeDeveloperRequest(deps, { method: "GET", path, headers: {}, requestId: "invite-directory" }, new URL(path, "https://cell.example"), { caller: as, csrf: "" }) as { invites?: Array<Record<string, unknown>>; nextCursor?: string; coverage?: string; checkedAt?: string } }; }catch (e) { if (!(e instanceof AgentXError)) throw e;return { status: errorStatus(e.code), body: { code: e.code } }; } }
+ async function request(query = "", as = caller): Promise<{ status: number; body: { invites?: Array<Record<string, unknown>>; nextCursor?: string; coverage?: string; checkedAt?: string; code?: string } }> { const path = "/v1/app/org/invites" + query;try { return { status: 200, body: await routeDeveloperRequest(deps, { method: "GET", path, headers: {}, requestId: "invite-directory" }, new URL(path, "https://cell.example"), { caller: as, csrf: "" }) as { invites?: Array<Record<string, unknown>>; nextCursor?: string; coverage?: string; checkedAt?: string } }; }catch (e) { if (!(e instanceof AgentXError)) throw e;return { status: errorStatus(e.code), body: { code: e.code } }; } }
  async function invite(orgId = A, email?: string, ttlSeconds?: number, requestId?: string) { return store.createInvite({ orgId, createdBy: orgId === A ? actor : foreign, role: "member", ...(email === undefined ? {} : { email }), ...(ttlSeconds === undefined ? {} : { ttlSeconds }), ...(requestId === undefined ? {} : { requestId }) }); }
  return { db, deps, store, caller, request, invite, advance(ms: number) { now += ms; } };
 }
@@ -54,4 +54,11 @@ it("refuses reads when live membership, index or canonical storage is unavailabl
 });
 it("treats equivalent ISO expiry instants equally even without fractional seconds", async () => {
  const f = fixture(), result = await f.invite();const key = orgInviteKey(hashOf(result.token));f.db.set({ ...f.db.get(key), expiresAt: "2026-10-26T12:00:00Z" });const page = await f.request();expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(0);
+});
+
+it("independently rejects a canonical org, id or hash mismatch", async () => {
+ for (const changed of [{ orgId: B }, { inviteId: "22222222-2222-4222-8222-222222222222" }, { tokenHash: "e".repeat(64) }]) { const f = fixture(), invite = await f.invite(), key = orgInviteKey(hashOf(invite.token));expect((await f.request()).status).toBe(200);f.db.set({ ...f.db.get(key), ...changed });expect((await f.request()).status).toBe(503); }
+});
+it("caps a full directory page at 50 and leaves a resumable cursor", async () => {
+ const f = fixture();for (let i = 0; i < 51; i++) await f.invite();const page = await f.request("?limit=50");expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(50);expect(page.body.nextCursor).toBeTruthy();const next = await f.request("?limit=50&cursor=" + page.body.nextCursor!);expect(next.body.invites).toHaveLength(1);
 });

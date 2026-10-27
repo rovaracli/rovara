@@ -45,6 +45,11 @@ describe("browser API boundary", () => {
   h.db.set({ ...h.db.get(`SESSION#${SID}`, "META")!, revokedAt: new Date().toISOString() });
   const ended = await h.call("GET", "/v1/web/projects");expect(ended.status).toBe(401);expect(errorOf(ended.body).message).toBe("Sign in to continue.");
  });
+ it("reads the masked invite directory through the cookie adapter and refuses live member access", async () => {
+  const h = await broker();const created = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID(), role: "member", email: "private.person@example.test" });expect(created.status).toBe(200);
+  const page = await h.call("GET", "/v1/web/org/invites");expect(page.status).toBe(200);expect(page.body).toMatchObject({ coverage: "indexed_only", invites: [{ destination: { kind: "email", label: "***@example.test" } }] });const serialized = JSON.stringify(page.body);const token = String(created.body.token);expect(serialized.includes("private.person") || serialized.includes(token) || serialized.includes(createHash("sha256").update(token).digest("hex"))).toBe(false);
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });expect((await h.call("GET", "/v1/web/org/invites")).status).toBe(403);
+ });
  it("checks Origin and CSRF before any write, with distinct stale recovery", async () => {
   const h = await broker();const body = { requestId: randomUUID(), role: "member" };
   for (const headers of [{}, { origin: CELL }, { origin: "null", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {

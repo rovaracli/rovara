@@ -45,3 +45,5 @@ export * from "./onboarding.js";
 export { ChainRunViewReaderSchema } from "./chain-session.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
+
+export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";

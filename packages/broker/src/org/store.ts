@@ -3,7 +3,7 @@
 // most one org (the developer pointer's `attribute_not_exists(pk)` condition enforces it), and an
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX,
@@ -21,6 +21,7 @@ import {
   orgBanKey,
   orgEmailKey,
   orgInviteKey,
+  orgInviteDirectoryKey,
   orgInviteRequestKey,
   orgRenameRequestKey,
   orgMemberKey,
@@ -265,9 +266,10 @@ export class OrgStore {
    */
   async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
     const token = randomBytes(32).toString("base64url");
-    const tokenHash = sha256Hex(token);
+    const tokenHash = sha256Hex(token), inviteId = randomUUID();
     const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
     const invite: OrgInviteRecord = {
+      inviteId,
       orgId: input.orgId,
       tokenHash,
       ...(input.email === undefined ? {} : { email: normalizeInviteEmail(input.email) }),
@@ -281,8 +283,9 @@ export class OrgStore {
       [
         this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
         ...(input.requestId === undefined ? [] : [this.put(orgInviteRequestKey(input.orgId, input.requestId), "ORG_INVITE_REQUEST", { tokenHash, createdAt: invite.createdAt })]),
+        this.put(orgInviteDirectoryKey(input.orgId, inviteId), "ORG_INVITE_DIRECTORY", { orgId: input.orgId, inviteId, tokenHash }),
       ],
-      (failed) => (failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined),
+      (failed) => (input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined),
     );
     return { token };
   }
