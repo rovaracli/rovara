@@ -196,3 +196,6 @@ export { archiveProjectReviewedWithEffects } from "./reviewed-project-archive-ap
 
 // Lane B internal restore primitive; not wired to HTTP/UI.
 export { readProjectRestorePreview, restoreProjectReviewed } from "./reviewed-project-restore.js";
+
+// Lane B reviewed restore app adapter.
+export { readReviewedProjectRestoreAppPreview, restoreProjectReviewedWithEffects } from "./reviewed-project-restore-app.js";

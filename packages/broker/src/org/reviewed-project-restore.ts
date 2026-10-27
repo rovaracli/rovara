@@ -38,8 +38,8 @@ async function prerequisites(deps: Deps, caller: DeveloperCaller, state: Awaited
 }
 export async function readProjectRestorePreview(deps: Deps, caller: DeveloperCaller, name: string) {
  try {
-  identifiers(caller, name);await authority(deps, caller, name);const state = await projectState(deps, caller, name);await prerequisites(deps, caller, state);
-  return { project: name, status: state.status, expectedRevision: state.epoch, expectedProjectRevision: state.projectRevision, checkedAt: new Date(deps.now()).toISOString(), prerequisites: "checked" as const };
+  identifiers(caller, name);await authority(deps, caller, name);const state = await projectState(deps, caller, name);if (state.status === "archived") await prerequisites(deps, caller, state);
+  return { project: name, status: state.status, expectedRevision: state.epoch, expectedProjectRevision: state.projectRevision, checkedAt: new Date(deps.now()).toISOString(), prerequisites: state.status === "archived" ? "checked" as const : "not_required" as const };
  } catch (error) { throw safeError(error); }
 }
 export async function restoreProjectReviewed(deps: Deps, caller: DeveloperCaller, name: string, body: unknown) {

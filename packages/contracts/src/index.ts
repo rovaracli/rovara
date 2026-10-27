@@ -141,3 +141,6 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 
 // Lane B reviewed project archive boundary.
 export * from "./reviewed-project-archive.js";
+
+// Lane B reviewed restore boundary.
+export * from "./reviewed-project-restore.js";

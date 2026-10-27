@@ -34,6 +34,7 @@
   "packages/contracts/src/realtime.ts",
   "packages/contracts/src/redaction.ts",
   "packages/contracts/src/reviewed-project-archive.ts",
+  "packages/contracts/src/reviewed-project-restore.ts",
   "packages/contracts/src/rovara-code.ts",
   "packages/contracts/src/session-views.ts",
   "packages/contracts/src/spend.ts",

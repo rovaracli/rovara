@@ -1,3 +1,4 @@
+import { readReviewedProjectRestoreAppPreview } from "../org/reviewed-project-restore-app.js";
 import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-archive-app.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
@@ -115,7 +116,7 @@ import {
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
-import { archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
+import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
@@ -1930,6 +1931,15 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
     if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
     return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
+  }
+  // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
+  const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
+  if (reviewedRestoreRoute !== null && ((request.method === "GET" && reviewedRestoreRoute[2] === "restore-preview") || (request.method === "POST" && reviewedRestoreRoute[2] === "reviewed-restore"))) {
+    let name: string;
+    try { name = decodeURIComponent(reviewedRestoreRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
+    if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
+    if (request.method === "GET") return readReviewedProjectRestoreAppPreview(deps, caller, name);
+    return restoreProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
