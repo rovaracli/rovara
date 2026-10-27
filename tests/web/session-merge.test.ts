@@ -42,7 +42,7 @@ function tracking(extra: Partial<MergeTrackingItem> = {}): MergeTrackingItem {
 }
 
 /** A task session waiting for its merge, as the server's version 2 task view shows it. */
-function mergeSession(merge: { ready: boolean; message?: string } | undefined, options: { items?: MergeTrackingItem[]; level?: "view" | "use" | "edit"; owner?: boolean; mayMerge?: true } = {}) {
+function mergeSession(merge: { ready: boolean; message?: string; risk?: { level: "low" | "medium" | "high"; reasons: string[] } } | undefined, options: { items?: MergeTrackingItem[]; level?: "view" | "use" | "edit"; owner?: boolean; mayMerge?: true } = {}) {
   const base = workspaceFixture();
   const level = options.level ?? "edit";
   const task = taskFixture({
@@ -86,7 +86,8 @@ it("asks first: pressing Merge opens a question, and a no sends nothing", async 
   fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
   const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
   expect(dialog.textContent).toContain("payments #42");
-  expect(dialog.textContent).toContain("confirm");
+  expect(dialog.textContent).toContain("merges it now");
+  expect(dialog.textContent).not.toContain("Merge anyway");
   fireEvent.click(screen.getByRole("button", { name: "Not now" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Press Merge?" })).toBeNull());
   expect(f.presses()).toHaveLength(0);
@@ -210,4 +211,75 @@ it("round trip: against the real broker, the page reads the task view's merge, t
   expect(decided.status).toBeLessThan(400);
   expect(broker.github.mergeCalls).toHaveLength(1);
   ui.unmount(); router.dispose(); query.clear();
+});
+
+
+// ---- owner decision 2026-10-27: one click, and the risk shown
+
+const MERGED = { status: 200, body: { status: "MERGED", pullRequests: [{ repositoryId: "payments", number: 42 }] } };
+const CI_RISK = { level: "high" as const, reasons: ["Changes CI configuration (.circleci/config.yml), which decides what is checked before a merge."] };
+
+it("merges with one click: the press answers 200 and the page says merged, with no confirmation page to open", async () => {
+  const f = setup(mergeSession({ ready: true, risk: { level: "low", reasons: ["A small change with no sensitive paths, dependency changes or open concerns."] } }), async () => MERGED);
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
+  await screen.findByText("Merged payments #42.");
+  expect(f.presses()).toHaveLength(1);
+  expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Open confirmation" })).toBeNull();
+  expect(f.host.openExternal).not.toHaveBeenCalled();
+  f.close();
+});
+
+it("shows the risk and its reasons next to Merge", async () => {
+  const f = setup(mergeSession({ ready: true, risk: CI_RISK }));
+  const region = await screen.findByRole("region", { name: "Merge" });
+  expect(region.textContent).toContain("High risk");
+  expect(region.textContent).toContain(CI_RISK.reasons[0]);
+  f.close();
+});
+
+it("a low risk dialog is one question; the press names the level the person saw", async () => {
+  const f = setup(mergeSession({ ready: true, risk: { level: "low", reasons: ["A small change."] } }), async () => MERGED);
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
+  expect(dialog.textContent).not.toContain("Merge anyway");
+  fireEvent.click(screen.getByRole("button", { name: "Press Merge" }));
+  await screen.findByText("Merged payments #42.");
+  expect((f.presses()[0]![0].body as { risk: string }).risk).toBe("low");
+  f.close();
+});
+
+it("a medium or high risk adds one line to the dialog and is still one click; the press names that level", async () => {
+  for (const risk of [CI_RISK, { level: "medium" as const, reasons: ["Changes dependencies or build files: package.json."] }]) {
+    const f = setup(mergeSession({ ready: true, risk }), async () => MERGED);
+    fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+    const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
+    expect(dialog.textContent).toContain(`${risk.level === "high" ? "High" : "Medium"} risk`);
+    expect(dialog.textContent).toContain(risk.reasons[0]);
+    expect(dialog.textContent).toContain("Merge anyway?");
+    fireEvent.click(screen.getByRole("button", { name: "Press Merge" }));
+    await screen.findByText("Merged payments #42.");
+    expect(f.presses()).toHaveLength(1);
+    expect((f.presses()[0]![0].body as { risk: string }).risk).toBe(risk.level);
+    f.close();
+  }
+});
+
+it("shows GitHub's reason when GitHub refuses the merge, and a changed risk as a new question", async () => {
+  const reason = `payments didn't merge: GitHub would not merge it (GitHub says: Required status check "build" is expected.). Check it on GitHub, then press Merge again.`;
+  const f = setup(mergeSession({ ready: true, risk: { level: "low", reasons: ["A small change."] } }), async () => ({ status: 409, body: { error: { code: "MERGE_NOT_READY", message: reason } } }));
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Required status check");
+  f.close();
+});
+
+it("a task whose server gives no risk is pressed as the lowest level it can claim: the server decides", async () => {
+  const f = setup(mergeSession({ ready: true }), async () => MERGED);
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
+  await screen.findByText("Merged payments #42.");
+  expect((f.presses()[0]![0].body as { risk?: string }).risk).toBeUndefined();
+  f.close();
 });

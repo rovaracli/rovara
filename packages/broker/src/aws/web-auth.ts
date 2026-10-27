@@ -32,5 +32,6 @@ export async function authenticateWebRequest(deps: DeveloperRouteDependencies, r
   if (request.headers.origin !== new URL(deps.developer.issuer).origin || csrf === undefined) throw agentXError("FORBIDDEN", WEB_REQUEST_REFUSED);
   if (!appCsrfMatches(cookie, csrf)) throw agentXError("CSRF_STALE", CSRF_STALE_MESSAGE);
  }
- return caller;
+ // Only this function says a caller came through a browser session with its CSRF token: Merge merges at once for such a caller and never for a token.
+ return { ...caller, browserSession: true };
 }

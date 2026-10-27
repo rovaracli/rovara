@@ -564,7 +564,7 @@ function waitingForMerge(workflow: WorkflowSnapshot): string | undefined {
   // Rovara Code (version 2, staging 0.4.11 Bug G): Merge is pressed in Rovara once a person has approved the pull request on GitHub.
   const tracked = workflow.definitionVersion === "1.1.0";
   const review = (many: boolean): string => (tracked
-    ? `Once ${many ? "they're" : "it's"} approved on GitHub, press Merge in Rovara; I'll finish this task when ${many ? "they're all" : "it's"} merged.`
+    ? `Approve ${many ? "the PRs" : "the PR"} on GitHub, then press Merge in Rovara; I'll finish this task when ${many ? "they're all" : "it's"} merged.`
     : `${many ? "Review them and merge them" : "Review it and merge it"} on GitHub; I'll finish this task when ${many ? "they're all" : "it's"} merged.`);
   if (merged === 0) {
     // Plan 6 Task 17: Rovara brought a pull request up to date with its base branch (a clean merge, not a fix).

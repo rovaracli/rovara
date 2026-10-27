@@ -46,7 +46,7 @@ describe("assessRisk", () => {
   it("matches path segments, not substrings: src/author.ts and src/diamond.ts are not high", () => {
     for (const path of ["src/author.ts", "src/diamond.ts", "src/authored/list.ts", "src/payments-ui.ts", "docs/infrastructure.md", "src/secretsanta.ts", "src/cdk8s.ts",
       // A directory that only ends like a sensitive one is not one either.
-      "src/oauth/x.ts", "src/reauth/x.ts", "lib/preauthz/x.ts", "lib/subiam/x.ts", "app/nonmigrations/x.ts", "app/myinfra/x.ts"]) {
+      "src/xoauth/x.ts", "src/reauth/x.ts", "lib/preauthz/x.ts", "lib/subiam/x.ts", "app/nonmigrations/x.ts", "app/myinfra/x.ts"]) {
       expect(assessRisk(riskInput({ changedFiles: [file(path)] })).level, path).toBe("low");
     }
   });

@@ -85,30 +85,30 @@ describe("merging a pull request", () => {
       { status: 405, body: { message: "Squash merges are not allowed on this repository." } },
       { status: 405, body: { message: "Merge commits are not allowed on this repository." } },
     ] });
-    await expect(h.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "not_mergeable" });
+    await expect(h.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "not_mergeable" });
     expect(h.merges()).toHaveLength(2);
   });
 
   it("reads the pull request again after a 405 that is not about the method, and reports what it finds", async () => {
     const notMergeable = harness({ merges: [{ status: 405, body: { message: "Pull Request is not mergeable" } }] });
-    await expect(notMergeable.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "not_mergeable" });
+    await expect(notMergeable.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "not_mergeable" });
     expect(notMergeable.merges()).toHaveLength(1);
     const merged = harness({ merges: [{ status: 405, body: { message: "Pull Request is not mergeable" } }], pull: pull({ state: "closed", merged: true, merge_commit_sha: MERGE_COMMIT }) });
     await expect(merged.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "already_merged" });
     const closed = harness({ merges: [{ status: 405, body: { message: "Pull Request is not mergeable" } }], pull: pull({ state: "closed" }) });
-    await expect(closed.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "closed" });
+    await expect(closed.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "closed" });
   });
 
   it("says the head changed when GitHub answers 409, or when the head it reads is not the checked one", async () => {
     const conflict = harness({ merges: [{ status: 409, body: { message: "Head branch was modified. Review and try the merge again." } }], pull: pull({ head: { ref: "agentx/op", sha: MOVED, repo: { full_name: "acme/payments" } } }) });
-    await expect(conflict.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "head_changed" });
+    await expect(conflict.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "head_changed" });
     const same = harness({ merges: [{ status: 409, body: { message: "Head branch was modified" } }] });
-    await expect(same.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "not_mergeable" });
+    await expect(same.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "not_mergeable" });
   });
 
   it("says GitHub would not let the App merge when it answers 403, and leaves a failing GitHub for a retry", async () => {
     const forbidden = harness({ merges: [{ status: 403, body: { message: "Resource not accessible by integration" } }] });
-    await expect(forbidden.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "forbidden" });
+    await expect(forbidden.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "forbidden" });
     const down = harness({ merges: [{ status: 502 }] });
     await expect(down.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     const noToken = harness({ merges: [], tokenStatus: 500 });
@@ -124,12 +124,29 @@ describe("merging a pull request", () => {
 
   it("does not take a 200 that does not say merged as a merge", async () => {
     const h = harness({ merges: [{ status: 200, body: { merged: false, message: "queued" } }], pull: pull() });
-    await expect(h.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "not_mergeable" });
+    await expect(h.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toMatchObject({ outcome: "refused", reason: "not_mergeable" });
   });
 
-  it("does not leak GitHub's words: a refusal carries a fixed reason and nothing else", async () => {
-    const h = harness({ merges: [{ status: 405, body: { message: "ghp_secrettoken123456789012345678901234567890 do not merge" } }] });
-    const result = await h.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE);
-    expect(JSON.stringify(result)).not.toContain("ghp_");
+  it("carries GitHub's reason on a refusal so a person can read why (branch protection, a required check, a ruleset), cleaned: no token, no mention, no markup, one line, 200 characters", async () => {
+    const protectedBranch = harness({ merges: [{ status: 405, body: { message: "Required status check \"build\" is expected." } }] });
+    await expect(protectedBranch.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "not_mergeable", githubMessage: "Required status check \"build\" is expected." });
+    const forbidden = harness({ merges: [{ status: 403, body: { message: "Repository rule violations found\n\nChanges must be made through a pull request." } }] });
+    await expect(forbidden.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).resolves.toEqual({ outcome: "refused", reason: "forbidden", githubMessage: "Repository rule violations found Changes must be made through a pull request." });
+    const dirty = harness({ merges: [{ status: 405, body: { message: "ghp_secrettoken123456789012345678901234567890 @everyone <b>do not</b> merge " + "x".repeat(400) } }] });
+    const result = await dirty.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE);
+    expect(result.outcome).toBe("refused");
+    const message = (result as { githubMessage?: string }).githubMessage ?? "";
+    expect(message).not.toContain("ghp_");
+    expect(message).not.toContain("@");
+    expect(message).not.toContain("<");
+    expect(message.length).toBeLessThanOrEqual(200);
+    expect(message).not.toMatch(/[\r\n]/u);
+  });
+
+  it("says nothing of GitHub's words when it gave none, or when the pull request moved on (closed, head changed)", async () => {
+    const none = harness({ merges: [{ status: 405, body: {} }] });
+    expect(await none.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).toEqual({ outcome: "refused", reason: "not_mergeable" });
+    const closed = harness({ merges: [{ status: 405, body: { message: "Pull Request is not mergeable" } }], pull: pull({ state: "closed" }) });
+    expect(await closed.provider.mergePullRequest(REPO, 42, { sha: HEAD, method: "squash" }, SCOPE)).toEqual({ outcome: "refused", reason: "closed" });
   });
 });

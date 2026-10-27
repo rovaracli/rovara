@@ -108,7 +108,7 @@ describe("the risk of a fix", () => {
     expect(command.level).toBe("high");
     expect(command.reasons).toContain("A fix changes the command that runs the tests (package.json), so a check may pass because the tests no longer run.");
     // The same files in an ordinary change are judged as before.
-    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: "vitest.config.ts", added: 1, removed: 1 }] })).level).toBe("low");
+    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: "vitest.config.ts", added: 1, removed: 1 }] })).level).toBe("high");
     expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: "package.json", added: 1, removed: 1, testCommandChanged: true }] })).level).toBe("medium");
   });
 
@@ -123,9 +123,10 @@ describe("the risk of a fix", () => {
   });
 
   it("an ordinary build that does the same is judged as before (these two reasons are for a fix); only the workflows folder was and stays sensitive", () => {
-    expect(assessRisk(input({ changedFiles: [removed] })).level).toBe("low");
-    expect(assessRisk(input({ changedFiles: [skipped] })).level).toBe("low");
-    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: ".gitlab-ci.yml", added: 1, removed: 1 }] })).level).toBe("low");
+    // Since 2026-10-27 the risk shown next to Merge names them for an ordinary change too (rovara-code-risk-tiers.test.ts): removed or skipped tests are medium, CI configuration is high.
+    expect(assessRisk(input({ changedFiles: [removed] })).level).toBe("medium");
+    expect(assessRisk(input({ changedFiles: [skipped] })).level).toBe("medium");
+    expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: ".gitlab-ci.yml", added: 1, removed: 1 }] })).level).toBe("high");
     expect(assessRisk(input({ changedFiles: [{ repository: "payments", path: ".github/workflows/ci.yml", added: 1, removed: 1 }] })).level).toBe("high");
   });
 

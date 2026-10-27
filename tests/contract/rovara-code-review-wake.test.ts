@@ -226,7 +226,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     expect(c.w.db.get("WORKFLOW_MERGE_RECOVERY", `TASK#${c.w.taskId}`)).toMatchObject({ wakeAt: c.now(), nextAttemptAt: c.now() + REVIEW_COALESCE });
     c.w.clock.now += GATE;
     expect(await c.pass()).toMatchObject({ attempted: 1, reconciled: 1 });
-    expect(await c.merge()).toEqual({ ready: true });
+    expect(await c.merge()).toMatchObject({ ready: true });
     expect(c.now() - started).toBeLessThan(HEARTBEAT);
   });
 
@@ -257,7 +257,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     // ... and the pass for woken rows runs the one woken task, once.
     expect(await passWith({ wokenOnly: true })).toMatchObject({ attempted: 1, reconciled: 1 });
     expect(read).toEqual([c.w.taskId]);
-    expect(await c.merge()).toEqual({ ready: true });
+    expect(await c.merge()).toMatchObject({ ready: true });
     expect(c.now() - approvedAt).toBeLessThanOrEqual(15_000);
     expect(gate()).toBe(closedUntil);
     // Nothing is woken now: a second woken pass reads nothing.
@@ -289,7 +289,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     expect((await c.deliver("approved", deliveryId)).outcome.status).toBe("DUPLICATE");
     c.w.clock.now += GATE;
     expect(await c.pass()).toMatchObject({ attempted: 1 });
-    expect(await c.merge()).toEqual({ ready: true });
+    expect(await c.merge()).toMatchObject({ ready: true });
     expect(await c.pass()).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
   });
 
@@ -309,6 +309,6 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     await c.deliver("commented");
     c.w.clock.now += GATE;
     await c.pass();
-    expect(await c.merge()).toEqual({ ready: true });
+    expect(await c.merge()).toMatchObject({ ready: true });
   });
 });

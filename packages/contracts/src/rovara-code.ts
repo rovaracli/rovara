@@ -494,7 +494,10 @@ export const CODE_SETTINGS_STALE_MESSAGE = "Someone changed these settings. Relo
 
 /** The task view's `merge` (version 2 only): whether the viewer pressing Merge now would be allowed to, and if not, in words, why. */
 export const MERGE_VIEW_MESSAGE_MAX = 500;
-export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(MERGE_VIEW_MESSAGE_MAX).optional() }).strict();
+/** The risk of the pull request's code as the Merge section shows it (owner decision 2026-10-27): a level and the reasons in words. */
+export const MergeRiskSchema = z.object({ level: z.enum(["low", "medium", "high"]), reasons: z.array(z.string().min(1).max(200)).max(8) }).strict();
+export type MergeRisk = z.infer<typeof MergeRiskSchema>;
+export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(MERGE_VIEW_MESSAGE_MAX).optional(), risk: MergeRiskSchema.optional() }).strict();
 export type MergeView = z.infer<typeof MergeViewSchema>;
 
 /** The exact texts of `MERGE_NOT_READY` (409). Words for a person: nothing here carries a title, a comment or a log. */
@@ -520,7 +523,23 @@ export const MERGE_NOT_READY_MESSAGES = {
   notMerged: (repository: string, reason: string): string => `${repository} didn't merge: ${reason}. Check it on GitHub, then press Merge again.`,
   changedAfterConfirm: "The pull request changed after you confirmed. Check it and press Merge again.",
   halfMerged: (merged: string, failed: string, reason: string): string => `${merged} merged, but ${failed} didn't: ${reason}. Merge it on GitHub or press Merge again.`,
+  /** Where the repository has a CODEOWNERS file that covers changed paths, a code owner has to approve (owner decision 2026-10-27). `owners` are the logins and teams, as the file names them. */
+  needsCodeOwner: (owners: string): string => `A code owner has to approve the files this pull request changes (${owners}).`,
+  codeOwnersUnreadable: "Rovara couldn't read this repository's code owners, so it can't tell whether a code owner approved. Try again in a minute.",
+  riskChanged: (level: "low" | "medium" | "high"): string => `The risk of this pull request is now ${level}. Check it and press Merge again.`,
 } as const;
+
+/**
+ * `POST /v1/app/sessions/{id}/merge` (and the same through the web boundary): the request id, and for the web app the risk level the person saw in the dialog. A medium or high risk press that did
+ * not see the current level is refused. Nothing else is taken: a token cannot add a field that makes it a browser.
+ */
+export const MergePressBodySchema = z.object({ requestId: z.string().uuid(), risk: z.enum(["low", "medium", "high"]).optional() }).strict();
+export type MergePressBody = z.infer<typeof MergePressBodySchema>;
+
+/** What a web press answers when it merged (200): the pull requests Rovara merged. */
+export const MergeDoneSchema = z.object({ status: z.literal("MERGED"), pullRequests: z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().min(1) }).strict()).max(32) }).strict();
+export type MergeDone = z.infer<typeof MergeDoneSchema>;
+export const MergeDoneReaderSchema = forwardReader(MergeDoneSchema);
 
 // ---- reports and drafts
 

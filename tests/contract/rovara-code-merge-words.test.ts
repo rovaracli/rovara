@@ -72,6 +72,7 @@ describe("the AI tool's task answer", () => {
   it("tells it a person presses Merge in Rovara when ready, and that it can't merge", async () => {
     const text = await toolText(await mergeButtonBroker());
     expect(text).toContain("presses Merge in Rovara");
+    expect(text).toContain("one click in the web app");
     expect(text).toContain("can't merge");
     expect(text).not.toMatch(/merge it on GitHub/i);
   });
@@ -113,7 +114,7 @@ describe("taskPageStage", () => {
 describe("the message in the task's thread", () => {
   it("tells a Rovara Code task's owner to press Merge in Rovara once the pull request is approved, and leaves a version 1 task on GitHub", () => {
     const text = workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: waitingWorkflow("1.1.0"), project: "payments" })!.text;
-    expect(text).toContain("press Merge in Rovara");
+    expect(text).toContain("Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.");
     expect(text).not.toContain("merge it on GitHub");
     expect(workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: waitingWorkflow("1.0.0"), project: "payments" })!.text).toContain("merge it on GitHub");
   });
