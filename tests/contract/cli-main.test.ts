@@ -20,7 +20,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
     expect(subcommands(admin, "budget")).toEqual(["set"]);
-    expect(subcommands(admin, "slack")).toEqual(["bind", "connect-team", "unbind"]);
+    expect(subcommands(admin, "slack")).toEqual(["bind", "connect-team", "disconnect-team", "unbind"]);
     expect(subcommands(program, "slack")).toEqual(["bind", "unbind"]);
     expect(subcommands(admin, "eval")).toEqual(["enable", "show", "disable", "batch"]);
     expect(admin?.commands.find((command) => command.name() === "eval")?.commands.find((command) => command.name() === "batch")?.commands.map((command) => command.name())).toEqual(["start", "show", "stop", "results"]);

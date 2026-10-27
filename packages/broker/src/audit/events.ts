@@ -210,6 +210,19 @@ export function auditSlackChannelUnbound(input: AuditBuilderBase & { projectName
   return build("slack_channel.unbound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
 }
 
+/**
+ * `occurrence`: `auditOccurrence(teamId, occurredAt)` (release 0.4.17). An operator links a Slack workspace to an org, which sends all of that workspace's
+ * Slack traffic to the org, so the org's own ledger records it. The actor is the operator's pseudonymous id; the org is the target; the team is related.
+ */
+export function auditSlackTeamConnected(input: AuditBuilderBase & { teamId: string }): AuditEventInput {
+  return build("slack_team.connected", { ...input, related: [input.teamId, ...(input.related ?? [])] }, { kind: "org", id: input.orgId });
+}
+
+/** `occurrence`: as for `auditSlackTeamConnected`. */
+export function auditSlackTeamDisconnected(input: AuditBuilderBase & { teamId: string }): AuditEventInput {
+  return build("slack_team.disconnected", { ...input, related: [input.teamId, ...(input.related ?? [])] }, { kind: "org", id: input.orgId });
+}
+
 /** `occurrence`: `auditOccurrence(identityKey, createdAt of the link item)`. */
 export function auditIdentityLinked(input: AuditBuilderBase & { memberId: string; provider: string }): AuditEventInput {
   return build("identity.linked", input, { kind: "member", id: input.memberId }, { provider: input.provider });

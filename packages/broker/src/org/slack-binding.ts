@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  SlackChannelBindingSchema, agentXError, orgPk, projectPk, slackBindingKey,
+  SLACK_BINDING_SK_PREFIX, SlackChannelBindingSchema, agentXError, orgPk, projectPk, slackBindingKey, slackBindingPk,
   type AuditEventInput, type OrgId, type OrgKey, type SlackChannelBinding,
 } from "@agentx/contracts";
 import { auditOccurrence, auditSlackChannelBound, auditSlackChannelUnbound } from "../audit/events.js";
@@ -30,6 +30,21 @@ export async function readSlackBinding(deps: { documentClient: Send; tableName: 
   const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: slackBindingKey(orgId, teamId, channelId), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
   if (!item) return undefined;
   return SlackChannelBindingSchema.parse({ teamId: item.teamId, channelId: item.channelId, projectName: item.projectName, updatedAt: item.updatedAt });
+}
+
+/** The channels an org has bound in one Slack workspace, across its projects (their ids only). */
+export async function listTeamChannels(deps: { documentClient: Send; tableName: string }, orgId: OrgId, teamId: string): Promise<string[]> {
+  const channels: string[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": slackBindingPk(orgId, teamId), ":prefix": SLACK_BINDING_SK_PREFIX },
+      ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<{ channelId?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) if (typeof item.channelId === "string") channels.push(item.channelId);
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  return channels;
 }
 
 export interface ProjectSlackChannelDependencies {

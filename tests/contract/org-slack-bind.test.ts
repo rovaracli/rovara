@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  auditEventId, orgProjectCatalogKey, orgSlackTeamKey, projectMemberKey, projectMetaKey, projectRevisionKey, slackBindingKey, slackTeamOrgKey, developerOrgKey,
+  auditEventId, auditOperatorId, orgMetaKey, orgProjectCatalogKey, orgSlackTeamKey, projectMemberKey, projectMetaKey, projectRevisionKey, slackBindingKey, slackTeamOrgKey, developerOrgKey,
   type AuditEventInput, type OrgId, type OrgRole, type ProjectRole,
 } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
@@ -12,7 +12,7 @@ import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, seedMembership, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call, loadSlackBroker } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, issuer as brokerIssuer, loadSlackBroker } from "../support/slack-broker.js";
 
 beforeAll(loadSlackBroker, 60_000);
 
@@ -309,7 +309,7 @@ describe("which Slack workspace an org may bind from: the cloud guard", () => {
     disconnectTeam(h);
     const before = writes(h);
     expect((await connect(h, SLACK_TEAM, { orgId: TEST_ORG }, { subject: "someone" })).status).toBe(403);
-    expect((await h.dev(OMAR, "PUT", `/v1/admin/slack/teams/${SLACK_TEAM}`, { orgId: TEST_ORG })).status).not.toBe(200);
+    expect([401, 403]).toContain((await h.dev(OMAR, "PUT", `/v1/admin/slack/teams/${SLACK_TEAM}`, { orgId: TEST_ORG })).status);
     expect(writes(h)).toBe(before);
     expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toBeUndefined();
   });
@@ -327,6 +327,92 @@ describe("which Slack workspace an org may bind from: the cloud guard", () => {
     expect(taken.status).toBe(409);
     expect(taken.body.error).toMatchObject({ code: "SLACK_TEAM_TAKEN" });
     expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toMatchObject({ orgId: OTHER_ORG });
+  });
+});
+
+describe("the operator's connect and disconnect of a Slack workspace, and closed orgs", () => {
+  const admin = { subject: "admin-subject", admin: true };
+  const OPERATOR = auditOperatorId(brokerIssuer, admin.subject);
+  const connect = (h: Harness, body: unknown = { orgId: TEST_ORG }, user: { subject: string; admin?: boolean } = admin) =>
+    call(h.handler, { method: "PUT", path: `/v1/admin/slack/teams/${SLACK_TEAM}`, user, body });
+  const disconnect = (h: Harness, user: { subject: string; admin?: boolean } = admin) =>
+    call(h.handler, { method: "DELETE", path: `/v1/admin/slack/teams/${SLACK_TEAM}`, user });
+  const setMeta = (h: Harness, fields: Record<string, unknown>) => h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG).pk, orgMetaKey(TEST_ORG).sk)!, ...fields });
+
+  it.each([["closed", { closedAt: "2026-10-27T00:00:00.000Z" }], ["closing", { closingAt: "2026-10-27T00:00:00.000Z" }]])("refuses to connect a workspace to an org that is %s, and writes no link", async (_label, fields) => {
+    const h = await world({ cloud: true });
+    disconnectTeam(h);
+    setMeta(h, fields);
+    const refused = await connect(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(refused.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "that organization has closed" });
+    expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toBeUndefined();
+    expect(h.db.get(orgSlackTeamKey(TEST_ORG, SLACK_TEAM))).toBeUndefined();
+  });
+
+  it("refuses the owner's own bind from claiming the install's workspace for an org that is closing", async () => {
+    const h = await world();
+    seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    disconnectTeam(h);
+    setMeta(h, { closingAt: "2026-10-27T00:00:00.000Z" });
+    const refused = await bindRoute(h, OMAR);
+    expect(refused.status).toBe(400);
+    expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toBeUndefined();
+    expect(bindingOf(h, NEW_CHANNEL)).toBeUndefined();
+  });
+
+  it("audits a connection in the target org's ledger, naming the operator by a pseudonymous id, and records nothing for a repeat", async () => {
+    const audit = capturingAuditDeps();
+    const h = await world({ cloud: true, audit });
+    disconnectTeam(h);
+    expect((await connect(h)).status).toBe(200);
+    expect((await connect(h)).status).toBe(200);
+    expect(audit.recordedBy("slack_team.connected")).toEqual([expect.objectContaining({
+      orgId: TEST_ORG, action: "slack_team.connected", actor: { kind: "operator", id: OPERATOR }, target: { kind: "org", id: TEST_ORG }, related: [SLACK_TEAM],
+    })]);
+    expect(JSON.stringify(audit.recordedBy("slack_team.connected"))).not.toContain(admin.subject);
+    expect(audit.pending()).toEqual([]);
+  });
+
+  it("refuses to disconnect a workspace whose org still has channels bound, naming how to unbind them, and removes nothing", async () => {
+    const h = await world({ cloud: true });
+    const refused = await disconnect(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(refused.body.error).toMatchObject({ code: "CONFIG_INVALID" });
+    const message = (refused.body.error as { message: string }).message;
+    expect(message).toContain(SLACK_CHANNEL);
+    expect(message).toContain("slack unbind --channel");
+    expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toMatchObject({ orgId: TEST_ORG });
+    expect(h.db.get(orgSlackTeamKey(TEST_ORG, SLACK_TEAM))).toBeDefined();
+    expect(bindingOf(h, SLACK_CHANNEL)).toMatchObject({ projectName: "payments" });
+  });
+
+  it("disconnects a workspace with no channels bound, audits it, and the org can no longer bind from it on a cloud install", async () => {
+    const audit = capturingAuditDeps();
+    const h = await world({ cloud: true, audit });
+    seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    expect((await unbindRoute(h, OMAR, { channelId: SLACK_CHANNEL })).body).toMatchObject({ removed: true });
+    const done = await disconnect(h);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body).toMatchObject({ teamId: SLACK_TEAM, orgId: TEST_ORG });
+    expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toBeUndefined();
+    expect(h.db.get(orgSlackTeamKey(TEST_ORG, SLACK_TEAM))).toBeUndefined();
+    expect(audit.recordedBy("slack_team.disconnected")).toEqual([expect.objectContaining({
+      orgId: TEST_ORG, action: "slack_team.disconnected", actor: { kind: "operator", id: OPERATOR }, target: { kind: "org", id: TEST_ORG }, related: [SLACK_TEAM],
+    })]);
+    expect((await bindRoute(h, OMAR)).body.error).toMatchObject({ code: "SLACK_TEAM_NOT_BOUND" });
+    // A second disconnect finds nothing to remove and records nothing.
+    expect((await disconnect(h)).status).toBe(404);
+    expect(audit.recordedBy("slack_team.disconnected")).toHaveLength(1);
+  });
+
+  it("only an operator disconnects, and the developer token of an org owner is refused", async () => {
+    const h = await world({ cloud: true });
+    seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    await unbindRoute(h, OMAR, { channelId: SLACK_CHANNEL });
+    expect((await disconnect(h, { subject: "someone" })).status).toBe(403);
+    expect([401, 403]).toContain((await h.dev(OMAR, "DELETE", `/v1/admin/slack/teams/${SLACK_TEAM}`)).status);
+    expect(h.db.get(slackTeamOrgKey(SLACK_TEAM))).toMatchObject({ orgId: TEST_ORG });
   });
 });
 

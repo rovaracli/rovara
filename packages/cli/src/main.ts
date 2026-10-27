@@ -35,7 +35,7 @@ import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pend
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
-import { bindSlackChannel, connectSlackTeam, unbindSlackChannel } from "./admin/slack.js";
+import { bindSlackChannel, connectSlackTeam, disconnectSlackTeam, unbindSlackChannel } from "./admin/slack.js";
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
 import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
@@ -1592,6 +1592,16 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await connectSlackTeam({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, teamId: options.team, orgId: options.org }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  adminSlack
+    .command("disconnect-team")
+    .description("release a Slack workspace from the organization that holds it (Rovara operators); refused while that organization still has channels bound in it")
+    .requiredOption("--team <team-id>", "Slack workspace ID, for example T0123456789")
+    .action(async (options: { team: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await disconnectSlackTeam({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, teamId: options.team }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
   adminSlack
