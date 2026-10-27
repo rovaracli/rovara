@@ -234,7 +234,7 @@ it("requires a reviewed source-order body on real cookie routes before any mutat
 it("runs reviewed source-order cookie writes through CSRF, live authority and atomic replay", async () => {
  const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);
  h.db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" });
- const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body = { requestId: randomUUID(), expectedRevision: 1, order: ["rovara"] }, path = "/v1/web/org/model-sources-order";
+ const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body = { requestId: randomUUID(), expectedOrgId: TEST_ORG, expectedRevision: 1, order: ["rovara"] }, path = "/v1/web/org/model-sources-order";
  expect((await h.call("PUT", path, { cookie: COOKIE, origin: CELL }, body)).status).toBe(403);
  for (let i = 0; i < 2; i++) { const reply = await h.call("PUT", path, headers, body);expect(reply.status).toBe(200);expect(reply.body).toMatchObject({ order: ["rovara"], revision: 2 }); }
  expect(h.db.get(modelSourcesKey(TEST_ORG))?.revision).toBe(2);expect(audit.recordedBy("model_source.order_changed")).toHaveLength(1);
@@ -265,4 +265,23 @@ it("refuses cookie deletes uniformly for unknown and foreign-company source IDs"
   const response = await h.call("DELETE", `/v1/web/org/model-sources/${sourceId}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { requestId: randomUUID() });expect(response.status).toBe(403);expect(errorOf(response.body)).toMatchObject({ code: "FORBIDDEN", message: "Removing a company AI source is not available in the console yet." });
  }
  expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.get(modelSourcesKey(TEST_ORG))).toBeUndefined();expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+});
+it("requires an expected company before a reviewed cookie order can affect a moved session's company", async () => {
+ const { orgMetaKey } = await import("@agentx/contracts"), audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), otherOrg = "org_bbbbbbbbbbbbbbbbbbbb";audit.attach(h.db);
+ const original = { ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" }, foreign = { ...original, ...modelSourcesKey(otherOrg) };h.db.set(original);h.db.set(foreign);h.db.set({ ...orgMetaKey(otherOrg), orgId: otherOrg, name: "Other company", plan: "team" });seedMembership(h.db, WHO, { orgId: otherOrg, role: "owner" });
+ const before = h.db.transactions().length, headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body = { requestId: randomUUID(), expectedRevision: 1, order: ["rovara"] };
+ const omitted = await h.call("PUT", "/v1/web/org/model-sources-order", headers, body);expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(omitted.status).toBe(400);
+ expect((await h.call("PUT", "/v1/web/org/model-sources-order", headers, { ...body, expectedOrgId: TEST_ORG })).status).toBe(403);
+ expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(original);expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.transactions()).toHaveLength(before);
+});
+it("applies and replays a same-company bound cookie order with one atomic audit", async () => {
+ const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);h.db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" });
+ const body = { requestId: randomUUID(), expectedOrgId: TEST_ORG, expectedRevision: 1, order: ["rovara"] }, headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+ for (let i = 0; i < 2; i++) expect((await h.call("PUT", "/v1/web/org/model-sources-order", headers, body)).status).toBe(200);expect(h.db.get(modelSourcesKey(TEST_ORG))?.revision).toBe(2);expect(audit.recordedBy("model_source.order_changed")).toHaveLength(1);
+});
+it("does not authenticate a cookie-only app source delete or route check/trailing-slash deletes", async () => {
+ const audit = capturingAuditDeps(), access = fakeModelAccess(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access, proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);const source = seedCompanySource(h.db), body = { requestId: randomUUID() }, before = h.db.commandNames().length;
+ const app = await h.call("DELETE", `/v1/app/org/model-sources/${source.sourceId}`, { cookie: COOKIE }, body);expect(app.status).toBe(401);expect(errorOf(app.body).code).toBe("AUTH_REQUIRED");
+ for (const suffix of ["/check", "/"]) expect((await h.call("DELETE", `/v1/web/org/model-sources/${source.sourceId}${suffix}`, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body)).status).toBe(404);
+ expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(source.item);expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);expect(audit.recorded()).toEqual([]);expect(access.removeSource).not.toHaveBeenCalled();
 });

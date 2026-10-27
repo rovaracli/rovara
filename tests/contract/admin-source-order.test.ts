@@ -121,3 +121,8 @@ it("refuses same-org reverse pointer role disagreement before committing", async
 it("fences only a reverse pointer role change during the commit", async () => {
  const f = fixture("admin");f.beforeCommit(() => f.db.set({ ...developerOrgKey(actor), orgId: org, role: "member" }));expect((await f.request()).code).toBe("FORBIDDEN");expect(f.order()).toBeUndefined();expect(f.db.get({ pk: orgScoped(org, "SOURCE_ORDER_REVIEW"), sk: f.requestId })).toBeUndefined();expect(f.audit.recorded()).toEqual([]);
 });
+it("validates expected company again at the internal reviewed boundary before any storage access", async () => {
+ const f = fixture(), before = f.db.commandNames().length;
+ const input = { orgId: org, expectedOrgId: foreign, by: actor, order: ["rovara"], expectedRevision: 0, request: { orgId: org, developerId: actor, requestId: randomUUID(), fingerprint: "a".repeat(64) } };
+ await expect(f.store.setOrder(input)).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.db.commandNames()).toHaveLength(before);expect(f.order()).toBeUndefined();
+});
