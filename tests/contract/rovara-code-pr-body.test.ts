@@ -1363,3 +1363,30 @@ describe("the open pull request's Fixes line follows the binding at once", () =>
     expect(withLinearCloseLine("no block at all", undefined)).toEqual({ kind: "same" });
   });
 });
+
+// #412 (A1) merged into Cloud: the test-proof lines go at the end of the version 2 Tests section, and only when given.
+describe("the version 2 description carries the test proof", () => {
+  const PROOF = "Test proof: 1 check fails on the original code and passes now";
+
+  it("lists the proof lines at the end of the Tests section, before the Reviews", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context(), [PROOF]);
+    const tests = body.indexOf("## Tests");
+    const proof = body.indexOf(`- ${PROOF}`);
+    expect(tests).toBeGreaterThanOrEqual(0);
+    expect(proof).toBeGreaterThan(tests);
+    expect(proof).toBeGreaterThan(body.indexOf("- Tests added:"));
+    expect(proof).toBeLessThan(body.indexOf("## Reviews"));
+    expect(body.split(PROOF)).toHaveLength(2);
+  });
+
+  it("leaves the description as it was without proof lines", () => {
+    expect(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context(), [])).toBe(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context()));
+    expect(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context())).not.toContain("Test proof");
+  });
+
+  it("carries them in the status block a later update rewrites when they are given", () => {
+    const lines = workflowPullRequestStatusLines(workflowWith(), context(), [PROOF]);
+    expect(lines).toContain(`- ${PROOF}`);
+    expect(workflowPullRequestStatusLines(workflowWith(), context())).not.toContain(`- ${PROOF}`);
+  });
+});
