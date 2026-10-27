@@ -13644,7 +13644,7 @@ async function blockWorkflowE2EReadiness(dependencies: AwsBrokerDependencies, it
       } } },
     // AUTOFIX (LIVEFIX-1): a block written here, before the round started, is looked at by the automatic-fix policy exactly like one a finished run writes: it sends the work back, retries, or
     // asks. The row commits with the block, so no blocked VERIFY step is left for nobody to decide.
-    ...(dependencies.autofix?.enabled === true ? [workflowDispatchItem(dependencies.tableName, item.taskId, blocked.revision, "AUTOFIX", blocked.candidate?.digest ?? "0".repeat(64), now)] : []),
+    ...(dependencies.autofix?.enabled === true && blocked.fixSource === undefined && (blocked.pullRequests?.length ?? 0) === 0 ? [workflowDispatchItem(dependencies.tableName, item.taskId, blocked.revision, "AUTOFIX", blocked.candidate?.digest ?? "0".repeat(64), now)] : []),
   ] }));
   // Run the look right away (never throws); the recovery sweep is the fallback if this is lost.
   if (dependencies.autofix?.enabled === true) await dispatchWorkflowContinuation(dependencies, item.taskId);
