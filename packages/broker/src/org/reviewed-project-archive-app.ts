@@ -13,6 +13,7 @@ export async function readReviewedProjectArchiveAppPreview(deps: Pick<Deps,"docu
 export async function archiveProjectReviewedWithEffects(deps: Deps, caller: DeveloperCaller, name: string, body: unknown): Promise<ReviewedProjectArchiveOutcome> {
  const parsed = ReviewedProjectArchiveBodySchema.safeParse(body);
  if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review the project and acknowledge that new work stops before archiving.");
+ if (parsed.data.expectedOrgId !== undefined && parsed.data.expectedOrgId !== caller.orgId) throw agentXError("CHANGE_STALE", "The company changed. Refresh and review the archive again.");
  const change = { requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, expectedProjectRevision: parsed.data.expectedProjectRevision };
  try {
   const outcome = await commitReviewedProjectArchive(deps, caller, name, change);

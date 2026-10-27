@@ -95,6 +95,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname.startsWith("/v1/web/") || url.pathname === "/v1/auth/browser/sign-out") {
  if (url.pathname.startsWith("/v1/web/") && !webRouteAllowed(method, url.pathname)) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
  const webCaller = await authenticateWebRequest(deps, { method, path: url.pathname, headers, requestId: "mock-request" });
+ // B7 exercises the reviewed route against the same persisted transaction/audit table.
+ if (current.name === "admin" && ((method === "GET" && /^\/v1\/web\/projects\/[^/]+\/archive-preview$/.test(url.pathname)) || (method === "POST" && /^\/v1\/web\/projects\/[^/]+\/reviewed-archive$/.test(url.pathname)))) {
+  let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }
+  const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body);json(200,result);return;
+ }
  // Lane B: real read handlers; the scenario endpoint seeds only synthetic persisted rows.
  if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/projects" || /^\/v1\/web\/projects\/[^/]+(?:\/members)?$/.test(url.pathname) || url.pathname === "/v1/web/agents" || /^\/v1\/web\/agents\/[^/]+\/versions$/.test(url.pathname) || url.pathname === "/v1/web/org/agent-guardrails")) {
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"));json(200,result);return;

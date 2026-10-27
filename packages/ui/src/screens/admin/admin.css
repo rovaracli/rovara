@@ -20,3 +20,8 @@
 
 /* Lane B: read-only inspection links meet touch target sizing. */
 .rv-admin-b1-link{display:inline-flex;align-items:center;min-height:44px;margin-right:var(--rv-space-4)}
+
+/* Lane B: a readable consequential-change review, using existing theme tokens. */
+.rv-admin-archive-review{display:grid;gap:var(--rv-space-3)}
+.rv-admin-archive-review p,.rv-admin-archive-review label{overflow-wrap:anywhere}
+.rv-admin-archive-review label{display:flex;align-items:flex-start;gap:var(--rv-space-2);min-height:44px}

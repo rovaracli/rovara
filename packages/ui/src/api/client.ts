@@ -12,7 +12,7 @@ const redirectedHosts = new WeakSet<AppHost>();
 export function createApiClient(host: AppHost) {
  async function request(input: ApiRequest): Promise<ApiResponse> {
   const readRequest = input.method === "GET" || input.method === "HEAD";
-  const retry = readRequest || idempotent(input.body);
+  const retry = input.retry !== "never" && (readRequest || idempotent(input.body));
   for (let attempt = 0;; attempt++) {
    let response: ApiResponse;
    try { response = await host.transport.request(input); }
@@ -34,8 +34,8 @@ export function createApiClient(host: AppHost) {
  function read<T>(body: unknown, schema: Reader<T>): T { try { return schema.parse(body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."); } }
  return {
   async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }) })).body, schema); },
-  async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>): Promise<SendResult<T>> {
-   const response = await request({ method, path, body });
+  async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<SendResult<T>> {
+   const response = await request({ method, path, body, ...options });
    if (response.status === 202) {
     const confirmation = PendingConfirmationReaderSchema.safeParse(response.body);
     if (confirmation.success && (confirmation.data.status === "NEEDS_CONFIRMATION" || confirmation.data.status === "NEEDS_OWNER_APPROVAL")) return { kind: "needs_confirmation", changes: confirmation.data.changes, ...(confirmation.data.confirmUrl !== undefined && isConfirmUrl(confirmation.data.confirmUrl, host.origin) ? { confirmUrl: confirmation.data.confirmUrl } : {}) };

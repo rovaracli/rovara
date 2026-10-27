@@ -39,7 +39,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   if (write && csrf === undefined) await refresh();
   const send = () => { if (write) headers.set("x-rovara-csrf", csrf!);return fetchJson(path, { method: input.method, headers, ...(body === undefined ? {} : { body }) }); };
   let response = await send();
-  if (write && response.status === 403 && typeof response.body === "object" && response.body !== null && "error" in response.body && typeof response.body.error === "object" && response.body.error !== null && "code" in response.body.error && response.body.error.code === "CSRF_STALE") { await refresh();response = await send(); }
+  if (write && input.retry !== "never" && response.status === 403 && typeof response.body === "object" && response.body !== null && "error" in response.body && typeof response.body.error === "object" && response.body.error !== null && "code" in response.body.error && response.body.error.code === "CSRF_STALE") { await refresh();response = await send(); }
   if (input.method === "GET" && input.path === "/v1/app/me" && response.status === 200) { const me = AppMeResponseReaderSchema.safeParse(response.body);if (me.success) csrf = me.data.csrf; }
   return response;
  } };
