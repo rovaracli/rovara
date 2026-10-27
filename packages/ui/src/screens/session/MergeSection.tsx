@@ -38,7 +38,7 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
  const sending = useRef(false), requestId = useRef<string | undefined>(undefined), key = ["session", session.sessionId];
  // While a press waits for its confirmation the session is read again every few seconds, so the page notices the merge without a reload.
  useQuery({ queryKey: key, enabled: pending !== undefined, refetchInterval: 4000, queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(key), await sessions.read(session.sessionId)) });
- const items = task.mergeTracking ?? [], merged = mergedEverywhere(task), mayPress = session.you.level !== "view";
+ const items = task.mergeTracking ?? [], merged = mergedEverywhere(task), mayPress = session.you.level !== "view" || session.you.mayMerge === true;
  const unmerged = items.filter(item => item.state !== "merged");
  async function press() {
   if (sending.current || pending !== undefined) return;
