@@ -374,7 +374,7 @@ export const AuditEventInputSchema = z.object({
   const modelFacts = event.action === "project.models_changed" ? ProjectModelsChangedAuditFactsSchema : event.action === "project.model_selection_changed" ? ProjectModelSelectionChangedAuditFactsSchema : undefined;
   if (modelFacts !== undefined) {
     if (!modelFacts.safeParse(event.facts).success) context.addIssue({ code: "custom", path: ["facts"], message: "Invalid project model audit facts." });
-    if (event.target.kind !== "project" || !("id" in event.target)) context.addIssue({ code: "custom", path: ["target"], message: "Project model events require an opaque project target." });
+    if (event.target.kind !== "project") context.addIssue({ code: "custom", path: ["target"], message: "Project model events require a project target." });
     if (event.details !== undefined) context.addIssue({ code: "custom", path: ["details"], message: "Project model events do not accept free-text details." });
   }
   if (event.facts === undefined) return;

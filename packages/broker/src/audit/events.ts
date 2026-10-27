@@ -374,12 +374,12 @@ export function auditModelSourceOrderChanged(input: AuditBuilderBase & { count: 
 }
 
 // Owner playbook model registrations only; future emitters require reviewed atomic writes and reader-first rollout.
-type ProjectModelAuditBase = Omit<AuditBuilderBase, "details" | "related"> & { projectId: string };
+type ProjectModelAuditBase = Omit<AuditBuilderBase, "details" | "related"> & { projectName: string };
 function projectModelEvent(action: "project.models_changed" | "project.model_selection_changed", input: ProjectModelAuditBase & { definitionRevision: number }, facts: Record<string, Fact>): AuditEventInput {
   const base = { orgId: input.orgId, actor: input.actor, occurredAt: input.occurredAt, occurrence: input.occurrence, ...(input.proof === undefined ? {} : { proof: input.proof }) };
-  return AuditEventInputSchema.parse(build(action, base, { kind: "project", id: input.projectId }, facts, [input.orgId, input.projectId, String(input.definitionRevision)]));
+  return AuditEventInputSchema.parse(build(action, base, { kind: "project", name: input.projectName }, facts, [input.orgId, input.projectName, String(input.definitionRevision)]));
 }
-/** Occurrence is the reviewed request or generation/revision identity; org/project/revision also bind the event id. No raw model lists or details. */
+/** Occurrence is the reviewed request or generation/revision identity; org/project/revision also bind the event id. Project names appear only in the name-keyed target; the appender pseudonymizes it and seals its erasable name. No raw model lists or caller-supplied details. */
 export function auditProjectModelsChanged(input: ProjectModelAuditBase & ProjectModelsChangedAuditFacts): AuditEventInput {
   const facts = ProjectModelsChangedAuditFactsSchema.parse({ beforeModelIdsDigest: input.beforeModelIdsDigest, afterModelIdsDigest: input.afterModelIdsDigest, beforeDefaultModelIdDigest: input.beforeDefaultModelIdDigest, afterDefaultModelIdDigest: input.afterDefaultModelIdDigest, beforeCount: input.beforeCount, afterCount: input.afterCount, definitionRevision: input.definitionRevision });
   return projectModelEvent("project.models_changed", input, facts);
