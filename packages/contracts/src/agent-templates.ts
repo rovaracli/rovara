@@ -236,11 +236,33 @@ const ROVARA_CODE_STEPS: ResolvedStep[] = [
   { id: "pull_request", name: "Pull request", kind: "pull_request", settings: { instructions: [] } },
 ];
 
-/** Rovara Code version 2: the same steps with a plan check (a second model reads the plan) directly after the plan. Version 1's steps above never change. */
+/**
+ * Rovara Code version 2: what the planner and the builder are told about input rules, tests and checks. General guidance for any change, found wanting in three graded rehearsals: input accepted
+ * through a loose conversion, a new option never tested with the existing ones or above the item count, and a Checks section without the repository's CI checks. The plan check's matching checklist
+ * is in the plan check's own prompt (`PLAN_CRITIC_QUALITY_CHECKLIST`). Version 1 never had either.
+ */
+export const ROVARA_CODE_PLAN_GUIDANCE = [
+  "Plan the input rules, the tests and the checks as well as the code.",
+  "- Input: say exactly which values are accepted and which are rejected (empty, padded with spaces, signed, decimal, exponent, hex, below the minimum, above the maximum), and parse strictly. A loose conversion such as Number() or parseInt() accepts values the rule does not.",
+  "- Tests: for each new option, plan a test alone, one combined with each existing option it can meet (such as filters), and one at each boundary: the minimum, the maximum, one past each, and a value above the number of available items.",
+  "- Checks: list every check the repository's CI requires. Read its workflow files, and do not stop at lint.",
+].join("\n");
+
+export const ROVARA_CODE_BUILD_GUIDANCE = [
+  "Validate input strictly: accept only the documented form and reject everything else with a clear error before doing any work.",
+  "Do not rely on a loose conversion such as Number() or parseInt(), which accepts padding, exponents, hex and decimals.",
+  "Write tests for each new option alone, combined with the existing options, and at its boundaries (the minimum, the maximum, one past each, and above the number of available items).",
+  "Run the plan's checks and the repository's own test command before you finish.",
+].join("\n");
+
+const withGuidance = (step: ResolvedStep, text: string): ResolvedStep => ({ ...structuredClone(step), settings: { instructions: [{ agentName: "Rovara Code", text }] } });
+
+/** Rovara Code version 2: the same steps with a plan check (a second model reads the plan) directly after the plan, and the plan and build steps' guidance. Version 1's steps above never change. */
 const ROVARA_CODE_STEPS_V2: ResolvedStep[] = [
-  ...structuredClone(ROVARA_CODE_STEPS.slice(0, 1)),
+  withGuidance(ROVARA_CODE_STEPS[0]!, ROVARA_CODE_PLAN_GUIDANCE),
   { id: "plan_critic", name: "Plan check", kind: "plan_critic", settings: { instructions: [] } },
-  ...structuredClone(ROVARA_CODE_STEPS.slice(1)),
+  withGuidance(ROVARA_CODE_STEPS[1]!, ROVARA_CODE_BUILD_GUIDANCE),
+  ...structuredClone(ROVARA_CODE_STEPS.slice(2)),
 ];
 
 interface DraftVersion { recipe: ResolvedRecipe; releasedIn: string; notes: string }

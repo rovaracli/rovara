@@ -115,11 +115,34 @@ function changedLines(context: PullRequestBodyContext, limit: number): string[] 
   ];
 }
 
+const SHORT_SHA = 8;
+/** The most repositories whose tested commit the Tests section names. */
+const TESTED_COMMITS_MAX = 8;
+
+/**
+ * The commit the checks ran on: the head of the current candidate, per repository, and the head the pull request holds when that is a different commit with the same code. Undefined when no check
+ * ran on this code, because a line that said "tested" would then be untrue.
+ */
+function testedCommitLine(workflow: WorkflowSnapshot, report: VerificationReport): string | undefined {
+  const candidate = workflow.candidate;
+  if (candidate === undefined || report.passed.length + report.failed.length === 0) return undefined;
+  const short = (sha: string) => sha.slice(0, SHORT_SHA);
+  const entries = [...candidate.repositories].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)).map((repository) => {
+    const pushed = (workflow.pullRequests ?? []).find((pullRequest) => pullRequest.repositoryId === repository.repositoryId && pullRequest.candidateDigest === candidate.digest)?.headSha;
+    return { repositoryId: repository.repositoryId, text: `${short(repository.commitSha)}${pushed === undefined || pushed === repository.commitSha ? "" : ` (pushed as ${short(pushed)})`}` };
+  });
+  if (entries.length === 1) return `- Tested on head commit ${entries[0]!.text}`;
+  const listed = entries.slice(0, TESTED_COMMITS_MAX).map((entry) => `${inertLine(entry.repositoryId, 60)} ${entry.text}`);
+  return `- Tested on head commits: ${listed.join(", ")}${more(entries.length, listed.length)}`;
+}
+
 function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, limit: number): string[] {
   const report: VerificationReport = verificationReport(workflow, context.changedFiles?.files ?? [], { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) });
   const base = context.baseBranch === undefined || context.baseBranch.trim() === "" ? "the base branch" : inertLine(context.baseBranch, 100);
   const lines: string[] = [];
   if (report.ciBasis === "all_checks") lines.push(`Checked against every check on this branch, because ${base} has no required checks.`);
+  const tested = testedCommitLine(workflow, report);
+  if (tested !== undefined) lines.push(tested);
   if (report.passed.length > 0) lines.push(`- Passed: ${joined(report.passed.map((item) => item.label), limit)}`);
   if (report.failed.length > 0) lines.push(`- Failed: ${joined(report.failed.map((item) => `${item.label} (${item.summary})`), limit)}`);
   if (report.notChecked.length > 0) lines.push(`- Not checked: ${joined(report.notChecked.map((item) => `${item.label} (${item.reason})`), limit)}`);
