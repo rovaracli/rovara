@@ -85,7 +85,7 @@ const ORDER_PATH = "/v1/app/org/model-sources-order";
 const ITEM_PATH = /^\/v1\/app\/org\/model-sources\/([^/]+)(?:\/(check))?$/;
 /** Called only by the trusted cookie adapter; share the exact path matchers with the handlers. */
 export function requireReviewedModelSourceWebWrite(request: AdaptedHttpRequest, url: URL): void {
-  if (request.method === "PUT" && url.pathname === ORDER_PATH && !ReviewedSourceOrderBodySchema.safeParse(jsonBody(request)).success) {
+  if (request.method === "PUT" && url.pathname === ORDER_PATH && !ReviewedSourceOrderBodySchema.required({ expectedOrgId: true }).safeParse(jsonBody(request)).success) {
     throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
   }
   const item = ITEM_PATH.exec(url.pathname);
@@ -406,10 +406,10 @@ async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise
   if (typeof body === "object" && body !== null && "expectedRevision" in body) {
     const reviewed = ReviewedSourceOrderBodySchema.safeParse(body);
     if (!reviewed.success) throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
-    const { requestId, order, expectedRevision } = reviewed.data;
+    const { requestId, order, expectedRevision, expectedOrgId } = reviewed.data;
     // Preserve tombstones for the sweeper: cleanup must not precede the reviewed atomic write.
     // RequestMark requires fingerprint, but only the reviewed digest binds this path; no legacy receipt is used.
-    return deps.modelSources.store.setOrder({ orgId: caller.orgId, by: caller.developerId, order, expectedRevision, request: { orgId: caller.orgId, developerId: caller.developerId, requestId, fingerprint: fingerprintOf("reviewed-source-order", "", { order, expectedRevision }) } });
+    return deps.modelSources.store.setOrder({ orgId: caller.orgId, by: caller.developerId, order, expectedRevision, expectedOrgId, request: { orgId: caller.orgId, developerId: caller.developerId, requestId, fingerprint: fingerprintOf("reviewed-source-order", "", { order, expectedRevision }) } });
   }
   await finishOwedRemovals(deps, caller, caller);
   const { requestId, order } = parseBody(OrderBodySchema, body);

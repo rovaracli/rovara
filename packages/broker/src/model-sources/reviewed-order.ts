@@ -9,18 +9,19 @@ import { auditPending, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { requestRecordPut } from "../org/request-records.js";
 import type { ModelSourceStoreInput, StoredModelSources } from "./store.js";
-type Input = { orgId: string; by: string; order: readonly string[]; expectedRevision: number; request?: RequestMark | undefined };
+type Input = { orgId: string; by: string; order: readonly string[]; expectedRevision: number; expectedOrgId?: string | undefined; request?: RequestMark | undefined };
 type Deps = ModelSourceStoreInput & { read(orgId: string): Promise<StoredModelSources> };
-export const ReviewedSourceOrderBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1), order: z.array(ModelSourceIdSchema).min(1).max(20) }).strict();
+export const ReviewedSourceOrderBodySchema = z.object({ requestId: z.string().uuid(), expectedOrgId: OrgIdSchema.optional(), expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1), order: z.array(ModelSourceIdSchema).min(1).max(20) }).strict();
 const resultSchema = z.object({ order: z.array(ModelSourceIdSchema).min(1).max(20), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
 const forbidden = () => agentXError("FORBIDDEN", "Only a current company owner or admin can change source order.");
 const stale = () => agentXError("CHANGE_STALE", "Company sources changed. Reload and review the order again.");
 const unavailable = () => agentXError("AUDIT_UNAVAILABLE", "The source-order change could not be confirmed. Reload before trying again.");
 async function read(deps: Deps, key: { pk: string; sk: string }) { return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item; }
 export async function changeReviewedSourceOrder(deps: Deps, input: Input): Promise<{ order: string[]; revision: number }> {
- const parsed = ReviewedSourceOrderBodySchema.safeParse({ requestId: input.request?.requestId, expectedRevision: input.expectedRevision, order: input.order });
+ const parsed = ReviewedSourceOrderBodySchema.safeParse({ requestId: input.request?.requestId, expectedOrgId: input.expectedOrgId, expectedRevision: input.expectedRevision, order: input.order });
  if (!parsed.success || !OrgIdSchema.safeParse(input.orgId).success || !/^[a-f0-9]{64}$/.test(input.by) || input.request?.orgId !== input.orgId || input.request.developerId !== input.by) throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
  const change = parsed.data;
+ if (change.expectedOrgId !== undefined && change.expectedOrgId !== input.orgId) throw agentXError("FORBIDDEN", "Company changed. Reload and review source order again.");
  try {
   const orgId = OrgIdSchema.parse(input.orgId), by = input.by, actorKey = orgMemberKey(orgId, by), pointerKey = developerOrgKey(by), orgKey = orgMetaKey(orgId);
   const [actor, pointer, org] = await Promise.all([read(deps, actorKey), read(deps, pointerKey), read(deps, orgKey)]);

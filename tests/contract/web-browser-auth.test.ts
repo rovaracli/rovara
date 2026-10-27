@@ -274,8 +274,8 @@ it("requires an expected company before a reviewed cookie order can affect a mov
  expect((await h.call("PUT", "/v1/web/org/model-sources-order", headers, { ...body, expectedOrgId: TEST_ORG })).status).toBe(403);
  expect(h.db.get(modelSourcesKey(TEST_ORG))).toEqual(original);expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.transactions()).toHaveLength(before);
 });
-it("applies and replays a same-company bound cookie order with one atomic audit", async () => {
- const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);h.db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" });
+for (const role of ["owner", "admin"] as const) it(`applies and replays a same-company bound cookie order for ${role} with one atomic audit`, async () => {
+ const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } });audit.attach(h.db);seedMembership(h.db, WHO, { orgId: TEST_ORG, role });h.db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" });
  const body = { requestId: randomUUID(), expectedOrgId: TEST_ORG, expectedRevision: 1, order: ["rovara"] }, headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
  for (let i = 0; i < 2; i++) expect((await h.call("PUT", "/v1/web/org/model-sources-order", headers, body)).status).toBe(200);expect(h.db.get(modelSourcesKey(TEST_ORG))?.revision).toBe(2);expect(audit.recordedBy("model_source.order_changed")).toHaveLength(1);
 });
