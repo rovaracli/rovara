@@ -36,7 +36,7 @@ function SlackGuidance() {
  return <details className="rv-connection-guidance"><summary>Slack setup guidance</summary>
  <p>No company-scoped Slack installation, permission or event data is available to this page.</p><p>Installation-wide configuration is not proof of association with this company.</p>
  <ol><li>First, the Slack workspace must be connected to this company. A Rovara operator handles workspace connection; <code>connect-team</code> is operator work.</li>
- <li>On installations with company Slack channel binding support, a company owner or admin binds each channel to a project using the CLI <code>slack bind</code>. This page has no bind control and cannot confirm that support is installed.</li>
+ <li>On installations with company Slack channel binding support, a company owner or admin binds each channel to a project using the CLI <code>rovara slack bind</code>. This page has no bind control and cannot confirm that support is installed.</li>
  <li>Invite the Rovara bot into that channel with <code>/invite</code>.</li></ol>
  <p>This page cannot see the workspace connection, channel binding or delivery. Permissions and current health remain unknown.</p><p>Opening this guidance makes no Slack request and changes no configuration.</p></details>;
 }
