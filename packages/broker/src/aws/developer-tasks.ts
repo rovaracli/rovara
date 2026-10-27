@@ -5103,8 +5103,8 @@ export async function autoRetryReviewsFromSystem(deps: DeveloperTaskRouteDepende
   const caller = automaticCaller(deps, task);
   const access = await authorizeTaskAction(deps, caller, taskId, "retry");
   await actionableWorkspace(deps, task);
-  await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, requestId, input.reason, access, caller, decision);
-  return "STARTED";
+  const accepted = await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, requestId, input.reason, access, caller, decision);
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
 /** Starts a separate server-admitted native CHECKS operation from VERIFY/WAITING. */
