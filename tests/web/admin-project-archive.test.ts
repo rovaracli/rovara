@@ -49,3 +49,29 @@ it("disables archive during a background company authority check",async()=>{cons
 it("disables an open archive review when project details become stale",async()=>{const f=mount();await review();acknowledge();const original=f.request.getMockImplementation()!;f.request.mockImplementation(r=>r.path==="/v1/app/projects/payments"?Promise.resolve({status:400,body:{}}):original(r));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","project-detail"]});});await waitFor(()=>expect(screen.getByRole("button",{name:"Archive project"})).toHaveProperty("disabled",true));expect(f.posts()).toEqual([]);f.close();});
 
 it("never relabels old repository/settings data as a newer project revision",async()=>{const f=mount({preview:()=>({status:200,body:{orgId:"org_aaaaaaaaaaaaaaaaaaaa",project:"payments",status:"active",expectedRevision:0,expectedProjectRevision:4,checkedAt:"2026-10-27T15:00:00.000Z",access:{actions:["archive"]}}})});await review();expect(f.query.getQueryData(["admin","project-detail",f.me.org.orgId,f.me.developer.id,"payments"])).toMatchObject({latestRevision:3});f.close();});
+
+// B8: a read after an ambiguous write cannot silently replace the retained attempt's pins.
+for (const changed of ["lifecycle", "configuration"] as const) it(`requires a fresh explicit archive review when ${changed} pins change after ambiguity`, async () => {
+ let lifecycle = 0, configuration = 3;
+ const f = mount({ post: async () => { throw new Error("Synthetic ambiguous transport failure"); }, preview: () => ({ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", status: "active", expectedRevision: lifecycle, expectedProjectRevision: configuration, checkedAt: "2026-10-27T16:40:00.000Z", access: { actions: ["archive"] } } }) });
+ try {
+  await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+  await screen.findByText(/outcome is unconfirmed/);expect(f.posts()).toHaveLength(1);
+  const original = f.posts()[0]!.body as Record<string, unknown>;
+  if (changed === "lifecycle") lifecycle++;else configuration++;
+  fireEvent.click(screen.getByRole("button", { name: "Check current state" }));
+  await screen.findByText("Current project status: Active.");
+  expect(f.posts()).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Retry same archive request" })).toBeNull();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  fireEvent.click(await screen.findByRole("button", { name: "Review latest state" }));
+  const checkbox = await screen.findByRole("checkbox");expect(checkbox).toHaveProperty("checked", false);
+  expect(f.posts()).toHaveLength(1);expect(screen.getByRole("button", { name: "Archive project" })).toHaveProperty("disabled", true);
+  acknowledge();await waitFor(() => expect(screen.getByRole("button", { name: "Archive project" })).toHaveProperty("disabled", false));
+  fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+  await screen.findByText(/outcome is unconfirmed/);expect(f.posts()).toHaveLength(2);
+  const next = f.posts()[1]!.body as Record<string, unknown>;
+  expect(next.requestId).not.toBe(original.requestId);
+  expect(next).toMatchObject({ expectedOrgId: f.me.org.orgId, expectedRevision: lifecycle, expectedProjectRevision: configuration, acknowledgeNewWorkStops: true });
+ } finally { f.close(); }
+});
