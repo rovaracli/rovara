@@ -214,7 +214,7 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
-import { parallelPartsForTask, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
+import { parallelPartsDecision, parallelPartsForTask, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../rovara-code/critic.js";
 import { noteFinishedTaskDuration } from "../rovara-code/duration.js";
@@ -310,7 +310,7 @@ import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type Ag
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
 import { understandPrompt } from "../rovara-code/understand.js";
-import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal, type MergeTrackingItem, type MergeView } from "@agentx/contracts";
+import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal, type MergeTrackingItem, type MergeView, type TaskGraphV1 } from "@agentx/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../rovara-code/question-answers.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
@@ -3038,7 +3038,8 @@ export async function decideTaskWorkflow(
   const retired = mode === "PLAN" ? await retiredClaimIdList(deps, workflow) : [];
   // Only a coding run checks its work: a planning run, here revising a plan the owner did not approve, gets no proposed command.
   const selectedReadiness = next.checkPolicy === undefined || mode !== "IMPLEMENT" ? undefined : workflowSelectedChecks(next.checkPolicy).map((check) => check.command);
-  const firstParallel = mode === "IMPLEMENT" && planGraph !== undefined && next.workflowDependenciesApproval !== undefined ? await partsSettingOf(deps, task, next) : undefined;
+  const firstParts = mode === "IMPLEMENT" && planGraph !== undefined && next.workflowDependenciesApproval !== undefined ? await partsDecisionOf(deps, task, next, planGraph) : undefined;
+  const firstParallel = firstParts?.parallel;
   const workflowDependencies = mode === "IMPLEMENT" && planGraph !== undefined && next.workflowDependenciesApproval !== undefined
     ? { graph: planGraph, approval: next.workflowDependenciesApproval, peopleRevision: access.peopleRevision ?? 0, sequenceStart: 0, ...(firstParallel === undefined ? {} : { parallel: firstParallel }) } : undefined;
   // The decision's detail, beside the task (never inside it), when there is anything to keep beyond the decision itself.
@@ -3133,7 +3134,9 @@ export async function decideTaskWorkflow(
         ];
       }, { sharedTask: task.shared === true, workflowMode: mode, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(mode === "PLAN" && nextPhase !== undefined ? { workflowPhase: nextPhase } : {}), ...(selectedReadiness === undefined ? {} : { readiness: selectedReadiness }), ...(mode === "IMPLEMENT" ? taskBaseOption(task, next) : {}), ...(mode === "IMPLEMENT" && next.programStepId !== undefined ? { programStepId: next.programStepId } : {}), ...(workflowDependencies === undefined ? {} : { workflowDependencies }),
         // M1.3 Task 3.7b (owner decision D2): the coding run also exports the unchanged code, for the approved application plan's baseline round.
-        ...(mode === "IMPLEMENT" && baselineSource ? { workflowE2EBaselineSource: true as const } : {}) });
+        ...(mode === "IMPLEMENT" && baselineSource ? { workflowE2EBaselineSource: true as const } : {}),
+        // Bug N: why the plan's parts run one after another, as the operation's first timeline line.
+        ...(firstParts?.note === undefined ? {} : { firstEvent: firstParts.note }) });
     });
   } catch (error) {
     // Another decision got there first: the same request (a double press) is that decision; any other is refused with
@@ -3733,6 +3736,12 @@ async function approvedWorkflowDependencies(deps: DeveloperTaskRouteDependencies
   const parallel = await partsSettingOf(deps, task, workflow);
   return { ...bindingWithoutParallel, graph, approval, ...(resumeTreeSha === undefined ? {} : { resumeTreeSha }), peopleRevision: peopleRevision ?? 0,
     sequenceStart: latestProgress?.sequence ?? binding.sequenceStart ?? 0, resumeProgress, ...(parallel === undefined ? {} : { parallel }) };
+}
+
+/** The same, with the line for the operation's timeline when the room holds the plan's parts back (see rovara-code/parallel-parts.ts). */
+function partsDecisionOf(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "developerId" | "slackUserId" | "charge">, workflow: WorkflowSnapshot | undefined, graph: TaskGraphV1) {
+  return parallelPartsDecision({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: deps.orgId, slackTeamId: deps.slackTeamId, limitDefaults: deps.actions.limitDefaults },
+    { developerId: task.developerId, slackUserId: task.slackUserId, ...(task.charge === undefined ? {} : { charge: task.charge }), workflow }, graph);
 }
 
 /** How many parts of the task's approved plan may be built at once (Rovara Code v2 only; see rovara-code/parallel-parts.ts). */
