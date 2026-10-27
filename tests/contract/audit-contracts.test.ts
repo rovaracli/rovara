@@ -130,7 +130,7 @@ describe("the event catalog", () => {
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
       "agent.rolled_back", "builtin.adopted", "chain.published", "chain.rolled_back", "trigger.enabled",
       "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "model_source.saved",
-      "model_source.removed", "model_source.order_changed", "audit.read",
+      "model_source.removed", "model_source.order_changed", "project.models_changed", "project.model_selection_changed", "audit.read",
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);

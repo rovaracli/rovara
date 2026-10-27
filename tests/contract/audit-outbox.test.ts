@@ -723,6 +723,8 @@ describe("I4: the builders", () => {
     ["auditModelSourceSaved", (occurrence) => builders.auditModelSourceSaved({ ...base, occurrence, details, sourceId: "src_abcdefghij0123456789", sourceKind: "anthropic", change: "created" })],
     ["auditModelSourceRemoved", (occurrence) => builders.auditModelSourceRemoved({ ...base, occurrence, details, sourceId: "src_abcdefghij0123456789", sourceKind: "anthropic" })],
     ["auditModelSourceOrderChanged", (occurrence) => builders.auditModelSourceOrderChanged({ ...base, occurrence, details, count: 2 })],
+    ["auditProjectModelsChanged", (occurrence) => builders.auditProjectModelsChanged({ ...base, occurrence, projectId: "project_1", definitionRevision: 2, beforeModelIdsDigest: "a".repeat(64), afterModelIdsDigest: "b".repeat(64), beforeCount: 1, afterCount: 2 })],
+    ["auditProjectModelSelectionChanged", (occurrence) => builders.auditProjectModelSelectionChanged({ ...base, occurrence, projectId: "project_1", definitionRevision: 2, beforeModelIdDigest: "a".repeat(64), afterModelIdDigest: "b".repeat(64), sourceSurface: "slack" })],
     ["auditRead", (occurrence) => builders.auditRead({ ...base, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditStaffRead", (occurrence) => builders.auditStaffRead({ ...base, actor: { kind: "operator", id: `op_${"b".repeat(24)}` }, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
@@ -755,7 +757,9 @@ describe("I4: the builders", () => {
         const { details: kept, ...chain } = event;
         const outside = JSON.stringify(chain.target !== undefined && "name" in chain.target ? { ...chain, target: { kind: chain.target.kind } } : chain);
         for (const personal of PERSONAL) expect(outside, personal).not.toContain(personal);
-        expect(JSON.stringify(kept)).toContain("Jane Roe");
+        // New project-model events intentionally prohibit free-text details. Keep the old builder contract unchanged.
+        if (name === "auditProjectModelsChanged" || name === "auditProjectModelSelectionChanged") expect(kept).toBeUndefined();
+        else expect(JSON.stringify(kept)).toContain("Jane Roe");
       });
     });
   }

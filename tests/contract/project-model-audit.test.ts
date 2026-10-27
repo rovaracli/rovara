@@ -1,0 +1,27 @@
+import { expect,it } from "vitest";
+import { AUDIT_ACTIONS,AuditEventInputSchema } from "@agentx/contracts";
+import * as events from "../../packages/broker/src/audit/events.js";
+const base={orgId:"org_aaaaaaaaaaaaaaaaaaaa",actor:{kind:"member" as const,id:"a".repeat(64)},occurredAt:"2026-10-27T16:00:00.000Z",occurrence:"revision-2",projectId:"project_1",definitionRevision:2};
+const modelsFacts={beforeModelIdsDigest:"a".repeat(64),afterModelIdsDigest:"b".repeat(64),beforeDefaultModelIdDigest:"c".repeat(64),afterDefaultModelIdDigest:"d".repeat(64),beforeCount:1,afterCount:2,definitionRevision:2};
+const selectionFacts={beforeModelIdDigest:"a".repeat(64),afterModelIdDigest:"b".repeat(64),sourceSurface:"slack",definitionRevision:2};
+function event(action:string,facts:unknown){return {eventId:"aev_"+"a".repeat(40),orgId:base.orgId,actor:base.actor,occurredAt:base.occurredAt,action,target:{kind:"project",id:base.projectId},facts};}
+for(const [action,facts] of [["project.models_changed",modelsFacts],["project.model_selection_changed",selectionFacts]] as const){
+ it(`registers ${action} with the existing scalar verifier shape`,()=>{expect(AUDIT_ACTIONS as readonly string[]).toContain(action);expect(AuditEventInputSchema.safeParse(event(action,facts)).success).toBe(true);});
+ for(const field of ["rawModelIds","providerError","taskText"])it(`refuses ${field} facts on ${action}`,()=>{expect(AuditEventInputSchema.safeParse(event(action,{...facts,[field]:"unneeded-private-text"})).success).toBe(false);});
+ it(`requires safe bounded facts and an opaque project target for ${action}`,()=>{
+  expect(AuditEventInputSchema.safeParse(event(action,undefined)).success).toBe(false);expect(AuditEventInputSchema.safeParse({...event(action,facts),target:{kind:"org",id:base.orgId}}).success).toBe(false);expect(AuditEventInputSchema.safeParse({...event(action,facts),target:{kind:"project",name:"private name"}}).success).toBe(false);expect(AuditEventInputSchema.safeParse({...event(action,facts),details:[{subject:"org",fields:{task:"private task"}}]}).success).toBe(false);
+ });
+}
+it("rejects malformed model commitments, counts, revisions and source surfaces",()=>{
+ for(const facts of [{...modelsFacts,afterModelIdsDigest:"not-a-digest"},{...modelsFacts,afterCount:17},{...modelsFacts,definitionRevision:-1}])expect(AuditEventInputSchema.safeParse(event("project.models_changed",facts)).success).toBe(false);
+ for(const facts of [{...selectionFacts,afterModelIdDigest:"raw provider/model"},{...selectionFacts,sourceSurface:"arbitrary source"},{...selectionFacts,definitionRevision:1.5}])expect(AuditEventInputSchema.safeParse(event("project.model_selection_changed",facts)).success).toBe(false);
+});
+it("builds org/project/revision-bound events without copying free text or extra fields",()=>{
+ expect(events).toHaveProperty("auditProjectModelsChanged");expect(events).toHaveProperty("auditProjectModelSelectionChanged");
+ const extra={details:[{subject:"org",fields:{task:"unneeded-private-text"}}],rawModelIds:"unneeded-private-text"};
+ const make=events.auditProjectModelsChanged,input={...base,...modelsFacts,...extra};const first=make(input);
+ expect(AuditEventInputSchema.safeParse(first).success).toBe(true);expect(first.facts).toEqual(modelsFacts);expect(first.target).toEqual({kind:"project",id:base.projectId});expect(JSON.stringify(first)).not.toContain("unneeded-private-text");expect(make(input)).toEqual(first);
+ for(const change of [{orgId:"org_bbbbbbbbbbbbbbbbbbbb"},{projectId:"project_2"},{definitionRevision:3},{occurrence:"other-request"}])expect(make({...input,...change}).eventId).not.toBe(first.eventId);
+ const selection=events.auditProjectModelSelectionChanged({...base,...selectionFacts,sourceSurface:"slack",...extra});expect(selection.action).toBe("project.model_selection_changed");expect(selection.facts).toEqual(selectionFacts);expect(JSON.stringify(selection)).not.toContain("unneeded-private-text");
+ expect(()=>make({...input,afterModelIdsDigest:"bad"})).toThrow();
+});
