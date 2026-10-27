@@ -63,6 +63,25 @@ async function setup() {
 }
 
 describe("starting work from the app", () => {
+  it("keeps the org's Rovara Code max per run for a task the project's process layer runs: the lower of it and the layer's own (I1)", async () => {
+    const t = await setup();
+    await t.store.setBudget(TEST_ORG, ROVARA_CODE_AGENT_ID, { maxPerRunUsd: 5 }, "test");
+    const layer = await t.processLayer();
+    t.point(layer);
+    const first = await t.send();
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    expect(t.meta((first.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 5, agent: { agentId: layer, builtin: false } });
+    // The layer's own cap can only lower it.
+    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 2 }, "test");
+    const lower = await t.send();
+    expect(lower.status, JSON.stringify(lower.body)).toBe(202);
+    expect(t.meta((lower.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 2 });
+    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 50 }, "test");
+    const higher = await t.send();
+    expect(higher.status, JSON.stringify(higher.body)).toBe(202);
+    expect(t.meta((higher.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 5 });
+  });
+
   it("runs the built-in Rovara Code, with the run request it always had, for a project with no playbook document", async () => {
     const t = await setup();
     const requestId = randomUUID();
