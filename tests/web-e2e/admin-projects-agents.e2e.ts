@@ -24,12 +24,12 @@ for(const area of ["projects","agents"])test(`keeps keyboard focus on the same $
  let release!:()=>void,started!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),requestStarted=new Promise<void>(resolve=>{started=resolve;});
  const pattern=area==="projects"?"**/v1/web/projects?include=archived":"**/v1/web/agents?scope=all";
  await page.route(pattern,async route=>{const response=await route.fetch();started();await gate;await route.fulfill({response});});
- await button.focus();await page.keyboard.press("Enter");await requestStarted;await expect(button).toHaveAttribute("aria-busy","true");await expect(button).toBeFocused();expect(await original!.evaluate(node=>node===document.activeElement)).toBe(true);
- release();await expect(button).not.toHaveAttribute("aria-busy","true");expect(await original!.evaluate(node=>node===document.activeElement)).toBe(true);await page.unroute(pattern);
+ await button.focus();await page.keyboard.press("Enter");await requestStarted;await expect(button).toHaveAttribute("aria-busy","true");await expect(button).toBeFocused();expect(await original.evaluate(node=>node===document.activeElement)).toBe(true);
+ release();await expect(button).not.toHaveAttribute("aria-busy","true");expect(await original.evaluate(node=>node===document.activeElement)).toBe(true);await page.unroute(pattern);
 });
 for(const area of ["projects","agents"])test(`keeps keyboard focus through ${area} error retry`,async({page})=>{
  const pattern=area==="projects"?"**/v1/web/projects?include=archived":"**/v1/web/agents?scope=all";let reads=0,release!:()=>void,started!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),requestStarted=new Promise<void>(resolve=>{started=resolve;});
  await page.route(pattern,async route=>{if(++reads===1){await route.fulfill({status:403,json:{error:{code:"FORBIDDEN",message:"Synthetic refusal"}}});return;}const response=await route.fetch();started();await gate;await route.fulfill({response});});
- await page.goto("/app/admin/"+area);const button=page.getByRole("button",{name:"Try again",exact:true});await expect(button).toBeVisible();const original=await button.elementHandle();await button.focus();await page.keyboard.press("Enter");await requestStarted;expect(await original!.evaluate(node=>node.isConnected && node===document.activeElement)).toBe(true);
- release();await expect(page.getByRole("table")).toBeVisible();expect(await original!.evaluate(node=>node===document.activeElement)).toBe(true);await expect(page.getByRole("button",{name:"Refresh "+area,exact:true})).toBeFocused();await page.unroute(pattern);
+ await page.goto("/app/admin/"+area);const button=page.getByRole("button",{name:"Try again",exact:true});await expect(button).toBeVisible();const original=await button.elementHandle();await button.focus();await page.keyboard.press("Enter");await requestStarted;expect(await original.evaluate(node=>node.isConnected && node===document.activeElement)).toBe(true);
+ release();await expect(page.getByRole("table")).toBeVisible();expect(await original.evaluate(node=>node===document.activeElement)).toBe(true);await expect(page.getByRole("button",{name:"Refresh "+area,exact:true})).toBeFocused();await page.unroute(pattern);
 });
