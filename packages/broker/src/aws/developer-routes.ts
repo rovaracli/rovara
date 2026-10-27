@@ -1977,7 +1977,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
-  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
+  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) {
+    const body = jsonBody(request);
+    // Only the trusted cookie adapter supplies authenticated; headers/body cannot opt into legacy authority.
+    if (authenticated !== undefined && !OrgMemberRoleChangeBodySchema.required({ expectedRole: true }).safeParse(body).success) throw agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.");
+    return changeMemberRole(deps, caller, memberRoute[1]!, body);
+  }
   if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
   if (request.method === "GET" && url.pathname === "/v1/dev/budget") return getBudget(deps, caller);
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));

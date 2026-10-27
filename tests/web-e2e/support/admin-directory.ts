@@ -14,7 +14,7 @@ export function createAdminDirectory() {
  function setRole(id: string, role: OrgRole, org: string = FIXTURE_ORG) {
   put({ ...orgMemberKey(org, id), orgId: org, developerId: id, role, joinedAt: "2026-10-01T00:00:00.000Z" });put({ ...developerOrgKey(id), orgId: org, role });
  }
- for (const [org, id, name, role] of [[FIXTURE_ORG, FIXTURE_DEVELOPER, "Priya", "owner"], [FIXTURE_ORG, "b".repeat(64), "Maya", "member"], ["org_bbbbbbbbbbbbbbbb", "c".repeat(64), "Other company person", "owner"]] as const) {
+ for (const [org, id, name, role] of [[FIXTURE_ORG, FIXTURE_DEVELOPER, "Priya", "owner"], [FIXTURE_ORG, "b".repeat(64), "Maya", "member"], ["org_bbbbbbbbbbbbbbbbbbbb", "c".repeat(64), "Other company person", "owner"]] as const) {
   setRole(id, role, org);put({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name, provider: "cloud" });
  }
  put({ ...orgMetaKey(FIXTURE_ORG), orgId: FIXTURE_ORG, name: "Acme", plan: "team", createdBy: FIXTURE_DEVELOPER });
@@ -40,6 +40,7 @@ export function createAdminDirectory() {
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
    const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write ? write.UpdateExpression ?? "" : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
+   for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
    for (const [token, value] of Object.entries({ ...write.ExpressionAttributeNames, ...write.ExpressionAttributeValues })) { if (!tokens.has(token) || value === undefined) throw new Error("Invalid fixture expression attribute."); }
    const key = "Key" in write ? write.Key : "Item" in write ? write.Item : undefined;
    return condition(write.ConditionExpression, rows.get(keyOf(key ?? {})), write.ExpressionAttributeNames, write.ExpressionAttributeValues);
@@ -48,6 +49,7 @@ export function createAdminDirectory() {
   for (const action of actions) {
    if (action.Put?.Item !== undefined) put(action.Put.Item);
    if (action.Update !== undefined) {
+    if (action.Update.UpdateExpression !== "SET #role = :role" && action.Update.UpdateExpression !== "SET #role = :role, roleUpdatedAt = :at") throw new Error("Unsupported fixture update expression.");
     const update = action.Update, values = update.ExpressionAttributeValues ?? {}, row = rows.get(keyOf(update.Key));
     if (row === undefined || values[":role"] === undefined) throw new Error("Unsupported fixture update.");
     put({ ...row, role: values[":role"], ...(values[":at"] === undefined ? {} : { roleUpdatedAt: values[":at"] }) });

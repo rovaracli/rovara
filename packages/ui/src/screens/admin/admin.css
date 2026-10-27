@@ -11,3 +11,9 @@
 .rv-admin-role{padding-block:var(--rv-space-4);border-top:1px solid var(--rv-border)}
 .rv-admin-role ul{margin-bottom:0;padding-left:var(--rv-space-6)}
 .rv-admin-surface td{overflow-wrap:anywhere}
+
+.rv-admin-role-review{display:grid;gap:var(--rv-space-3)}
+.rv-admin-role-review p{margin:0;overflow-wrap:anywhere}
+.rv-admin-role-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
+
+.rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:default}
