@@ -7,6 +7,12 @@ import { EMPTY_RECIPE, canonicalModelName, modelCompany, type ModelIdentifier, t
 import { lessSafeChanges } from "../agents/less-safe.js";
 import { criticCapabilityTier } from "../rovara-code/critic.js";
 
+/**
+ * The time a step may run when its recipe sets none: the same default an agent step is watched against (agents/run-engine.ts). The built-in Rovara Code sets no step time, so this is what
+ * "Rovara's default" means for the comparison below; it is deliberately the lower of the defaults in use, so an unclear case asks a person (a wrong "safe" is worse than one more click).
+ */
+export const PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES = 60;
+
 /** What the comparison needs to word its reasons: whether `current` is a published version, or (a first publish) the process the layer builds on. */
 export interface ProcessLessSafeContext {
   firstPublish: boolean;
@@ -70,6 +76,22 @@ const companyWords = (key: string): string => (key.startsWith("other:") ? "one R
 /** The instructions of a step as written, layer by layer: only the text counts (renaming the agent that wrote a layer changes no instruction). */
 const instructionTexts = (step: ResolvedStep): string[] => (settingsOf(step).instructions ?? []).map((layer) => layer.text).filter((text) => text.length > 0);
 
+const timeoutOf = (step: ResolvedStep | undefined): number => (step?.settings as { timeoutMinutes?: number | null } | undefined)?.timeoutMinutes ?? PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES;
+const budgetOf = (step: ResolvedStep | undefined): number | undefined => (step?.settings as { stepBudgetUsd?: number | null } | undefined)?.stepBudgetUsd ?? undefined;
+
+/** (f) For any step of `next`: a time above the one that runs now (a step that sets none runs on the default), a spending limit above the current one, or a spending limit taken away. */
+function limitRaises(before: ResolvedRecipe, next: ResolvedRecipe, found: string[]): void {
+  for (const step of next.steps) {
+    const was = before.steps.find((candidate) => sameStep(candidate, step));
+    if (timeoutOf(step) > timeoutOf(was)) found.push(`Raises the time the step "${step.name}" may run, from ${String(timeoutOf(was))} to ${String(timeoutOf(step))} minutes`);
+    const budgetBefore = budgetOf(was);
+    const budgetAfter = budgetOf(step);
+    if (budgetBefore === undefined) continue;
+    if (budgetAfter === undefined) found.push(`Removes the spending limit of the step "${step.name}"`);
+    else if (budgetAfter > budgetBefore) found.push(`Raises the spending limit of the step "${step.name}", from $${String(budgetBefore)} to $${String(budgetAfter)}`);
+  }
+}
+
 /**
  * What `next` does to a process layer that `current` (the recipe that runs now: the published version, or for a first publish the process it builds on) does not make as safe. For the
  * plan check and review steps present in both recipes (the same id and kind):
@@ -80,6 +102,7 @@ const instructionTexts = (step: ResolvedStep): string[] => (settingsOf(step).ins
  *   (e) one that `next` takes out, or a review step that loses a reviewer.
  * And for any step of `next`:
  *   (c) a model, or a fallback model, from a company that no step of `current` used.
+ *   (f) a step time above the current one, or a spending limit raised or taken away (follow-up M1; lowering either is an ordinary publish).
  * Empty when none of these apply.
  */
 export function processLessSafeChanges(current: ResolvedRecipe | undefined, next: ResolvedRecipe, context: ProcessLessSafeContext): string[] {
@@ -115,6 +138,7 @@ export function processLessSafeChanges(current: ResolvedRecipe | undefined, next
         : `Lets the step "${step.name}" send data to a new AI company (${companyWords(key)})`);
     }
   }
+  limitRaises(before, next, found);
   return [...new Set(found)];
 }
 

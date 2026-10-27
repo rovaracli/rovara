@@ -2,7 +2,7 @@
 // that loses its independence or moves to a weaker model, a model from a new AI company, changed instructions of a plan check or review); an ordinary agent is judged as before.
 import { describe, expect, it } from "vitest";
 import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
-import { lessSafeChangesFor, processLessSafeChanges } from "../../packages/broker/src/playbook/process-less-safe.js";
+import { PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES, lessSafeChangesFor, processLessSafeChanges } from "../../packages/broker/src/playbook/process-less-safe.js";
 
 type Model = { provider: string; modelId: string };
 const OPUS: Model = { provider: "anthropic", modelId: "claude-opus-4-8" };
@@ -13,7 +13,7 @@ const GEMINI: Model = { provider: "google", modelId: "gemini-2.5-pro" };
 const BEDROCK_OPUS: Model = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-8-v1:0" };
 
 const layers = (...texts: string[]) => texts.map((text) => ({ agentName: "Layer", text }));
-type Extra = { model?: Model; fallbackModel?: Model; differentCompanyFrom?: string; instructions?: string[] };
+type Extra = { model?: Model; fallbackModel?: Model; differentCompanyFrom?: string; instructions?: string[]; timeoutMinutes?: number | null; stepBudgetUsd?: number | null };
 const settings = ({ instructions = [], ...rest }: Extra = {}) => ({ instructions: layers(...instructions), ...rest });
 const plan = (extra?: Extra): ResolvedStep => ({ id: "plan", name: "Plan", kind: "plan", settings: settings(extra) });
 const critic = (extra?: Extra): ResolvedStep => ({ id: "plan_critic", name: "Plan check", kind: "plan_critic", settings: settings(extra) });
@@ -159,5 +159,48 @@ describe("which rule applies to which agent", () => {
   it("a process layer still gets the ordinary reasons", () => {
     const looser = { ...flow(), autonomy: "run" as const };
     expect(lessSafeChangesFor({ purpose: "process" }, flow(), looser, ctx)).toEqual(["Raises the agent's autonomy from prepare to run"]);
+  });
+});
+
+describe("(f) a step's time or step budget is raised (follow-up M1)", () => {
+  it("flags a raised timeout on any kind of step, naming the step and the minutes", () => {
+    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow({ build: { timeoutMinutes: 90 } }))).toEqual(['Raises the time the step "Build" may run, from 30 to 90 minutes']);
+    expect(reasons(flow({ review: { timeoutMinutes: 20 } }), flow({ review: { timeoutMinutes: 21 } }))).toHaveLength(1);
+    expect(reasons(flow({ plan: { timeoutMinutes: 10 } }), flow({ plan: { timeoutMinutes: 240 } }))).toHaveLength(1);
+  });
+  it("judges a timeout set on a step that had none against Rovara's default", () => {
+    expect(reasons(flow(), flow({ build: { timeoutMinutes: PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES + 1 } }))).toHaveLength(1);
+    expect(reasons(flow(), flow({ build: { timeoutMinutes: PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES } }))).toEqual([]);
+    expect(reasons(flow(), flow({ build: { timeoutMinutes: 30 } }))).toEqual([]);
+    expect(reasons(flow({ build: { timeoutMinutes: null } }), flow({ build: { timeoutMinutes: PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES + 1 } }))).toHaveLength(1);
+  });
+  it("judges a timeout that is taken away against the current value: back to the default is a raise only when the default is higher", () => {
+    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow())).toEqual(['Raises the time the step "Build" may run, from 30 to 60 minutes']);
+    expect(reasons(flow({ build: { timeoutMinutes: 30 } }), flow({ build: { timeoutMinutes: null } }))).toHaveLength(1);
+    expect(reasons(flow({ build: { timeoutMinutes: 200 } }), flow())).toEqual([]);
+  });
+  it("does not flag a lowered or unchanged timeout", () => {
+    expect(reasons(flow({ build: { timeoutMinutes: 90 } }), flow({ build: { timeoutMinutes: 30 } }))).toEqual([]);
+    expect(reasons(flow({ build: { timeoutMinutes: 90 } }), flow({ build: { timeoutMinutes: 90 } }))).toEqual([]);
+  });
+  it("flags a raised step budget, and one that is taken away (set to unset counts as raised)", () => {
+    expect(reasons(flow({ build: { stepBudgetUsd: 5 } }), flow({ build: { stepBudgetUsd: 6 } }))).toEqual(['Raises the spending limit of the step "Build", from $5 to $6']);
+    expect(reasons(flow({ build: { stepBudgetUsd: 5 } }), flow())).toEqual(['Removes the spending limit of the step "Build"']);
+    expect(reasons(flow({ build: { stepBudgetUsd: 5 } }), flow({ build: { stepBudgetUsd: null } }))).toEqual(['Removes the spending limit of the step "Build"']);
+  });
+  it("does not flag a lowered, unchanged or newly added step budget", () => {
+    expect(reasons(flow({ build: { stepBudgetUsd: 5 } }), flow({ build: { stepBudgetUsd: 4 } }))).toEqual([]);
+    expect(reasons(flow({ build: { stepBudgetUsd: 5 } }), flow({ build: { stepBudgetUsd: 5 } }))).toEqual([]);
+    expect(reasons(flow(), flow({ build: { stepBudgetUsd: 50 } }))).toEqual([]);
+  });
+  it("judges a step the current version does not have against the default", () => {
+    const extra = recipe([...flow().steps, { id: "extra", name: "Extra", kind: "build", settings: { instructions: [], timeoutMinutes: 200 } }]);
+    expect(reasons(flow(), extra)).toHaveLength(1);
+  });
+  it("applies to a process layer only: an ordinary agent is judged as before", () => {
+    const next = flow({ build: { timeoutMinutes: 90, stepBudgetUsd: 9 } });
+    const current = flow({ build: { timeoutMinutes: 30, stepBudgetUsd: 5 } });
+    expect(lessSafeChangesFor({}, current, next, ctx)).toEqual([]);
+    expect(lessSafeChangesFor({ purpose: "process" }, current, next, ctx)).toHaveLength(2);
   });
 });
