@@ -67,7 +67,7 @@ function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: s
     <div className="rv-admin-role-actions"><Button disabled={cursors.length === 0} aria-disabled={locked || cursors.length === 0} onClick={() => { if (locked) return;setCursors(old => old.slice(0, -1));pageFocus.current = true; }}>Previous page</Button><Button disabled={nextCursor === undefined} aria-disabled={locked || nextCursor === undefined} onClick={() => { if (!locked && nextCursor !== undefined) { setCursors(old => [...old, nextCursor]);pageFocus.current = true; } }}>Next page</Button></div>
    </>}
   </>}
-  {createSession && !terminal && <InviteCreateDialog key={createKey} open={createOpen} orgId={orgId} company={company} role={role} checking={checking || read.isFetching} staleData={stale || hidden} onClose={closeCreate} restoreFocus={restoreCreate} onApplied={created} onDenied={denied} onProgress={progress} onRevoke={revokeCreated} />}
+  {createSession && <InviteCreateDialog key={createKey} open={createOpen} orgId={orgId} company={company} role={role} accessAllowed={!terminal} checking={checking || read.isFetching} staleData={stale || hidden} onClose={closeCreate} restoreFocus={restoreCreate} onApplied={created} onDenied={denied} onProgress={progress} onRevoke={revokeCreated} />}
   {selected !== undefined && !terminal && <InviteRevokeDialog orgId={orgId} company={company} target={selected} checking={checking || read.isFetching} changed={changed} staleData={stale || hidden} onApplied={applied} onDenied={denied} onClose={close} restoreFocus={restore} />}
  </section>;
 }

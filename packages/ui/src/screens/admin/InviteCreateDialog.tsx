@@ -11,21 +11,22 @@ import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { InviteRevokeTarget } from "./InviteRevokeDialog.js";
 type Intent = z.infer<typeof ReviewedInviteCreateBodySchema>;
-interface Props { open: boolean; orgId: string; company: string; role: "owner" | "admin"; checking: boolean; staleData: boolean; onClose: () => void; restoreFocus: () => void; onApplied: () => void; onDenied: () => void; onProgress: (resume: boolean, inviteId?: string) => void; onRevoke: (target: InviteRevokeTarget) => void }
+interface Props { open: boolean; orgId: string; company: string; role: "owner" | "admin"; accessAllowed: boolean; checking: boolean; staleData: boolean; onClose: () => void; restoreFocus: () => void; onApplied: () => void; onDenied: () => void; onProgress: (resume: boolean, inviteId?: string) => void; onRevoke: (target: InviteRevokeTarget) => void }
 const utc = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "UTC" });
 const unknown = "The creation outcome is unknown. Check this request before creating another invite.";
 const lostLink = "This invite was created, but its link cannot be recovered. Revoke this invite before creating a replacement.";
 async function bounded<T>(work: Promise<T>): Promise<T> { let timer: ReturnType<typeof setTimeout> | undefined;try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => { reject(new Error("Invite operation timed out.")); }, 30_000); })]); } finally { clearTimeout(timer); } }
-export function InviteCreateDialog({ open, orgId, company, role, checking, staleData, onClose, restoreFocus, onApplied, onDenied, onProgress, onRevoke }: Props) {
- const host = useAppHost(), api = useMemo(() => ({ ...createInviteAdminApi(host, orgId), role }), [host, orgId, role]);
+export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, checking, staleData, onClose, restoreFocus, onApplied, onDenied, onProgress, onRevoke }: Props) {
+ const host = useAppHost(), api = useMemo(() => ({ ...createInviteAdminApi(host, orgId), role, accessAllowed }), [host, orgId, role, accessAllowed]);
  const [destination, setDestination] = useState("email"), [email, setEmail] = useState(""), [proposed, setProposed] = useState("member"), [intent, setIntent] = useState<Intent>();
  const [sent, setSent] = useState(false), [working, setWorking] = useState(false), [copied, setCopied] = useState(false), [canCopy, setCanCopy] = useState(false), [terminal, setTerminal] = useState(false), [feedback, setFeedback] = useState<string>(), [receipt, setReceipt] = useState<InviteCreateReceipt>(), [current, setCurrent] = useState<InviteStatus>(), [proofClient, setProofClient] = useState<typeof api>(), [operationClient, setOperationClient] = useState<typeof api>();
  const busy = working && operationClient === api;
+ const copyReady = canCopy && proofClient === api;
  const scopeChanged = sent && operationClient !== undefined && operationClient !== api;
  const privateLink = useRef<string | undefined>(undefined), generation = useRef(0), alive = useRef(true), attempted = useRef(false), sending = useRef(false), notice = useRef<HTMLParagraphElement>(null), reviewHeading = useRef<HTMLHeadingElement>(null);
  useEffect(() => { alive.current = true;generation.current += 1;api.setScopeActive(true);return () => { alive.current = false;generation.current += 1;privateLink.current = undefined;sending.current = false;api.setScopeActive(false); }; }, [api]);
  useEffect(() => { if (!busy && (feedback || scopeChanged)) notice.current?.focus();else if (intent && !sent) reviewHeading.current?.focus(); }, [feedback, busy, intent, sent, scopeChanged]);
- const locked = checking || staleData, roleBlocked = intent?.role === "admin" && role !== "owner";
+ const locked = checking || staleData || !accessAllowed, roleBlocked = intent?.role === "admin" && role !== "owner";
  const valid = (version: number) => alive.current && version === generation.current;
  function review() {
   if (locked || busy || attempted.current) return;
@@ -77,7 +78,7 @@ export function InviteCreateDialog({ open, orgId, company, role, checking, stale
   privateLink.current = undefined;setCanCopy(false);onProgress(true, receipt.inviteId);onClose();
   onRevoke({ inviteId: receipt.inviteId, revision: current.revision, role: current.role, createdAt: receipt.createdAt, expiresAt: current.expiresAt, label: intent?.email === undefined ? "Invite link" : "***@" + intent.email.slice(intent.email.lastIndexOf("@") + 1) });
  }
- return <Dialog title="Create invite" description="Create a private link, then share it yourself." open={open} onOpenChange={value => { if (!value) close(); }} onCloseAutoFocus={event => { event.preventDefault();onClose();restoreFocus(); }}>
+ return <Dialog title="Create invite" description="Create a private link, then share it yourself." open={open && accessAllowed} onOpenChange={value => { if (!value) close(); }} onCloseAutoFocus={event => { event.preventDefault();onClose();restoreFocus(); }}>
   <div className="rv-admin-role-review" aria-busy={busy}>
    <p>Company: <VisibleText text={company} /></p>
    {intent === undefined ? <>
@@ -97,9 +98,9 @@ export function InviteCreateDialog({ open, orgId, company, role, checking, stale
    {(feedback || scopeChanged) && <p ref={notice} tabIndex={-1} role={!scopeChanged && (canCopy || terminal || copied) ? "status" : "alert"}>{scopeChanged ? "Your company access changed. The creation outcome is unknown. Check this request before continuing." : feedback}</p>}
    {receipt && <><p>Expires <time dateTime={receipt.expiresAt}>{utc(receipt.expiresAt)}</time> UTC.</p><details><summary>Invite reference</summary><VisibleText text={receipt.inviteId} /></details></>}
    {current && <p>Checked at <time dateTime={current.checkedAt}>{utc(current.checkedAt)}</time> UTC.</p>}
-   {canCopy && proofClient === api && <><p>Copy this private link before closing. Closing discards it; revoke it if you do not need it.</p><Button variant="primary" busy={busy} aria-disabled={locked || roleBlocked} onClick={() => { void copy(); }}>Copy invite link</Button></>}
-   {sent && !terminal && (!canCopy || proofClient !== api) && <Button busy={busy} aria-disabled={locked} onClick={() => { void recover(); }}>Check creation request</Button>}
-   {sent && !terminal && receipt !== undefined && current?.status === "pending" && <Button variant={canCopy ? "quiet" : "danger"} busy={busy} aria-disabled={locked} onClick={revoke}>Revoke this invite</Button>}
+   {copyReady && <><p>Copy this private link before closing. Closing discards it; revoke it if you do not need it.</p><Button variant="primary" busy={busy} aria-disabled={locked || roleBlocked} onClick={() => { void copy(); }}>Copy invite link</Button></>}
+   {sent && !terminal && !copyReady && <Button busy={busy} aria-disabled={locked} onClick={() => { void recover(); }}>Check creation request</Button>}
+   {sent && !terminal && receipt !== undefined && current?.status === "pending" && <Button variant={copyReady ? "quiet" : "danger"} busy={busy} aria-disabled={locked} onClick={revoke}>Revoke this invite</Button>}
   </div>
  </Dialog>;
 }
