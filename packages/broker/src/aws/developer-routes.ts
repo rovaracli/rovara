@@ -1,3 +1,4 @@
+import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-archive-app.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
@@ -114,7 +115,7 @@ import {
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
-import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
+import { archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
@@ -1920,6 +1921,15 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+  }
+  // Lane B reviewed archive: strict pinned preview + acknowledged write; legacy routes remain compatible.
+  const reviewedArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive-preview|reviewed-archive)$/.exec(url.pathname);
+  if (reviewedArchiveRoute !== null && ((request.method === "GET" && reviewedArchiveRoute[2] === "archive-preview") || (request.method === "POST" && reviewedArchiveRoute[2] === "reviewed-archive"))) {
+    let name: string;
+    try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
+    if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
+    if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");

@@ -80,6 +80,7 @@ const archiveRequestKey = (orgId: OrgId, name: string, requestId: string): OrgKe
  * A project that predates META gets one, created by "unknown".
  */
 function metaChange(deps: ProjectArchiveDependencies, orgId: OrgId, name: string, change: "archive" | "restore", actor: { developerId: string }, at: string, current: Record<string, unknown> | undefined): RequestTransactItem {
+  // Creating a missing META on legacy restore establishes epoch 1 even without a prior transition.
   const epoch = current?.archiveRevision ?? 0;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0 || epoch >= Number.MAX_SAFE_INTEGER) throw agentXError("RUNTIME_UNAVAILABLE", "Project lifecycle could not be checked.");
   const before = current?.status, desired = change === "archive" ? "archived" : "active";
@@ -189,5 +190,6 @@ export async function archiveOrgProjects(deps: ProjectArchiveDependencies, orgId
   } while (start !== undefined);
 }
 
-// Lane B internal reviewed primitive; no HTTP route is wired here.
+// Lane B reviewed transaction and app effect adapter.
 export { readProjectArchivePreview, archiveProjectReviewed } from "./reviewed-project-archive.js";
+export { archiveProjectReviewedWithEffects } from "./reviewed-project-archive-app.js";

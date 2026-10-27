@@ -1,4 +1,4 @@
-// Internal reviewed archive primitive. No HTTP/UI entry point is exposed by this milestone.
+// Reviewed archive transaction; the separate app adapter owns explicit acknowledgment and post-commit effects.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -33,7 +33,7 @@ async function projectState(deps: Deps, caller: DeveloperCaller, name: string) {
  if (catalog?.entityType !== "PROJECT_CATALOG" || catalog.name !== name || !projectRevision.success) throw missing();
  const registeredKey = projectRevisionKey(caller.orgId, name, projectRevision.data), registered = await read(deps, registeredKey), definition = StoredProjectDefinitionSchema.safeParse(registered?.definition);
  if (registered?.entityType !== "PROJECT" || !definition.success || definition.data.name !== name || definition.data.revision !== projectRevision.data) throw missing();
- if (meta !== undefined && (meta.entityType !== "PROJECT_META" || meta.name !== name || (meta.orgId !== undefined && meta.orgId !== caller.orgId) || (meta.status !== "active" && meta.status !== "archived"))) throw missing();
+ if (meta !== undefined && (meta.entityType !== "PROJECT_META" || meta.name !== name || (meta.orgId !== undefined && meta.orgId !== caller.orgId) || (meta.status !== undefined && meta.status !== "active" && meta.status !== "archived"))) throw missing();
  const epoch = revision.safeParse(meta?.archiveRevision === undefined ? 0 : meta.archiveRevision);if (!epoch.success) throw unavailable();
  return { catalogKey, metaKey, registeredKey, meta, epoch: epoch.data, projectRevision: projectRevision.data, status: meta?.status === "archived" ? "archived" as const : "active" as const };
 }
@@ -43,6 +43,10 @@ export async function readProjectArchivePreview(deps: Deps, caller: DeveloperCal
  catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }
 export async function archiveProjectReviewed(deps: Deps, caller: DeveloperCaller, name: string, body: unknown) {
+ return (await commitReviewedProjectArchive(deps, caller, name, body)).receipt;
+}
+/** Execution metadata is not stored in the immutable receipt. Replays must not repeat hooks. */
+export async function commitReviewedProjectArchive(deps: Deps, caller: DeveloperCaller, name: string, body: unknown) {
  identifiers(caller, name);const parsed = bodySchema.safeParse(body);if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review a valid project archive before submitting.");
  try {
   const change = parsed.data;
@@ -55,14 +59,14 @@ export async function archiveProjectReviewed(deps: Deps, caller: DeveloperCaller
    if (receipt.by !== by || receipt.action !== action || receipt.bodyHash !== bodyHash) throw agentXError("CONFIG_INVALID", "Use a new request id for a different archive.");
    const result = resultSchema.safeParse(receipt);if (!result.success || receipt.orgId !== orgId || result.data.project !== name || result.data.revision !== change.expectedRevision + 1 || result.data.projectRevision !== change.expectedProjectRevision) throw unavailable();return result.data;
   }
-  const previous = await replay();if (previous !== undefined) return previous;
+  const previous = await replay();if (previous !== undefined) return { receipt: previous, replayed: true };
   const state = await projectState(deps, caller, name);
   if (state.status !== "active" || state.epoch !== change.expectedRevision || state.projectRevision !== change.expectedProjectRevision) throw stale();
   const now = deps.now(), archivedAt = new Date(now).toISOString(), next = state.epoch + 1;
   const result = resultSchema.parse({ project: name, status: "archived", revision: next, projectRevision: state.projectRevision, archivedAt, egressReconciliation: "pending" });
   const labels: string[] = [], items: TransactItem[] = [], add = (label: string, item: TransactItem) => { labels.push(label);items.push(item); };
   const epochCondition = state.meta?.archiveRevision === undefined ? "attribute_not_exists(archiveRevision)" : "archiveRevision = :expected";
-  add("meta", { Update: { TableName: deps.tableName, Key: state.metaKey, UpdateExpression: "SET entityType = :type, #name = :name, #status = :archived, archivedAt = :at, archivedBy = :by, archiveRevision = :next, createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)", ConditionExpression: state.meta === undefined ? "attribute_not_exists(pk)" : "entityType = :type AND #name = :name AND #status = :active AND " + epochCondition + (state.meta.orgId === undefined ? " AND attribute_not_exists(orgId)" : " AND orgId = :org"), ExpressionAttributeNames: { "#name": "name", "#status": "status" }, ExpressionAttributeValues: { ":type": "PROJECT_META", ":name": name, ":archived": "archived", ":at": archivedAt, ":by": by, ":next": next, ":unknown": "unknown", ...(state.meta === undefined ? {} : { ":active": "active", ...(state.meta.archiveRevision === undefined ? {} : { ":expected": state.epoch }), ...(state.meta.orgId === undefined ? {} : { ":org": orgId }) }) } } });
+  add("meta", { Update: { TableName: deps.tableName, Key: state.metaKey, UpdateExpression: "SET entityType = :type, #name = :name, #status = :archived, archivedAt = :at, archivedBy = :by, archiveRevision = :next, createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)", ConditionExpression: state.meta === undefined ? "attribute_not_exists(pk)" : "entityType = :type AND #name = :name AND " + (state.meta.status === undefined ? "attribute_not_exists(#status)" : "#status = :active") + " AND " + epochCondition + (state.meta.orgId === undefined ? " AND attribute_not_exists(orgId)" : " AND orgId = :org"), ExpressionAttributeNames: { "#name": "name", "#status": "status" }, ExpressionAttributeValues: { ":type": "PROJECT_META", ":name": name, ":archived": "archived", ":at": archivedAt, ":by": by, ":next": next, ":unknown": "unknown", ...(state.meta === undefined ? {} : { ...(state.meta.status === undefined ? {} : { ":active": "active" }), ...(state.meta.archiveRevision === undefined ? {} : { ":expected": state.epoch }), ...(state.meta.orgId === undefined ? {} : { ":org": orgId }) }) } } });
   add("catalog", { ConditionCheck: { TableName: deps.tableName, Key: state.catalogKey, ConditionExpression: "entityType = :type AND #name = :name AND latestRevision = :revision", ExpressionAttributeNames: { "#name": "name" }, ExpressionAttributeValues: { ":type": "PROJECT_CATALOG", ":name": name, ":revision": state.projectRevision } } });
   add("registered", { ConditionCheck: { TableName: deps.tableName, Key: state.registeredKey, ConditionExpression: "entityType = :type AND #definition.#name = :name AND #definition.#revision = :revision", ExpressionAttributeNames: { "#definition": "definition", "#name": "name", "#revision": "revision" }, ExpressionAttributeValues: { ":type": "PROJECT", ":name": name, ":revision": state.projectRevision } } });
   add("actor", { ConditionCheck: { TableName: deps.tableName, Key: auth.actorKey, ConditionExpression: "orgId = :org AND developerId = :person AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": orgId, ":person": by, ":role": auth.actor.role } } });
@@ -74,11 +78,11 @@ export async function archiveProjectReviewed(deps: Deps, caller: DeveloperCaller
   const pending = auditPending(deps, event);if (pending.length !== 1) throw unavailable();for (const item of pending) { if (item.Put === undefined) throw unavailable();add("audit", { Put: { ...item.Put, ConditionExpression: "attribute_not_exists(pk)" } }); }
   try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
   catch (error) {
-   const already = await replay();if (already !== undefined) return already;
+   const already = await replay();if (already !== undefined) return { receipt: already, replayed: true };
    const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons, failed = labels.filter((_, index) => reasons?.[index]?.Code === "ConditionalCheckFailed");
    if (failed.some(label => ["actor", "pointer", "org", "grant"].includes(label))) throw forbidden();
    if (failed.some(label => ["meta", "catalog", "registered"].includes(label))) throw stale();throw unavailable();
   }
-  await flushAuditEvents(deps, [event]);return result;
+  await flushAuditEvents(deps, [event]);return { receipt: result, replayed: false };
  } catch (error) { if (error instanceof AgentXError) throw error;throw unavailable(); }
 }
