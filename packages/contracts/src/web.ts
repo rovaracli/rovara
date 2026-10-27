@@ -54,3 +54,6 @@ export { OrgIdSchema } from "./org.js";
 
 // Lane A: safe reviewed invite creation receipts.
 export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema } from "./invite-creation.js";
+
+// Lane A: strict read-only monthly base budget settings.
+export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";

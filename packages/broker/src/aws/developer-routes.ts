@@ -1,3 +1,5 @@
+// Lane A: read-only monthly base settings; no legacy proxy sync.
+import { getAdminBudgetSettings } from "../org/admin-budget-settings.js";
 import { createReviewedOrganizationInvite, getInviteCreationReceipt } from "../org/invite-creation.js";
 import { getOrganizationInviteStatus } from "../org/invite-status.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
@@ -1972,6 +1974,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
   // Lane A: reviewed creation and actor-bound historical recovery, isolated from legacy onboarding.
+  // Lane A: current-org, live-role monthly settings projection.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/budget-settings") return getAdminBudgetSettings(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/invites/reviewed") return createReviewedOrganizationInvite(deps, caller, jsonBody(request));
   const createReceipt = /^\/v1\/app\/org\/invites\/requests\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && createReceipt !== null) return getInviteCreationReceipt(deps, caller, createReceipt[1]!);

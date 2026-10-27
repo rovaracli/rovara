@@ -59,9 +59,9 @@ export function InviteCreateDialog({ open, orgId, company, role, accessAllowed, 
   finally { if (valid(version)) { sending.current = false;setWorking(false); } }
  }
  async function recover() {
-  if (sending.current || busy || locked || intent === undefined) return;setMissingReceipt(false);setRestartReview(false);sending.current = true;setOperationClient(api);setWorking(true);const version = generation.current;
-  try { const result = await bounded(api.creationReceipt(intent.requestId));if (!valid(version)) return;await verify(result.receipt, version); }
-  catch (error) { if (!valid(version)) return;privateLink.current = undefined;setCanCopy(false);const missing = error instanceof ApiError && error.status === 404;setMissingReceipt(missing && receipt === undefined);setFeedback(missing ? "No creation receipt was found. The earlier request may still create an invite. Check the directory before starting again." : error instanceof ApiError && error.status === 429 ? "Too many invite checks. Wait a minute before checking this request again." : unknown);if (error instanceof ApiError && error.status === 403) onDenied(); }
+  if (sending.current || busy || locked || intent === undefined) return;setMissingReceipt(false);setRestartReview(false);sending.current = true;setOperationClient(api);setWorking(true);const version = generation.current;let receiptLookup = true;
+  try { const result = await bounded(api.creationReceipt(intent.requestId));if (!valid(version)) return;receiptLookup = false;await verify(result.receipt, version); }
+  catch (error) { if (!valid(version)) return;privateLink.current = undefined;setCanCopy(false);const missing = receiptLookup && error instanceof ApiError && error.status === 404;setMissingReceipt(missing && receipt === undefined);setFeedback(missing ? "No creation receipt was found. The earlier request may still create an invite. Check the directory before starting again." : error instanceof ApiError && error.status === 429 ? "Too many invite checks. Wait a minute before checking this request again." : unknown);if (error instanceof ApiError && error.status === 403) onDenied(); }
   finally { if (valid(version)) { sending.current = false;setWorking(false); } }
  }
  async function copy() {
