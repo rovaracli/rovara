@@ -529,6 +529,13 @@ export const MERGE_NOT_READY_MESSAGES = {
   riskChanged: (level: "low" | "medium" | "high"): string => `The risk of this pull request is now ${level}. Check it and press Merge again.`,
 } as const;
 
+/**
+ * `POST /v1/app/sessions/{id}/merge` (and the same through the web boundary): the request id, and for the web app the risk level the person saw in the dialog. A medium or high risk press that did
+ * not see the current level is refused. Nothing else is taken: a token cannot add a field that makes it a browser.
+ */
+export const MergePressBodySchema = z.object({ requestId: z.string().uuid(), risk: z.enum(["low", "medium", "high"]).optional() }).strict();
+export type MergePressBody = z.infer<typeof MergePressBodySchema>;
+
 /** What a web press answers when it merged (200): the pull requests Rovara merged. */
 export const MergeDoneSchema = z.object({ status: z.literal("MERGED"), pullRequests: z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().min(1) }).strict()).max(32) }).strict();
 export type MergeDone = z.infer<typeof MergeDoneSchema>;

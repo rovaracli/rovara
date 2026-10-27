@@ -1,4 +1,8 @@
-// Rovara Code (Plan 6 Task 19): a person approves, and a person presses Merge. Rovara never merges by itself (owner decision 1).
+// Rovara Code (Plan 6 Task 19): a person approves, and a person presses Merge. Rovara never merges by itself (owner decision 1; confirmed 2026-10-27: no automatic merge).
+//
+// Owner decision 2026-10-27: pressing Merge in the web app is ONE click for every pull request (a browser session with its CSRF token, one confirm dialog in the app, no email-code sign-in): the press
+// merges at once, through the same path as the confirmation page. The risk of the code (Low, Medium or High, with its reasons) is shown next to Merge, and a press must have seen the current level.
+// Where the repository has a CODEOWNERS file that covers the changed paths, a code owner has to approve first. A token (the CLI, an AI tool) never merges: its press is the confirmation link below.
 //
 // - `humanApprovalOf` says whose approval on GitHub counts (a person with write access, a member of the org who is not a requester unless the org allows self-approval, on the head).
 // - `mergeReadiness` says whether every required pull request of a task may be merged, in the exact words of `MERGE_NOT_READY`.
@@ -12,6 +16,7 @@ import {
   MERGE_CLAIM_SECONDS,
   MERGE_NOT_READY_MESSAGES as M,
   MERGE_VIEW_MESSAGE_MAX,
+  MergePressBodySchema,
   agentXError,
   auditPullRequestId,
   isBranchSyncBlockReason,
@@ -21,6 +26,8 @@ import {
   type AuditProof,
   type CodeSettings,
   type MergeTrackingItem,
+  type MergeDone,
+  type MergeRisk,
   type MergeView,
   type NeedsConfirmation,
   type OrgId,
@@ -43,6 +50,7 @@ import type { GitHubTokenScope, MergePullRequestResult } from "../github-app.js"
 import { parseGitHubRepository } from "../github-app.js";
 import type { PullRequestStatus } from "../github-pull-status.js";
 import { readCodeSettings } from "./code-settings.js";
+import { codeOwnerVerdict, type CodeOwnerVerdict } from "./code-owners.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type HumanApproval, type ApprovalRefusal, type RepositoryPermission } from "./approval.js";
 import { githubUserOfMember } from "./github-members.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
@@ -89,6 +97,8 @@ export interface ReadinessInput {
   allowSelfApproval: boolean;
   /** The name the person who asked is called by, for the words of an approval that must come from someone else. */
   requesterName: string;
+  /** Whether a code owner approved, by `repositoryId#number`, where the repository has a CODEOWNERS file that covers the changed paths (read fresh; absent where nothing was read). */
+  codeOwners?: ReadonlyMap<string, CodeOwnerVerdict> | undefined;
 }
 
 export type Readiness = { ready: true } | { ready: false; message: string };
@@ -104,6 +114,11 @@ function approvalMessage(reason: ApprovalRefusal, repository: string, input: Pic
     case "stale": return M.staleApproval;
     case "changes_requested": return M.changesRequested;
   }
+}
+
+function codeOwnerRefusal(verdict: CodeOwnerVerdict | undefined): string | undefined {
+  if (verdict === undefined || verdict.ok) return undefined;
+  return "unreadable" in verdict ? M.codeOwnersUnreadable : M.needsCodeOwner(verdict.owners);
 }
 
 function workflowRefusal(workflow: ReadinessWorkflow): string | undefined {
@@ -133,12 +148,14 @@ export function mergeReadiness(input: ReadinessInput): Readiness {
   for (const pr of open) {
     const key = pullRequestKey(pr);
     const approval = input.approvals.get(key) ?? { approved: false as const, reason: "none" as const };
+    const owner = codeOwnerRefusal(input.codeOwners?.get(key));
     const reason = pr.state !== "open" ? M.notOpen
       : input.recordedBases.get(key) !== pr.baseBranch ? M.baseChanged(pr.baseBranch)
       : pr.draft ? M.draft
       : pr.ci !== "passing" && pr.ci !== "none" ? M.checks
       : pr.branch === "conflicted" ? M.conflicted(pr.baseBranch)
       : !approval.approved ? approvalMessage(approval.reason, pr.repositoryId, input)
+      : owner !== undefined ? owner
       // Only a branch that is approved is brought up to date (an approval none counts needs no up-to-date branch yet).
       : pr.branch === "behind" && pr.behindRequired ? M.behind(pr.baseBranch)
       : undefined;
@@ -163,6 +180,12 @@ export interface CodeMergeGithub {
   getPullRequestStatus(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<PullRequestStatus>;
   getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope): Promise<RepositoryPermission>;
   mergePullRequest(repositoryUrl: string, number: number, input: { sha: string; method: "squash" | "merge" }, scope: GitHubTokenScope): Promise<MergePullRequestResult>;
+  /** The CODEOWNERS file of a branch, undefined where there is none (throws when it cannot be read). Without the three reads below no code owner is asked for. */
+  readCodeOwners?(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string | undefined>;
+  /** Every path the pull request changes (a renamed file under both names), and whether that is all of them. */
+  listChangedPaths?(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<{ paths: string[]; complete: boolean }>;
+  /** Whether a person is in a team (`org/slug`) of the repository's organization; `unknown` when that cannot be told. */
+  isTeamMember?(repositoryUrl: string, team: string, login: string, scope: GitHubTokenScope): Promise<"member" | "not_member" | "unknown">;
 }
 
 export interface CodeMergeHost {
@@ -255,7 +278,22 @@ export async function mergeViewOf(
   const host = deps.codeMerge;
   if (host === undefined || items.length === 0 || task.orgId === undefined || !tracksMerge(task.workflow)) return undefined;
   const { readiness } = await readinessFromItems(deps, host, task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, items, viewerDeveloperId);
-  return mergeViewFromReadiness(readiness);
+  return { ...mergeViewFromReadiness(readiness), risk: riskOfTask(task.workflow, items) };
+}
+
+/**
+ * The risk the Merge section shows (owner decision 2026-10-27): the level and reasons recorded for the pull request's code. When none is recorded, when it was judged for other code than the workflow's
+ * current candidate, or when someone else pushed to a pull request since, the code Rovara would merge is not the code it judged, so the level is at least medium and says so.
+ */
+export function riskOfTask(workflow: WorkflowSnapshot | undefined, items: ReadonlyArray<{ headByRovara: boolean }>): MergeRisk {
+  const recorded = workflow?.risk;
+  if (recorded === undefined) return { level: "medium", reasons: ["Rovara hasn't judged the risk of this change yet."] };
+  const current = workflow?.candidate?.digest;
+  if (current !== undefined && current !== recorded.candidateDigest) return { level: "medium", reasons: ["The risk was judged for earlier code, not the code that would be merged."] };
+  if (items.some((item) => !item.headByRovara)) {
+    return { level: recorded.level === "low" ? "medium" : recorded.level, reasons: ["Someone else pushed to this pull request after Rovara judged its risk.", ...recorded.reasons].slice(0, 8) };
+  }
+  return { level: recorded.level, reasons: [...recorded.reasons] };
 }
 
 /**
@@ -276,15 +314,30 @@ export function mergeViewFromReadiness(readiness: Readiness): MergeView {
 const UNAVAILABLE = "Merging isn't available right now.";
 const changeText = (repository: string, number: number, method: string): string => `Merge ${repository} pull request ${String(number)} (${method})`;
 
+/** The body of a press: `{ requestId }`, and for the web app the risk level the person saw. Nothing else. */
+function parsePressBody(raw: unknown) {
+  const parsed = MergePressBodySchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
+  throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
+}
+
+export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; body: NeedsConfirmation };
+
 /**
- * `POST /v1/app/sessions/{id}/merge { requestId }`: the session's effective owner, a maintainer of its project or an org owner or admin presses Merge. Readiness is checked from what
- * tracking stored (the confirmation re-reads GitHub); a branch GitHub needs up to date is brought up to date first. Ready, it answers `202 NEEDS_CONFIRMATION` with ONE pending change
- * that lists every required pull request and its head and is decided only by the presser on the confirmation page. Not ready, it answers `409 MERGE_NOT_READY` and writes nothing.
+ * `POST /v1/app/sessions/{id}/merge { requestId, risk? }`: the session's effective owner, a maintainer of its project or an org owner or admin presses Merge. Readiness is checked from what tracking
+ * stored (the merge re-reads GitHub); a branch GitHub needs up to date is brought up to date first. Not ready, it answers `409 MERGE_NOT_READY` and writes nothing.
+ *
+ * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges at once: one click and the app's own confirm dialog, no email-code sign-in. The press
+ *   must name the risk level the person saw when it is medium or high; one that saw another level is refused. Answers `200` with the pull requests merged.
+ * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
+ *   presser on the confirmation page (R66) with a fresh sign-in.
  */
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
-): Promise<{ status: 202; body: NeedsConfirmation }> {
-  const { requestId } = parseControlBody(rawBody);
+): Promise<MergePressReply> {
+  const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
   if (approvals === undefined || host === undefined) throw agentXError("RUNTIME_UNAVAILABLE", UNAVAILABLE);
   const access = await requireSessionLevel(deps, caller, sessionId, "view", "merge it");
@@ -321,6 +374,15 @@ export async function pressMerge(
     kind: MERGE_RULE as typeof MERGE_RULE, taskId: tracked.taskId,
     pullRequests: byRepository(open.map((entry) => ({ repositoryId: entry.repositoryId, number: entry.number, headSha: heads.get(pullRequestKey(entry))! }))),
   };
+
+  if (caller.browserSession === true) {
+    // What the person saw in the dialog has to be what is true now: a medium or high risk is part of the click, and a risk that changed since is a new question.
+    const current = riskOfTask(tracked.workflow, items).level;
+    if ((seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
+    const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
+    return { status: 200, body: { status: "MERGED", pullRequests: merged } };
+  }
+
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject,
     changes: subject.pullRequests.map((pr) => changeText(pr.repositoryId, pr.number, checked.settings.mergeMethod)),
@@ -338,9 +400,15 @@ const REFUSAL_REASONS = {
   head_changed: "the pull request changed", not_mergeable: "GitHub would not merge it", closed: "it is closed", forbidden: "GitHub did not allow Rovara to merge it",
 } as const;
 
+/** Why GitHub would not merge, in the words Rovara has for it and, where GitHub gave one, GitHub's own reason (branch protection, a required check, a ruleset), already cleaned. */
+function refusalWords(result: Extract<MergePullRequestResult, { outcome: "refused" }>): string {
+  const base = REFUSAL_REASONS[result.reason];
+  return result.githubMessage === undefined ? base : `${base} (GitHub says: ${result.githubMessage})`;
+}
+
 async function mergeableNow(
   deps: ApprovalDependencies, host: CodeMergeHost, task: DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, subject: PullRequestMergeSubject, presserDeveloperId: string,
-): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[] }> {
+): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[]; entries: PullRequestEntry[] }> {
   // The change lists the pull requests that were unmerged when it was pressed. Those that merged since (a half merge being finished) are not in the way; one that is new is.
   const required = requiredPullRequests(task.workflow);
   const entries = required.filter((entry) => entry.state !== "MERGED");
@@ -356,6 +424,7 @@ async function mergeableNow(
   const facts: MergePullRequestFacts[] = [];
   const approvals = new Map<string, HumanApproval>();
   const bases = new Map<string, string>();
+  const codeOwners = new Map<string, CodeOwnerVerdict>();
   const plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }> = [];
   const items = new Map((await readMergeTracking(deps, task.taskId, task.orgId)).map((item) => [pullRequestKey(item), item]));
   for (const [index, entry] of entries.entries()) {
@@ -375,19 +444,43 @@ async function mergeableNow(
       repositoryId: entry.repositoryId, number: entry.number, headSha: status.headSha, state: status.state, draft: status.draft, baseBranch: status.baseBranch,
       ci: ci.ci, branch: readBranch(status), behindRequired: status.mergeableState === "behind",
     });
-    approvals.set(key, await approvalFromStatus(deps, host, { url, scope, orgId: task.orgId, status, syncedFrom: entry.syncedFrom, ciPassing: ci.ci === "passing" || ci.ci === "none", requesters, allowSelfApproval: settings.allowSelfApproval, permissions }));
+    const approval = await approvalFromStatus(deps, host, { url, scope, orgId: task.orgId, status, syncedFrom: entry.syncedFrom, ciPassing: ci.ci === "passing" || ci.ci === "none", requesters, allowSelfApproval: settings.allowSelfApproval, permissions });
+    approvals.set(key, approval);
+    // Where the repository names code owners for the changed paths, one of them has to have approved (read fresh, and only once an approval counts: the approval words come first).
+    if (approval.approved && status.state === "open") codeOwners.set(key, await codeOwnersOf(host, { url, scope, baseBranch: status.baseBranch, number: entry.number, approval }));
     const base = await host.recordedBase(task.workspaceId, entry.repositoryId, entry.number);
     if (base !== undefined) bases.set(key, base);
     plan.push({ entry, url, headSha: status.headSha });
   }
   const mergedBefore = [...mergedByWorkflow, ...facts.filter((fact) => fact.state === "merged").map((fact) => fact.repositoryId)];
-  if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true, mergedBefore };
+  if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true, mergedBefore, entries };
   const presser = { githubUserId: await githubUserOfMember(deps, task.orgId, presserDeveloperId) };
   const readiness = mergeReadiness({
-    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task),
+    pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task), codeOwners,
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
-  return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore };
+  return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
+}
+
+/** Whether a code owner approved, for one pull request: nothing is asked of GitHub when the host cannot read code owners or the repository has no CODEOWNERS file. Anything unreadable fails closed. */
+async function codeOwnersOf(
+  host: CodeMergeHost, ctx: { url: string; scope: GitHubTokenScope; baseBranch: string; number: number; approval: Extract<HumanApproval, { approved: true }> },
+): Promise<CodeOwnerVerdict> {
+  const github = host.github;
+  if (github.readCodeOwners === undefined || github.listChangedPaths === undefined) return { ok: true };
+  try {
+    const text = await github.readCodeOwners(ctx.url, ctx.baseBranch, ctx.scope);
+    if (text === undefined) return { ok: true };
+    const changed = await github.listChangedPaths(ctx.url, ctx.number, ctx.scope);
+    // A list cut short could hide a path a code owner owns.
+    if (!changed.complete) return { ok: false, unreadable: true };
+    return await codeOwnerVerdict({
+      codeOwnersText: text, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
+      teamMember: async (team, login) => (await github.isTeamMember?.(ctx.url, team, login, ctx.scope)) ?? "unknown",
+    });
+  } catch {
+    return { ok: false, unreadable: true };
+  }
 }
 
 /** The approval a fresh read of GitHub gives: each reviewer's permission is looked up now (once), and a reviewer's link to a member is read now. */
@@ -427,7 +520,7 @@ export interface PullRequestMergeSubject {
 /** Claims the merge of one pull request on its tracking item: only when nobody holds it, or the holder's claim is older than `MERGE_CLAIM_SECONDS`. The claim bumps the item's version. */
 async function claimMerge(
   deps: ApprovalDependencies, task: { taskId: string; orgId: OrgId }, pr: { repositoryId: string; number: number; url: string }, headSha: string, by: string,
-  audit: { approvalId: string; method: string; proof?: AuditProof | undefined },
+  audit: { occurrence: string; approvalId?: string | undefined; method: string; proof?: AuditProof | undefined },
 ): Promise<boolean> {
   const now = deps.now();
   const at = new Date(now).toISOString();
@@ -435,7 +528,7 @@ async function claimMerge(
   const repository = parseGitHubRepository(pr.url);
   const fullName = `${repository.owner}/${repository.name}`;
   const events = await tryAuditEvents(deps, () => [auditPullRequestMergeRequested({
-    orgId: task.orgId, actor: auditActorOf(by), occurredAt: at, occurrence: auditOccurrence(audit.approvalId, pr.repositoryId, String(pr.number)), related: [audit.approvalId],
+    orgId: task.orgId, actor: auditActorOf(by), occurredAt: at, occurrence: auditOccurrence(audit.occurrence, pr.repositoryId, String(pr.number)), ...(audit.approvalId === undefined ? {} : { related: [audit.approvalId] }),
     ...(audit.proof === undefined ? {} : { proof: audit.proof }),
     pullRequestId: auditPullRequestId(fullName, pr.number), number: pr.number, method: audit.method,
     details: [{ subject: "org", fields: { repository: fullName } }],
@@ -473,14 +566,26 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
   // A rerun (the sweep tries a handler again) re-checks who pressed: someone who lost the right to merge this task since is not merging it now.
   if (!await mayStillPress(deps, { orgId: record.orgId, developerId: record.decidedBy }, subject.taskId)) throw agentXError("MERGE_NOT_READY", M.presserLostRight);
   const tracked = task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot };
-  const { plan, settings, alreadyMerged, mergedBefore } = await mergeableNow(deps, host, tracked, subject, record.decidedBy);
-  if (alreadyMerged) return;
+  await mergeTask(deps, host, tracked, subject, { decidedBy: record.decidedBy, occurrence: record.approvalId, approvalId: record.approvalId, ...(decision?.proof === undefined ? {} : { proof: decision.proof }) });
+}
+
+/**
+ * The single merge path (the confirmation page's handler and the web app's one click both end here): re-reads every pull request, every reviewer and the code owners from GitHub, checks readiness for
+ * the exact heads, claims each pull request on its tracking item (the audit fact in the claim's transaction) and merges in repository order with the checked head as `sha`. Returns the pull requests
+ * that are merged when it ends.
+ */
+async function mergeTask(
+  deps: ApprovalDependencies, host: CodeMergeHost, tracked: DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, subject: PullRequestMergeSubject,
+  who: { decidedBy: string; occurrence: string; approvalId?: string; proof?: AuditProof },
+): Promise<Array<{ repositoryId: string; number: number }>> {
+  const { plan, settings, alreadyMerged, mergedBefore, entries } = await mergeableNow(deps, host, tracked, subject, who.decidedBy);
+  if (alreadyMerged) return entries.map((entry) => ({ repositoryId: entry.repositoryId, number: entry.number }));
   const scope = host.scope(tracked.orgId);
   // What an earlier run of this handler already merged counts, so a rerun that finds the second pull request refused still says the first merged.
   const merged: string[] = [...mergedBefore];
   for (const step of plan) {
     const { entry, url, headSha } = step;
-    const claimed = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, record.decidedBy, { approvalId: record.approvalId, method: settings.mergeMethod, proof: decision?.proof });
+    const claimed = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, who.decidedBy, { occurrence: who.occurrence, approvalId: who.approvalId, method: settings.mergeMethod, proof: who.proof });
     // Another handler holds the claim, or tracking has no item for the pull request yet: whichever it is, a later run finds out (the pull request merged, the claim gone stale).
     if (!claimed) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara is already merging this pull request.");
     const result = await host.github.mergePullRequest(url, entry.number, { sha: headSha, method: settings.mergeMethod }, scope);
@@ -495,20 +600,26 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
       }
       continue;
     }
+    const why = refusalWords(result);
     if (merged.length === 0) {
-      throw agentXError("MERGE_NOT_READY", result.reason === "head_changed" ? M.changedAfterConfirm : M.notMerged(entry.repositoryId, REFUSAL_REASONS[result.reason]));
+      throw agentXError("MERGE_NOT_READY", result.reason === "head_changed" ? M.changedAfterConfirm : M.notMerged(entry.repositoryId, why));
     }
     // A merge that fails after an earlier pull request merged stops: a person finishes it, and is told.
-    const text = M.halfMerged(merged.join(", "), entry.repositoryId, REFUSAL_REASONS[result.reason]);
+    const text = M.halfMerged(merged.join(", "), entry.repositoryId, why);
     const at = new Date(deps.now()).toISOString();
     await writeAll(deps, codeMilestoneItems({ tableName: deps.tableName }, {
       kind: "stuck", orgId: tracked.orgId, taskId: tracked.taskId, ...(tracked.sessionId === undefined ? {} : { sessionId: tracked.sessionId }), at, text,
       pullRequests: plan.map((p) => ({ repository: p.entry.repositoryId, number: p.entry.number, url: p.entry.url })).slice(0, 32),
-    }, hashNumber(record.approvalId), { definitionVersion: tracked.workflow.definitionVersion })).catch(() => undefined);
+    }, hashNumber(who.occurrence), { definitionVersion: tracked.workflow.definitionVersion })).catch(() => undefined);
     await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, tracked.taskId).catch(() => undefined);
     throw agentXError("MERGE_NOT_READY", text);
   }
+  return byRepository([...mergedBeforeEntries(tracked), ...plan.map((step) => ({ repositoryId: step.entry.repositoryId, number: step.entry.number }))]);
 }
+
+/** The pull requests the workflow already holds as merged (a half merge being finished): they are part of what the press answers. */
+const mergedBeforeEntries = (task: { workflow: WorkflowSnapshot }): Array<{ repositoryId: string; number: number }> =>
+  requiredPullRequests(task.workflow).filter((entry) => entry.state === "MERGED").map((entry) => ({ repositoryId: entry.repositoryId, number: entry.number }));
 
 /** May the person still press Merge on this task: its effective owner, a maintainer of its project or an org owner or admin, read now. */
 async function mayStillPress(deps: ApprovalDependencies, caller: { orgId: OrgId; developerId: string }, taskId: string): Promise<boolean> {

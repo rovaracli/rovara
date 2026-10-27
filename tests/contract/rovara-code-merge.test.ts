@@ -943,8 +943,8 @@ describe("the task view's merge field", () => {
     const task = w.db.get(taskKey(w.taskId))! as never;
     const items = [w.trackingOf({ repositoryId: "payments", number: 7 })!];
     // Priya asked for the change and Max approved it: Priya may press, Max (the only approver) may not.
-    expect(await mergeViewOf(w.deps, task, items, PRIYA)).toEqual({ ready: true });
-    expect(await mergeViewOf(w.deps, task, items, MAX)).toEqual({ ready: false, message: M.presserApproved });
+    expect(await mergeViewOf(w.deps, task, items, PRIYA)).toMatchObject({ ready: true, risk: { level: "low" } });
+    expect(await mergeViewOf(w.deps, task, items, MAX)).toMatchObject({ ready: false, message: M.presserApproved });
     // Nothing tracked yet: no view.
     expect(await mergeViewOf(w.deps, task, [], PRIYA)).toBeUndefined();
   });
@@ -952,7 +952,7 @@ describe("the task view's merge field", () => {
   it("is not ready while the task is blocked, and reads nothing from GitHub to say so", async () => {
     const w = await ready({}, { ci: "failing", failingChecks: ["test"] });
     const task = w.db.get(taskKey(w.taskId))! as never;
-    expect(await mergeViewOf(w.deps, task, [w.trackingOf({ repositoryId: "payments", number: 7 })!], PRIYA)).toEqual({ ready: false, message: M.checks });
+    expect(await mergeViewOf(w.deps, task, [w.trackingOf({ repositoryId: "payments", number: 7 })!], PRIYA)).toMatchObject({ ready: false, message: M.checks });
     expect(w.github.calls).toEqual([]);
   });
 });

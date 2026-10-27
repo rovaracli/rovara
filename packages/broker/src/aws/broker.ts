@@ -745,7 +745,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "getRepositoryStanding" | "replyToReviewThread" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "getRepositoryStanding" | "replyToReviewThread" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -13017,6 +13017,12 @@ function codeMergeHostOf(dependencies: AwsBrokerDependencies): CodeMergeHost | u
       getPullRequestStatus: (url, number, scope) => github.getPullRequestStatus!.call(github, url, number, scope),
       getRepositoryPermission: (url, login, scope) => github.getRepositoryPermission!.call(github, url, login, scope),
       mergePullRequest: (url, number, input, scope) => github.mergePullRequest!.call(github, url, number, input, scope),
+      // Code owners (owner decision 2026-10-27): the CODEOWNERS file, the changed paths and team membership, read only. A provider that cannot read them leaves the check off.
+      ...(github.readCodeOwners === undefined || github.listChangedPaths === undefined ? {} : {
+        readCodeOwners: (url: string, branch: string, scope: GitHubTokenScope) => github.readCodeOwners!.call(github, url, branch, scope),
+        listChangedPaths: (url: string, number: number, scope: GitHubTokenScope) => github.listChangedPaths!.call(github, url, number, scope),
+      }),
+      ...(github.isTeamMember === undefined ? {} : { isTeamMember: (url: string, team: string, login: string, scope: GitHubTokenScope) => github.isTeamMember!.call(github, url, team, login, scope) }),
     },
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),

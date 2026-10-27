@@ -69,7 +69,12 @@ export interface SessionShareDependencies extends SessionAccessDependencies {
 }
 
 /** Who shares: `DeveloperCaller` fits. `orgRole` is only passed on to Plan 3's link minting, which reads it live itself. */
-export interface ShareCaller extends SessionCaller { name: string; orgRole?: OrgRole }
+export interface ShareCaller extends SessionCaller {
+  name: string;
+  orgRole?: OrgRole;
+  /** Set only by the web boundary, for a request that carried a live browser session cookie and its CSRF token (never by a token): Merge merges at once for it, and for nothing else. */
+  browserSession?: true;
+}
 
 export type SessionShareReply =
   | { status: 200; body: { share: SessionShareRow } }
