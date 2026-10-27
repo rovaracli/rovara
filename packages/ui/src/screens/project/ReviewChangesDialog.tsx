@@ -38,7 +38,7 @@ export function ReviewChangesDialog({ project, agentId, from, revision, disabled
   } catch (failure) { setError(failureText(failure, "Couldn't check the status. Try again.")); }
   finally { setChecking(false); }
  }
- return <Dialog className="rv-publish-review" title="Review changes" open={open} onOpenChange={value => { if (!busy) setOpen(value); }} trigger={<Button variant="primary" disabled={disabled}>Review changes</Button>}>
+ return <Dialog className="rv-publish-review" title="Review changes" open={open} onOpenChange={value => { if (busy) return;if (value) { setNote("");setError(undefined);setPublished(undefined);setPending(undefined); }setOpen(value); }} trigger={<Button variant="primary" disabled={disabled}>Review changes</Button>}>
   <p>Publishing changes how new tasks work. Running tasks keep their version.</p>
   {diff.isPending ? <p role="status">Loading the changes</p> : diff.isError ? <p role="alert"><VisibleText text={failureText(diff.error, "Couldn't read these changes. Close this and try again.")} /></p> : <>
    {empty ? <p>There are no changes to publish.</p> : summary !== undefined && <section aria-label="What changes"><h3>What changes</h3><ul>{summary.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul></section>}

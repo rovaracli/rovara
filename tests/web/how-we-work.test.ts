@@ -213,7 +213,7 @@ describe("review and publish", () => {
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
   const dialog = await publish();
   fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
-  const status = await within(dialog).findByText("Sent for confirmation — someone else who can approve changes in this project confirms it.");
+  const status = await within(dialog).findByText("Sent for confirmation: someone else who can approve changes in this project confirms it.");
   expect(status).toBeTruthy();
   expect(within(dialog).queryByText(/Published as version/u)).toBeNull();
   fireEvent.click(within(dialog).getByRole("button", { name: "Open confirmation" }));
@@ -266,7 +266,7 @@ describe("history and rollback", () => {
   const dialog = await screen.findByRole("dialog", { name: "Roll back to version 1" });
   await within(dialog).findByText("What will change");
   fireEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
-  await within(dialog).findByText("Sent for confirmation — someone else who can approve changes in this project confirms it.");
+  await within(dialog).findByText("Sent for confirmation: someone else who can approve changes in this project confirms it.");
   expect(within(dialog).queryByText(/Rolled back to version/u)).toBeNull();
  });
 
@@ -282,7 +282,56 @@ describe("history and rollback", () => {
  });
 });
 
+describe("publishing more than once", () => {
+ const okPublish: Handler = (request, url) => url.pathname.endsWith("/publish") ? { status: 200, body: { agent: publishedAgent(), version: { version: 3 } } } : undefined;
+ const edit = async (text: string) => { type(/Project rules/u, text);fireEvent.click(screen.getByRole("button", { name: "Save draft" }));await screen.findByText("Draft saved. Review changes to publish it."); };
+ const reopen = async () => { await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));fireEvent.click(screen.getByRole("button", { name: "Review changes" }));return screen.findByRole("dialog", { name: "Review changes" }); };
+
+ it("offers Publish again, with no old result, after a publish and a new saved edit", async () => {
+  await open({ handle: okPublish });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
+  let dialog = await reopen();
+  await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Publish" }).disabled).toBe(false));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+  await within(dialog).findByText(/Published as version 3/u);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await edit("A second rule");
+  dialog = await reopen();
+  expect(within(dialog).queryByText(/Published as version/u)).toBeNull();
+  await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Publish" }).disabled).toBe(false));
+  expect(within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Version note" }).disabled).toBe(false);
+ });
+
+ it("offers Publish again, with no old waiting message, after a publish that was sent for confirmation", async () => {
+  await open({ handle: (request, url) => url.pathname.endsWith("/publish") ? { status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: CONFIRM_URL, changes: ["Changes the instructions of the review step \"Review\""] } } : undefined });
+  let dialog = await reopen();
+  await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Publish" }).disabled).toBe(false));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+  await within(dialog).findByText(/Sent for confirmation/u);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await edit("Another rule");
+  dialog = await reopen();
+  expect(within(dialog).queryByText(/Sent for confirmation/u)).toBeNull();
+  await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Publish" }).disabled).toBe(false));
+ });
+});
+
 describe("a project that still runs the built-in process", () => {
+ const withDraftLayer = () => howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code", draftLayer: { agentId: LAYER, draftRevision: 3 } }, rules: [] });
+ it("finds a saved first draft after a reload: the boxes show it and Review changes opens, without creating anything", async () => {
+  const f = await open({ view: withDraftLayer(), overlay: { instructions: "Saved before the reload", steps: { build: { instructions: "Saved build rule" } } }, handle: (request, url) => url.pathname.endsWith("/diff") ? { status: 200, body: diffBody("base", ["Changes the project rules"], [], "draft") } : undefined });
+  await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Saved before the reload"));
+  await waitFor(() => expect(within(card("Build")).getByRole<HTMLTextAreaElement>("textbox", { name: "Instructions for this stage" }).value).toBe("Saved build rule"));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+  const dialog = await screen.findByRole("dialog", { name: "Review changes" });
+  await within(dialog).findByText("What changes");
+  expect(f.calls().some(call => call.endsWith("/diff"))).toBe(true);
+  expect(f.sent()).toEqual([]);
+ });
+
  const builtin = () => howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code" }, rules: [] });
  it("shows an empty history and sends the first save through the ensure call", async () => {
   const f = await open({ view: builtin(), overlay: {} });

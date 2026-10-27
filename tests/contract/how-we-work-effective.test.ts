@@ -6,6 +6,7 @@ import {
   type AgentId, type HowWeWorkView, type OrgRole, type RecipeOverlay,
 } from "../../packages/contracts/src/index.js";
 import { getProjectHowWeWork, HOW_WE_WORK_PATH, type HowWeWorkDependencies } from "../../packages/broker/src/playbook/routes.js";
+import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { BO, MAX, MIA, ORG_A, ORG_B, ZED, OLA } from "../support/agent-session-world.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
@@ -261,7 +262,7 @@ describe("a process layer", () => {
     const w = mergeWorld();
     await adoptVersion2(w);
     const layer = await w.store.create({ orgId: ORG_A, name: "web process", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX });
-    expect((await view(w)).process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID });
+    expect((await view(w)).process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, draftLayer: { agentId: layer.agentId, draftRevision: layer.draftRevision } });
     await w.store.publish({ orgId: ORG_A, agentId: layer.agentId, expectedDraftRevision: layer.draftRevision, digest: "a".repeat(64), by: MAX });
     await writeProjectPlaybook(deps(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: 0, defaultProcess: { kind: "project_process", agentId: layer.agentId } });
     await w.store.archive(ORG_A, layer.agentId, MAX);
@@ -355,5 +356,29 @@ describe("the contract", () => {
     expect(edit((c) => { c.stages[0]!.who.model = { value: null, source: "rovara", locked: true }; })).toBe(false);
     expect(edit((c) => { c.stages[0]!.who.model = { value: null, source: "rovara", locked: false, lockedBy: "rovara" }; })).toBe(false);
     expect(edit((c) => { (c.stages[0]!.who.model as Record<string, unknown>)["extra"] = 1; })).toBe(false);
+  });
+});
+
+describe("a process layer that is not the project's default yet", () => {
+  it("is named in the view as the draft layer, so a saved first draft can be found again", async () => {
+    const w = mergeWorld();
+    const made = await postProjectProcess(deps(w), w.caller(MAX), "web");
+    const v = await view(w);
+    expect(v.process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, draftLayer: { agentId: made.agentId, draftRevision: made.draftRevision } });
+    expect(HowWeWorkViewSchema.safeParse(v).success).toBe(true);
+  });
+
+  it("does not create a layer when there is none, even for a viewer's read", async () => {
+    const w = mergeWorld();
+    const v = await view(w, MIA);
+    expect(v.process).toEqual({ kind: "builtin", agentId: ROVARA_CODE_AGENT_ID });
+    expect((await w.store.list(ORG_A)).filter((agent) => agent.purpose === "process")).toEqual([]);
+  });
+
+  it("is left out once the layer is the project's default (its own draft revision is shown instead)", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    await withProcessLayer(w, { instructions: "RULE" });
+    expect((await view(w)).process).not.toHaveProperty("draftLayer");
   });
 });

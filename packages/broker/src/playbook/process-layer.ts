@@ -33,7 +33,7 @@ const answerOf = (agent: AgentRecord): ProcessLayerAnswer => ({
 });
 
 /** The project's process layer, if it has one: the one its playbook points at, else any process layer it owns (a draft not yet published). */
-async function existingLayer(deps: ProjectPlaybookDependencies, store: ProcessLayerStore, orgId: OrgId, project: string): Promise<AgentRecord | undefined> {
+export async function existingLayer(deps: ProjectPlaybookDependencies, store: ProcessLayerStore, orgId: OrgId, project: string): Promise<AgentRecord | undefined> {
   const { defaultProcess } = await readProjectPlaybook(deps, orgId, project, { lenient: true });
   if (defaultProcess.kind === "project_process") {
     const pointed = await store.get(orgId, defaultProcess.agentId);

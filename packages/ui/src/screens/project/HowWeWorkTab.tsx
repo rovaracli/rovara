@@ -22,7 +22,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
  const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState(false);
- const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured;
+ const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured ?? data.process.draftLayer?.agentId;
  const draftKey = [...howWeWorkKey(project), "draft", layerId] as const;
  const draft = useQuery({ queryKey: draftKey, enabled: canEdit && layerId !== undefined, queryFn: () => builder.draft(layerId!) });
  const baseline = useMemo(() => draft.data === undefined ? EMPTY_RULES : ruleValues(draft.data.draft.overlay as Overlay), [draft.data]);

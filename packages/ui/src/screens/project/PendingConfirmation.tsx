@@ -3,8 +3,7 @@ import type { SendResult } from "../../api/client.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { isConfirmUrl } from "../../text/links.js";
-// The owner-approved sentence has a dash between its halves; the repository's copy rule keeps that character out of source literals, so it is joined here.
-export const SENT_FOR_CONFIRMATION = "Sent for confirmation " + String.fromCharCode(0x2014) + " someone else who can approve changes in this project confirms it.";
+export const SENT_FOR_CONFIRMATION = "Sent for confirmation: someone else who can approve changes in this project confirms it.";
 export const publishedMessage = (version: number) => "Published as version " + String(version) + ". New tasks use it; running tasks keep their version.";
 export const rolledBackMessage = (version: number) => "Rolled back to version " + String(version) + ". New tasks use it; running tasks keep their version.";
 /** A less-safe change waits for a second person. It shows why, the confirmation link, and a read-only status check (never a second write). */

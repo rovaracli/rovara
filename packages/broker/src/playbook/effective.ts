@@ -39,6 +39,7 @@ import { readGuardrails } from "../agents/guardrails.js";
 import { resolveAgent, type AgentStore } from "../agents/store.js";
 import { latestRevision } from "../org/project-settings.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
+import { existingLayer } from "./process-layer.js";
 import { wholeAgentLayers } from "./process-reviewers.js";
 import { readProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -75,7 +76,11 @@ interface Running {
 async function runningProcess(deps: HowWeWorkDependencies, orgId: OrgId, name: string, playbook: { defaultProcess: { kind: "builtin" } | { kind: "project_process"; agentId: AgentId } }): Promise<Running> {
   const pinned = deps.store === undefined ? builtinDefaultPin(ROVARA_CODE_AGENT_ID) : await deps.store.pinnedBuiltinVersion(orgId, ROVARA_CODE_AGENT_ID);
   const base = deps.store === undefined ? builtinRecipe(ROVARA_CODE_AGENT_ID, pinned) : deps.store.builtinRecipe(ROVARA_CODE_AGENT_ID, pinned);
-  if (playbook.defaultProcess.kind === "builtin") return { process: { kind: "builtin", agentId: ROVARA_CODE_AGENT_ID }, recipe: base, base, overlay: undefined };
+  if (playbook.defaultProcess.kind === "builtin") {
+    // A layer saved but never published is not the default yet; the page needs to find its draft. Read-only: the view never creates a layer.
+    const draftLayer = deps.store === undefined ? undefined : await existingLayer({ ...deps, store: deps.store }, deps.store, orgId, name);
+    return { process: { kind: "builtin", agentId: ROVARA_CODE_AGENT_ID, ...(draftLayer === undefined ? {} : { draftLayer: { agentId: draftLayer.agentId, draftRevision: draftLayer.draftRevision } }) }, recipe: base, base, overlay: undefined };
+  }
   const { agentId } = playbook.defaultProcess;
   const version = await requireProcessLayer(deps.store, orgId, name, agentId);
   const store = deps.store!;
