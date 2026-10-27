@@ -333,6 +333,7 @@ import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
+import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../developer/test-proof-lines.js";
 
@@ -6216,7 +6217,7 @@ function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string
  * an owner approval names its digest and the text read back has that digest. Anything else (no plan, no approval of
  * it, a changed object) gives undefined, and the description falls back to the task's title.
  */
-async function approvedPlanForPullRequest(deps: Pick<DeveloperTaskRouteDependencies, "actions">, workflow: WorkflowSnapshot): Promise<LoadedDocument | undefined> {
+export async function approvedPlanForPullRequest(deps: Pick<DeveloperTaskRouteDependencies, "actions">, workflow: WorkflowSnapshot): Promise<LoadedDocument | undefined> {
   const plan = workflow.artifacts.filter((artifact) => artifact.type === "plan").at(-1);
   if (plan === undefined || !workflow.decisions.some((decision) => decision.decision === "APPROVE" && decision.artifactDigest === plan.sha256)) return undefined;
   return loadWorkflowDocument((objectKey, maxBytes) => deps.actions.readArtifact(objectKey, maxBytes), plan, {});
@@ -6407,7 +6408,9 @@ export async function startTaskWorkflowPublicationFromSystem(
   const rovaraV2 = workflow.definitionVersion === "1.1.0";
   // A session bound to a Linear issue gets `Fixes <KEY>` once in the description, so Linear's own GitHub integration closes the issue when the pull request merges (Plan 6 Task 20).
   const linearIssueKey = rovaraV2 ? await linearIssueKeyOfTask({ documentClient: deps.documentClient, tableName: deps.tableName }, task) : undefined;
-  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }) } : undefined;
+  // Playbook P1: the Proof section's inputs (the approved plan, the browser/API rows, the test proof); each one that cannot be read is left out.
+  const proof = rovaraV2 ? await loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: await deps.actions.operations(task.workspaceId), actor: "owner" }) }, task, workflow, approvedPlan) : undefined;
+  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }) } : undefined;
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);

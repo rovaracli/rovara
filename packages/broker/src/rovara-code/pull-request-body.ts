@@ -7,6 +7,7 @@ import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-reques
 import { inertLine } from "./inert-text.js";
 import { reviewModelLines } from "./review-model-lines.js";
 import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
+import { PROOF_LEVEL_LAST, proofSection, type ProofContext } from "./proof-section.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -43,6 +44,8 @@ export interface PullRequestBodyContext {
   proofLines?: readonly string[] | undefined;
   /** The reviews of this code ran on the build's own model (`reviewSameModelOf`): the Reviews section says so. */
   reviewSameModel?: boolean | undefined;
+  /** The approved plan, the browser/API rows and the test proof for the Proof section (Playbook P1). Absent, or without a plan with claims: the description has no Proof section. */
+  proof?: ProofContext | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -171,11 +174,15 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
   const risk = riskShown(workflow, context);
   const linearKey = normalizeIssueKey(context.linearIssueKey);
   let lines: string[] = [];
-  for (const limit of LIST_LIMITS) {
+  const proof = proofSection(workflow, context.proof);
+  // The Proof section shrinks with the lists: its evidence text first, then its proven and passed rows, never a failed row or a not-tested item. One more step after the lists are empty shortens it again.
+  const steps = [...LIST_LIMITS.map((limit, index) => ({ limit, proofLevel: Math.min(index, 3) })), { limit: 0, proofLevel: PROOF_LEVEL_LAST }];
+  for (const { limit, proofLevel } of steps) {
     // The last guard: whatever a path let through, no line has a Linear magic word before a key but Rovara's own Fixes line.
     lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
+      ...(proof === undefined ? [] : [...proof(proofLevel), ""]),
       "## Reviews", ...reviewLines(limit), ...reviewModelLines(workflow, context.reviewSameModel === true).map((line) => inertLine(line, ITEM_MAX)), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
       ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),

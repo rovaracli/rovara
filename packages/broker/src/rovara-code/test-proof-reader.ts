@@ -1,0 +1,28 @@
+// Playbook P1: the test proof (does a new test fail on the original code?) for the Proof section. The worker writes test-proof.json at the end of a CHECKS run, bound to the candidate digest; this
+// reads it the way the mainline branch's publication hook does (`loadTestProofLines`): the newest operations of the task, only an object under the task's own key prefix, only a proof that parses and is
+// bound to the current candidate digest. Informational: any fault gives no proof, and the pull request is published without it. Until the worker part lands in Cloud, no artifact exists and this
+// returns undefined.
+import { TEST_PROOF_ARTIFACT, TestProofSchema, type TestProof } from "@agentx/contracts";
+import type { TestProofActions } from "../developer/test-proof-lines.js";
+import { byCreated } from "../developer/task-records.js";
+
+const OPERATIONS_READ = 10;
+const PROOF_READ_BYTES = 256 * 1024;
+
+/** The newest test proof among the task's latest operations that is bound to `candidateDigest`; undefined when there is none, it does not parse, or storage fails. */
+export async function loadTestProof(actions: TestProofActions, task: { ownerKey: string; workspaceId: string }, candidateDigest: string | undefined): Promise<TestProof | undefined> {
+  if (candidateDigest === undefined) return undefined;
+  try {
+    const newest = (await actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, OPERATIONS_READ);
+    for (const operation of newest) {
+      const artifact = (await actions.artifacts(task.workspaceId, operation.id)).find((entry) => entry.name === TEST_PROOF_ARTIFACT);
+      const prefix = `private/${task.ownerKey}/${task.workspaceId}/${operation.id}/`;
+      if (artifact === undefined || !artifact.objectKey.startsWith(prefix)) continue;
+      const parsed = TestProofSchema.safeParse(JSON.parse(await actions.readArtifact(artifact.objectKey, PROOF_READ_BYTES)) as unknown);
+      if (parsed.success && parsed.data.candidateDigest === candidateDigest) return parsed.data;
+    }
+  } catch {
+    // The proof is a courtesy to the reader: a storage or parse fault only leaves it out.
+  }
+  return undefined;
+}
