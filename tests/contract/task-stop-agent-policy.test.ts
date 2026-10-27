@@ -264,3 +264,41 @@ it("refuses a source returned under another org key even when its body claims th
   };
   expect((await f.readAgent()).status).toBe(503);
 });
+
+it("attributes a missing configured company default to the company source, not an unknown agent limit", async () => {
+  const f = fixture();
+  f.agent(7);
+  const result = await f.readAgent();
+  expect(result.status).toBe(503);
+  expect(result.message?.startsWith("RUNTIME_UNAVAILABLE: Company task-stop settings could not be checked.")).toBe(true);
+});
+it("keeps present builtin settings without an amount as builtin_settings inheritance", async () => {
+  const f = fixture();
+  f.policy();
+  f.agent(1, builtin);
+  const raw = { ...f.db.get(builtinSettingsKey(A, builtin)) };
+  delete raw.maxPerRunUsd;
+  f.db.set(raw);
+  const result = await f.readAgent(builtin);
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ sourceKind: "builtin_settings", agentOverride: { kind: "inherit" } });
+});
+for (const row of ["member", "pointer"] as const) {
+  it(`refuses an agent policy actor whose ${row} row was revoked`, async () => {
+    const f = fixture();
+    f.policy();
+    f.agent();
+    f.db.delete(row === "member" ? orgMemberKey(A, who) : developerOrgKey(who));
+    expect((await f.readAgent()).status).toBe(403);
+  });
+}
+it("reports a stored150 override as a partial source rather than the effective100 stop", async () => {
+  const f = fixture();
+  f.policy();
+  f.record(100);
+  f.agent(150);
+  const result = await f.readAgent();
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ agentOverride: { kind: "limited", stopMicrousd: 150_000_000 }, coverage: "agent_override_only", calculation: "unavailable", enforcement: "not_connected" });
+  expect(Object.hasOwn(result.body!, "effectiveStopMicrousd")).toBe(false);
+});

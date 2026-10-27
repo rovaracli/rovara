@@ -1121,3 +1121,19 @@ describe("a built-in's budget answer", () => {
     expect(again.body.agent).toMatchObject({ monthlyBudgetUsd: 10 });
   });
 });
+
+
+it("preserves future task-stop intent during an ordinary project AI PUT and exposes no setter", async () => {
+  const { db, call } = await routeSetup();
+  const policy = { schemaVersion: 1, stopMicrousd: 20_000_000 };
+  db.set({ ...projectAiKey(TEST_ORG, "web"), entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 200, taskStopPolicy: policy, revision: 1 });
+  const changed = await call(DANA, "PUT", "/v1/app/projects/web/ai", { monthlyBudgetUsd: 300 });
+  expect(changed.status).toBe(200);
+  expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
+  const forbidden = await call(DANA, "PUT", "/v1/app/projects/web/ai", { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+  expect(forbidden.status).toBe(400);
+  expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
+  const member = await call(MAX, "PUT", "/v1/app/projects/web/ai", { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+  expect(member.status).toBe(400);
+  expect(db.get(projectAiKey(TEST_ORG, "web"))?.taskStopPolicy).toEqual(policy);
+});
