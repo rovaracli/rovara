@@ -1,0 +1,104 @@
+// @vitest-environment jsdom
+import { expect, it, vi } from "vitest";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Routes, Route } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { PROCESS_START_REFUSED_MESSAGE } from "@agentx/contracts/web";
+import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
+import { createRunApi } from "../../packages/ui/src/api/runs.js";
+import { createCodeApi } from "../../packages/ui/src/api/code.js";
+import { howWeWorkKey } from "../../packages/ui/src/api/how-we-work.js";
+import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
+import { Announcer } from "../../packages/ui/src/design/Announcer.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { renderUi } from "./support/render.js";
+import { expectNoAxeViolations } from "./support/axe.js";
+import { fakeHost } from "./support/fake-host.js";
+import { h } from "./support/h.js";
+import { projectFixture } from "./support/project-fixture.js";
+import { taskFixture } from "./support/session-fixture.js";
+import { LAYER, howWeWorkView } from "./support/how-we-work-view.js";
+const id = "ses_bbbbbbbbbbbbbbbbbbbb", CODE = "/v1/app/projects/payments/code";
+const started = () => ({ status: 202, body: { task: taskFixture({ sessionId: id }), sessionId: id, sessionUrl: "https://cell.example/s/" + id } });
+function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown } = {}) {
+ const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.method === "GET" ? { status: 200, body: value } : options.send ? options.send(request) : started());
+ const query = createQueryClient();
+ if (options.seed !== undefined) query.setQueryData([...howWeWorkKey("payments"), "view"], options.seed);
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
+ return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
+}
+const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
+const box = () => screen.findByRole("textbox", { name: "What do you need?" });
+it("posts the text to the project's code route and opens the returned session", async () => {
+ const f = setup(), navigate = vi.spyOn(f.host, "navigate");
+ fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));
+ expect(posts(f)).toHaveLength(1);expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Fix the duplicate refunds" }, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
+ expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "requestId"]);f.close();
+});
+for (const modifier of ["metaKey", "ctrlKey"] as const) it("submits with " + modifier + "+Enter but not with a bare Enter", async () => {
+ const f = setup(), navigate = vi.spyOn(f.host, "navigate"), input = await box();
+ fireEvent.change(input, { target: { value: "Add a retry" } });fireEvent.keyDown(input, { key: "Enter" });expect(posts(f)).toHaveLength(0);
+ fireEvent.keyDown(input, { key: "Enter", [modifier]: true });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));expect(posts(f)).toHaveLength(1);f.close();
+});
+it("sends once while a start is in flight and disables the box", async () => {
+ let finish: ((value: ApiResponse) => void) | undefined;const send = vi.fn(async () => new Promise<ApiResponse>(resolve => { finish = resolve; }));
+ const f = setup(undefined, { send }), navigate = vi.spyOn(f.host, "navigate"), input = await box();fireEvent.change(input, { target: { value: "Add a retry" } });
+ const start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });fireEvent.click(start);fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+ expect(send).toHaveBeenCalledTimes(1);expect((input as HTMLTextAreaElement).disabled).toBe(true);expect(start.disabled).toBe(true);
+ finish?.(started());await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));f.close();
+});
+it("counts characters and cannot submit text over 4,000 characters or blank text", async () => {
+ const f = setup(), input = await box(), start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });
+ expect(start.disabled).toBe(true);expect(screen.getByText("0 / 4000")).toBeTruthy();
+ fireEvent.change(input, { target: { value: "   " } });expect(start.disabled).toBe(true);
+ fireEvent.change(input, { target: { value: "x".repeat(4000) } });expect(screen.getByText("4000 / 4000")).toBeTruthy();expect(start.disabled).toBe(false);
+ fireEvent.change(input, { target: { value: "x".repeat(4001) } });expect(screen.getByText("4001 / 4000")).toBeTruthy();expect(start.disabled).toBe(true);
+ fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });expect(posts(f)).toHaveLength(0);f.close();
+});
+it("shows no box to a viewer", async () => {
+ const f = setup(projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false } }));await screen.findByRole("heading", { name: "payments" });
+ expect(screen.queryByRole("textbox", { name: "What do you need?" })).toBeNull();expect(screen.queryByRole("button", { name: "Start" })).toBeNull();expect(screen.queryByText(/^Runs:/u)).toBeNull();f.close();
+});
+it("shows PROCESS_UNAVAILABLE's message and does not navigate", async () => {
+ const f = setup(undefined, { send: async () => ({ status: 400, body: { error: { code: "PROCESS_UNAVAILABLE", message: PROCESS_START_REFUSED_MESSAGE } } }) }), navigate = vi.spyOn(f.host, "navigate");
+ fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ expect((await screen.findByRole("alert")).textContent).toBe(PROCESS_START_REFUSED_MESSAGE);expect(navigate).not.toHaveBeenCalled();
+ expect((await box() as HTMLTextAreaElement).value).toBe("Fix it");f.close();
+});
+it("maps the route's fixed codes to plain messages, whatever message came with them", async () => {
+ const cases: Array<[number, string, string | RegExp]> = [[400, "PROCESS_UNAVAILABLE", PROCESS_START_REFUSED_MESSAGE], [404, "PROJECT_NOT_FOUND", /wasn't found/u], [403, "FORBIDDEN", /permission/u], [400, "CONFIG_INVALID", /4000/u], [409, "IDEMPOTENCY_CONFLICT", /different/u], [503, "RUNTIME_UNAVAILABLE", /right now/u]];
+ for (const [status, code, expected] of cases) {
+  const f = fakeHost(async () => ({ status, body: { error: { code, message: "raw server words" } } })), api = createCodeApi(f.host);
+  const failure = await api.startCode("payments", "Fix it").then(() => undefined, (error: unknown) => error as Error);
+  expect(failure?.message, code).toMatch(expected instanceof RegExp ? expected : new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));expect(failure?.message).not.toContain("raw server words");
+ }
+});
+it("startCode returns the session id and url from the route's answer", async () => {
+ const f = fakeHost(async () => started()), api = createCodeApi(f.host), result = await api.startCode("payments", "Fix it");
+ expect(result).toMatchObject({ kind: "done", value: { sessionId: id } });expect(f.request.mock.calls[0]![0]).toMatchObject({ method: "POST", path: CODE });
+});
+it("lists Rovara Code first in New session and starts it through the code route", async () => {
+ const f = setup(), navigate = vi.spyOn(f.host, "navigate");fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+ const dialog = screen.getByRole("dialog"), choices = within(dialog).getAllByRole("button").filter(button => button.closest(".rv-project-choices") !== null);
+ expect(choices[0]!.textContent).toBe("Describe the work (Rovara Code)");expect(choices[1]!.textContent).toBe("Payments expert");expect(within(dialog).queryByRole("button", { name: "Rovara Code" })).toBeNull();
+ fireEvent.click(choices[0]!);fireEvent.change(await screen.findByRole("textbox", { name: /^What should/u }), { target: { value: "Fix the refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));expect(posts(f).map(request => request.path)).toEqual([CODE]);f.close();
+});
+it("routes every Rovara Code call of the runs API to the code route", async () => {
+ const f = fakeHost(async () => started()), api = createRunApi(f.host);
+ const result = await api.startWork("rovara-code", { project: "payments", text: "Fix it" });expect(result.kind).toBe("done");
+ expect(f.request.mock.calls.map(([request]) => request.path)).toEqual([CODE]);expect(f.request.mock.calls[0]![0].body).toMatchObject({ input: { text: "Fix it" } });
+ await expect(async () => api.startWork("rovara-code", { project: "payments", text: "   " })).rejects.toThrow();await expect(async () => api.startWork("rovara-code", { project: "../x", text: "Fix it" })).rejects.toThrow();expect(f.request).toHaveBeenCalledTimes(1);
+});
+it("says which process runs when How we work is already loaded, and does not ask for it otherwise", async () => {
+ const bare = setup();await box();expect(screen.getByText("Runs: this project's process")).toBeTruthy();expect(bare.request.mock.calls.every(([request]) => !request.path.includes("how-we-work"))).toBe(true);bare.close();
+ const layer = projectFixture();layer.agents.push({ agentId: LAYER, name: "Payments process", description: "How payments work", running: 0 });
+ const named = setup(layer, { seed: howWeWorkView() });expect(await screen.findByText("Runs: Payments process (Rovara Code)")).toBeTruthy();named.close();
+ const builtin = setup(undefined, { seed: howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code" } }) });expect(await screen.findByText("Runs: the built-in process (Rovara Code)")).toBeTruthy();builtin.close();
+});
+it("shows a process name safely and never as markup", async () => {
+ const layer = projectFixture();layer.agents.push({ agentId: LAYER, name: "<b>Evil</b>‮", description: "x", running: 0 });
+ const f = setup(layer, { seed: howWeWorkView() });const line = await screen.findByText(/^Runs: /u);expect(line.querySelector("b")).toBeNull();expect(line.textContent).toContain("[U+202E]");f.close();
+});
+for (const theme of ["light", "dark"] as const) it("has an accessible start box in " + theme, async () => { const f = setup(undefined, { theme });await box();await expectNoAxeViolations(f.container);f.close(); });

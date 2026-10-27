@@ -1,3 +1,4 @@
+import { CodeIntentBodySchema } from "@agentx/contracts";
 import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
@@ -133,6 +134,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
  if (current.project !== undefined && current.project.project.name === "payments" && await howWeWorkMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
+ const code = /^\/v1\/web\/projects\/([^/]+)\/code$/.exec(url.pathname);
+ if (current.project !== undefined && current.session !== undefined && code !== null && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
+  const input = CodeIntentBodySchema.parse(JSON.parse(body));
+  if (code[1] !== current.project.project.name) { json(404, { error: { code: "PROJECT_NOT_FOUND", message: "Not found." } });return; }
+  evidence.body = input;json(202, { task: taskFixture({ sessionId: current.session.sessionId }), sessionId: current.session.sessionId, sessionUrl: origin + "/s/" + current.session.sessionId });return;
+ }
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
   let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
