@@ -8,7 +8,8 @@ export { MAX_RECIPE_STEPS, CODING_STEP_KINDS, AGENT_STEP_KINDS, STEP_TOOLS, Tool
 export { errorStatus, agentXError, AgentXErrorCodeSchema, type AgentXErrorCode, LAST_OWNER_MESSAGE, projectNameTakenMessage, projectArchivedMessage, INVITE_WRONG_EMAIL_MESSAGE, GITHUB_INSTALLATION_TAKEN_MESSAGE, AgentXError, githubNotConnectedMessage } from "./errors.js";
 export { scopeKey, pauseKey, spendOriginKind, suggestedTopUpUsd, suggestedMonthTopUpUsd, RUN_LIMIT_MULTIPLIER, LEAD_APPROVAL_THRESHOLD_USD, ADMIN_APPROVAL_THRESHOLD_USD, BUDGET_WARNING_RATIO, MAX_RUN_LIMIT_USD, type RunEstimateRange, DEFAULT_RUN_ESTIMATE_USD, RunEstimateSchema, type RunEstimate, RUN_LIMIT_BLOCK_PREFIX, RUN_LIMIT_WAITING_PREFIXES, runLimitWaitingText, isRunLimitBlockReason, runLimitBlockText, planRunLimitSubject, heldPlanStartKey, runLimitAskedKey, RUN_LIMIT_ASK_COOLDOWN_MS, DEFAULT_PLANNING_LIMIT_USD, TESTING_ALLOWANCE_USD, PER_TEST_CAP_USD, DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_MAX_PER_RUN_CEILING_USD, DEFAULT_OWNER_AGENT_BUDGET_CAP_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, SPEND_REQUEST_TTL_DAYS, WRITE_APPROVAL_TTL_DAYS, CHANGE_APPROVAL_TTL_DAYS, OWNER_ANSWER_HOURS, MAX_PENDING_APPROVALS_PER_STEP, DEFAULT_MAX_AUTONOMY, APPROVAL_EXECUTING_RETRY_MINUTES, type BudgetScope, type PauseScope, FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, FINALIZED_SETTLE_WINDOW_MS, BUDGET_ALERT_LEVELS, sourceCounter, modelCounter, personalCounter, type SpendOriginKind, SPEND_ORIGIN_KINDS, originCounter, PLANNING_LIMIT_MIN_USD, PLANNING_LIMIT_MAX_USD, MAX_SPEND_SETTING_USD, ProjectAiSettingsSchema, DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD, type ProjectAiSettings, defaultProjectAiSettings, SpendPolicyFieldsSchema, SpendPolicySchema, type SpendPolicy, memberAcceptRunLimitUsd, defaultSpendPolicy, TRIAL_LIMITS_R49, SPEND_REQUEST_KINDS, type SpendRequestKind, SPEND_REQUEST_STATUSES, type SpendRequestStatus, SPEND_APPROVER_ROLES, type SpendApproverRole, SPEND_REQUEST_REASON_MAX, SPEND_RESUME_INSTRUCTIONS, type OwnerCapChange, type SpendRequestRecord } from "./spend.js";
 
-// PLAN6: export its reader schemas and formatMinutes when the owning plan lands; Part A does not invent their shapes.
+// PLAN6: export its reader schemas when the owning plan lands; Part A does not invent their shapes. The plan card reads the time estimate and the plan check's words (staging 0.4.10).
+export { formatMinutes, CRITIC_NOT_CHECKED_LINE, MergeDoneReaderSchema } from "./rovara-code.js";
 
 export { DeveloperSignInMethodSchema, AppMeResponseSchema, AppMeResponseReaderSchema, type AppMeResponse, LinkedIdentitySchema } from "./developer-web.js";
 export { OrgRoleSchema, type OrgRole } from "./org.js";
@@ -21,7 +22,7 @@ export type { OrgId } from "./org.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 export { SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema } from "./session-views.js";
 export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInput, type SessionAnchorRef } from "./agent-sessions.js";
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
@@ -47,3 +48,4 @@ export { ChainRunViewReaderSchema } from "./chain-session.js";
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
+export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";

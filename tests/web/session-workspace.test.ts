@@ -39,6 +39,15 @@ it("offers review only to the owner while the plan is waiting", async () => {
 it("shows the real plan estimate and its run limit without claiming checks passed", async () => {
  const f = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.getByText("$0.50")).toBeTruthy();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$2.00")).toBeTruthy();expect(screen.queryByText("Passed")).toBeNull();f.close();
 });
+it("shows the time to a pull request beside the cost, and says when the plan check was unavailable (staging 0.4.10, bug D)", async () => {
+ const task = taskFixture({ workflow: { ...workflow(), definitionVersion: "1.1.0", critique: { status: "done", critiques: [], revisions: 0 } },
+  runEstimate: { lowUsd: 0.5, highUsd: 1.2, runLimitUsd: 2, stopAtUsd: 2, basis: "default", samples: 0, minutes: { low: 20, high: 45, basis: "default", samples: 0 } } });
+ const f = setup(fixture({ body: { kind: "task", task } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.getByText("Estimated time: about 20–45 minutes to a pull request.")).toBeTruthy();
+ expect(screen.getByText("Plan check unavailable: this plan was not checked by a second model.")).toBeTruthy();f.close();
+ const plain = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.queryByText(/Estimated time/u)).toBeNull();expect(screen.queryByText(/Plan check unavailable/u)).toBeNull();plain.close();
+});
 it("marks only the server's current pipeline stage", () => {
  const f = setup();const current = f.container.querySelectorAll('[aria-current="step"]');expect(current).toHaveLength(1);expect(current[0]?.textContent).toContain("Plan check");expect(screen.getByText("Understand")).toBeTruthy();expect(screen.getByText("Build")).toBeTruthy();f.close();
 });

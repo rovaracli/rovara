@@ -10,14 +10,33 @@ export type RiskLevel = RiskAssessment["level"];
 
 /**
  * The paths that make a change high risk. Each pattern is tested against the whole path, lower-cased and written with `/`, so a directory name must be a whole path segment
- * (`src/author.ts` and `src/diamond.ts` are not `auth` or `iam`). Directory names: migrations, auth, authn, authz, payments, billing, secrets, iam, infra, terraform, cdk and
+ * (`src/author.ts` and `src/diamond.ts` are not `auth` or `iam`). Directory names: migrations, auth, authn, authz, security, oauth, saml, sso, jwt, crypto, permissions, credentials, payments, billing, secrets, iam, infra, terraform, cdk and
  * `.github/workflows`. File patterns: `*.sql`, `*.tf` and `Dockerfile`.
  */
 export const RISK_SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
-  /(^|\/)(migrations|auth|authn|authz|payments|billing|secrets|iam|infra|terraform|cdk)(\/|$)/,
+  /(^|\/)(migrations|auth|authn|authz|security|oauth|saml|sso|jwt|crypto|permissions|credentials|payments|billing|secrets|iam|infra|terraform|cdk)(\/|$)/,
   /(^|\/)\.github\/workflows(\/|$)/,
+  // Who must approve and how a branch is protected: a change to them changes the rules every later merge follows.
+  /(^|\/)codeowners$/,
+  /(^|\/)\.github\/(settings\.ya?ml|rulesets?(\/|$)|branch[-_]protection[^/]*)$/,
   /\.(sql|tf)$/,
   /(^|\/)dockerfile$/,
+];
+
+/**
+ * The paths of continuous-integration configuration (GitHub workflows, CircleCI, GitLab, Jenkins, Azure, Buildkite, Travis, Bitbucket, AppVeyor, Drone). A fix that changes one may have made CI pass by changing
+ * what CI checks, so it is high risk (Plan 6 Task 16). Matched on the whole path, lower-cased and written with `/`.
+ */
+export const CI_CONFIG_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)\.github\/(workflows|actions)(\/|$)/,
+  /(^|\/)\.gitlab(\/|$)/,
+  // What decides which tests CI runs: the test runners' own configuration.
+  /(^|\/)(vitest|jest|playwright|karma|cypress)\.(config|workspace)\.[cm]?[jt]s(on)?$/,
+  /(^|\/)\.github\/(dependabot|renovate)\.(ya?ml|json)$/,
+  /^(makefile|turbo\.json)$/,
+  /(^|\/)(pytest\.ini|tox\.ini|conftest\.py|\.mocharc(\.[\w]+)?|karma\.conf\.[cm]?js)$/,
+  /(^|\/)\.(circleci|buildkite|drone)(\/|$)/,
+  /(^|\/)(\.gitlab-ci\.ya?ml|jenkinsfile|azure-pipelines\.ya?ml|\.travis\.ya?ml|bitbucket-pipelines\.ya?ml|appveyor\.ya?ml|\.drone\.ya?ml|buildkite\.ya?ml)$/,
 ];
 
 /** The lock files and manifests whose change is at least medium (matched on the file name). */
@@ -38,10 +57,17 @@ function normalized(path: string): string {
   return path.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").toLowerCase();
 }
 
+/** The words that make a file sensitive when its name is one, or is made of one joined to others by `-`, `_` or `.` (`jwt.ts`, `user-auth.ts`, `oauth_client.py`); `author.ts` and `secretsanta.ts` are not. */
+const SENSITIVE_NAME_WORDS: ReadonlySet<string> = new Set(["auth", "authn", "authz", "security", "oauth", "saml", "sso", "jwt", "crypto", "permissions", "credentials", "secrets", "iam"]);
+/** Documents about a topic are not code for it. */
+const DOCUMENT_EXTENSIONS = /\.(md|mdx|markdown|txt|rst|adoc)$/u;
+
 /** Whether a path has a segment (or the workflows folder, or a file name) that makes it sensitive. */
 export function isSensitivePath(path: string): boolean {
   const value = normalized(path);
-  return RISK_SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(value));
+  if (RISK_SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(value))) return true;
+  const name = value.split("/").at(-1) ?? "";
+  return !DOCUMENT_EXTENSIONS.test(name) && name.split(/[-_.]/u).some((word) => SENSITIVE_NAME_WORDS.has(word));
 }
 
 function isManifestPath(path: string): boolean {
@@ -57,9 +83,19 @@ export interface RiskFile {
   renamedFrom?: string | undefined;
   added?: number | undefined;
   removed?: number | undefined;
+  /** The change deletes this test file, or only takes lines out of it. */
+  testsRemoved?: true | undefined;
+  /** A line the change adds skips a test in this file. */
+  testsSkipped?: true | undefined;
+  /** package.json: the change adds or removes a line of the `test` scripts. */
+  testCommandChanged?: true | undefined;
+  /** The diff changes a route declaration, a response model or a schema file (read from the diff, never from a model). */
+  apiShapeChanged?: true | undefined;
 }
 
 export interface RiskInput {
+  /** True while the change is a fix to a pull request that is open (for CI, a conflict or review comments): it may not hide what it was asked to fix. */
+  fix?: boolean | undefined;
   /** The files the change touches. */
   changedFiles: readonly RiskFile[];
   /** False when the list may be missing files (it could not be read, or was cut): the level is then never low. */
@@ -91,6 +127,23 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   const named = (file: RiskFile) => [file.path, ...(file.renamedFrom === undefined ? [] : [file.renamedFrom])];
   const sensitive = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isSensitivePath)))];
   if (sensitive.length > 0) high.push(`Changes sensitive paths: ${shown(sensitive)}.`);
+  if (input.fix === true) {
+    // A fix that makes a failure go by taking out or switching off what shows it, or by changing CI itself, has hidden the failure rather than fixed it. Only the whole change since the task's base is
+    // kept, so a test the task's first change removed is flagged on a later fix too: erring high costs a look; erring low costs a hidden failure.
+    const hidden = [...new Set(input.changedFiles.filter((file) => file.testsRemoved === true || file.testsSkipped === true).map((file) => file.path))];
+    if (hidden.length > 0) high.push(`A fix removes or skips tests (${shown(hidden)}), so a failure may be hidden rather than fixed.`);
+    const ci = [...new Set(input.changedFiles.flatMap((file) => named(file).filter((path) => CI_CONFIG_PATH_PATTERNS.some((pattern) => pattern.test(normalized(path))))))];
+    const command = [...new Set(input.changedFiles.filter((file) => file.testCommandChanged === true).map((file) => file.path))];
+    if (command.length > 0) high.push(`A fix changes the command that runs the tests (${shown(command)}), so a check may pass because the tests no longer run.`);
+    if (ci.length > 0) high.push(`A fix changes CI configuration (${shown(ci)}), so a check may pass because CI changed.`);
+  }
+  if (input.fix !== true) {
+    // Owner decision 2026-10-27: the risk is shown next to Merge for every change, so CI configuration and the tests a change removes or skips are named for an ordinary change too (a fix has its own, stronger words above).
+    const ci = [...new Set(input.changedFiles.flatMap((file) => named(file).filter((path) => CI_CONFIG_PATH_PATTERNS.some((pattern) => pattern.test(normalized(path))) && !isSensitivePath(path))))];
+    if (ci.length > 0) high.push(`Changes CI configuration (${shown(ci)}), which decides what is checked before a merge.`);
+    const hidden = [...new Set(input.changedFiles.filter((file) => file.testsRemoved === true || file.testsSkipped === true).map((file) => file.path))];
+    if (hidden.length > 0) medium.push(`Removes or skips tests (${shown(hidden)}).`);
+  }
   if (input.acceptedFindings.some((finding) => finding.role === "SECURITY")) high.push("The owner accepted a security review finding.");
   else if (input.securityFindings > 0) high.push("The security review reported a problem with this change.");
   if (input.reviewerRisk === "high") high.push("The code review rated this change high risk.");
@@ -101,6 +154,9 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   const uncounted = input.changedFiles.filter((file) => file.added === undefined || file.removed === undefined).length;
   if (uncounted > 0) medium.push(`${uncounted} ${uncounted === 1 ? "file has" : "files have"} no line count (new or binary), so Rovara can't tell how large the change is.`);
   if (!input.changedFilesComplete) medium.push("Rovara couldn't list every changed file.");
+  // A route or a response schema changed: whoever calls it today may get a different answer. Read from the diff, so it is said whatever the plan or the reviewer thought.
+  const api = [...new Set(input.changedFiles.filter((file) => file.apiShapeChanged === true).map((file) => file.path))];
+  if (api.length > 0) medium.push(`Changes a public API route or response shape (${shown(api)}), so existing callers may get a different response; check that they still work.`);
   const manifests = [...new Set(input.changedFiles.flatMap((file) => named(file).filter(isManifestPath)))];
   if (manifests.length > 0) medium.push(`Changes dependencies or build files: ${shown(manifests)}.`);
   if (input.report.reviewOnly) medium.push("No automated check applied, so this change was checked by review only.");

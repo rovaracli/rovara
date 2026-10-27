@@ -84,6 +84,9 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.WorkflowDependenciesEnabled;
   // Rovara Code v2 per environment (Plan 6): its parameter and its packed setting are no part of the proof-only addition either.
   delete remainder.Parameters?.RovaraCodeV2Enabled;
+  // Mainline #408 kill switches (plan self-check, automatic fixing): parameters and packed settings, no part of the proof-only addition.
+  delete remainder.Parameters?.PlanSelfCheckEnabled;
+  delete remainder.Parameters?.AutofixEnabled;
   const conditions = remainder.Conditions ?? {};
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
@@ -116,7 +119,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -283,24 +286,26 @@ describe("the named TEST proof-only installation gate", () => {
     // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
     // Round 8 release-path fixes: the web app's ResponseHeadersPolicy and OriginAccessControl got explicit prefixed names, so the named and foreign digests were retaken from the test's output; legacy did not move.
     // Staging v0.4.9: the invalid `GET /app/` web route (an empty path segment, refused by API Gateway) was removed with its Lambda permission, so the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Round 11 (mainline #408 sync): the notifier's role gained the WORKFLOW_DISPATCH read (blocked cards are no longer lost, LIVEFIX-1); the named and foreign digests were retaken from the test's output, legacy did not move.
+    // Round 13b (mainline #409, AUTOREQUALIFY and DRYMSG): the pinned worker AMI (a read grant and a state machine step), the reconciler's pin variable, the pin alarm; the named and foreign digests were retaken from the test's output, legacy did not move (its pins are #409's own, taken as merged).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "f077aa59651ad246c33b474f9c9144f3e746a257312a363999a234367f652fc5",
-        withoutRoute: "e5b39d57a7e00923907c876036171bc6ca3cc2a396d1c7eff0240ce2ae4c9bf8",
+        withRoute: "9941efa5f43a72f44f46df833599bde2c4f8013393e59450f10368e7e551eb0d",
+        withoutRoute: "ae7b9f56e63fac32e7214f3eb0f83b4d1780d0d8818dd69091ba9d1382ca1d0a",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "bd635f276ba294accfddf7216d598e51adf5377faf297c55105b5e05162da9a7",
-        withoutRoute: "cf6eb4815361f98ee9cda36712d3bf7d27ac0753cf6f6a3704d3c35abf2697e4",
+        withRoute: "b075455cfd7b2607c80e1e459ce65582e0a7241d3c3a9c022d21264d1fea6aba",
+        withoutRoute: "f2158754491697bbe153a06c18c26d8600b9316c0c65bbaa0e7afd77207dface",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "1f0b918254a14b6791514f47902eca58f783e301c5a2335b7d766a950f760b92",
-        withoutRoute: "a41f3a2dedd12ec2c7940789a85fb448626181dc2b658e6e7ad46f18d95c0f06",
+        withRoute: "ca953d736cf5102d9dfb0779215fed9175e7763a0fbe21379706561eb2a75f42",
+        withoutRoute: "25d3a6bd95423e5758293ece7225df8d8f204bafa6c08d5e29e1538a0322ff0a",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {

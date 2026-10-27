@@ -23,6 +23,7 @@ import {
   hostPathResolver,
   type ContainerInspection,
 } from "./devcontainer-policy.js";
+import { inertContextText } from "./context-text.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
@@ -132,7 +133,7 @@ export function devcontainerContextFile(paths: DevcontainerPaths): { path: strin
     path: "AgentX devcontainer",
     content: [
       "Shell commands (the bash tool) run inside this project's devcontainer.",
-      `The repository is at ${paths.hostFolder}. Inside the devcontainer it is also at ${paths.containerFolder}.`,
+      `The repository is at ${inertContextText(paths.hostFolder).text}. Inside the devcontainer it is also at ${inertContextText(paths.containerFolder).text}.`,
       "Both paths name the same files, in the file tools and in the shell; prefer the first.",
     ].join("\n"),
   };
@@ -445,6 +446,7 @@ export async function runContainerCommand(
   rootPath: string,
   command: ProjectCommand,
   signal?: AbortSignal,
+  options: ContainerCommandOptions = {},
 ): Promise<CommandResult> {
   const cwd = contained(rootPath, command.cwd);
   const run = await runInContainerGroup(exec, {
@@ -455,7 +457,9 @@ export async function runContainerCommand(
     args: [command.executable, ...command.args],
     timeoutMs: command.timeoutSeconds * 1_000,
     // The command's own variables (#54) reach the command only, never the TERM and KILL execs.
-    ...(command.env !== undefined ? { env: { ...command.env } } : {}),
+    ...(command.env !== undefined || options.defaultEnvironment !== undefined ? { env: { ...options.defaultEnvironment, ...command.env } } : {}),
+    ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+    ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
     ...(signal !== undefined ? { signal } : {}),
   });
   const { result } = run;
@@ -466,6 +470,25 @@ export async function runContainerCommand(
     ...(result.signal !== undefined ? { signal: result.signal } : {}),
     ...(run.timedOut || result.timedOut === true ? { timedOut: true } : {}),
   };
+}
+
+/**
+ * What a container's commands must not inherit from the container's own ENV. A project's devcontainer is the project's own
+ * image, whose ENV is the project's; the task sandbox is the worker's image, whose ENV is the worker's (Bug F).
+ */
+export interface ContainerCommandOptions {
+  /**
+   * Variables removed from the command's environment before it starts, unless the command sets them itself (a project
+   * command's `env`, #54). The agent's shell sets none of them: the project's `env` belongs to its setup and readiness commands.
+   */
+  unsetEnvironment?: readonly string[];
+  /**
+   * Variables the command starts with unless it sets them itself (a project command's `env`, #54; the agent's shell sets none of them). The task sandbox uses this for
+   * the Python user site (Bug K).
+   */
+  defaultEnvironment?: Readonly<Record<string, string>>;
+  /** Folders put in front of the command's PATH, unless the command sets its own PATH. The sandbox's Python user bin (Bug K). */
+  pathPrefix?: readonly string[];
 }
 
 /** The command's stderr, then a line for each step of the stop sequence that failed. */
@@ -504,7 +527,7 @@ export type ContainerExec = (
  * A timeout reports back after the stop sequence: the TERM exec, the 5 s grace period, then the KILL
  * exec (each exec bounded at 10 s); an abort reports back at once.
  */
-export function containerBashOperations(exec: ContainerExec): BashOperations {
+export function containerBashOperations(exec: ContainerExec, options: ContainerCommandOptions = {}): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (signal?.aborted) throw new Error("aborted");
@@ -515,7 +538,9 @@ export function containerBashOperations(exec: ContainerExec): BashOperations {
         cwd,
         args: [command],
         ...(timeout !== undefined && timeout > 0 ? { timeoutMs: timeout * 1_000 } : {}),
-        env: sessionEnvironment(env),
+        env: { ...options.defaultEnvironment, ...sessionEnvironment(env) },
+        ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+        ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
         ...(signal !== undefined ? { signal } : {}),
         onStdout: onData,
         onStderr: onData,
@@ -537,9 +562,26 @@ interface ContainerGroupCommand {
   args: readonly string[];
   timeoutMs?: number;
   env?: Record<string, string>;
+  /** Names removed from the environment before the command starts, except those `env` sets (see ContainerCommandOptions). */
+  unsetEnvironment?: readonly string[];
+  /** Folders put in front of PATH before the command starts, unless `env` sets PATH (see ContainerCommandOptions). */
+  pathPrefix?: readonly string[];
   signal?: AbortSignal;
   onStdout?: (data: Buffer) => void;
   onStderr?: (data: Buffer) => void;
+}
+
+/** `export PATH='dir':"$PATH";` for the folders the command asks to have first on PATH, or "" when it sets its own PATH (or asks for none). */
+function pathStatement(command: ContainerGroupCommand): string {
+  if ((command.pathPrefix ?? []).length === 0 || Object.hasOwn(command.env ?? {}, "PATH")) return "";
+  const quoted = (command.pathPrefix ?? []).map((folder) => `'${folder.replaceAll("'", "'\\''")}'`).join(":");
+  return `export PATH=${quoted}:"$PATH"; `;
+}
+
+/** `unset NAME ...;` for the names the command does not set itself, or "" when there are none. */
+function unsetStatement(command: ContainerGroupCommand): string {
+  const names = (command.unsetEnvironment ?? []).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && !Object.hasOwn(command.env ?? {}, name));
+  return names.length === 0 ? "" : `unset ${names.join(" ")}; `;
 }
 
 /**
@@ -595,7 +637,7 @@ async function runInContainerGroup(
       "bash", "-c",
       // Job control only while starting the command, which puts it in its own process group; left
       // on, bash would also print a "Done" line into the output.
-      `set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
+      `${unsetStatement(command)}${pathStatement(command)}set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
       "bash", command.cwd, groupFile, ...command.args,
     ], {
       ...(command.env !== undefined ? { env: command.env } : {}),

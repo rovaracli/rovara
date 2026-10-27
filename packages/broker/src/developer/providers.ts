@@ -1,7 +1,7 @@
 // Spec 025 FR-002 to FR-004: the Slack and company OIDC providers, and the GitHub OAuth provider of cloud installs (Task 22). The code exchange runs here,
 // server side, with the client secret; the laptop never sees it.
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
-import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, type DeveloperSignInMethod } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, type DeveloperSignInMethod } from "@agentx/contracts";
 
 export interface ProviderIdentity {
   method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
@@ -239,12 +239,14 @@ export function oidcSignInProvider(input: {
       }
       if (typeof payload.sub !== "string" || payload.sub === "") return { ok: false, reason: "the identity token has no subject; ask an admin to check the company sign-in app" };
       const email = verifiedEmail(payload);
-      const name = [payload.name, payload.preferred_username, email].find((value): value is string => typeof value === "string" && value !== "");
+      // Release 0.4.16: the person's email is not their name. The email-code sign-in has no name for a person; the name then stays empty and the sign-in
+      // table stores a placeholder ("Member 3fa9"), so no screen shows the address to a teammate. A name that holds an address is not used either.
+      const name = [payload.name, payload.preferred_username].find((value): value is string => typeof value === "string" && value !== "" && !containsEmailAddress(value));
       return {
         ok: true,
         identity: {
           method, issuer, subject: payload.sub,
-          displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? payload.sub,
+          displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? "",
           ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
           ...authTimeOf(payload),
           ...amrOf(payload),

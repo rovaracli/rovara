@@ -1,3 +1,6 @@
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { OrgIdSchema } from "@agentx/contracts";
+import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 195: a cancel that never reaches the worker never holds a workspace for good. Stopping a
 // task moves it to CANCEL_REQUESTED and queues a cancel operation; if that cancel is lost (its
 // dispatch failed, or its worker is gone), the task stays CANCEL_REQUESTED and its workspace stays
@@ -301,8 +304,8 @@ async function noteRelease(
   log: (entry: Record<string, unknown>) => void,
 ): Promise<void> {
   try {
-    if (typeof workspace.ownerKey !== "string") return;
-    const record = ((await dependencies.client.send(new GetCommand({ TableName: dependencies.tableName, Key: { pk: `SLACK_THREAD#${workspace.ownerKey}`, sk: "META" }, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+    if (typeof workspace.ownerKey !== "string" || !OrgIdSchema.safeParse(workspace.orgId ?? installOrgIdFromEnvironment()).success) return;
+    const record = ((await dependencies.client.send(new GetCommand({ TableName: dependencies.tableName, Key: await resolveSlackThreadKey({ documentClient: dependencies.client, tableName: dependencies.tableName }, OrgIdSchema.parse(workspace.orgId ?? installOrgIdFromEnvironment()), workspace.ownerKey), ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
     // An API, CLI or AI-tool workspace has no thread; a thread now bound to another workspace is not this one's.
     // A closed thread takes no more requests, so it is not told (as failed-preparation.ts skips it).
     if (record === undefined || record.workspaceId !== ids.workspaceId || record.closedAt != null) return;

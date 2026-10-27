@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
 import { ProjectCommandSchema } from "./project.js";
@@ -22,7 +23,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk"] as const;
+export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -36,6 +37,51 @@ export const AGENT_GROUNDING_FEATURE = "task.agentGrounding.v1" as const;
 export const MODEL_ROUTE_FEATURE = "model.route" as const;
 /** What a delivery says when the worker lacks a feature an agent step or a model route needs. Such a field is never dropped. */
 export const AGENT_WORKER_OUTDATED = "This agent needs a newer worker. Ask an admin to upgrade Rovara.";
+/**
+ * The worker tries a coding plan's proposed checks on the unchanged code while it plans, and reports only a fixed class per check (see PlanDryRunReportSchema).
+ * Nothing in an invocation asks for it: a worker that lists this feature does it for every structured coding plan that proposes checks. The planner is asked for
+ * `expectOnBase` only from a worker that lists it.
+ */
+/** T7a: the feature a worker lists when it can export a plan's base source and run a grounding round (see E2EWorkflowAdmissionRefSchema `purpose: "grounding"`). */
+export const GROUNDING_CHECKS_FEATURE = "task.workflowE2EGroundingChecks.v1" as const;
+export const PLAN_DRY_RUN_FEATURE = "task.workflowPlanDryRun.v1" as const;
+/** The whole dry run, all checks together, may take this long; a check the budget cannot start is "not-run". */
+export const PLAN_DRY_RUN_TOTAL_BUDGET_MS = 120_000;
+/**
+ * A check's result on the unchanged code. `passed`: exit 0. `failed`: it ran and said no. `broken`: it could not say anything (program missing or not executable, a
+ * grep or shell usage error, a syntax error, killed by a signal, out of time or memory). `not-run`: AgentX did not run it (budget, cancel, or the sandbox could not start). `not-checked`: its result would depend on installed dependencies or tools the
+ * sandbox does not have (only built-in file checks and plain grep or test are tried), so AgentX did not try it and nothing is concluded from it.
+ */
+export const PLAN_DRY_RUN_CLASSES = ["passed", "failed", "broken", "not-run", "not-checked"] as const;
+export type PlanDryRunClass = (typeof PLAN_DRY_RUN_CLASSES)[number];
+/** Why the worker did not try the checks at all; fixed codes, never text from a command or an error. */
+export const PLAN_DRY_RUN_UNAVAILABLE_REASONS = ["sandbox-not-configured", "sandbox-unavailable", "source-unavailable", "cancelled", "internal-error"] as const;
+export type PlanDryRunUnavailableReason = (typeof PLAN_DRY_RUN_UNAVAILABLE_REASONS)[number];
+export const PLAN_DRY_RUN_SCHEMA_VERSION = "workflow-plan-dry-run/v1" as const;
+const Sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
+/**
+ * What a planning run reports (as a progress event's `planDryRun` member) about the proposed checks: per check the digest of the command that ran, a class and a
+ * duration, and nothing else. No output, no exit code and no message leaves the worker. `planSha256` is the digest of the exact plan text the worker uploaded, so
+ * the control plane accepts the report only for that plan; each check is attributed by `commandSha256` (the digest of its folder, program and arguments), so the
+ * control plane matches it to its own proposed check whatever the numbering.
+ */
+export const PlanDryRunReportSchema = z.discriminatedUnion("status", [
+  z.object({
+    schemaVersion: z.literal(PLAN_DRY_RUN_SCHEMA_VERSION), status: z.literal("COMPLETE"), planSha256: Sha256Hex,
+    checks: z.array(z.object({
+      commandSha256: Sha256Hex, class: z.enum(PLAN_DRY_RUN_CLASSES), durationMs: z.number().int().min(0).max(PLAN_DRY_RUN_TOTAL_BUDGET_MS + 60_000),
+    }).strict()).min(1).max(WORKFLOW_PROPOSED_CHECKS_MAX),
+    totalMs: z.number().int().min(0).max(PLAN_DRY_RUN_TOTAL_BUDGET_MS + 60_000),
+  }).strict(),
+  z.object({ schemaVersion: z.literal(PLAN_DRY_RUN_SCHEMA_VERSION), status: z.literal("UNAVAILABLE"), planSha256: Sha256Hex, reason: z.enum(PLAN_DRY_RUN_UNAVAILABLE_REASONS) }).strict(),
+]);
+export type PlanDryRunReport = z.infer<typeof PlanDryRunReportSchema>;
+
+/** The digest a dry-run report names a check by: its folder, program and arguments (the label and the timeout do not change what runs). */
+export function planDryRunCommandSha256(command: { cwd: string; executable: string; args: readonly string[] }): string {
+  return createHash("sha256").update(JSON.stringify(["workflow-plan-dry-run-command/v1", command.cwd, command.executable, [...command.args]])).digest("hex");
+}
+
 /** The field on /ping that carries WORKER_INVOCATION_FEATURES; absent on a worker built before it. */
 export const WORKER_PING_FEATURES_FIELD = "invocationFeatures";
 
@@ -233,6 +279,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * Sent only to a worker whose /ping lists "task.workflowE2EBaselineSource" (which, unlike the baseline CHECKS feature, needs no executor image: the export reads the repository alone); an older one is sent the run without it, and the baseline then says it could not be checked.
          */
         workflowE2EBaselineSource: z.literal(true).optional(),
+        /**
+         * T7a: a coding plan run is asked to export the unchanged code (the signed workflow base) after planning, so the plan's must-not-change checks can be tried on the current app before the owner is asked.
+         * Sent only to a worker whose /ping lists "task.workflowE2EGroundingChecks.v1" and only to a structured planning run that negotiated the application plan; absent means the run is as before.
+         */
+        workflowE2EGroundingSource: z.literal(true).optional(),
         /** One approved same-repository dependency graph, sent only to workers advertising task.workflowDependencies. */
         workflowDependencies: WorkflowDependencyInvocationSchema.optional(),
         /**
@@ -307,6 +358,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         if (payload.workflowE2EPlanVersion !== undefined && (payload.workflowMode !== "PLAN" || payload.planFormat !== "structured")) {
           context.addIssue({ code: "custom", path: ["workflowE2EPlanVersion"], message: "the application E2E plan version requires a structured planning run" });
         }
+        if (payload.workflowE2EGroundingSource !== undefined && (payload.workflowMode !== "PLAN" || payload.planFormat !== "structured" || payload.workflowE2EPlanVersion !== 2)) {
+          context.addIssue({ code: "custom", path: ["workflowE2EGroundingSource"], message: "the grounding source export requires a structured planning run with the application plan version" });
+        }
         if (payload.workflowReviewChecks !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewChecks"], message: "the checks reviewers are told about require review mode" });
         }
@@ -330,6 +384,10 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowFeedbackApproval !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "feedback approval binding requires implementation mode" });
+        }
+        // Rovara's own decision on review comments (Plan 6 Task 16) is a feedback fix. (A feedback fix may also run with no approval: the owner's Retry of one that stopped continues it from the current code.)
+        if (payload.workflowFeedbackApproval?.autonomy !== undefined && payload.workflowFix?.source !== "feedback") {
+          context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "an automatic feedback approval belongs to a feedback fix" });
         }
         if (payload.workflowDependencies !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowDependencies"], message: "a work breakdown requires implementation mode" });
@@ -447,9 +505,26 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * "task.workflowFix" is sent the push without it, and its commit keeps the usual message.
          */
         workflowFix: WorkflowFixPayloadSchema.optional(),
+        /**
+         * A workflow task's merge of the base branch into its pull request's branch (Plan 6 Task 17, `sync` only): the worker merges exactly `baseCommit` (no rebase, no force-push), runs the readiness
+         * checks and pushes to the head it was told (`expectedHeadCommit`); a conflict is returned as the conflicting files, nothing pushed, the merge's files left in the workspace. Sent only to a
+         * worker whose /ping lists "maintain.workflowSync"; never dropped, because an older worker would merge whatever the base is now.
+         */
+        workflowSync: z.object({ baseCommit: z.string().regex(/^[a-f0-9]{40}$/), expectedHeadCommit: z.string().regex(/^[a-f0-9]{40,64}$/) }).strict().optional(),
+        /**
+         * A conflict round's reviewed fix is pushed as a merge commit (`append` with the reviewed tree only): the first parent is the head the pull request has, the second is this commit of the base.
+         * Sent only to a worker whose /ping lists "maintain.workflowSync".
+         */
+        workflowMergeBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
       })
       .strict()
       .superRefine((value, context) => {
+        if (value.workflowSync !== undefined && (value.action !== "sync" || value.workflowCandidateTreeSha !== undefined || value.workflowSync.expectedHeadCommit !== value.expectedHeadCommit)) {
+          context.addIssue({ code: "custom", path: ["workflowSync"], message: "a merge of the base branch is a sync of the recorded head, with no reviewed tree" });
+        }
+        if (value.workflowMergeBase !== undefined && value.workflowCandidateTreeSha === undefined) {
+          context.addIssue({ code: "custom", path: ["workflowMergeBase"], message: "the base a fix was merged with goes with the reviewed tree" });
+        }
         if (value.workflowFix !== undefined && value.workflowCandidateTreeSha === undefined) {
           context.addIssue({ code: "custom", path: ["workflowFix"], message: "the fix a push is for goes with the reviewed tree" });
         }

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   DeveloperSignInMethodSchema,
   agentXError,
   inertName,
@@ -45,7 +46,12 @@ import {
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import { isHeartbeat, modelCallView } from "./model-call-view.js";
+import { personNameForText } from "./requester-text.js";
+import { safeDisplayName } from "./person-name.js";
 import type { ShareDecision } from "./share.js";
+import type { PlanGroundingHold, PlanSelfCheckState } from "./plan-self-check.js";
+import type { PlanUnreadableCategory } from "./plan-check-summary.js";
+import type { AutoFixAsk } from "./autofix-messages.js";
 
 /** Whether a block reason is one of the two that send a task back to plan review for a corrected E2E plan: a source reference that does not match the candidate, or an application plan that can no longer run as written. */
 export function isE2EPlanCorrectionBlockReason(blockReason: string | undefined): boolean {
@@ -88,6 +94,8 @@ export interface DeveloperTaskRecord {
   share?: TaskShare;
   /** C1: every write of `share` replaces the whole map, conditioned on this number. */
   shareVersion?: number;
+  /** Latest legacy Code share request; a later change invalidates every older undo. */
+  codeShareRequestId?: string;
   /** Serializes append-only task Canvas lineage mutations without advancing workflow revision. */
   canvasLineageVersion?: number;
   canvasCloseoutVersion?: number;
@@ -113,10 +121,20 @@ export interface DeveloperTaskRecord {
   /** When that release claimed the workspace (CLOSING) before deleting its compute; removed once it is released. */
   releaseClaimedAt?: string;
   workflow?: WorkflowSnapshot;
+  /** Trust fix A2: the latest reviews ran on the build's own model, for the code with this digest. Kept here, never in the (strict) workflow, so an older broker still reads the workflow after a rollback; it ignores this key. */
+  reviewSameModel?: { candidateDigest: string };
   /** The commit each repository's preparation checked out, from the prepare result; the task's base until one is pinned. */
   preparedBase?: WorkflowReviewBase;
   /** Spec 061: why the planner's last answer could not be read, kept for Retry planning; `workflowRevision` is the blocked step's revision. */
-  planUnreadable?: { workflowRevision: number; errors: string[] };
+  planUnreadable?: { workflowRevision: number; errors: string[]; /** The fixed category of the problem (never the validator's words), for the owner's message. */ category?: PlanUnreadableCategory; /** Whether AgentX already asked the planner once more by itself. */ autoRetried?: true };
+  /** AUTOFIX: why Rovara asked the owner instead of fixing a blocked step by itself, for the blocked revision `workflowRevision` (see autofix-messages.ts). */
+  autofixAsk?: AutoFixAsk;
+  /** Plan self-check: which document version the automatic revision budget is for, and how much is spent (see plan-self-check.ts). */
+  planSelfCheck?: PlanSelfCheckState;
+  /** T7c: the coding plan the task is holding back while its must-not-change checks run on the current app; the plan is not yet submitted, so there is nothing to approve. */
+  planGrounding?: PlanGroundingHold;
+  /** T7c: the owner closed the task while the plan was held (the held plan's digest): the finish clears the hold and asks nobody anything. */
+  planGroundingAbandoned?: string;
   /** Broker-private fence requiring a new E2E plan after the protected source disproved an approved plan reference. */
   e2ePlanCorrection?: { artifactId: string; artifactSha256: string; candidateDigest: string; reasonCode: string; requiredE2E: true };
   /** Gap 2: how many thread replies are saved for the task (NOTE# items). */
@@ -359,10 +377,12 @@ export function effectiveTaskOwner(task: TaskOwnerSource): TaskOwner {
     const taker = readCurrentOwner(task.currentOwner);
     if (taker === undefined) throw unreadableOwner();
     const { since: _since, ...owner } = taker; // eslint-disable-line @typescript-eslint/no-unused-vars
-    return owner;
+    // Release 0.4.16: a taker stored under their email is named without it.
+    return { ...owner, name: safeDisplayName(owner.name, owner.developerId) };
   }
   if (!present(task.developerId) || typeof task.developerName !== "string") throw unreadableOwner();
-  return { developerId: task.developerId, name: task.developerName, provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
+  // Release 0.4.16: a task started while the creator's name was their email names them without it.
+  return { developerId: task.developerId, name: safeDisplayName(task.developerName, task.developerId), provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
 }
 
 /**
@@ -447,7 +467,7 @@ export function ownerActorIdOf(task: TaskOwnerSource): string {
  * decision made before a take-over still reads as the creator's. `undefined` for any other actor.
  */
 export function ownerNameOfActor(task: TaskOwnerSource, actorId: string): string | undefined {
-  if (actorId === taskOwnerKey(task.developerId, task.taskId)) return task.developerName;
+  if (actorId === taskOwnerKey(task.developerId, task.taskId)) return safeDisplayName(task.developerName, task.developerId);
   return tryEffectiveTaskOwner(task) !== undefined && actorId === ownerActorIdOf(task) ? effectiveTaskOwner(task).name : undefined;
 }
 
@@ -465,7 +485,7 @@ export function ownerFenceOf(task: TaskOwnerSource): { expression: string; names
   };
 }
 
-export interface OperationFacts { id: string; kind: string; status: string; error?: string | undefined; createdAt: string; updatedAt?: string | undefined; fence?: number | undefined }
+export interface OperationFacts { id: string; kind: string; status: string; error?: string | undefined; createdAt: string; updatedAt?: string | undefined; fence?: number | undefined; workflowMode?: string | undefined }
 
 const LIVE = new Set(["ACCEPTED", "DISPATCHING", "RUNNING", "CANCEL_REQUESTED"]);
 
@@ -477,9 +497,15 @@ const LIVE = new Set(["ACCEPTED", "DISPATCHING", "RUNNING", "CANCEL_REQUESTED"])
 export const byCreated = (left: OperationFacts, right: OperationFacts) =>
   left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : (left.fence ?? 0) - (right.fence ?? 0);
 
-/** The newest task or publish operation: what the developer last asked for (R4). */
+/**
+ * A plan check that failed. The check is advice that a person never asked for and that never holds a plan back (the plan goes to review, shown as not checked), so its failure is not the task's:
+ * v0.4.10 staging showed `FAILED` for a task whose plan waited at review (and the session `Needs a person`).
+ */
+const failedPlanCheck = (operation: OperationFacts): boolean => operation.kind === "task" && operation.workflowMode === "PLAN_CRITIQUE" && operation.status === "FAILED";
+
+/** The newest task or publish operation: what the developer last asked for (R4). A failed plan check is not one of them. */
 export function currentOperation(operations: readonly OperationFacts[]): OperationFacts | undefined {
-  return operations.filter((operation) => operation.kind === "task" || operation.kind === "publish").sort(byCreated).at(-1);
+  return operations.filter((operation) => (operation.kind === "task" || operation.kind === "publish") && !failedPlanCheck(operation)).sort(byCreated).at(-1);
 }
 
 const DISPATCH_OR_COMPUTE = /^RUNTIME_UNAVAILABLE:/;
@@ -545,7 +571,9 @@ export function deriveTaskStatus(input: {
   }
   if (input.pointer?.pendingPrompt !== undefined || input.workspaceStatus === "PREPARING" || current === undefined) return { status: "STARTING", closing };
   if (LIVE.has(current.status)) return { status: "RUNNING", closing, current };
-  const status = current.status as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
+  // A build that changed nothing finished its run; the workflow holds it for a person (`noCodeChanged`) in plain words. It is not a failed task with the worker's config wording.
+  const ranToItsEnd = current.kind === "task" && current.status === "FAILED" && current.error?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true;
+  const status = (ranToItsEnd ? "SUCCEEDED" : current.status) as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
   return {
     status, closing, current,
     ...(status === "FAILED" || status === "INTERRUPTED" ? { failure: failureOf(current.kind, status, current.error) } : {}),
@@ -753,8 +781,9 @@ export function taskOwnerLabel(name: string): string {
  * FR-023. The client is one of the fixed names cleanClientName gives, or "Slack" for a task the Slack workflow
  * started, so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
  */
-export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX"): string {
-  const label = taskOwnerLabel(name);
+export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX", githubLogin?: string): string {
+  // C55: text on GitHub never carries an email address, which is what a provider that has no name for a person uses as the display name: the name without it, else the GitHub login, else "the task owner".
+  const label = taskOwnerLabel(personNameForText(name, githubLogin) ?? "");
   const owner = label === TASK_OWNER_LABEL ? label : inertName(label);
   const slack = client === SLACK_CLIENT_NAME || (client === UNKNOWN_CLIENT_NAME && SLACK_FALLBACK_NAME.test(name.trim()));
   return `Requested by ${owner} via ${product}, started from ${slack ? SLACK_CLIENT_NAME : client}`;

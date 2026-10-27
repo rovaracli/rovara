@@ -26,12 +26,16 @@ import {
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
 import type { AgentSkillFile } from "../agent-step.js";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { withIsolatedGit } from "../isolated-git.js";
+import { isTestPath } from "./test-paths.js";
+
+export { isTestPath };
 
 const FEEDBACK_REVIEW_OUTPUT_MAX_BYTES = 2_000_000;
 const FEEDBACK_BUNDLE_MAX_BYTES = 5_000_000;
@@ -89,6 +93,8 @@ export async function runWorkflowFeedbackReview(input: {
    */
   taskChecks?: WorkflowFeedbackTaskChecks;
   artifactSink: ArtifactSink;
+  /** The broker's base commit per repository, for the reviewer's rule files. Required: no caller can fall back to a base the agent could write. */
+  ruleFileBaseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -153,7 +159,8 @@ export async function runWorkflowFeedbackReview(input: {
     if (status === "COMPLETE") {
       input.onProgress?.("AgentX is independently reviewing the current PR feedback.");
       session = await createWorkspacePiSession({ rootPath: input.rootPath, model: input.model,
-        workflowMode: "REVIEW", conversationId: randomUUID(),
+        workflowMode: "REVIEW", conversationId: randomUUID(), contextFilesAt: "base-commit",
+        baseCommits: input.ruleFileBaseCommits,
         ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
         ...(input.tools === undefined ? {} : { agentTools: input.tools }),
         ...(input.skills === undefined ? {} : { skills: input.skills }) }, input.piAdapter);
@@ -342,17 +349,6 @@ async function readCandidateFilePaths(
     result.set(identity.repositoryId, new Set(stdout.split("\0").filter(Boolean)));
   }
   return result;
-}
-
-/**
- * A path common test layouts use: a test/, tests/, __tests__/, spec/ or e2e/ directory, or a *.test.*, *.spec.*,
- * *_test.*, *_spec.* or test_*.py file.
- */
-export function isTestPath(path: string): boolean {
-  const parts = path.split("/");
-  const name = parts.at(-1) ?? "";
-  return parts.slice(0, -1).some(part => ["test", "tests", "__tests__", "spec", "e2e"].includes(part))
-    || /\.(?:test|spec)\.[^./]+$/.test(name) || /_(?:test|spec)\.[^./]+$/.test(name) || /^test_.+\.py$/.test(name);
 }
 
 /** Build and dependency files that are never documentation, whatever their extension or folder. */
@@ -659,6 +655,8 @@ export async function runWorkflowReviews(input: {
   reviewers?: readonly ("CRITIC" | "SECURITY")[];
   /** Rovara Code version 2: the code review also states a risk level (low, medium or high). Absent: the review is exactly as a version 1 review. */
   reviewRisk?: boolean;
+  /** The broker's base commit per repository, for the reviewers' rule files. Required: no caller can fall back to a base the agent could write. */
+  ruleFileBaseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -706,6 +704,8 @@ export async function runWorkflowReviews(input: {
     let usageStats: ReturnType<PiSessionHandle["getSessionStats"]> | undefined;
     let usageOutcome: "SUCCEEDED" | "FAILED" = "FAILED";
     let statusOverride: "INTERRUPTED" | undefined = interrupted ? "INTERRUPTED" : undefined;
+    // The reviewer's last model call, when it failed: a fixed sentence from the model-call monitor's note (never the provider's text), cleared when a later call answers.
+    let modelFailure: string | undefined;
     try {
       if (statusOverride !== undefined) throw new Error("review interrupted");
       input.onProgress?.(`AgentX is running the ${role === "CRITIC" ? "code" : "security"} review on this candidate.`);
@@ -719,6 +719,8 @@ export async function runWorkflowReviews(input: {
         ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
         ...(input.tools === undefined ? {} : { agentTools: input.tools }),
         ...(input.skills === undefined ? {} : { skills: input.skills }),
+        contextFilesAt: "base-commit",
+        baseCommits: input.ruleFileBaseCommits,
       }, input.piAdapter);
       const actualModel = session.getModel();
       provider = actualModel.provider;
@@ -727,6 +729,13 @@ export async function runWorkflowReviews(input: {
       unsubscribe = session.subscribe((event: unknown) => {
         const record = event as { type?: unknown; payload?: { type?: unknown }; message?: unknown };
         if (record.type === "message_end" || record.payload?.type === "message_end") response = assistantText(record.message ?? (event as { message?: unknown }).message);
+        const note = sanitizeModelCallEvent(event)?.modelCall;
+        if (note?.outcome === "failed") {
+          const sentence = describeModelCallNote(note);
+          modelFailure = WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN.test(sentence) ? sentence : undefined;
+        } else if (record.type === "message_end" && (record.message as { role?: unknown; stopReason?: unknown } | undefined)?.role === "assistant" && (record.message as { stopReason?: unknown }).stopReason !== "aborted") {
+          modelFailure = undefined;
+        }
       });
       const focus = reviewerFocus(role);
       const stopped = new Promise<"TIMEOUT" | "INTERRUPTED">((resolve) => {
@@ -818,6 +827,8 @@ export async function runWorkflowReviews(input: {
       status: parsed.status,
       ...(statusOverride === undefined ? {} : { status: statusOverride }),
       ...(parsed.failureReason === undefined ? {} : { failureReason: parsed.failureReason }),
+      // A review with no answer because its model call failed says so, so the broker can leave that model out of the next review of the task.
+      ...(parsed.status === "UNKNOWN" && modelFailure !== undefined ? { modelFailure } : {}),
       findings: parsed.findings,
       ...(role === "CRITIC" && input.reviewRisk === true && parsed.risk !== undefined ? { risk: parsed.risk } : {}),
       readOnly: true,

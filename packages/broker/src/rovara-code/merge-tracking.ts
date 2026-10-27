@@ -6,15 +6,18 @@
 // on changes (`decisionDigest`), so a pass that saw nothing new writes nothing, and the workflow snapshot changes only when a decision changes the workflow.
 //
 // Merge tracking never presses merge: a person always does (owner decision 1). It marks a draft ready and asks for reviewers; fixes and syncs are other tasks' deciders.
+import { createHash } from "node:crypto";
 import { TransactWriteCommand, GetCommand, QueryCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MergeTrackingItemSchema,
   TRACKING_REQUESTS_BASE,
   TRACKING_REQUESTS_PER_EXTRA_PR,
   agentXError,
+  codeMilestoneKey,
   mergeTrackingDecisionDigest,
   mergeTrackingKey,
   sessionEventId,
+  sessionLink,
   type AgentXError,
   type Autonomy,
   type CodeSettings,
@@ -31,7 +34,9 @@ import { sessionEventItem } from "../agent-sessions/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { prHeadItems } from "./head-index.js";
+import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
+import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
@@ -44,9 +49,17 @@ export const PERMISSION_LOOKUPS_MAX = 8;
 export const SOMEONE_ELSE_PUSHED_MESSAGE = "Someone else pushed to this pull request, so I'll stop changing it. I'll keep watching for reviews and the merge.";
 export const PUSH_WAS_MINE_MESSAGE = "That push was mine after all. I'll carry on.";
 
+/** A person's standing on a repository, read live: the permission, and the account kind GitHub names (`User`, `Bot`, `Organization`), when it names one. */
+export interface RepositoryStanding {
+  permission: "admin" | "write" | "read" | "none";
+  userType?: string | undefined;
+}
+
 export interface TrackingGithub {
   getPullRequestStatus(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<PullRequestStatus>;
   getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none">;
+  /** The person's permission and what kind of account GitHub says it is (Plan 6 Task 16); without it the kind is not known and a bot is told by its name alone. */
+  getRepositoryStanding?(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<RepositoryStanding>;
   markPullRequestReady(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"ready" | "already_ready">;
   requestReviewers(repositoryUrl: string, number: number, reviewers: readonly string[], scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"requested" | "refused">;
   /** The end of a GitHub Actions job's log (Plan 6 Task 15), absent where GitHub has none. Without it a CI fix is told which checks failed and where to read them. */
@@ -54,7 +67,7 @@ export interface TrackingGithub {
 }
 
 /** The part of the task record tracking reads. */
-export interface TrackedTask {
+export interface TrackedTask extends TaskOwnerSource {
   taskId: string;
   orgId?: OrgId | undefined;
   project: string;
@@ -64,6 +77,10 @@ export interface TrackedTask {
   closedAt?: string | undefined;
   releasedAt?: string | undefined;
   workflow?: WorkflowSnapshot | undefined;
+  /** Who asked for the task (Plan 6 Task 19): the approval rule tells a requester's own approval from a reviewer's. */
+  startedBy?: { developerId?: string | undefined } | undefined;
+  /** The task's frozen agent: its recipe's digest, which an automatic decision is bound to. */
+  agent?: { digest?: string | undefined } | undefined;
 }
 
 export interface MergeTrackingDependencies {
@@ -81,8 +98,22 @@ export interface MergeTrackingDependencies {
   recordedHead?(workspaceId: string, repositoryId: string, number: number): Promise<string | undefined>;
   /** The org's autonomy for Rovara Code, for the deciders; `prepare` when not given. */
   autonomy?(task: TrackedTask): Promise<Autonomy> | Autonomy;
+  /**
+   * The autonomy and the digest of the frozen recipe that gave it, read together (one read, so the two cannot disagree): an automatic feedback decision is bound to both (Plan 6 Task 16).
+   * Preferred over `autonomy` where given.
+   */
+  autonomyBinding?(task: TrackedTask): Promise<{ autonomy: Autonomy; recipeDigest?: string | undefined }>;
+  /**
+   * Whether the waiting feedback round can be fixed on its own: its stored report and comments are read and found sound, every fix is one to make, and the checks it changes are acceptable (Plan 6
+   * Task 16). Without it nothing is decided on Rovara's own.
+   */
+  feedbackRoundCheck?(task: TrackedTask & { workflow: WorkflowSnapshot; orgId: OrgId }): Promise<boolean>;
+  /** Sends the replies a landed push of an automatic comment fix left to send (Plan 6 Task 16): best effort, at the end of a pass; a failure is logged and tried again by the next. */
+  sendFeedbackReplies?(task: TrackedTask & { orgId: OrgId }, budget?: GithubMergeReadBudget): Promise<unknown>;
   /** Every request counts against this (the sweep's budget); each task's pass is held to its own cap inside it. */
   budget?: GithubMergeReadBudget;
+  /** The origin session links are made from (the control plane's own): the approved milestone links to the session with it. Without it the milestone says no link. */
+  origin?: string | undefined;
   log?(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -299,6 +330,11 @@ export interface MergeActionRequest {
   slot: MergeActionSlot;
   workflow: WorkflowSnapshot;
   items: TransactItem[];
+  /**
+   * The pull request's day count of merges of the base (Plan 6 Task 17), when the action uses one. It is written to the tracking item in the same transaction (the pass writes that item, so an
+   * action cannot also write it), which is what keeps the count from being used twice.
+   */
+  syncs?: MergeTrackingItem["syncs"];
 }
 
 export type MergeAction =
@@ -324,7 +360,17 @@ export interface MergeActionContext {
   failing: readonly FailingCheck[];
   /** The end of a job's log, or undefined where there is none or this provider cannot read logs. Throws what GitHub's failure throws; a rate limit and a spent allowance are the sweep's to handle. */
   readJobLog?: ((jobId: string) => Promise<string | undefined>) | undefined;
+  /** GitHub itself calls the branch `behind` (its `mergeable_state`), which it does only for a base that requires up-to-date branches: a branch a commit behind a base that does not care is not. */
+  behindRequired?: boolean | undefined;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
+  /** Who the person is on the repository, read live and counted in the pass's allowance (once a pass for each person); undefined where this provider cannot ask. */
+  standingOf?: ((login: string, repositoryId: string) => Promise<RepositoryStanding>) | undefined;
+  /** The digest of the recipe that gave the task its autonomy. */
+  recipeDigest?: string | undefined;
+  /** Whether the waiting feedback round's stored report and comments are sound enough to fix on Rovara's own decision. Undefined: not known, so it is the owner's. */
+  feedbackRoundCheck?: (() => Promise<boolean>) | undefined;
+  /** Says this pass ran out of its allowance while deciding, so the pass settles as a retry once its item is written. */
+  noteCapped?: (() => void) | undefined;
 }
 
 export interface MergeActionInput {
@@ -359,8 +405,16 @@ export function ownerCardPending(workflow: WorkflowSnapshot): boolean {
 export async function nextMergeAction(item: MergeTrackingItem, workflow: WorkflowSnapshot, settings: CodeSettings, autonomy: Autonomy, now: number = Date.now(), context?: MergeActionContext): Promise<MergeAction> {
   if (item.state !== "open") return { slot: "none", reason: "not_open" };
   if (!item.headByRovara) return { slot: "none", reason: "someone_else_pushed" };
+  // A head the pull request record has and the workflow has not recorded yet (a push whose result is still to be judged) is not acted on: nothing is fixed, merged or asked about it until the workflow knows it.
+  const recorded = context === undefined ? undefined : workflow.pullRequests?.find((entry) => entry.repositoryId === context.repositoryId && entry.number === context.pullRequestNumber);
+  if (context !== undefined && recorded?.headSha !== undefined && recorded.headSha !== context.headSha) return { slot: "none", reason: "in_flight" };
   if (workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return { slot: "none", reason: "in_flight" };
-  if (ownerCardPending(workflow)) return { slot: "none", reason: "owner_card", ...(item.failingChecks.length === 0 ? {} : { ciFailures: item.failingChecks }) };
+  if (ownerCardPending(workflow)) {
+    // The owner's card blocks every action but its own: the feedback slot may add the failing checks to the card, or decide a card that waits (Plan 6 Task 16).
+    const request = await deciders.get("feedback")?.({ item, workflow, settings, autonomy, now, ...(context === undefined ? {} : { context }) });
+    if (request !== undefined) return request;
+    return { slot: "none", reason: "owner_card", ...(item.failingChecks.length === 0 ? {} : { ciFailures: item.failingChecks }) };
+  }
   for (const slot of MERGE_ACTION_ORDER) {
     const request = await deciders.get(slot)?.({ item, workflow, settings, autonomy, now, ...(context === undefined ? {} : { context }) });
     if (request !== undefined) return request;
@@ -487,7 +541,7 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
   // The pass that resumes reads only from the pull request it stopped at to the end: the ones before it were read by the pass that stopped.
   const pullRequests = listed.slice(cursor);
   const budget = deps.budget === undefined ? undefined : rowBudget(deps.budget, trackingRequestCap(pullRequests.length));
-  const permissions = new Map<string, Promise<"admin" | "write" | "read" | "none">>();
+  const standings = new Map<string, Promise<RepositoryStanding>>();
   const setCursor = async (value: number): Promise<void> => {
     if (row === undefined || (row["trackingCursor"] ?? 0) === value) return;
     await deps.documentClient.send(new UpdateCommand({
@@ -505,7 +559,7 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     let one: Awaited<ReturnType<typeof trackOne>>;
     const seen: PassSeen = {};
     try {
-      one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, permissions, seen);
+      one = await trackOne(deps, { ...task, orgId, workflow: task.workflow }, pullRequest, settings, budget, standings, seen);
     } catch (error) {
       if (error instanceof TrackingRequestCapError) await setCursor(cursor + position);
       throw error;
@@ -525,6 +579,16 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     if (one.acted) break;
   }
   await setCursor(0);
+  // The replies a landed push of an automatic comment fix left to send: a courtesy, so a failure is logged and never fails the pass (a rate limit goes up to the sweep).
+  if (deps.sendFeedbackReplies !== undefined) {
+    const fresh = await deps.loadTask(taskId);
+    if (fresh !== undefined && fresh.closedAt === undefined && fresh.orgId === orgId) {
+      await deps.sendFeedbackReplies({ ...fresh, orgId }, budget).catch((error: unknown) => {
+        if (error instanceof GithubMergeRateLimitError) throw error;
+        deps.log?.("merge_tracking.replies_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
+      });
+    }
+  }
   return { result: changed ? "changed" : "unchanged", anyNotOpen, ...(recheckAt === undefined ? {} : { recheckAt }) };
 }
 
@@ -540,7 +604,7 @@ async function trackOne(
   pullRequest: NonNullable<WorkflowSnapshot["pullRequests"]>[number],
   settings: CodeSettings,
   budget: GithubMergeReadBudget | undefined,
-  permissions: Map<string, Promise<"admin" | "write" | "read" | "none">>,
+  standings: Map<string, Promise<RepositoryStanding>>,
   seen: PassSeen,
 ): Promise<{ changed: boolean; notOpen: boolean; acted: boolean; recheckAt?: number }> {
   const url = await deps.repositoryUrl(task.project, task.startingRevision, pullRequest.repositoryId, task.orgId);
@@ -557,15 +621,24 @@ async function trackOne(
   if (status.number !== pullRequest.number) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
   seen.requestedReviewerIds = status.requestedReviewerIds ?? [];
   const prior = trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
-  const permission = (login: string): Promise<"admin" | "write" | "read" | "none"> => {
-    const key = `${fullName}:${login.toLowerCase()}`;
-    let found = permissions.get(key);
+  // One lookup for each person a pass asks about, whoever asks (the reviews, or the rule for a feedback round): the answer carries the permission and, where GitHub says it, the kind of account.
+  const standingOn = async (repositoryId: string, login: string): Promise<RepositoryStanding> => {
+    // The repository of this pull request is known; another repository of the task is looked up as the task's project pins it.
+    const onUrl = repositoryId === pullRequest.repositoryId ? url : await deps.repositoryUrl(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (onUrl === undefined) throw agentXError("CONFIG_INVALID", "the repository is not in the task's project");
+    const parsed = parseGitHubRepository(onUrl);
+    const key = `${parsed.owner}/${parsed.name}:${login.toLowerCase()}`;
+    let found = standings.get(key);
     if (found === undefined) {
-      found = deps.github.getRepositoryPermission(url, login, scope, budget);
-      permissions.set(key, found);
+      found = deps.github.getRepositoryStanding !== undefined
+        ? deps.github.getRepositoryStanding(onUrl, login, scope, budget)
+        : deps.github.getRepositoryPermission(onUrl, login, scope, budget).then((permission): RepositoryStanding => ({ permission }));
+      standings.set(key, found);
     }
     return found;
   };
+  const standing = (login: string): Promise<RepositoryStanding> => standingOn(pullRequest.repositoryId, login);
+  const permission = async (login: string): Promise<"admin" | "write" | "read" | "none"> => (await standing(login)).permission;
   const recordedHead = await deps.recordedHead?.(task.workspaceId, pullRequest.repositoryId, pullRequest.number);
   const now = deps.now();
   const reviewsOf = (reviews: ReviewReading) => deriveTrackingFields({ task, pullRequest, status, prior, recordedHead, reviews, now });
@@ -615,6 +688,35 @@ async function trackOne(
   const fields = reviewsOf(reviews);
   if (markedReady) fields.draft = false;
 
+  // Plan 6 Task 19: an approval that counts (a person with write access who is a member and not a requester, unless the org allows self-approval, on the head) is announced once,
+  // once for each approval of each head. It is judged on every pass, because an approval that did not count can start to (the org allows self-approval, the reviewer is linked to a member), and
+  // the milestone's own key says whether it was said already. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
+  let announce: { login: string; n: number } | undefined;
+  if (fields.approval !== undefined && !capped) {
+    const reviewers = latestReviewers(status.reviews);
+    const known = new Map<string, RepositoryPermission>();
+    for (const reviewer of reviewers) known.set(reviewer.login, await permission(reviewer.login));
+    const members = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+    const counted = humanApprovalOf({
+      reviews: status.reviews, headSha: status.headSha, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ci.ci === "passing" || ci.ci === "none", permissions: known,
+      requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
+      allowSelfApproval: settings.allowSelfApproval,
+    });
+    if (counted.approved) {
+      const n = Number.parseInt(createHash("sha256").update(`${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${counted.commitId}\n${counted.by.githubUserId}`).digest("hex").slice(0, 6), 16) % 1_000_000;
+      const said = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: codeMilestoneKey(task.taskId, "approved", n), ConsistentRead: true })) as { Item?: unknown };
+      if (said.Item === undefined) announce = { login: counted.by.login, n };
+    }
+  }
+  const approvedItems = (stamp: string): TransactItem[] => {
+    if (announce === undefined) return [];
+    const where = deps.origin !== undefined && task.sessionId !== undefined ? `: ${sessionLink(deps.origin, task.sessionId)}` : ".";
+    return codeMilestoneItems({ tableName: deps.tableName }, {
+      kind: "approved", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: stamp,
+      text: `Approved by ${inertLine(announce.login)}. Ready to merge${where}`, pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
+    }, announce.n, { definitionVersion: task.workflow.definitionVersion });
+  };
+
   for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
     const current = attempt === 0 ? prior : trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
     const stamp = new Date(now).toISOString();
@@ -632,19 +734,39 @@ async function trackOne(
     let action: MergeActionRequest | undefined;
     const github = deps.github;
     const readLog = github.getJobLogTail === undefined ? undefined : (jobId: string) => github.getJobLogTail!(url, jobId, scope, budget);
-    const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now, {
+    const bound = deps.autonomyBinding !== undefined ? await deps.autonomyBinding(task) : { autonomy: await (deps.autonomy?.(task) ?? "prepare") };
+    const recipeDigest = bound.recipeDigest;
+    let ranOut = false;
+    const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, bound.autonomy, now, {
       tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
       repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
+      behindRequired: status.mergeableState === "behind",
       ...(readLog === undefined ? {} : { readJobLog: readLog }),
       ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }),
+      standingOf: (login, repositoryId) => standingOn(repositoryId, login),
+      ...(recipeDigest === undefined ? {} : { recipeDigest }),
+      ...(deps.feedbackRoundCheck === undefined ? {} : { feedbackRoundCheck: () => deps.feedbackRoundCheck!({ ...task, orgId: task.orgId, workflow: task.workflow }) }),
+      noteCapped: () => { ranOut = true; },
     });
+    if (ranOut) capped = true;
     if (decision.slot !== "none") action = decision;
     if (unchanged && action === undefined) {
+      // Nothing GitHub said changed, but an approval that stood unannounced now counts: the milestone is all there is to write.
+      if (announce !== undefined) {
+        try {
+          await deps.documentClient.send(new TransactWriteCommand({ TransactItems: approvedItems(stamp) }));
+          await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
+        } catch (error) {
+          if (!isCancelled(error)) throw error;
+        }
+      }
       if (capped) throw new TrackingRequestCapError();
       return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
     }
-    if (!unchanged) {
-      items.push(trackingWriteItem(deps.tableName, current, nextItem));
+    // An action that uses the day's count of merges of the base (Plan 6 Task 17) keeps it on this item, in this transaction: the item is written even when nothing GitHub said changed.
+    const written: MergeTrackingItem = action?.syncs === undefined ? nextItem : { ...withDigest({ ...merged, syncs: action.syncs }), version: nextItem.version, observedAt: stamp };
+    if (!unchanged || action?.syncs !== undefined) {
+      items.push(trackingWriteItem(deps.tableName, current, written));
       // The index a check or status event finds the task by: kept up to date whenever the item is, for a head that is Rovara's.
       if (merged.headByRovara) items.push(...prHeadItems(deps.tableName, { orgId: task.orgId, repositoryFullName: fullName, headSha: status.headSha, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, now).slice(0, 1));
     }
@@ -663,6 +785,7 @@ async function trackOne(
         pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
       }, index, { definitionVersion: task.workflow.definitionVersion }));
     }
+    items.push(...approvedItems(stamp));
     if (flipped && task.sessionId !== undefined) {
       items.push(sessionEventItem({ tableName: deps.tableName }, { orgId: task.orgId, sessionId: task.sessionId }, {
         eventId: sessionEventId("merge_tracking", `${task.taskId}\n${pullRequest.repositoryId}\n${String(pullRequest.number)}\n${String(nextItem.version)}`),
@@ -677,7 +800,7 @@ async function trackOne(
       if (isCancelled(error)) throw agentXError("RUNTIME_UNAVAILABLE", "the tracking item was changed by another writer");
       throw error;
     }
-    if (justReady) {
+    if (justReady || announce !== undefined) {
       // After the commit: the handlers are told (a failure is theirs, and the sweep tells them again).
       await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
     }

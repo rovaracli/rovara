@@ -1,6 +1,6 @@
 // Spec 025 FR-032, C8: what the notifier posts in a shared thread. Every value from a record is
 // escaped; free text from the worker is redacted and capped first. No em dashes.
-import { DEVELOPER_SHARE_SUMMARY_MAX, redactAndCap, redactText } from "@agentx/contracts";
+import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, redactAndCap, redactText } from "@agentx/contracts";
 import { escapeSlack, fitEscaped } from "../aws/slack-details-view.js";
 
 export interface StartMessageInput {
@@ -15,7 +15,7 @@ export interface StartMessageInput {
 }
 
 const who = (input: Pick<StartMessageInput, "developerName" | "slackUserId">) =>
-  input.slackUserId !== undefined ? `<@${input.slackUserId}>` : escapeSlack(input.developerName);
+  input.slackUserId !== undefined ? `<@${input.slackUserId}>` : escapeSlack(emailSafeName(input.developerName) ?? "a member");
 
 const MODE_SENTENCE = {
   view: (name: string) => `View only: follow-ups happen in ${name}'s AI tool, and I post each update here.`,
@@ -118,3 +118,8 @@ export function modeReply(mode: "view" | "continue"): string {
 
 export const CANCELLED_REPLY = "The task was cancelled before it ran.";
 export const CLOSED_REPLY = "The task is closed, and its workspace is released. This thread no longer drives it.";
+
+/** Copy used by surfaces resolving an owner share notice's ids. The undo is the session share DELETE route. */
+export function widenedShareMessage(input: { actor: string; title: string; who: string; undoUrl: string }): string {
+  return `${clean(input.actor, 80)} shared "${clean(input.title, 300)}" with ${clean(input.who, 100)}. Undo: ${input.undoUrl}`;
+}

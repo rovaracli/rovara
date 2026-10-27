@@ -48,16 +48,42 @@ export function decideCiFix(input: { item: Pick<MergeTrackingItem, "ci" | "faili
 }
 
 /**
- * How far Rovara may go on its own with a task: what its frozen recipe says, `prepare` for a task that has no recipe (the default), and `suggest` (ask first) when the recipe cannot be read,
- * so a failed read never starts paid work a person said Rovara should ask about.
+ * How far Rovara may go on its own with a task, and the digest of the frozen recipe that said so: the stricter of the task's frozen recipe (`prepare` for a task that has no recipe, the default) and the
+ * company's limit now (`limit`: the guardrails' `maxAutonomy`, read each time, so an admin who lowers it stops the paid work of tasks already running). `suggest` (ask first) when the recipe or the
+ * limit cannot be read, so a failed read never starts paid work a person said Rovara should ask about.
  */
-export async function taskAutonomy(read: () => Promise<{ recipe: { autonomy: Autonomy } } | undefined>, log?: (event: string, fields: Record<string, unknown>) => void): Promise<Autonomy> {
+export async function taskAutonomyBinding(
+  read: () => Promise<{ recipe: { autonomy: Autonomy }; digest?: string | undefined } | undefined>,
+  log?: (event: string, fields: Record<string, unknown>) => void,
+  limit?: () => Promise<Autonomy>,
+): Promise<{ autonomy: Autonomy; recipeDigest?: string }> {
+  const order: readonly Autonomy[] = ["suggest", "prepare", "run"];
   try {
-    return (await read())?.recipe.autonomy ?? "prepare";
+    const frozen = await read();
+    const own = frozen?.recipe.autonomy ?? "prepare";
+    let ceiling: Autonomy = "run";
+    if (limit !== undefined) {
+      try {
+        ceiling = await limit();
+      } catch (error) {
+        log?.("ci_fix.autonomy_limit_unreadable", { error: error instanceof Error ? error.name : "unknown" });
+        return { autonomy: "suggest" };
+      }
+    }
+    return { autonomy: order.indexOf(own) <= order.indexOf(ceiling) ? own : ceiling, ...(frozen?.digest === undefined ? {} : { recipeDigest: frozen.digest }) };
   } catch (error) {
     log?.("ci_fix.autonomy_unreadable", { error: error instanceof Error ? error.name : "unknown" });
-    return "suggest";
+    return { autonomy: "suggest" };
   }
+}
+
+/** `taskAutonomyBinding`'s autonomy alone. */
+export async function taskAutonomy(
+  read: () => Promise<{ recipe: { autonomy: Autonomy }; digest?: string | undefined } | undefined>,
+  log?: (event: string, fields: Record<string, unknown>) => void,
+  limit?: () => Promise<Autonomy>,
+): Promise<Autonomy> {
+  return (await taskAutonomyBinding(read, log, limit)).autonomy;
 }
 
 // ---- what CI said
@@ -77,7 +103,7 @@ const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, "gu"
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /u;
 
 /** One line of untrusted text (a check's name): control and format characters out, redacted, cut. */
-function oneLine(text: string, max: number): string {
+export function oneLine(text: string, max: number): string {
   return Array.from(redactText(text.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim()).slice(0, max).join("");
 }
 

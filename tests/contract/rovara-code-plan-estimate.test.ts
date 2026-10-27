@@ -4,14 +4,15 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { ROVARA_CODE_BUILD_GUIDANCE, ROVARA_CODE_PLAN_GUIDANCE } from "../../packages/contracts/src/agent-templates.js";
 import { releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-shared.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { slackSectionTexts, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { estimateDuration, noteDurationAtPullRequest, noteFinishedTaskDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import {
-  PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, type PlanDocument,
+  PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument,
 } from "../../packages/contracts/src/workflow-plan-document.js";
 import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
@@ -19,7 +20,8 @@ import type { OrgId } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, durationHistoryKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "../../packages/contracts/src/rovara-code.js";
 import { RUN_MINUTES_MAX, RunEstimateSchema, type RunEstimate } from "../../packages/contracts/src/spend.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { DeveloperTaskResponseSchema } from "../../packages/contracts/src/index.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -378,6 +380,20 @@ describe("the plan-ready message", () => {
     expect(textOf(estimate())).toContain("Estimated cost: about $2–$4. Run limit: $8.\nEstimated time: about 20–45 minutes to a pull request.");
   });
 
+  it("keeps the cost line, the time line, AgentX's plan check lines, the answers and the plan's checks together on one card, every Slack section within its limit (mainline #408 sync)", () => {
+    const decisions = [{ id: "d1", question: "Which cache should hold the retry state?", answer: "Reuse the existing one" }];
+    const checkLines = ["A browser test that a timed-out payment is retried once.", "A command that runs the unit tests of the payments package."];
+    const selfCheckLines = ["Not every claim is proved by a check that runs code."];
+    const message = workflowMessage({ taskId, workflow: workflowFor("1.1.0"), runEstimate: estimate(), agentName: "Rovara Code",
+      documentLink: { url: "https://agentx.example.test/review/x/task?version=1" }, taskPageUrl: "https://agentx.example.test/review/x/task",
+      structured: { claims: ["Payments that time out are retried."], claimCount: 3, decisionCount: 1, tiny: false, decisions, checkLines, selfCheckLines } })!;
+    expect(message.text).toContain("Estimated cost: about $2–$4. Run limit: $8.\nEstimated time: about 20–45 minutes to a pull request.");
+    expect(message.text).toContain("Not every claim is proved by a check that runs code.");
+    expect(message.text).toContain("Answer: Reuse the existing one");
+    expect(message.text).toContain("A browser test that a timed-out payment is retried once.");
+    for (const section of slackSectionTexts(message.text)) expect(section.length).toBeLessThanOrEqual(2_800);
+  });
+
   it("says hours for a long range", () => {
     expect(textOf(estimate({ minutes: { low: 60, high: 180, basis: "default", samples: 0 } }))).toContain("Estimated time: about 1–3 hours to a pull request.");
   });
@@ -539,7 +555,22 @@ const TESTED_PLAN = planDocument({
 });
 
 /** GitHub as the broker sees it when a pull request opens: every commit has the checked tree, and the pull request is #42. */
-const githubGateway = () => ({
+const githubGateway = (workflows: Record<string, string> = {}, readerFails = false) => ({
+  /** The org's read-only reader of the default branch (Plan 6 plan quality): the workflow files the repository has. */
+  agentRepositoryReader: vi.fn(async () => {
+    if (readerFails) throw new Error("GitHub is down");
+    return {
+      defaultBranch: "main", commit: "e".repeat(40),
+      list: async (path: string) => {
+        const entries = Object.keys(workflows).filter((name) => name.startsWith(`${path}/`)).map((name) => ({ name: name.slice(path.length + 1), path: name, type: "file" as const, sha: "a".repeat(40), size: 10 }));
+        return entries.length === 0 ? undefined : { entries, truncated: false };
+      },
+      read: async (path: string) => {
+        const text = workflows[path];
+        return text === undefined ? undefined : { sha: "a".repeat(40), size: text.length, text };
+      },
+    };
+  }),
   reconcilePullRequest: vi.fn(async () => ({ number: 42, url: "https://github.com/example/demo/pull/42", reconciled: false })),
   getCommitTree: vi.fn(async () => "b".repeat(40)), getBranchHead: vi.fn(async () => "d".repeat(40)), getCommitParents: vi.fn(async () => ["e".repeat(40)]),
   getPullRequest: vi.fn(async (_url: string, number: number) => ({ number, url: "https://github.com/example/demo/pull/42", state: "open" as const, headBranch: "x", baseBranch: "main", headCommit: "d".repeat(40), title: "t", body: "" })),
@@ -547,10 +578,11 @@ const githubGateway = () => ({
   getPullRequestFeedback: vi.fn(async (_url: string, number: number) => ({ pullRequest: { number, url: "https://github.com/example/demo/pull/42", state: "open" as const, headBranch: "x", baseBranch: "main", headCommit: "d".repeat(40), title: "t", body: "", headTreeSha: "b".repeat(40) }, comments: [], threads: [] })),
 });
 
-async function world(options: { v2?: boolean; proxy?: boolean } = {}) {
+async function world(options: { v2?: boolean; proxy?: boolean; workflows?: Record<string, string>; readerFails?: boolean } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
-  const h = await createDeveloperTaskBroker({
-    brokerExtra: { agents: {}, githubPullRequests: githubGateway(), ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
+  const gateway = githubGateway(options.workflows, options.readerFails);
+  const h = await createSingleAnswerPlanBroker({
+    brokerExtra: { agents: {}, githubPullRequests: gateway, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -581,9 +613,9 @@ async function world(options: { v2?: boolean; proxy?: boolean } = {}) {
     return { taskId, workspaceId: meta(taskId).workspaceId };
   };
   const finishPrepare = async (workspaceId: string) => h.finish(workspaceId, String(operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
-  const finishPlanning = async (workspaceId: string, plan: PlanDocument = TESTED_PLAN) => {
+  const finishPlanning = async (workspaceId: string, plan: PlanDocument = TESTED_PLAN, answer: string = planAnswer(plan)) => {
     const operationId = String(planOperation(workspaceId).id);
-    await h.artifact(workspaceId, operationId, "plan.md", planAnswer(plan));
+    await h.artifact(workspaceId, operationId, "plan.md", answer);
     await h.finish(workspaceId, operationId, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
     // Plan 6 Task 8: a version 2 coding plan is checked by a second model before it reaches the person; here the check finds nothing to say.
     const taskId = (h.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.workspaceId === workspaceId)[0] as { taskId: string }).taskId;
@@ -599,7 +631,7 @@ async function world(options: { v2?: boolean; proxy?: boolean } = {}) {
     await finishPlanning(started.workspaceId, plan);
     return started;
   };
-  return { h, access, meta, operations, planOperation, promptOf, start, finishPrepare, finishPlanning, planned };
+  return { h, access, gateway, meta, operations, planOperation, promptOf, start, finishPrepare, finishPlanning, planned };
 }
 
 describe("a version 2 plan that reaches review", () => {
@@ -692,6 +724,107 @@ describe("a version 2 plan that reaches review", () => {
     const t = await world({ v2: true });
     const { taskId } = await t.planned("FULL", planDocument());
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+  });
+});
+
+// ---- plan quality: the repository's CI checks in the plan's Checks section
+
+const CI_WORKFLOW = { ".github/workflows/ci.yml": "name: CI\non: [push, pull_request]\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - name: Lint and type-check\n        run: npm run lint\n      - run: npm test\n" };
+const PROJECT_NPM_TEST = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
+
+describe("a version 2 plan's Checks section", () => {
+  /** A planned task whose project requires `npm test`, with the stored plan's markdown and the checks the owner would approve. */
+  async function planWithPolicy(options: Parameters<typeof world>[0], plan: PlanDocument = TESTED_PLAN, answer?: (plan: PlanDocument) => string) {
+    const t = await world({ v2: true, ...options });
+    const { taskId, workspaceId } = await t.start("QUICK");
+    const record = t.meta(taskId);
+    t.h.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { required: [PROJECT_NPM_TEST], optional: [], selectedOptionalIds: [] } } });
+    await t.finishPrepare(workspaceId);
+    await t.finishPlanning(workspaceId, plan, answer === undefined ? planAnswer(plan) : answer(plan));
+    const workflow = t.meta(taskId).workflow as unknown as { artifacts: Array<{ objectKey: string }>; checkPolicy?: { proposed?: Array<{ label: string; command: { executable: string; args: string[] } }> }; state: string };
+    const stored = [...t.h.s3.objects.entries()].find(([key]) => key === workflow.artifacts.at(-1)?.objectKey)?.[1];
+    const parsed = stored === undefined ? undefined : readCanonicalPlan(String(stored));
+    return { t, taskId, workflow, plan: parsed, markdown: parsed === undefined ? "" : planDocumentMarkdown(parsed, { kind: "plan", version: 1, sha256: "a".repeat(64) }) };
+  }
+  const commands = (workflow: Awaited<ReturnType<typeof planWithPolicy>>["workflow"]) => (workflow.checkPolicy?.proposed ?? []).map((check) => [check.label, check.command.executable, ...check.command.args].join(" "));
+
+  it("lists the CI's lint as a proposed check and the npm test the project already runs as a project check, though the planner proposed neither", async () => {
+    const { workflow, plan, markdown } = await planWithPolicy({ workflows: CI_WORKFLOW });
+    expect(workflow.state).toBe("WAITING");
+    expect(commands(workflow)).toEqual(["CI: Lint and type-check npm run lint"]);
+    expect(plan?.checks?.alsoRun).toEqual([PROJECT_NPM_TEST]);
+    expect(markdown.slice(markdown.indexOf("## Checks"), markdown.indexOf("## Decisions")).trimEnd().split("\n")).toEqual([
+      "## Checks",
+      "- CI: Lint and type-check: `npm run lint` in `repo/demo`",
+      "- npm test: `npm test` in `repo/demo` (a project check; it always runs)",
+    ]);
+  });
+
+  it("keeps the planner's own checks first and does not repeat a command it proposed", async () => {
+    const own = (plan: PlanDocument) => planAnswer(plan, { checks: { checks: [{ label: "Lint", cwd: "repo/demo", executable: "npm", args: ["run", "lint"], proves: ["1"] }] } });
+    const { workflow } = await planWithPolicy({ workflows: CI_WORKFLOW }, TESTED_PLAN, own);
+    expect(commands(workflow)).toEqual(["Lint npm run lint"]);
+  });
+
+  it("still lists the project's checks when the repository has no workflows or GitHub can't be read: the plan is never held up", async () => {
+    for (const options of [{}, { workflows: CI_WORKFLOW, readerFails: true }]) {
+      const { workflow, plan } = await planWithPolicy(options);
+      expect(workflow.state, JSON.stringify(options)).toBe("WAITING");
+      expect(commands(workflow)).toEqual([]);
+      expect(plan?.checks?.alsoRun).toEqual([PROJECT_NPM_TEST]);
+    }
+  });
+
+  it("does not let a CI check stand in for the test the plan must name: a plan with no test claim is still unreadable", async () => {
+    const { t, taskId } = await planWithPolicy({ workflows: CI_WORKFLOW }, planDocument());
+    expect(t.meta(taskId).planUnreadable?.errors).toEqual([PLAN_MISSING_TESTS]);
+  });
+
+  it("is as it was for a version 1 plan: no CI checks, no project checks listed, and no read of GitHub", async () => {
+    const t = await world({ workflows: CI_WORKFLOW });
+    const { taskId, workspaceId } = await t.start("QUICK");
+    const record = t.meta(taskId);
+    t.h.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { required: [PROJECT_NPM_TEST], optional: [], selectedOptionalIds: [] } } });
+    await t.finishPrepare(workspaceId);
+    await t.finishPlanning(workspaceId);
+    const workflow = t.meta(taskId).workflow as unknown as { checkPolicy?: { proposed?: unknown[] }; artifacts: Array<{ objectKey: string }> };
+    expect(workflow.checkPolicy?.proposed ?? []).toEqual([]);
+    const plan = readCanonicalPlan(String(t.h.s3.objects.get(workflow.artifacts.at(-1)!.objectKey)));
+    expect(plan?.checks).not.toHaveProperty("alsoRun");
+    expect(t.gateway.agentRepositoryReader).not.toHaveBeenCalled();
+  });
+});
+
+describe("the plan-quality guidance reaches the prompts", () => {
+  /** A task taken through its plan to the build step's operation, with the plan and build prompts. */
+  async function prompts(v2: boolean) {
+    const t = await world({ v2 });
+    const { taskId, workspaceId } = await t.start("QUICK");
+    await t.finishPrepare(workspaceId);
+    const planPrompt = t.promptOf(t.planOperation(workspaceId).id);
+    await t.finishPlanning(workspaceId);
+    const digest = t.meta(taskId).workflow.artifacts.at(-1)!.sha256;
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: t.meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const build = t.operations(workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    return { planPrompt, buildPrompt: t.promptOf(build.id) };
+  }
+
+  it("tells a version 2 planner and builder, each in the step's own words, and adds nothing else to either", async () => {
+    const { planPrompt, buildPrompt } = await prompts(true);
+    expect(planPrompt).toContain(ROVARA_CODE_PLAN_GUIDANCE);
+    expect(planPrompt).not.toContain(ROVARA_CODE_BUILD_GUIDANCE);
+    expect(buildPrompt).toContain(ROVARA_CODE_BUILD_GUIDANCE);
+    expect(buildPrompt).not.toContain(ROVARA_CODE_PLAN_GUIDANCE);
+  });
+
+  it("tells a version 1 task's planner and builder nothing of it", async () => {
+    const { planPrompt, buildPrompt } = await prompts(false);
+    for (const prompt of [planPrompt, buildPrompt]) {
+      expect(prompt).not.toContain(ROVARA_CODE_PLAN_GUIDANCE);
+      expect(prompt).not.toContain(ROVARA_CODE_BUILD_GUIDANCE);
+      expect(prompt).not.toContain("Number()");
+    }
   });
 });
 
@@ -825,3 +958,24 @@ async function publishedTask(t: Awaited<ReturnType<typeof world>>) {
   return started;
 }
 
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the task view of a plan with an estimate, as the broker sends it", () => {
+  it("is read by the clients' task schema, with the time range for a version 2 client and without it for one that sends no header", async () => {
+    const t = await world({ v2: true });
+    const { taskId } = await t.planned("QUICK");
+    expect(t.meta(taskId).runEstimate?.minutes).toBeDefined();
+    const full = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`, undefined, { "x-agentx-task-view": "2" });
+    const old = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`);
+    for (const reply of [full, old]) {
+      expect(reply.status).toBe(200);
+      expect(typeof reply.body.requestId).toBe("string");
+      const parsed = DeveloperTaskResponseSchema.safeParse(reply.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+    expect((full.body.task as { runEstimate: RunEstimate }).runEstimate.minutes).toMatchObject({ low: 20, high: 45 });
+    // A client that sends no header has a strict estimate with no place for the time range: it is never sent one.
+    expect((old.body.task as { runEstimate: RunEstimate }).runEstimate).not.toHaveProperty("minutes");
+    expect(RunEstimateSchema.safeParse((full.body.task as { runEstimate: unknown }).runEstimate).success).toBe(true);
+  });
+});

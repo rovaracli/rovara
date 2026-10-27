@@ -1,5 +1,5 @@
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
-import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey, orgMetaKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
@@ -35,6 +35,7 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
+  if (command instanceof BatchGetCommand) return { Responses: Object.fromEntries(Object.entries(command.input.RequestItems ?? {}).map(([table, request]) => [table, (request.Keys ?? []).flatMap(key => { const row = rows.get(keyOf(key));return row === undefined ? [] : [row]; })])) };
   if (command instanceof QueryCommand) {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
    if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");

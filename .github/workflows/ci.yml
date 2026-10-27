@@ -62,9 +62,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      # The stricter type check (tsconfig.lint.json, which also covers tests/ and scripts/) may not
-      # add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
-      - run: npm run typecheck:all
+      # The stricter type check (the programs in tsconfig.lint/, which also cover tests/ and scripts/)
+      # may not add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
+      # A pull request runs only the programs its changed files can affect (TYPECHECK-SPLIT.md); depth 2
+      # puts the base branch at HEAD^1, as in the scope job. A manual run, and the release workflow, run all.
+      - name: Stricter type check (programs the change affects)
+        if: github.event_name == 'pull_request'
+        run: npm run typecheck:changed -- --base HEAD^1
+      - name: Stricter type check (every program)
+        if: github.event_name != 'pull_request'
+        run: npm run typecheck:all
       - run: npm run lint
 
   # Vitest hands each shard an even share of the test files. To change the count, change the list:

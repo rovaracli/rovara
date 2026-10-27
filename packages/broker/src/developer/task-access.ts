@@ -1,7 +1,7 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { effectiveProjectRole, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
@@ -223,7 +223,7 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
  * user ID ("Slack user U0…"), which is no name a person recognises, so the reader is told to ask the task owner.
  */
 export function ownerNameForReaders(developerName: string): string {
-  return /^Slack user [UW][A-Z0-9]{2,31}$/.test(developerName) ? "the task owner" : developerName;
+  return /^Slack user [UW][A-Z0-9]{2,31}$/.test(developerName) ? "the task owner" : emailSafeName(developerName) ?? "the task owner";
 }
 
 /** Whether the task still takes comments, suggestions and decisions: not closed and not finished. */

@@ -24,6 +24,7 @@ import type { WorkflowE2EReadinessMarker } from "./broker-shared.js";
 import type { ExtraItems } from "./developer-task-actions.js";
 import type { DurableOutboxRecord, RuntimeBinding } from "./lambda.js";
 import { taskAgentRunKey, taskPointerKey } from "../developer/task-records.js";
+import type { PlanQualityContext } from "../developer/plan-quality.js";
 
 /** The State table, as the broker and the reconciler reach it. */
 export interface StateTable {
@@ -59,6 +60,8 @@ export interface OperationRecord extends Operation {
   modelRoute?: { sourceId: string; alias: string; model: ModelIdentifier } | null;
   /** Plan 6 Task 8: a plan check run on the same model that wrote the plan, because the project allows only one (absent: it ran on a different model). */
   criticSameModel?: true;
+  /** Trust fix A2: the reviews ran on the same model that wrote the code, because it was the only one usable; their reports say so (absent: another model reviewed). */
+  reviewSameModel?: true;
   /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */
   planRevision?: true;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */
@@ -75,11 +78,17 @@ export interface OperationRecord extends Operation {
   candidateBuildSource?: StoredCandidateBuildSource;
   /** M1.3 Task 3.7b: the unchanged code (the task's base commit) the worker exported beside the candidate for the baseline round, or why there is none; absent when the worker sent nothing. */
   baselineSource?: StoredBaselineSource;
+  /** T7b: a planning run that was asked to export the unchanged code so its plan's must-not-change scenarios can be tried on the current app (absent: it was not). It may upload that one export, under its own operation key. */
+  groundingSourceAsked?: true;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
   /** A PR feedback review started by a broker that gives the critic only the owner's notes for its round (absent: an earlier release's run). */
   feedbackNotesScoped?: true;
   /** A planning run that was asked for the schema-v2 application plan (absent: it was not, so a v2 plan from it is refused). */
   workflowE2EPlanVersion?: 2;
+  /** A planning run: the part of the planning context its planner was given that the plan self-check reads (absent: it was given none). */
+  planQualityContext?: PlanQualityContext;
+  /** A planning run whose prompt asked the planner for the plan quality members (absent: it was not, or delivery dropped the guidance for an older worker). */
+  planQualityAsked?: true;
   publication?: {
     repository: string;
     repositoryUrl: string;
@@ -126,7 +135,9 @@ export interface OperationRecord extends Operation {
     expectedHeadCommit: string;
     codeBuildGates: CodeBuildGateDefinition[];
     /** A workflow task's push of its reviewed fix: the candidate, its reviewed tree and the task's pinned base. */
-    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string };
+    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; /** A conflict round's fix is pushed as a merge commit with this commit of the base as its second parent. */ mergeBaseCommit?: string };
+    /** Plan 6 Task 17: a workflow task's merge of the base branch into its pull request's branch: the base commit merged and the head it is for. */
+    workflowSync?: { baseCommit: string; expectedHeadCommit: string };
   };
   candidateCommit?: string;
   closePreviousStatus?: "READY" | "STOPPED";
@@ -245,6 +256,8 @@ export interface CapabilityOptions {
   /** #341, #342: only a task that runs on its owner's ChatGPT plan may ask for the owner's access token, and say why it stopped using that plan. */
   chatGptToken?: boolean;
   candidateExport?: boolean;
+  /** T7b (mainline #408): a planning run asked for the unchanged code may send that one export (the "baseline-source" action) and nothing else of the implementation run's. */
+  groundingSource?: boolean;
   workflowE2E?: boolean;
   /** M1.4 Task 4.3a: charge the project's day budget for AI navigation steps (`POST .../e2e-model-budget`); granted only to a round whose admission has such steps. */
   e2eModelBudget?: boolean;
@@ -271,7 +284,7 @@ export function issueCapability(
       "artifacts",
       "events",
       "result",
-      ...(options.candidateExport === true ? ["candidate-export" as const, "candidate-build-source" as const, "baseline-source" as const] : []),
+      ...(options.candidateExport === true ? ["candidate-export" as const, "candidate-build-source" as const, "baseline-source" as const] : options.groundingSource === true ? ["baseline-source" as const] : []),
       ...(options.workflowE2E === true ? ["e2e-admission" as const, "e2e-evidence" as const] : []),
       // M1.4 Task 4.3a: only a round whose admission has AI navigation steps charges the project's day budget.
       ...(options.e2eModelBudget === true ? ["e2e-model-budget" as const] : []),

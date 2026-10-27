@@ -21,7 +21,7 @@ import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentRunsKey, projectAgentKey, projectAiKey, projectMemberKey, runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, runLimitBlockText, type RunEstimate } from "../../packages/contracts/src/spend.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
-import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -324,7 +324,7 @@ async function world(options: { proxy?: boolean; requestRunLimit?: RequestRunLim
   const access = options.proxy === false ? undefined : fakeModelAccess();
   const requestRunLimit = vi.fn<RequestRunLimit>(async () => ({ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa" }));
   const seam = options.requestRunLimit === "none" ? undefined : options.requestRunLimit ?? requestRunLimit;
-  const h = await createDeveloperTaskBroker({
+  const h = await createSingleAnswerPlanBroker({
     brokerExtra: { agents: { ...(seam === undefined ? {} : { requestRunLimit: seam }) }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (access !== undefined) {

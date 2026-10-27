@@ -135,6 +135,8 @@ const GROUP_SENTENCES_BY_TEXT: Readonly<Record<string, string>> = GROUP_SENTENCE
 const SEND_BACK_CODES: ReadonlyArray<E2EGroupReasonCode> = E2E_APPLICATION_SEND_BACK_CODES;
 
 export const E2E_OWNER_SENTENCES = Object.freeze({
+  /** AUTOREQUALIFY (AR-3): why an audit replay of a round that ran before the test machine was renewed is refused. */
+  replayRuntimeRenewed: "The test machine was renewed since this round, so it can't be replayed exactly.",
   /**
    * Why a scenario could not be decided, for the codes the collector gives a case whose AI navigation was not clean (`E2E_AGENT_UNKNOWN_CODES`). `ctx` is the provider and model of the
    * route definition the broker stored for the admitted revision, or undefined when there is none.
@@ -174,6 +176,12 @@ export const E2E_OWNER_SENTENCES = Object.freeze({
   /** The one Slack line for a round with AI-navigated rows: `AI navigation: 1 step, 3 model calls (checks decide)`. */
   slackLine: (input: { steps: number; modelCalls: number }): string =>
     `AI navigation: ${input.steps} ${input.steps === 1 ? "step" : "steps"}, ${input.modelCalls} model ${input.modelCalls === 1 ? "call" : "calls"} (checks decide)`,
+
+  /**
+   * Why a scenario that ran could not be decided, for the case reason `undeclared-mock-consumption` (MOCKUNUSED): in a group that runs several targets together the host serves the
+   * group's stand-in services to every one of them, and this check's app called one the plan did not set for this check's target. A fixed sentence chosen by the code.
+   */
+  undeclaredMockConsumption: "called a stand-in service the plan did not set for this check's target",
 
   baseline: Object.freeze({
     /** A baseline that could not run because every scenario of the plan uses AI navigation. */

@@ -7,6 +7,7 @@ import {
   TaskPersonProofResponseSchema,
   agentXError,
   cleanDisplayName,
+  emailSafeName,
   redactAndCap,
   type TaskPersonProofRequest,
   type TaskPersonProofResponse,
@@ -75,7 +76,10 @@ const taskPk = (taskId: string) => `DEVTASK#${taskId}`;
 const personSk = (personId: string) => `PERSON#${personId}`;
 const subjectSk = (developerId: string) => `PERSON_SUBJECT#${developerId}`;
 
-const safeName = (name: string, fallback: string): string => cleanDisplayName(redactAndCap(name, 80).text) ?? fallback;
+/** The name a new row is written with, and the name as it is shown: never an email address (release 0.4.16). */
+const safeName = (name: string, fallback: string): string => emailSafeName(redactAndCap(name, 80).text) ?? fallback;
+/** Whether a stored name is well formed by the rule rows were written under before 0.4.16: a row stored under an email is still the person's row (shown through `safeName`). */
+const wellFormedName = (name: string, fallback: string): boolean => (cleanDisplayName(redactAndCap(name, 80).text) ?? fallback) === name;
 
 async function getItem(deps: TaskPersonIdentityDependencies, pk: string, sk: string): Promise<Record<string, unknown> | undefined> {
   const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk, sk }, ConsistentRead: true })) as { Item?: unknown };
@@ -92,13 +96,13 @@ async function currentTask(deps: TaskPersonIdentityDependencies, taskId: string)
 
 function parsedIdentity(item: Record<string, unknown>): TaskPersonIdentity | undefined {
   if (!HEX64.test(String(item.developerId)) || !SlackUserIdSchema.safeParse(item.slackUserId).success || typeof item.name !== "string"
-    || safeName(item.name, String(item.slackUserId)) !== item.name || (item.method !== "slack" && item.method !== "oidc")
+    || !wellFormedName(item.name, String(item.slackUserId)) || (item.method !== "slack" && item.method !== "oidc")
     || typeof item.issuer !== "string" || item.issuer.length === 0 || item.issuer.length > 2048
     || typeof item.subject !== "string" || item.subject.length === 0 || item.subject.length > 512) return undefined;
   return {
     developerId: String(item.developerId),
     slackUserId: String(item.slackUserId),
-    name: item.name,
+    name: safeName(item.name, String(item.slackUserId)),
     method: item.method,
     issuer: item.issuer,
     subject: item.subject,

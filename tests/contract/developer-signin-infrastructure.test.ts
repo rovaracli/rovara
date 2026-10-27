@@ -302,6 +302,26 @@ describe("developer sign-in infrastructure (named environments)", () => {
     for (const write of ["dynamodb:PutItem", "dynamodb:UpdateItem"]) expect(rolesThatMay(named, write, tableId, SAMPLE_TABLE_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
   });
 
+  it("needs no new permission for the display name (release 0.4.18): no PutItem or UpdateItem on the sign-in table, the creator's ConditionCheckItem for the check, and the State table for the name item", () => {
+    const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
+    const [stateId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => withoutHash(logicalId) === "State")!;
+    const brokerOnSignIn = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
+    // The rename is a transaction whose Update-free check reads the sign-in record: ConditionCheckItem, on DEVELOPER# items only, and the broker has nothing that writes there.
+    expect(brokerOnSignIn.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    for (const write of ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]) {
+      expect(rolesThatMay(named, write, tableId, SAMPLE_TABLE_ARN)).not.toContain("BrokerServiceRole");
+    }
+    const check = brokerOnSignIn.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
+    expect(check).toHaveLength(1);
+    expect(leadingKeysOf(check[0]!)).toEqual(["DEVELOPER#*"]);
+    // The name item (DEVELOPER_NAME#<id>) and the audit's pending item are in the State table, where the broker reads, writes and batch-reads without a key limit.
+    const SAMPLE_STATE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/agentx-staging-control-plane-State-AbCdEf";
+    for (const action of ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:BatchGetItem"]) {
+      const granting = grants(named).filter(({ role, statement }) => withoutHash(role) === "BrokerServiceRole" && statement.Effect !== "Deny" && allows(statement, action) && reaches(named, statement, stateId, SAMPLE_STATE_ARN));
+      expect(granting.some(({ statement }) => statement.Condition === undefined), action).toBe(true);
+    }
+  });
+
   it("gives the broker no write on the sign-in table: unlinking runs in DeveloperIdentity", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const actions = statementsOfRole(named, "BrokerServiceRole")

@@ -24,6 +24,9 @@ export interface DeveloperSignInParameters {
   /** Spec 025 E16: whether an admin may confirm a change in the AI tool's own pop-up. */
   mcpConfirmElicitation: CfnParameter;
   rovaraCodeV2Enabled: CfnParameter;
+  /** Mainline #408: the plan self-check (a coding plan is checked, and the planner asked again once) and automatic fixing of blocked checks and reviews. On unless an operator turns them off. */
+  planSelfCheckEnabled: CfnParameter;
+  autofixEnabled: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -45,6 +48,8 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     taskPeoplePrivateInvitationsEnabled: new CfnParameter(stack, "TaskPeoplePrivateInvitationsEnabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether task people may invite members to private channels in this environment" }),
     workflowDependenciesEnabled: new CfnParameter(stack, "WorkflowDependenciesEnabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether bounded serial task work breakdowns are enabled in this environment" }),
     rovaraCodeV2Enabled: new CfnParameter(stack, "RovaraCodeV2Enabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)" }),
+    planSelfCheckEnabled: new CfnParameter(stack, "PlanSelfCheckEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether every coding plan is checked before the owner sees it, and the planner asked again once when the check finds a fixable problem (agentx config set planSelfCheck.enabled false turns it off; it also turns off checking the plan against the current app)" }),
+    autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }

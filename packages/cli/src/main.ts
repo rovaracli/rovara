@@ -14,6 +14,7 @@ import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_PLACEHOLDER,
   EnvironmentNameSchema,
+  INTENT_QUESTIONS_MAX,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
   OrgRoleSchema,
@@ -34,7 +35,7 @@ import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pend
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
-import { bindSlackChannel, unbindSlackChannel } from "./admin/slack.js";
+import { bindSlackChannel, connectSlackTeam, disconnectSlackTeam, unbindSlackChannel } from "./admin/slack.js";
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
 import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
@@ -46,12 +47,14 @@ import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, sanitizeServerText, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
+import { projectCodeSettings } from "./developer/code-settings.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import {
   assertNewFile, auditLogQuery, auditLogText, auditPageUrl, developerExportTransport, exportAuditFile, exportRange, fetchAuditRecords, jsonSafe, verifyAuditExport,
   type AuditLogFlags, type AuditRuntime,
 } from "./developer/audit.js";
+import { projectSlackBind, projectSlackUnbind, slackBindText, slackUnbindText } from "./developer/slack-channel.js";
 import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
 import { orgCommentTriggers, orgCommentTriggersText, orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -87,7 +90,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { homeCards, sessionControl, sessionFollow, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
+import { homeCards, sessionAnswer, sessionControl, sessionFollow, sessionLinkIssue, sessionMerge, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -791,7 +794,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       }));
     });
-  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over or share it");
+  const session = program.command("session").description("look at one session, comment on it, tell its agent, answer its questions, stop it, retry it, take it over, share it, link it to a Linear issue or press Merge on its pull request");
   session
     .command("show")
     .description("show a session: its link, status, owner, cost and what waits for you")
@@ -812,10 +815,18 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "comment", text)));
   session
     .command("tell")
-    .description("send a message to the session's agent; it needs \"can use\" on the session")
+    .description("send a message to the session's agent; it needs \"can use\" on the session. To answer Rovara's questions use session answer")
     .argument("<session-id>", "the session's ID")
     .argument("<text>", "the message")
     .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "steer", text)));
+  // Rovara Code's questions (Plan 6 Task 5, Task 25): `--q1` answers question 1, `--q2` question 2 (an option's letter or words, or your own words).
+  const answerCommand = session
+    .command("answer")
+    .description("answer the questions Rovara Code asked before it plans; with no --qN it shows the questions. It needs \"can use\" on the session")
+    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID");
+  for (let number = 1; number <= INTENT_QUESTIONS_MAX; number += 1) answerCommand.option(`--q${number} <answer>`, `the answer to question ${number}: an option's letter or words, or your own words ("your call" leaves it to Rovara)`);
+  answerCommand.action(async (ref: string, options: Record<string, string | undefined>, command: Command) =>
+    printResult(command, await sessionAnswer(developerSession(), developerEnv(command), ref, { answers: Array.from({ length: INTENT_QUESTIONS_MAX }, (_unused, index) => options[`q${index + 1}`]) })));
   for (const action of ["stop", "retry"] as const) {
     session
       .command(action)
@@ -836,6 +847,22 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--level <level>", "view, use or edit")
     .action(async (id: string, options: { with?: string; level?: string }, command: Command) =>
       printResult(command, await sessionShare(developerSession(), developerEnv(command), id, { ...(options.with === undefined ? {} : { with: options.with }), ...(options.level === undefined ? {} : { level: options.level }) })));
+  session
+    .command("merge")
+    .description("press Merge for a Rovara Code task: shows what is approved and whether checks passed, asks, then prints the link where you confirm it in your browser")
+    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID")
+    .option("--yes", "press without asking; you still confirm in your browser", false)
+    .action(async (ref: string, options: { yes: boolean }, command: Command) =>
+      printResult(command, await sessionMerge(developerSession(), developerEnv(command), ref, { confirm: changeConfirmer(options.yes) })));
+  session
+    .command("link")
+    .description("link a Rovara Code session to a Linear issue, so its pull request says Fixes <KEY>; needs \"can edit\" on the session")
+    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID")
+    .option("--linear <issue>", "the Linear issue's key (like TEAM-123) or its linear.app link")
+    .option("--replace", "change the issue when the session already follows another", false)
+    .option("--unlink", "let go of the session's Linear issue", false)
+    .action(async (ref: string, options: { linear?: string; replace: boolean; unlink: boolean }, command: Command) =>
+      printResult(command, await sessionLinkIssue(developerSession(), developerEnv(command), ref, { ...(options.linear === undefined ? {} : { linear: options.linear }), replace: options.replace, unlink: options.unlink })));
   program
     .command("home")
     .description("what needs you now: approvals, plans, spend requests, pull requests and failures")
@@ -1513,6 +1540,31 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
     });
 
+  // Release 0.4.17: an org owner or admin binds their own project to a Slack channel with the developer sign-in (the admin form above needs the operator's).
+  const slack = program.command("slack").description("bind your project to a Slack channel with your own sign-in (an organization owner or admin)");
+  slack
+    .command("bind")
+    .description("bind a Slack channel of your organization's Slack workspace to --project; then invite the bot in Slack")
+    .requiredOption("--channel <channel-id>", "Slack channel ID, for example C0123456789")
+    .option("--team <team-id>", "Slack workspace ID, only when your organization has more than one")
+    .action(async (options: { channel: string; team?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const project = AgentXNameSchema.parse(requireProject(globals));
+      const result = await projectSlackBind(developerSession(), developerEnv(command), project, options.channel, options.team);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project, teamId: result.teamId, channelId: result.channelId, changed: result.changed }, true) : slackBindText(result));
+    });
+  slack
+    .command("unbind")
+    .description("remove a Slack channel binding from --project; existing thread workspaces are kept")
+    .requiredOption("--channel <channel-id>", "Slack channel ID, for example C0123456789")
+    .option("--team <team-id>", "Slack workspace ID, only when your organization has more than one")
+    .action(async (options: { channel: string; team?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const project = AgentXNameSchema.parse(requireProject(globals));
+      const result = await projectSlackUnbind(developerSession(), developerEnv(command), project, options.channel, options.team);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project, teamId: result.teamId, channelId: result.channelId, removed: result.changed }, true) : slackUnbindText(result));
+    });
+
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");
   adminSlack
     .command("bind")
@@ -1529,6 +1581,27 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         channelId: options.channel,
         projectName: AgentXNameSchema.parse(requireProject(globals)),
       }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  adminSlack
+    .command("connect-team")
+    .description("connect a Slack workspace to an organization, so its owner can bind channels with their own sign-in (Rovara operators)")
+    .requiredOption("--org <org-id>", "the organization's ID, for example org_abcdefghijklmnopqrst")
+    .requiredOption("--team <team-id>", "Slack workspace ID, for example T0123456789")
+    .action(async (options: { org: string; team: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await connectSlackTeam({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, teamId: options.team, orgId: options.org }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  adminSlack
+    .command("disconnect-team")
+    .description("release a Slack workspace from the organization that holds it (Rovara operators); refused while that organization still has channels bound in it")
+    .requiredOption("--team <team-id>", "Slack workspace ID, for example T0123456789")
+    .action(async (options: { team: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await disconnectSlackTeam({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, teamId: options.team }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
   adminSlack
@@ -1925,15 +1998,16 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("<project>", "the project")
     .argument("<hook-id>", "the hook's ID, from the list")
     .action(async (project: string, hookId: string, _options: unknown, command: Command) => printResult(command, await hooksDelete(developerSession(), developerEnv(command), project, hookId)));
+  const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
     .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
     .option("--description <text>", "what the project is, up to 280 characters")
-    .option("--setup-command <command>", "the setup command, or \"\" for none")
-    .option("--test-command <command>", "the test command, or \"\" for none")
-    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+    .option("--setup-command <command>", "a setup command, or \"\" for none; give it again for each one, in order", collect, [] as string[])
+    .option("--test-command <command>", "a test command, or \"\" for none; give it again for each one, in order", collect, [] as string[])
+    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand: string[]; testCommand: string[] }, command: Command) => {
       const globals = globalOptions(command);
       if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
       const result = await createDeveloperProject(developerSession(), developerEnv(command), {
@@ -1941,8 +2015,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         repository: options.repository,
         ...(options.name === undefined ? {} : { name: options.name }),
         ...(options.description === undefined ? {} : { description: options.description }),
-        ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
-        ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
+        ...(options.setupCommand.length === 0 ? {} : { setupCommands: options.setupCommand }),
+        ...(options.testCommand.length === 0 ? {} : { testCommands: options.testCommand }),
       });
       services.stdout.write(globals.json
         ? formatSuccess({ env: result.env, url: result.url, duplicate: result.created.duplicate, project: result.created.project.definition }, true)
@@ -1981,6 +2055,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
     });
+  // Plan 6, Task 19 (the Task 25 slice): a project's code settings. A maintainer changes them; self-approval turned on waits for an organization owner or admin to confirm it in a browser.
+  projectCommand
+    .command("code-settings")
+    .description("show or change how Rovara merges a project's pull requests: self-approval (on needs an organization owner or admin to confirm it in a browser), the merge method and the reviewers it asks")
+    .argument("<project>", "the project's name")
+    .option("--self-approval <on|off>", "let the person who asked for a pull request approve it (on waits for an organization owner or admin to confirm)")
+    .option("--merge-method <squash|merge>", "how a pull request is merged")
+    .option("--reviewers <names>", "GitHub names Rovara asks for a review, separated by commas (a person, or org/team), or none")
+    .action(async (project: string, options: { selfApproval?: string; mergeMethod?: string; reviewers?: string }, command: Command) => printResult(command, await projectCodeSettings(developerSession(), developerEnv(command), project, options)));
   // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
   projectCommand
     .command("check")
@@ -2023,7 +2106,6 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, removed: result.removed }, true) : projectRemoveMemberText(result));
     });
-  const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand
     .command("settings")
     .description("change a project's settings, on Rovara Cloud (a maintainer of the project); only the settings you give change")

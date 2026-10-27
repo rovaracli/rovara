@@ -15,7 +15,8 @@ import { taskResponseForClient, taskViewForClient } from "../../packages/broker/
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 
-import { MAYA, bearerFor, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, bearerFor, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { resumeAfterRunLimitApproval, startTaskWorkflowImplementationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -418,7 +419,7 @@ describe("a version 2 task through the broker", () => {
   beforeAll(async () => { await loadSlackBroker(); });
 
   async function v2Task() {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} } });
     const store = new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now });
     await store.ensureBuiltinSettings(TEST_ORG, "rovara-code");
     harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: now });
@@ -461,7 +462,7 @@ describe("a version 2 task through the broker", () => {
   });
 
   it("a version 1 task shows neither field, even with checks and a program-free round counter in its snapshot", async () => {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Add a greeting", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const id = (started.body.task as { taskId: string }).taskId;
     const record = harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
@@ -580,7 +581,7 @@ describe("the retained-source recovery prompt of a version 2 task (Review M2)", 
   beforeAll(async () => { await loadSlackBroker(); });
 
   it("tells the worker to finalize without editing, and never adds the test rule, which would contradict it", async () => {
-    const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } } });
+    const harness = await createSingleAnswerPlanBroker({ developerExtra: { workflowDependenciesEnabled: true }, brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Implement the ordered change", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const id = String((started.body.task as { taskId: string }).taskId);
     const record = () => harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> & { revision: number } };
@@ -630,7 +631,7 @@ describe("the chain step's task route (Review I2)", () => {
 
   it("projects the task for a client without the version 2 header: no report, no round, no Task 1 fields", async () => {
     const members = new FakeProjectMembers();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: { projectMembers: members } } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { agents: { projectMembers: members } } });
     members.setOrgRole(TEST_ORG, MAYA.developerId, "owner");
     members.grant(TEST_ORG, "payments", MAYA.developerId, "maintainer");
     harness.db.set({ ...orgProjectCatalogKey(TEST_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments" });

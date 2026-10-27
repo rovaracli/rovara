@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, vi, type MockInstance } from "vitest";
 import type { WorkflowOptionalCheck } from "@agentx/contracts";
 import { planAnswer, planDocument } from "./plan-documents.js";
 import { visibleSlackText } from "./strict-slack.js";
-import { JARGON, registerJourneyInvariants } from "./workflow-e2e-invariants.js";
+import { GITHUB_OWN_WORDS, JARGON, registerJourneyInvariants } from "./workflow-e2e-invariants.js";
 import type { WorkflowE2E } from "./workflow-e2e.js";
 
 /** A small structured coding plan with no decisions. */
@@ -62,7 +62,7 @@ export function everythingShown(e2e: WorkflowE2E): string[] {
 
 /** Nothing shown in Slack uses a word the owner should never see. */
 export function expectNoJargon(e2e: WorkflowE2E): void {
-  expect(everythingShown(e2e).filter((text) => JARGON.test(text))).toEqual([]);
+  expect(everythingShown(e2e).filter((text) => JARGON.test(text.replace(GITHUB_OWN_WORDS, "")))).toEqual([]);
 }
 
 /** The thread's posts, as the owner reads them (links shown as their labels). */

@@ -52,10 +52,13 @@ describe("the health route's grants (A13)", () => {
   // Issue 206: a DescribeAlarms call by name prefix is authorized against *, so the probe asks for
   // the environment's alarms by exact name (HEALTH_ALARM_SUFFIXES), authorized against each alarm's ARN.
   it("names every alarm a named app creates in the probe's list, and lists no alarm the app never creates (issue 206)", () => {
-    const stacks = buildAgentXApp({ agentxEnv: "live25d" }).node.children.filter((child): child is Stack => Stack.isStack(child));
-    const alarmNames = stacks.flatMap((stack) => Object.values(Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm") as Record<string, { Properties: { AlarmName?: unknown } }>))
+    const alarmNamesOf = (context: Record<string, unknown>) => buildAgentXApp({ agentxEnv: "live25d", ...context }).node.children.filter((child): child is Stack => Stack.isStack(child))
+      .flatMap((stack) => Object.values(Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm") as Record<string, { Properties: { AlarmName?: unknown } }>))
       .map((alarm) => alarm.Properties.AlarmName);
-    expect([...alarmNames].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`).sort());
+    const stacks = buildAgentXApp({ agentxEnv: "live25d" }).node.children.filter((child): child is Stack => Stack.isStack(child));
+    // The automatic renewal's alarms exist only where its CDK context is on (AR-2).
+    expect([...alarmNamesOf({})].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !suffix.startsWith("RuntimeRequalify")).map((suffix) => `agentx-live25d-${suffix}`).sort());
+    expect([...alarmNamesOf({ "agentx:autoRequalify": "enabled" })].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`).sort());
     expect(stacks.flatMap((stack) => Object.keys(Template.fromStack(stack).findResources("AWS::CloudWatch::CompositeAlarm")))).toEqual([]);
   }, 120_000);
 
@@ -200,6 +203,7 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/e2e/model-budget-endpoint.ts",
       // The baseline round's record (M1.3 Task 3.7b, owner decision D4): it expires 30 days after it was last written.
       "packages/broker/src/aws/workflow-e2e-baseline.ts",
+      "packages/broker/src/aws/workflow-e2e-grounding.ts",
       // The audit replay's record (M1.4 Task 4.6b) has the baseline record's expiry: 30 days after it was last written.
       "packages/broker/src/aws/workflow-e2e-replay.ts",
       // Rovara Code (Plan 6): the milestone records a task writes for the people following it (Task 5), the duration history of a project's runs (Task 7), the record of an applied
@@ -207,8 +211,16 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/milestones.ts", "packages/broker/src/rovara-code/duration.ts", "packages/broker/src/rovara-code/setup-draft.ts", "packages/broker/src/rovara-code/head-index.ts",
       // Rovara Code (Plan 6 Task 15): what CI said, kept for the coding run of the fix round that started with it (30 days, then the TTL deletes it); only ci-fix.ts writes and reads it.
       "packages/broker/src/rovara-code/ci-fix.ts",
+      // Rovara Code (Plan 6 Task 16): the replies a landed push of an automatic comment fix left to send (30 days, then the TTL deletes them); only feedback-autonomy.ts writes and sends them.
+      "packages/broker/src/rovara-code/feedback-autonomy.ts",
       // Rovara Code (Plan 6 Task 18): the record that a review reminder was sent (and when the next may be), kept for the waiting window (REVIEW_WAIT_RETENTION_DAYS), then the TTL deletes it; only nudges.ts writes and reads it.
       "packages/broker/src/rovara-code/nudges.ts",
+      // Rovara Code (Plan 6 Task 19): the change notice a confirmed code-settings change leaves for the people it concerns is an ordinary notice (it expires like the others); only code-settings.ts writes it.
+      "packages/broker/src/rovara-code/code-settings.ts",
+      // Rovara Code (Plan 6 Task 23): a Slack share's undo record and the owner's change notice of a widened share last seven days, then the TTL deletes them; only sharing.ts writes them.
+      "packages/broker/src/rovara-code/sharing.ts",
+      // The marker a project setup run leaves for the test machine renewal's drain (AUTOREQUALIFY AR-3) ends at the run's deadline and expires on it a day later.
+      "packages/broker/src/e2e/requalify-hold.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
@@ -222,7 +234,12 @@ describe("the health route's grants (A13)", () => {
       // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
       "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
+      // T7c: the held plan's marker (a small item the recovery sweep reads), always given a TTL; every finish deletes it, the TTL is only the backstop.
+      "        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(planHold.deadlineAt) / 1000) + 7 * 86_400 } } }]",
     ]);
+    const holdMarker = broker.slice(broker.indexOf("// The hold's own marker"), broker.indexOf("// The hold's own marker") + 700);
+    expect(holdMarker).toContain('entityType: "PLAN_GROUNDING_HOLD"');
+    expect(holdMarker).toContain(brokerUses.at(-1));
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.
     const refusal = broker.slice(broker.indexOf("async function recordSlackWorkflowRefusal("), broker.indexOf("async function answerSlackWorkflowEvent("));
     expect(refusal).toContain('entityType: "WORKFLOW_ACTION_REFUSAL"');

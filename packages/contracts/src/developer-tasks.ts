@@ -7,7 +7,7 @@ import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotRe
 import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
-import { MergeTrackingItemSchema, VerificationReportSchema } from "./rovara-code.js";
+import { MergeTrackingItemSchema, MergeViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
@@ -158,6 +158,11 @@ export const DeveloperTaskViewSchema = z.object({
    * as merge tracking last read it. The merge claim is the broker's own and is never part of the view.
    */
   mergeTracking: z.array(MergeTrackingItemSchema.omit({ mergeClaim: true })).max(32).optional(),
+  /**
+   * Plan 6, Task 19 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): whether the viewer pressing Merge now would be allowed to, from what merge
+   * tracking last read. Advisory: the press re-reads GitHub.
+   */
+  merge: MergeViewSchema.optional(),
 });
 
 /**

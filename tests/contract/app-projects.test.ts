@@ -11,7 +11,8 @@ import {
 import { orgMemberKey as orgMemberKeyOf } from "../../packages/contracts/src/org-node.js";
 import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { checkProjectAccess, effectiveProjectRole, requireNewWorkAllowed, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -121,7 +122,7 @@ describe("effectiveProjectRole", () => {
 
 describe("GET /v1/app/projects", () => {
   it("lists a project to an org owner who holds no grant on it, as a maintainer, in the shape the schema parses", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const answer = await h.dev(OMAR, "GET", "/v1/app/projects");
     expect(answer.status).toBe(200);
@@ -132,7 +133,7 @@ describe("GET /v1/app/projects", () => {
   });
 
   it("lists every project of the org's catalog to an admin, and none of another org's", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "admin");
     seedProject(h.db, TEST_ORG, "web");
     seedProject(h.db, OTHER_ORG, "elsewhere");
@@ -140,7 +141,7 @@ describe("GET /v1/app/projects", () => {
   });
 
   it("lists to a member only the projects they hold a grant or channel access on, as a contributor", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     seedProject(h.db, TEST_ORG, "web");
     seedProject(h.db, TEST_ORG, "ledger");
     grantProject(h.db, OMAR, "web");
@@ -150,7 +151,7 @@ describe("GET /v1/app/projects", () => {
   });
 
   it("hides an archived project unless asked for it", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     seedProject(h.db, TEST_ORG, "old", { status: "archived", description: "Retired" });
     expect((await listed(h, OMAR))!.map((project) => project.name)).toEqual(["payments"]);
@@ -161,7 +162,7 @@ describe("GET /v1/app/projects", () => {
   });
 
   it("derives the setup status from the project's META on every read", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const workspaceId = randomUUID();
     // A check that started just now: one that has been PREPARING for over 50 minutes reads as failed (Task 22).
@@ -183,7 +184,7 @@ describe("GET /v1/app/projects", () => {
 
 describe("GET /v1/app/projects/{name}", () => {
   it("shows the setup and test commands of the latest revision, the repositories and who created the project", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     seedProject(h.db, TEST_ORG, "web", { description: "The website", branch: "trunk", repository: "Acme/web" });
     const answer = await h.dev(OMAR, "GET", "/v1/app/projects/web");
@@ -197,7 +198,7 @@ describe("GET /v1/app/projects/{name}", () => {
   });
 
   it("reads a project that predates META as active, created by unknown", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     // The admin route that registered payments wrote its META; take it away, as for a project registered before Plan 2.
     expect(h.db.get(projectMetaKey(TEST_ORG, "payments"))).toMatchObject({ entityType: "PROJECT_META", status: "active" });
@@ -207,7 +208,7 @@ describe("GET /v1/app/projects/{name}", () => {
   });
 
   it("answers 404 PROJECT_NOT_FOUND to a member with no access, and the same to a missing or malformed name, never 403", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     seedProject(h.db, TEST_ORG, "web");
     const seen = new Set<string>();
     for (const name of ["web", "missing", "Not%20A%20Name!"]) {
@@ -222,7 +223,7 @@ describe("GET /v1/app/projects/{name}", () => {
   });
 
   it("shows a granted member the project as a contributor, and an archived project as archived", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     seedProject(h.db, TEST_ORG, "web", { status: "archived" });
     grantProject(h.db, OMAR, "web");
     expect((await h.dev(OMAR, "GET", "/v1/app/projects/web")).body).toMatchObject({ name: "web", status: "archived", myRole: "contributor" });
@@ -231,7 +232,7 @@ describe("GET /v1/app/projects/{name}", () => {
 
 describe("two orgs with a project of the same name", () => {
   async function twoOrgs() {
-    const h = await createDeveloperTaskBroker({
+    const h = await createSingleAnswerPlanBroker({
       register: false,
       orgResolver: async ({ developerId }) => (developerId === OMAR.developerId ? OTHER_ORG : TEST_ORG),
     });
@@ -285,7 +286,7 @@ describe("checkProjectAccess and the effective role", () => {
   const deps = (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => ({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer as never, now: Date.now });
 
   it("counts an org owner or admin as granted and returns a maintainer; a grant gives a contributor; a channel gives a contributor", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     expect(await checkProjectAccess(deps(h), caller(OMAR, "owner"), "payments")).toMatchObject({ access: "granted", role: "maintainer", revision: 1 });
     expect(await checkProjectAccess(deps(h), caller(OMAR, "admin"), "payments")).toMatchObject({ access: "granted", role: "maintainer" });
     await expect(checkProjectAccess(deps(h), caller(OMAR, "member"), "payments")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
@@ -295,13 +296,13 @@ describe("checkProjectAccess and the effective role", () => {
   });
 
   it("never refuses an archived project, because the E2E rechecks of running tasks call it", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z", archivedBy: "y" });
     expect(await checkProjectAccess(deps(h), caller(OMAR, "owner"), "payments")).toMatchObject({ role: "maintainer" });
   });
 
   it("does not bypass a project that does not exist, nor one in another org", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     seedProject(h.db, OTHER_ORG, "elsewhere");
     await expect(checkProjectAccess(deps(h), caller(OMAR, "owner"), "elsewhere")).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
     await expect(checkProjectAccess(deps(h), caller(OMAR, "owner"), "nothing")).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
@@ -312,7 +313,7 @@ describe("requireNewWorkAllowed", () => {
   const reader = (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => ({ documentClient: h.db, tableName: "state" });
 
   it("refuses an archived project for every kind of new work, from META", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     await expect(requireNewWorkAllowed(reader(h), TEST_ORG, "payments", "maintainer", "task")).resolves.toBeUndefined();
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: "x", createdBy: "y" });
     for (const kind of ["task", "setup_check"] as const) {
@@ -323,7 +324,7 @@ describe("requireNewWorkAllowed", () => {
   });
 
   it("refuses a viewer a task but not a setup check, with the viewer message", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     await expect(requireNewWorkAllowed(reader(h), TEST_ORG, "payments", "viewer", "task")).rejects.toMatchObject({
       code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining("You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.") as string,
     });
@@ -334,7 +335,7 @@ describe("requireNewWorkAllowed", () => {
 
 describe("starting a task", () => {
   it("accepts a start from an org owner who holds no grant (I4)", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     expect(h.db.get(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"))).toBeUndefined();
     const started = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
@@ -348,7 +349,7 @@ describe("starting a task", () => {
   });
 
   it("refuses a start in an archived project with PROJECT_ARCHIVED, records the refusal, and creates no workspace", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z", archivedBy: "y" });
     for (const who of [MAYA, OMAR]) {
       if (who === OMAR) setRole(h.db, OMAR, "owner");
@@ -364,7 +365,7 @@ describe("starting a task", () => {
   });
 
   it("starts a Slack-bound thread's new workspace only while the project is active, and keeps an existing thread's going", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     const first = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000100`;
     expect((await ensureWorkspace(h.handler, first, "U0MAYA001")).status).toBe(200);
     h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", createdAt: "x", createdBy: "y" });
@@ -390,7 +391,7 @@ describe("the project's META item at registration", () => {
   const actor = { orgId: TEST_ORG, ownerKey: MAYA.developerId };
 
   it("is written by the admin route for a project new to the org, and a later revision leaves it alone", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     expect(h.db.get(projectMetaKey(TEST_ORG, "payments"))).toMatchObject({
       entityType: "PROJECT_META", name: "payments", status: "active", createdBy: expect.stringMatching(/^[0-9a-f]{64}$/) as string, createdAt: expect.any(String) as string,
     });
@@ -400,14 +401,14 @@ describe("the project's META item at registration", () => {
   });
 
   it("leaves a project that predates META without one when a new revision is registered", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     h.db.delete(projectMetaKey(TEST_ORG, "payments"));
     await registerRevision(h.handler, 2, {});
     expect(h.db.get(projectMetaKey(TEST_ORG, "payments"))).toBeUndefined();
   });
 
   it("is written with revision 1, the catalog entry and the creator's grant in one transaction when the name must be new", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     const sent: Array<Record<string, unknown>> = [];
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => { sent.push(input); return true; }, error: { name: "InternalServerError" } });
     await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING },
@@ -429,7 +430,7 @@ describe("the project's META item at registration", () => {
   });
 
   it("refuses a name that is taken, an archived one, and one whose catalog entry predates META, writing no META", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     const register = (name: string) => registerProjectFor(h.brokerInput, actor, { definition: definition(name), runtimeBinding: BINDING }, { creatorMembership: "none", requireNewName: true });
     await register("web");
     await expect(register("web")).rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
@@ -449,21 +450,21 @@ describe("the project's META item at registration", () => {
 
   it("answers PROJECT_NAME_TAKEN when the META or the catalog condition fails between the read and the commit", async () => {
     for (const codes of [["None", "ConditionalCheckFailed", "None"], ["None", "None", "ConditionalCheckFailed"], ["ConditionalCheckFailed", "ConditionalCheckFailed", "ConditionalCheckFailed"]]) {
-      const h = await createDeveloperTaskBroker({ register: false });
+      const h = await createSingleAnswerPlanBroker({ register: false });
       h.db.injectFault({ command: "TransactWriteCommand", error: cancelled(...codes) });
       await expect(createWeb(h), codes.join()).rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
     }
   });
 
   it("finds the META item behind the creator's grant when there is one", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "ConditionalCheckFailed", "None") });
     await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "developer", requireNewName: true }))
       .rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
   });
 
   it("answers a retryable conflict, not PROJECT_NAME_TAKEN, when the transaction only met another in flight", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "TransactionConflict", "None") });
     const error = await createWeb(h).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
@@ -472,7 +473,7 @@ describe("the project's META item at registration", () => {
   });
 
   it("does not call a failed setup-row condition a taken name: it is the admission's own error", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "None", "ConditionalCheckFailed") });
     const error = await createWeb(h).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
@@ -480,7 +481,7 @@ describe("the project's META item at registration", () => {
   });
 
   it("keeps the same name in another org separate: it is not taken there", async () => {
-    const h = await createDeveloperTaskBroker({ register: false });
+    const h = await createSingleAnswerPlanBroker({ register: false });
     await registerProjectFor(h.brokerInput, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "none", requireNewName: true });
     await expect(registerProjectFor(h.brokerInput as never, { orgId: OTHER_ORG, ownerKey: OMAR.developerId }, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "none", requireNewName: true })).resolves.toMatchObject({ duplicate: false });
     expect(h.db.get(projectMetaKey(OTHER_ORG, "web"))).toMatchObject({ createdBy: OMAR.developerId });
@@ -498,13 +499,13 @@ describe("what authorizes work on a project's task paths (requireProjectAuthorit
   const outcome = (promise: Promise<unknown>) => promise.then((value) => value as { kind: string; role?: string }, (error: { code?: string; message?: string }) => ({ code: error.code, message: error.message }));
 
   it("returns a grant as it always has, whatever the org role", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     h.db.set({ ...projectMemberKey(TEST_ORG, OWNER_KEY, "payments"), entityType: "MEMBERSHIP", ownerKey: OWNER_KEY, projectName: "payments", role: "developer", grantId: randomUUID() });
     expect(await authority(h)).toMatchObject({ kind: "grant", membership: { role: "developer" } });
   });
 
   it("accepts a live org owner or admin with no grant, reading the role afresh each time, and refuses them once demoted", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     for (const role of ["owner", "admin"] as const) {
       setRole(h.db, { developerId: OWNER_KEY } as Developer, role);
       expect(await authority(h), role).toEqual({ kind: "org-role", role });
@@ -514,7 +515,7 @@ describe("what authorizes work on a project's task paths (requireProjectAuthorit
   });
 
   it("reads the task creator's record when the workspace runs a developer task, and not the workspace owner's", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     expect(await authority(h, { taskCreator: async () => OMAR.developerId })).toEqual({ kind: "org-role", role: "owner" });
     setRole(h.db, OMAR, "member");
@@ -527,31 +528,31 @@ describe("what authorizes work on a project's task paths (requireProjectAuthorit
     ["a cloud install, for anyone who is not a developer task's creator", { cloud: true }, { code: "NOT_FOUND", message: "NOT_FOUND: project not found" }],
   ] as const) {
     it(`answers NOT_FOUND "project not found" for no grant and no org member record, on ${label}`, async () => {
-      const h = await createDeveloperTaskBroker({ brokerExtra: extra });
+      const h = await createSingleAnswerPlanBroker({ brokerExtra: extra });
       expect(await outcome(authority(h))).toEqual(expected);
     });
   }
 
   it("says the task's creator is no longer a member only on a cloud install, when a developer task's creator has no member record", async () => {
-    const cloud = await createDeveloperTaskBroker({ brokerExtra: { cloud: true } });
+    const cloud = await createSingleAnswerPlanBroker({ brokerExtra: { cloud: true } });
     cloud.db.delete(orgMemberKeyOf(TEST_ORG, OMAR.developerId));
     expect(await outcome(authority(cloud, { taskCreator: async () => OMAR.developerId }))).toEqual({ code: "TASK_ACCESS_DENIED", message: "TASK_ACCESS_DENIED: you are no longer a member of this organization" });
     for (const brokerExtra of [{}, { environmentName: undefined }]) {
-      const other = await createDeveloperTaskBroker({ brokerExtra });
+      const other = await createSingleAnswerPlanBroker({ brokerExtra });
       other.db.delete(orgMemberKeyOf(TEST_ORG, OMAR.developerId));
       expect(await outcome(authority(other, { taskCreator: async () => OMAR.developerId }))).toEqual({ code: "NOT_FOUND", message: "NOT_FOUND: project not found" });
     }
   });
 
   it("does not take another org's owner role as authority here", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     seedMembership(h.db, OWNER_KEY, { orgId: OTHER_ORG, role: "owner" });
     expect(await outcome(authority(h))).toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("answers a Slack thread's workspace with no grant NOT_FOUND on every service path, as before", async () => {
     for (const brokerExtra of [{}, { environmentName: undefined }]) {
-      const h = await createDeveloperTaskBroker({ brokerExtra });
+      const h = await createSingleAnswerPlanBroker({ brokerExtra });
       const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000300`;
       const prepared = await ensureWorkspace(h.handler, thread, "U0MAYA001");
       expect(prepared.status).toBe(200);
@@ -612,7 +613,7 @@ describe("an org owner's task keeps going without a grant (I4)", () => {
   const withoutGrant = (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>, ownerKey: string) => h.db.delete(projectMemberKey(TEST_ORG, ownerKey, "payments"));
 
   it("dispatches the owner's task to REVIEW with no grant, and stops at the next dispatch once they are a plain member", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const first = await implementing(h, OMAR);
     withoutGrant(h, first.ownerKey);
@@ -627,7 +628,7 @@ describe("an org owner's task keeps going without a grant (I4)", () => {
   });
 
   it("accepts a continue, a pull request and a pull request action of the owner's idle task with no grant", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const started = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
     const taskId = String((started.body.task as { taskId: string }).taskId);
@@ -657,7 +658,7 @@ describe("an org owner's task keeps going without a grant (I4)", () => {
 
   it("says the creator is no longer a member, on a cloud install only, when their member record is gone", async () => {
     for (const [cloud, expected] of [[true, { code: "TASK_ACCESS_DENIED", message: "TASK_ACCESS_DENIED: you are no longer a member of this organization" }], [false, { code: "NOT_FOUND", message: "NOT_FOUND: project not found" }]] as const) {
-      const h = await createDeveloperTaskBroker({ ...(cloud ? { brokerExtra: { cloud: true } } : {}) });
+      const h = await createSingleAnswerPlanBroker({ ...(cloud ? { brokerExtra: { cloud: true } } : {}) });
       setRole(h.db, OMAR, "owner");
       const started = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
       expect(started.status, JSON.stringify(started.body)).toBe(200);
@@ -717,7 +718,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
   const readiness = (h: Harness, workspaceId: string) => operations(h, workspaceId).filter((item) => item.workflowE2EReadiness !== undefined);
 
   it("passes the creator-authority recheck for an org owner with no grant, on the live member record", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
     h.db.delete(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"));
@@ -727,7 +728,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
   });
 
   it("fails the round's authority check once the owner is demoted to member, and starts no warm-up", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
     h.db.delete(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"));
@@ -740,7 +741,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
   });
 
   it("records an org-role proof naming the live role, which a demotion removes and a later grant replaces with a direct-membership proof", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     const { requireWorkflowE2ECreatorAuthority } = await import("../../packages/broker/src/aws/broker.js") as unknown as {
       requireWorkflowE2ECreatorAuthority: (dependencies: unknown, task: unknown) => Promise<Record<string, unknown>>;
     };
@@ -767,7 +768,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
   });
 
   it("takes the creator-authority proof from the person who took the task over, never the creator's (Plan 5 Task 12a)", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     const { requireWorkflowE2ECreatorAuthority } = await import("../../packages/broker/src/aws/broker.js") as unknown as {
       requireWorkflowE2ECreatorAuthority: (dependencies: unknown, task: unknown) => Promise<Record<string, unknown>>;
     };
@@ -790,7 +791,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
   });
 
   it("keeps the round going when the project is archived while it is pending (I4)", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
     h.db.delete(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"));
@@ -803,7 +804,7 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
 
 describe("the org-role proof at commit", () => {
   it("holds only while the member record still names the role and time the proof saw", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     const { orgRoleAuthorityCheck } = await import("../../packages/broker/src/aws/broker.js") as unknown as {
       orgRoleAuthorityCheck: (table: string, proof: Record<string, unknown>) => Record<string, unknown>;
     };

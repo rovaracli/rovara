@@ -529,7 +529,7 @@ describe("P0 normal project onboarding journey", () => {
     const projectLifecycle = createProjectSetupDispatchLifecycle({ documentClient: broker.db as never, tableName: "state" });
     const projectSetupSessions = new ProjectSetupSessionManager({ documentClient: broker.db as never, tableName: "state" });
     const delivery = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => { throw new Error("setup delivery must not access WORKSPACE sessions"); } },
       binding: async () => { throw new Error("setup delivery must not read WORKSPACE runtime binding"); },
       projectSetupSessions,
@@ -1180,7 +1180,7 @@ describe("P0 normal project onboarding journey", () => {
       finally { admission.close(); }
     };
     const checksDelivery = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -1217,7 +1217,7 @@ describe("P0 normal project onboarding journey", () => {
       await broker.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
         UpdateExpression: "SET #status = :queued", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":queued": "QUEUED" } }));
     } });
-    const readinessDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+    const readinessDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async () => { throw new Error("internal E2E readiness must never POST to the worker"); },
       guardTaskDispatch: checksTaskGuard, validateWorkflowE2EReadiness: createWorkflowE2EReadinessValidator({ documentClient: broker.db as never, tableName: "state" }),
@@ -1510,7 +1510,7 @@ describe("P0 normal project onboarding journey", () => {
           workflowE2EEvidenceRoot: evidenceRootForWorker, workflowE2ERuntimeRoot: process.cwd() }),
       }, { onTerminal: async (result, invocation) => postWorkerTerminalResult(retryChecksCallbacks, result, invocation), retrySleep: async () => undefined },
       { publicKey: workerKeys.publicKey, workspaceId: featureWorkspaceId, generation: 1 });
-      const retryChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+      const retryChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
         binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
         post: async (_url, init) => { const response = await handleWorkerRequest(new Request("http://worker/invocations", { method: "POST",
           headers: { authorization: init.authorization, "content-type": "application/json" }, body: init.body }), retryChecksWorkerState);
@@ -1682,7 +1682,7 @@ describe("P0 normal project onboarding journey", () => {
     }, { onTerminal: async (result, invocation) => postWorkerTerminalResult(reviewCallbacks, result, invocation), retrySleep: async () => undefined },
     { publicKey: workerKeys.publicKey, workspaceId: featureWorkspaceId, generation: 1 });
     const reviewDelivery = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -1774,7 +1774,7 @@ describe("P0 normal project onboarding journey", () => {
       finally { admission.close(); }
     };
     const publishDelivery = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -2413,7 +2413,7 @@ describe("P0 normal project onboarding journey", () => {
       await postWorkerTerminalResult(terminalCallbacks, result, invocation);
     }, retrySleep: async () => undefined },
     { publicKey: workerKeys.publicKey, workspaceId: browserWorkspaceId, generation: 1 });
-    const browserChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+    const browserChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async (_url, init) => { const response = await handleWorkerRequest(new Request("http://worker/invocations", { method: "POST",
         headers: { authorization: init.authorization, "content-type": "application/json" }, body: init.body }), browserChecksWorker);
@@ -3004,7 +3004,7 @@ describe("P0 setup proposal broker authority", () => {
     const workspaceSession = vi.fn(async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }));
     const workspaceBinding = vi.fn(async () => ({ deploymentMode: "ec2-ebs" as const, launchTemplateId: "lt-0123456789abcdef0",
       subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3" as const }));
-    const deliver = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: workspaceSession }, binding: workspaceBinding,
+    const deliver = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, sessions: { ensureSession: workspaceSession }, binding: workspaceBinding,
       sign: async () => new Uint8Array(), post: async () => ({ status: 200, body: "{}" }), progress: async () => undefined,
       guardProjectSetupDispatch: async () => "ALLOWED" });
     await expect(deliver({ id: randomUUID(), entityType: "OUTBOX", status: "QUEUED", operationId, workspaceId,
@@ -3027,7 +3027,7 @@ describe("P0 setup proposal broker authority", () => {
       .mockResolvedValueOnce("PARKED");
     const post = vi.fn(async () => ({ status: 200, body: "{}" }));
     const delivery = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => { throw new Error("setup must not use workspace sessions"); } },
       binding: async () => { throw new Error("setup must not load workspace binding"); },
       projectSetupSessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },

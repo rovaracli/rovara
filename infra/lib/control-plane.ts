@@ -47,6 +47,7 @@ import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { AuditLedger } from "./audit-ledger.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
+import { REQUALIFY_CONTEXT_KEY, REQUALIFY_DEFAULT_HOUR_UTC, RuntimeRequalify } from "./runtime-requalify.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 
@@ -1198,6 +1199,9 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("workflowDependencies", signInParameters.workflowDependenciesEnabled.valueAsString);
       // Rovara Code v2, per environment: a packed setting, not a variable (ENV-ROOM). Off unless the operator sets the parameter.
       brokerSettings.add("rovaraCodeV2", signInParameters.rovaraCodeV2Enabled.valueAsString);
+      // Mainline #408: the plan self-check and automatic fixing switches, packed settings (never Lambda variables of their own). On unless the operator sets the parameter to false.
+      brokerSettings.add("planSelfCheck", signInParameters.planSelfCheckEnabled.valueAsString);
+      brokerSettings.add("autofix", signInParameters.autofixEnabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1449,6 +1453,23 @@ export class ControlPlaneStack extends Stack {
             { Sid: "ReadBedrockQuota", Effect: "Allow", Action: "servicequotas:GetServiceQuota", Resource: `arn:${Aws.PARTITION}:servicequotas:${Aws.REGION}:${Aws.ACCOUNT_ID}:bedrock/*` },
           ],
         },
+      });
+    }
+    // AUTOREQUALIFY (AR-2): the machine that renews the browser and API test machine by itself. CDK context agentx:autoRequalify=enabled, off by default
+    // (only the exact string "enabled" turns it on); named environments only. Its resources all carry the logical-ID prefix RuntimeRequalify, so the
+    // requalify-infra deploy unit adds them to a live stack with an Add-only change set. The foundation's values are the stack parameters SessionLifecycle declared.
+    if (naming.env !== undefined && this.node.tryGetContext(REQUALIFY_CONTEXT_KEY) === "enabled") {
+      const foundationValue = (name: string): string => (this.node.findChild(name) as CfnParameter).valueAsString;
+      const hour = Number(this.node.tryGetContext("agentx:autoRequalifyHourUtc") ?? REQUALIFY_DEFAULT_HOUR_UTC);
+      new RuntimeRequalify(this, "RuntimeRequalify", {
+        naming, state, artifacts, invokeSigningKey, operatorTopic: operatorAlerts, notifyOperator,
+        catalogIds: { setup: projectSetupRuntimeCatalogId, feature: e2eFeatureRuntimeCatalogId }, controlPlaneUrl: api.attrApiEndpoint,
+        foundation: {
+          privateSubnetIds: foundationValue("PrivateSubnetIds"), launchTemplateId: foundationValue("Ec2WorkerLaunchTemplateId"), workerRoleArn: foundationValue("Ec2WorkerInstanceRoleArn"),
+          workspaceKmsKeyArn: foundationValue("WorkspaceKmsKeyArn"), logGroupName: naming.ec2.workerLogGroupName,
+        },
+        ...(Number.isInteger(hour) && hour >= 0 && hour <= 23 ? { checkHourUtc: hour } : {}),
+        scheduleEnabled: this.node.tryGetContext("agentx:autoRequalifySchedule") === "enabled",
       });
     }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);

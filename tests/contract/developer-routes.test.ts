@@ -118,6 +118,8 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     expect(gets).toEqual([
       { TableName: "signin", Key: { pk: "SESSION#s-1", sk: "META" } },
       { TableName: "signin", Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } },
+      // Release 0.4.18: the name the person chose is an item in the state table, read beside their sign-in record.
+      { TableName: "state", Key: { pk: `DEVELOPER_NAME#${developerId}`, sk: "NAME" } },
       // The membership the token's org is checked against lives in the state table, beside the org.
       { TableName: "state", Key: { pk: `DEVELOPER_ORG#${developerId}`, sk: "ORG" } },
     ]);

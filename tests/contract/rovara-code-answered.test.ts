@@ -18,7 +18,7 @@ import {
   ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage,
   type CodeMilestone, type IntentAssessment,
 } from "../../packages/contracts/src/rovara-code.js";
-import { UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
+import { DeveloperTaskResponseSchema, SessionResponseReaderSchema, UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/contracts/src/task-workflow-node.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
@@ -762,6 +762,29 @@ describe("a build that changes nothing after approval still blocks", () => {
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
     expect(t.meta(run.taskId).workflow.outcome).not.toBe("ANSWERED");
   });
+
+  it("is a stop for a person, not a FAILED task with the worker's config wording: the task view and the session agree (staging 0.4.10, bug B)", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    await t.decide(MAYA, run.taskId, { decision: "APPROVE", reason: "Approved", artifactDigest: run.digest });
+    const build = t.operationOf(run.workspaceId, "IMPLEMENT")!;
+    await t.finish(run.workspaceId, String(build.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_NO_CODE_CHANGE_MESSAGE}` });
+    const task = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { status: string; failure?: { message: string }; workflow: { state: string; blockReason?: string } };
+    expect(task.workflow).toMatchObject({ state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
+    expect(task.status).not.toBe("FAILED");
+    expect(JSON.stringify(task)).not.toContain("CONFIG_INVALID");
+    await t.refreshSummary(run.sessionId);
+    expect(t.sessionRecord(run.sessionId).summary.status).toBe("needs_person");
+  });
+
+  it("any other failed build is still a FAILED task (positive control)", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    await t.decide(MAYA, run.taskId, { decision: "APPROVE", reason: "Approved", artifactDigest: run.digest });
+    await t.finish(run.workspaceId, String(t.operationOf(run.workspaceId, "IMPLEMENT")!.id), "FAILED", { error: "RUNTIME_UNAVAILABLE: the model call failed: provider-outage attempt 4; retry the step" });
+    const task = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { status: string };
+    expect(task.status).toBe("FAILED");
+  });
 });
 
 describe("retryOf is checked, not trusted", () => {
@@ -827,3 +850,26 @@ describe("retryOf is checked, not trusted", () => {
 });
 
 // A chain step that ends Answered pauses for a person (owner ruling): see rovara-code-answered-chain.test.ts.
+
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the answers after an Answered task, as the broker sends them", () => {
+  it("POST …/change-anyway answers 202 { task }, which the clients' task schema reads; the Answered task's session reads too", async () => {
+    const t = await world();
+    const run = await t.answeredTask(answerAssessment(), { path: "FULL" });
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(typeof reply.body.requestId, "every /v1/app answer carries the gateway's requestId").toBe("string");
+    const task = DeveloperTaskResponseSchema.safeParse(reply.body);
+    expect(task.success, JSON.stringify(task.error?.issues)).toBe(true);
+    for (const headers of [{ "x-agentx-task-view": "2" }, {}]) {
+      const session = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, headers);
+      expect(session.status).toBe(200);
+      const read = SessionResponseReaderSchema.safeParse(session.body);
+      expect(read.success, JSON.stringify(read.error?.issues)).toBe(true);
+      const answered = await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`, undefined, headers);
+      const parsed = DeveloperTaskResponseSchema.safeParse(answered.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+  });
+});

@@ -52,6 +52,7 @@ import { anchorKey, anchorTargetsFor, anchoredOn, presentMessages, withoutExcerp
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { announceDeviceCommand, deviceCommandItems } from "../devices/local-sessions.js";
 import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 export interface SessionMessageDependencies extends SessionAccessDependencies, Pick<SteerDependencies, "chainSteer">, Pick<AnchorDependencies, "taskView"> {
@@ -182,7 +183,10 @@ function messageOf(item: Item | undefined, session: { orgId: OrgId; sessionId: s
   const expires = item[INDEX_EXPIRY_ATTRIBUTE];
   if (typeof expires === "number" && expires <= nowSeconds) return undefined; // the table hasn't deleted it yet
   const parsed = SessionMessageSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([key]) => !HOUSEKEEPING.has(key))));
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+  // Release 0.4.16: an author stored under their email reads under the placeholder.
+  const name = safeDisplayName(parsed.data.author.name, parsed.data.author.developerId);
+  return name === parsed.data.author.name ? parsed.data : { ...parsed.data, author: { ...parsed.data.author, name } };
 }
 
 // ---- the rate of writing

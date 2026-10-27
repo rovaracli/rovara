@@ -7,6 +7,7 @@ import { PlanTab } from "./PlanTab.js";
 import { TestsTab } from "./TestsTab.js";
 import { ChangesTab } from "./ChangesTab.js";
 import { PullRequestTab } from "./PullRequestTab.js";
+import { MergeSection } from "./MergeSection.js";
 import { workspaceTask, type ReadTask, type CommentOnPart } from "./workspace-types.js";
 interface WorkspaceView { session: ReadSession; task: ReadTask | undefined }
 export const SESSION_TABS = [
@@ -21,5 +22,6 @@ export const Workspace = memo(function Workspace({ session, onComment, section }
  const prefix = section === undefined ? "" : "step-" + section + "-";
  const tabs = SESSION_TABS.filter(tab => tab.available(view)), requested = location.hash.startsWith("#" + prefix) ? location.hash.slice(1 + prefix.length) : "", selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
  const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "tests" ? <TestsTab task={task} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
- return <Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} />;
+ const merge = section === undefined && task?.merge !== undefined ? <MergeSection session={session} task={{ ...task, merge: task.merge }} /> : null;
+ return <>{merge}<Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} /></>;
 });

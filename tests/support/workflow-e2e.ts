@@ -79,7 +79,7 @@ import { inspectWorkspaceForClose } from "../../packages/worker/src/close-worksp
 import { projectCheckKey } from "../../packages/worker/src/verification/check-history.js";
 import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
-import { DEV_ISSUER, MAYA, bindChannel, createDeveloperTaskBroker, recordStream, type Developer } from "./developer-task-broker.js";
+import { DEV_ISSUER, MAYA, bindChannel, createSingleAnswerPlanBroker, recordStream, type Developer } from "./developer-task-broker.js";
 import { signedInClient, type ToolAnswer } from "./mcp-broker-client.js";
 import { FAUX_MODEL, fauxModelRuntime } from "./faux-model.js";
 import { workflowModel, type WorkflowTurn } from "./faux-scripts.js";
@@ -346,7 +346,7 @@ export async function createWorkflowE2E(options: {
     developers?: readonly Developer[];
   };
   /** Plan 6 Task 14: the GitHub reads and writes merge tracking uses (a pull request's status, a person's permission, marking ready, asking for reviewers); absent, the broker has none. */
-  trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
+  trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
   const taskPeopleConfiguration = options.taskPeople?.changesEnabled === undefined
@@ -374,7 +374,7 @@ export async function createWorkflowE2E(options: {
   // The plan evidence jobs the broker started: the background Lambda is run by the test, with `runPlanEvidenceJobs`.
   const planEvidenceJobs: PlanEvidenceEvent[] = [];
   const workflowDependenciesConfiguration = workflowDependenciesConfigurationFromEnvironment(options.workflowDependenciesEnvironment ?? {});
-  const harness = await createDeveloperTaskBroker({
+  const harness = await createSingleAnswerPlanBroker({
     register: false,
     ...(options.memberLimit === undefined ? {} : { memberLimit: options.memberLimit }),
     ...(options.channelMembers === undefined ? {} : { channelMembers: options.channelMembers }),
@@ -623,7 +623,7 @@ export async function createWorkflowE2E(options: {
       retrySleep: async () => undefined,
     }, { publicKey: workerKeys.publicKey, workspaceId: invocation.workspaceId, generation: 1 });
     const deliver = createEc2Delivery({
-      applicationPlanNotNegotiated: async () => undefined,
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => ({ deploymentMode: "ec2-ebs" }) as never,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -676,6 +676,49 @@ export async function createWorkflowE2E(options: {
     return { repository: "demo", number: pullRequest.number, url: pullRequest.url, headBranch: payload.headBranch, baseBranch: "main", commit, checks: [], reconciled: false };
   };
 
+  /** The commits the base branch has moved to since the task started (`journey.advanceBase`): the task's base may become any of them (Plan 6 Task 17). */
+  const knownBases = new Set<string>();
+  let latestBase: string | undefined;
+
+  /**
+   * The worker's merge of the base branch into a workflow task's pull request branch (Plan 6 Task 17), simulated with real Git in the workspace as the worker does it: the workspace goes to the head the
+   * broker named, exactly the base commit it named is merged with `--no-ff`, a conflict is returned as the conflicting files with the merge's files left in the workspace (the index back at the head's, as the worker does) and nothing pushed, and a clean
+   * merge is pushed as a fast-forward of the head with a push-scoped token.
+   */
+  const mergeBase = async (
+    invocation: Extract<WorkerInvocation, { kind: "maintain" }>, callbacks: ReturnType<typeof createWorkerCallbackSinks>, repository: { name: string },
+  ): Promise<unknown> => {
+    const { payload } = invocation;
+    const sync = payload.workflowSync;
+    if (sync === undefined) throw new Error("the E2E worker merges the base branch only for a workflow task");
+    const credential = await createRepositoryCredentialProvider({ controlPlaneUrl: CONTROL_PLANE_URL, invocation, fetchImplementation: workerFetch(handler) })(repository as never);
+    const remoteHead = github.pushes.get(payload.headBranch)?.commit;
+    if (remoteHead !== payload.expectedHeadCommit) throw new Error("STALE_FENCE: pull request head changed outside AgentX");
+    await git(["checkout", "--force", "-B", payload.headBranch, remoteHead]);
+    try {
+      await git(["merge", "--no-ff", "--no-edit", sync.baseCommit]);
+    } catch (error) {
+      const unmerged = (await git(["diff", "--name-only", "--diff-filter=U"])).split("\n").filter((line) => line !== "");
+      if (unmerged.length === 0) throw error;
+      // The merge's files stay, committed locally as the merge with its markers (the worker's, never pushed), so the history holds the base commit the round's candidate is on.
+      await git(["add", "--all"]);
+      await git(["commit", "--no-edit", "--quiet"]);
+      const updated = await callbacks.pullRequestUpdateSink({ repository: payload.repository, pullRequestNumber: payload.pullRequestNumber, action: "sync",
+        headBranch: payload.headBranch, baseBranch: payload.baseBranch, previousCommit: remoteHead, commit: remoteHead });
+      return { action: "sync", repository: payload.repository, number: payload.pullRequestNumber, url: updated.url, state: updated.state, headBranch: payload.headBranch,
+        baseBranch: payload.baseBranch, previousCommit: remoteHead, commit: remoteHead, conflicts: unmerged, checks: [], reconciled: true };
+    }
+    const commit = await git(["rev-parse", "HEAD"]);
+    const tree = await git(["rev-parse", "HEAD^{tree}"]);
+    github.push(credential.token, payload.headBranch, commit, tree, [remoteHead, sync.baseCommit]);
+    github.baseMerges.add(commit);
+    await git(["update-ref", `refs/remotes/origin/${payload.headBranch}`, commit]);
+    const updated = await callbacks.pullRequestUpdateSink({ repository: payload.repository, pullRequestNumber: payload.pullRequestNumber, action: "sync",
+      headBranch: payload.headBranch, baseBranch: payload.baseBranch, previousCommit: remoteHead, commit });
+    return { action: "sync", repository: payload.repository, number: payload.pullRequestNumber, url: updated.url, state: updated.state, headBranch: payload.headBranch,
+      baseBranch: payload.baseBranch, previousCommit: remoteHead, commit, treeSha: tree, checks: [], reconciled: updated.reconciled };
+  };
+
   /**
    * The worker's push of a reviewed fix to an existing pull request, simulated as the worker does it: the workspace must
    * still hold the reviewed tree, GitHub's branch head must be the one the broker expects (and the workspace must descend
@@ -685,21 +728,28 @@ export async function createWorkflowE2E(options: {
     const { payload } = invocation;
     const repository = payload.project.repositories.find((entry) => entry.name === payload.repository);
     if (repository === undefined) throw new Error(`the project has no repository ${payload.repository}`);
+    if (payload.action === "sync") return mergeBase(invocation, callbacks, repository);
     if (payload.action !== "append" || payload.workflowCandidateTreeSha === undefined) throw new Error("the E2E worker pushes only a reviewed fix");
-    if (payload.workflowBaseCommit !== baseCommit) throw new Error(`the fix names base ${String(payload.workflowBaseCommit)}, not the task's base ${baseCommit}`);
+    // The task's base is the one it started from, or one a merge of the base branch moved it to (Plan 6 Task 17).
+    if (payload.workflowBaseCommit !== baseCommit && !(payload.workflowBaseCommit !== undefined && knownBases.has(payload.workflowBaseCommit))) {
+      throw new Error(`the fix names base ${String(payload.workflowBaseCommit)}, not the task's base ${baseCommit}`);
+    }
     const tree = await workspaceTree(invocation.operationId);
     if (tree !== payload.workflowCandidateTreeSha) throw new Error(`the workspace tree ${tree} is not the reviewed tree ${payload.workflowCandidateTreeSha}`);
     const credential = await createRepositoryCredentialProvider({ controlPlaneUrl: CONTROL_PLANE_URL, invocation, fetchImplementation: workerFetch(handler) })(repository);
     const remoteHead = github.pushes.get(payload.headBranch)?.commit;
     if (remoteHead !== payload.expectedHeadCommit) throw new Error(`STALE_FENCE: pull request head changed outside AgentX`);
     await git(["merge-base", "--is-ancestor", remoteHead, "HEAD"]);
-    await git(["merge-base", "--is-ancestor", baseCommit, "HEAD"]);
-    const commit = await git(["commit-tree", tree, "-p", remoteHead, "-m", "AgentX: address PR feedback"]);
+    await git(["merge-base", "--is-ancestor", payload.workflowBaseCommit, "HEAD"]);
+    // A conflict round's fix is a merge commit of the base commit its merge was tried with (Plan 6 Task 17): the head first, that commit second.
+    const mergedBase = payload.workflowMergeBase;
+    const commit = await git(["commit-tree", tree, "-p", remoteHead, ...(mergedBase === undefined ? [] : ["-p", mergedBase]), "-m", mergedBase === undefined ? "AgentX: address PR feedback" : "Rovara: resolve conflict with the base branch"]);
     await git(["checkout", "--force", "-B", payload.headBranch, commit]);
     recordPush(invocation.workspaceId, commit);
     // What the fix changed, as GitHub works out which inline comments it outdates.
     const changedPaths = (await git(["diff", "--name-only", remoteHead, commit])).split("\n").filter((line) => line !== "");
-    github.push(credential.token, payload.headBranch, commit, tree, [remoteHead], changedPaths);
+    github.push(credential.token, payload.headBranch, commit, tree, mergedBase === undefined ? [remoteHead] : [remoteHead, mergedBase], changedPaths);
+    if (mergedBase !== undefined) github.baseMerges.add(commit);
     await git(["update-ref", `refs/remotes/origin/${payload.headBranch}`, commit]);
     const updated = await callbacks.pullRequestUpdateSink({ repository: payload.repository, pullRequestNumber: payload.pullRequestNumber, action: "append",
       headBranch: payload.headBranch, baseBranch: payload.baseBranch, previousCommit: remoteHead, commit });
@@ -829,6 +879,7 @@ export async function createWorkflowE2E(options: {
     const ownerRetry = owner !== undefined && db.find((item) => item.operationId === invocation.operationId && item.action === "continue" && item.outcome === "accepted"
       && (item.developer as { slackUserId?: unknown } | undefined)?.slackUserId === owner).length > 0;
     ledger.push({ operationId: invocation.operationId, kind: invocation.kind, ...(invocation.kind === "task" && invocation.payload.workflowMode !== undefined ? { mode: invocation.payload.workflowMode } : {}),
+      ...(invocation.kind === "maintain" && invocation.payload.workflowSync !== undefined ? { sync: true } : {}),
       decided: structuredClone({ decisions: owning?.decisions ?? [], feedbackDecisions: owning?.feedbackDecisions ?? [], artifacts: owning?.artifacts ?? [],
         // The fix rounds Rovara began on its own so far (Plan 6 Tasks 15 to 17): one `fixing` milestone is written in the commit that begins each, and none is ever taken back.
         automaticFixRounds: db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === "fixing" && item.taskId === owningTask?.taskId).length }),
@@ -950,7 +1001,7 @@ export async function createWorkflowE2E(options: {
       },
       log: () => undefined,
       deliverEc2: createEc2Delivery({
-        applicationPlanNotNegotiated: async () => undefined,
+        applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
         sessions: { ensureSession: async () => ({ ready: true, generation: 1, privateIp: "10.0.0.9" }) },
         binding: async () => ({ deploymentMode: "ec2-ebs" }) as never,
         sign: async () => new Uint8Array(64),
@@ -1605,6 +1656,33 @@ export async function createWorkflowE2E(options: {
     },
 
     repoFile: (path: string): Promise<string> => readFile(join(repoDirectory, path), "utf8"),
+
+    /**
+     * The base branch moves on (Plan 6 Task 17): one more commit on top of the base's latest, with `path` holding `content` (a new file, or a file the pull request also changes), made without touching
+     * the workspace or the pull request's branch. GitHub's base branch is at it from now on, and the task's base may become it. Answers the commit.
+     */
+    async advanceBase(path: string, content: string): Promise<string> {
+      const parent = latestBase ?? baseCommit;
+      const index = join(root, `.agentx-e2e-base-${randomUUID()}`);
+      const file = join(root, `.agentx-e2e-base-file-${randomUUID()}`);
+      try {
+        await writeFile(file, content);
+        await git(["read-tree", parent], { GIT_INDEX_FILE: index });
+        const blob = await git(["hash-object", "-w", file]);
+        await git(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { GIT_INDEX_FILE: index });
+        const tree = await git(["write-tree"], { GIT_INDEX_FILE: index });
+        const commit = await git(["commit-tree", tree, "-p", parent, "-m", `upstream ${path}`]);
+        await git(["update-ref", "refs/remotes/origin/main", commit]);
+        github.commits.set(commit, tree);
+        github.baseHeads.set("main", commit);
+        knownBases.add(commit);
+        latestBase = commit;
+        return commit;
+      } finally {
+        await rm(index, { force: true });
+        await rm(file, { force: true });
+      }
+    },
 
     /** Sends the broker a Slack ingress event directly, as the AWS wiring's invoke does, and answers its status and parsed reply. */
     async brokerEvent(action: string, input: Record<string, unknown>): Promise<{ statusCode: number; body: Record<string, unknown> }> {

@@ -7,7 +7,7 @@ import type * as NodeCrypto from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -29,7 +29,7 @@ beforeAll(async () => { await loadSlackBroker(); });
 // with no history), instead of the $25 per-task cap; approving a coding plan sets the run limit its estimate gave ($6 Quick with no history) and starts the
 // window at what planning spent. Change 4: a coding plan that reaches review carries that estimate (`task.runEstimate`), and the plan-ready message says it.
 const NO_HISTORY_ESTIMATE = { basis: "default", highUsd: 3, lowUsd: 1, runLimitUsd: 6, samples: 0, stopAtUsd: 6 };
-const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
+const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\n• d1: How many times should a payment be retried? Answer: Three times\n• Not checked by AgentX's plan check.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
 /** The limit each scenario's task has when the scenario is recorded; `baseline` and `estimate` are fields the task gains by then, `readyText` the post that gains the estimate line. */
 const RUN_LIMITS: Partial<Record<GoldenScenario, { budgetUsd: number; baseline?: true; estimate?: true; readyText?: true }>> = {
   "plan-quick": { budgetUsd: 2 },
@@ -111,11 +111,34 @@ function capabilityChanges(scenario: GoldenScenario, record: unknown): Array<{ p
   });
 }
 
+/**
+ * Change 7 (mainline #408 sync, plan quality): a coding plan's planning run is asked for the plan quality members, so (a) its operation record says `planQualityAsked`, (b) its prompt gains the
+ * "Plan quality guidance" block, wherever the prompt is recorded, and (c) the plan-ready card lists the answers Approve takes and what AgentX's plan check says of the plan ("Not checked" when it
+ * did not run). Each is checked by value: without its block or its lines the record must equal the fixture's, and the changed path is then listed with its exact new value.
+ */
+const GUIDANCE_BLOCK = /Plan quality guidance:\n[\s\S]*?End of plan quality guidance\.\n\n/u;
+const CARD_ADDED_LINES = /^\u2022 (?:d1: How many times should a payment be retried\? Answer: Three times|Not checked by AgentX's plan check\.)\n/gmu;
+function planQualityChanges(scenario: GoldenScenario, record: unknown, skipCard: readonly string[]): Array<{ path: string; expected: unknown; change: 7 }> {
+  const stored = JSON.parse(readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, `${scenario}.json`), "utf8")) as unknown;
+  const asked = nodePaths(record, (node) => node.planQualityAsked === true).map((path) => ({ path: path === "" ? "planQualityAsked" : `${path}.planQualityAsked`, expected: true, change: 7 as const }));
+  const prompts = stringPaths(record, (text) => text.includes("Plan quality guidance:\n")).map((path) => {
+    const now = valueAt(record, path) as string;
+    expect(now.replace(GUIDANCE_BLOCK, ""), `${scenario} ${path}: only the plan quality guidance block was added`).toBe(valueAt(stored, path));
+    return { path, expected: now, change: 7 as const };
+  });
+  const cards = stringPaths(record, (text) => text.includes("\u2022 d1: How many times should a payment be retried?")).filter((path) => !skipCard.includes(path)).map((path) => {
+    const now = valueAt(record, path) as string;
+    expect(`${now}\n`.replace(CARD_ADDED_LINES, "").replace(/\n$/u, ""), `${scenario} ${path}: only the answer and plan check lines were added`).toBe(valueAt(stored, path));
+    return { path, expected: now, change: 7 as const };
+  });
+  return [...asked, ...prompts, ...cards];
+}
+
 describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
     it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
       const record = await recordGolden(scenario);
-      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record)]);
+      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
     }, 120_000);
   }
 
@@ -254,6 +277,7 @@ describe("Rovara Code with agents switched on", () => {
       expectGolden(scenario, recorded, [
         ...runLimitChanges(scenario, recorded),
         ...capabilityChanges(scenario, recorded),
+        ...planQualityChanges(scenario, recorded, runLimitChanges(scenario, recorded).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path)),
         { path: `taskItems[${String(meta)}].sessionId`, expected: sessionId, change: 5 },
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
@@ -271,4 +295,70 @@ describe("Rovara Code with agents switched on", () => {
       for (const sent of [record.invocation, record.forWorker] as Array<{ payload?: Record<string, unknown> } | null>) expect(sent?.payload ?? {}).not.toHaveProperty("modelRoute");
     }, 120_000);
   }
+});
+
+// Plan quality (2026-10-27), change 7: three graded rehearsals scored the plan and the implementation for the same gaps, so Rovara Code version 2's plan and build steps now carry general guidance
+// (strict input rules, tests for a new option alone, combined and at the boundaries, and every CI check in the plan). That changes version 2's recipe, and so its digest, in exactly the two paths
+// listed here, by value. Version 1 is not touched: its digest, its fixtures and SHA256SUMS above are byte-identical, and the golden fixtures record version 1.
+const V2_DIGEST_BEFORE = "1b47c1f54341f67bf8c6d8292b42079ef756dc0c52f1c2710d7b1f2ffb9e3aea";
+const V2_DIGEST_AFTER = "c9381c97a2967f260ab3d16e48b2c3fddddc394fb15562fb61d62d74bf693812";
+const V1_DIGEST = "1f3d988f8f6c4ae406aca2a61c7afbc378a08f14d3ce47e8037228d9195c989b";
+const PLAN_QUALITY_CHANGES: Array<{ path: string; expected: unknown; change: 7 }> = [
+  {
+    path: "steps[0].settings.instructions", change: 7,
+    expected: [{
+      agentName: "Rovara Code",
+      text: [
+        "Plan the input rules, the tests and the checks as well as the code.",
+        "- Input: say exactly which values are accepted and which are rejected (empty, padded with spaces, signed, decimal, exponent, hex, below the minimum, above the maximum), and parse strictly. A loose conversion such as Number() or parseInt() accepts values the rule does not.",
+        "- Tests: for each new option, plan a test alone, one combined with each existing option it can meet (such as filters), and one at each boundary: the minimum, the maximum, one past each, and a value above the number of available items.",
+        "- Checks: list every check the repository's CI requires. Read its workflow files, and do not stop at lint.",
+      ].join("\n"),
+    }],
+  },
+  {
+    path: "steps[2].settings.instructions", change: 7,
+    expected: [{
+      agentName: "Rovara Code",
+      text: [
+        "Validate input strictly: accept only the documented form and reject everything else with a clear error before doing any work.",
+        "Do not rely on a loose conversion such as Number() or parseInt(), which accepts padding, exponents, hex and decimals.",
+        "Write tests for each new option alone, combined with the existing options, and at its boundaries (the minimum, the maximum, one past each, and above the number of available items).",
+        "Run the plan's checks and the repository's own test command before you finish.",
+      ].join("\n"),
+    }],
+  },
+];
+
+describe("Rovara Code version 2's recipe after the plan-quality change", () => {
+  const v2 = builtinRecipe("rovara-code", 2);
+
+  it("is the recipe it was before, apart from change 7's two paths, each listed by value", () => {
+    const before = structuredClone(v2) as unknown as Record<string, unknown>;
+    for (const { path, expected } of PLAN_QUALITY_CHANGES) {
+      expect(valueAt(v2, path), path).toEqual(expected);
+      const parts = path.split(/\.|(?=\[)/u).filter(Boolean);
+      const holder = parts.slice(0, -1).reduce<unknown>((node, part) => {
+        const index = /^\[(\d+)\]$/u.exec(part);
+        return (node as Record<string, unknown>)[index === null ? part : index[1]!];
+      }, before) as Record<string, unknown>;
+      holder[parts.at(-1)!] = [];
+    }
+    expect(recipeDigest(before as never), "version 2 before").toBe(V2_DIGEST_BEFORE);
+    expect(recipeDigest(v2), "version 2 now").toBe(V2_DIGEST_AFTER);
+    expect(BUILTIN_AGENTS["rovara-code"].versions[1]!.digest).toBe(V2_DIGEST_AFTER);
+  });
+
+  it("leaves version 1 untouched: its digest, and no instructions in any step", () => {
+    const v1 = builtinRecipe("rovara-code", 1);
+    expect(recipeDigest(v1)).toBe(V1_DIGEST);
+    expect(BUILTIN_AGENTS["rovara-code"].versions[0]!.digest).toBe(V1_DIGEST);
+    expect(JSON.stringify(v1)).not.toContain("Number()");
+    for (const step of v1.steps) expect((step.settings as { instructions: unknown[] }).instructions, step.id).toEqual([]);
+  });
+
+  it("is what the digest fixture records, for version 2 only", () => {
+    const recorded = JSON.parse(readFileSync(new URL("../fixtures/builtin-agent-digests.json", import.meta.url), "utf8")) as Record<string, Record<string, string>>;
+    expect(recorded["rovara-code"]).toEqual({ "1": V1_DIGEST, "2": V2_DIGEST_AFTER });
+  });
 });

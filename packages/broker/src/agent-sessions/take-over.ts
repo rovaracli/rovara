@@ -48,7 +48,7 @@ import { UNNAMED_MEMBER, effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey
 import { followerIds } from "../realtime/sink.js";
 import { writeChanges } from "../realtime/changes.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
-import { requireSessionLevel, type SessionAccess } from "./access.js";
+import { requireLevelOf, requireSessionLevel, sessionAccessFor, type SessionAccess } from "./access.js";
 import { confirmationReply, type SessionShareDependencies, type ShareCaller } from "./shares.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
@@ -104,7 +104,22 @@ function parseBody(body: unknown): z.infer<typeof BodySchema> {
  * asked for, when it is decided and when it is applied.
  */
 export async function requireTakeOver(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, sessionId: string): Promise<SessionAccess> {
-  const access = await requireSessionLevel(deps, caller, sessionId, "edit", "take it over");
+  return takeOverRules(deps, caller, await requireSessionLevel(deps, caller, sessionId, "edit", "take it over"));
+}
+
+/**
+ * `requireTakeOver` for a task that has no session yet: the rules run over the session it would get (`lazyTaskSessionRecord`), so a caller who could not take it over
+ * does not cause the session to be made. Writes nothing.
+ */
+export async function requireTakeOverOfNewSession(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord): Promise<void> {
+  const role = OrgRoleSchema.safeParse((await getItem(deps, orgMemberKey(caller.orgId, caller.developerId)))?.["role"]);
+  if (!role.success) throw agentXError("NOT_FOUND", "session not found");
+  const { access } = await sessionAccessFor(deps, caller, role.data, session);
+  if (access === undefined) throw agentXError("NOT_FOUND", "session not found");
+  await takeOverRules(deps, caller, requireLevelOf(access, "edit", "take it over"));
+}
+
+async function takeOverRules(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, access: SessionAccess): Promise<SessionAccess> {
   const { session } = access;
   if (session.where.kind !== "cloud") throw agentXError("SESSION_ON_MAC", sessionOnMacMessage(access.effectiveOwner.name));
   if (session.endedAt !== undefined) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
@@ -179,7 +194,7 @@ async function nameOf(deps: SessionTakeOverDependencies, developerId: string): P
  * for them (Plan 3's refusal, and nothing is written). It makes a pending change for the caller alone to decide and answers `202` with the ticketed link; nothing changes before it
  * is confirmed. The same `requestId` answers the same approval.
  */
-export async function askTakeOver(deps: SessionTakeOverDependencies, caller: ShareCaller, sessionId: string, body: unknown, approvals?: ApprovalDependencies): Promise<{ status: 202; body: NeedsConfirmation }> {
+export async function askTakeOver(deps: SessionTakeOverDependencies, caller: ShareCaller, sessionId: string, body: unknown, approvals?: ApprovalDependencies): Promise<{ status: 202; body: NeedsConfirmation; expiresAt: string }> {
   const input = parseBody(body);
   const access = await requireTakeOver(deps, caller, sessionId);
   if (approvals === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
@@ -196,7 +211,7 @@ export async function askTakeOver(deps: SessionTakeOverDependencies, caller: Sha
   });
   // A replay of a request that was decided since is not waiting any more.
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
-  return confirmationReply(approvals, caller, record);
+  return { ...await confirmationReply(approvals, caller, record), expiresAt: record.expiresAt };
 }
 
 // ---- the page's facts

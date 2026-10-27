@@ -14,7 +14,7 @@ FR-035 and US3 scenario 4 fix what it must convey (the task is driven from the d
 a new message in the channel starts a new thread workspace) and that it is sent at most once an
 hour per thread, but not the words.
 
-- **A (recommended).** "This thread follows a task that a developer is driving from their AI tool,
+- **A (recommended).** "You have view-only access to this task from this thread: it follows a task that a developer is driving from their AI tool,
   so I don't act on messages here. To ask AgentX for something, post a new message in the channel;
   it starts its own thread workspace." A closed task's thread gets the same second sentence after
   "The task this thread followed is closed, so I don't act on messages here."

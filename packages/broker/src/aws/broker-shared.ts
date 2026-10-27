@@ -54,6 +54,9 @@ export const UNEXPECTED_REQUEST_MESSAGE = "AgentX could not handle this request;
 export const SHARED_WORKSPACE_REREAD = "Other people also change this workspace between your turns. Read a file again before you change it.";
 
 /** Refuses an ordinary write-capable turn on a gated task (gap 10a); user-facing, so it avoids internal terms. */
+/** What more instructions to a Rovara Code task that waits for answers to its questions are told: only the answers resume it. */
+export const waitingForAnswersTurnRefusal = (sessionId: string | undefined): string =>
+  `This task is waiting for your answers to Rovara's questions, so it can't take more instructions yet. Answer them in the app, ${sessionId === undefined ? "with agentx session answer" : `with agentx session answer ${sessionId}`}, or with agentx_answer_task_questions.`;
 export const GATED_TASK_TURN_REFUSAL = "This task is waiting on its own approval steps. Use its approval buttons or the task's decision tool instead of sending more instructions.";
 /** Refuses a pull request anyone asks for on a gated task (ruling A): AgentX opens its draft itself. User-facing. */
 export const GATED_TASK_PULL_REQUEST_REFUSAL = "AgentX opens the draft pull request for this task itself once checks and reviews pass";
@@ -139,6 +142,37 @@ export function withoutApplicationPlanText(prompt: string): string {
 /** Whether a planning prompt asks for a version 2 application intent. */
 export const asksForApplicationPlan = (prompt: string): boolean => prompt.includes(APPLICATION_PLAN_OPEN);
 
+const PLAN_QUALITY_OPEN = "Plan quality guidance:";
+const PLAN_QUALITY_CLOSE = "End of plan quality guidance.";
+/**
+ * Asked only of a worker that lists the plan-quality feature (it also parses the members named here), for every coding plan, Quick and Full alike:
+ * AgentX runs the same checks on a Quick plan as on a Full one and sends the plan back to the planner once when they find a problem.
+ */
+const PLAN_QUALITY_GUIDANCE = [
+  PLAN_QUALITY_OPEN,
+  "AgentX checks every coding plan before the owner sees it, and sends it back once if a check finds a problem. A quick plan is held to the same standard as a full one. Before you answer, go through this list.",
+  "- Mocks: when the pinned E2E context lists a mock fixture usable on a target (`requestedTargetIds`), give `mockFixtureRefs` one entry for every requested target whose scenarios run the app, and never list that component in `requiredRealComponentIds` on a target where you mock it.",
+  "- Every claim is proved: each level 1 claim and each Not changing item needs a check that runs the app or its code, not only one that reads files (`grep`, `cat`, `test`). Name what each E2E scenario proves in a top-level `scenarioProves` member of the plan (outside `e2e`): `{ \"<scenarioId>\": [\"<claim ID or ncN>\"] }`.",
+  "- Expected values (a CSV row, a label, a status text, a count) come from the current code, which you read, not from memory.",
+  "- A claim that says something is hidden needs a scenario that asserts it is not visible, as the account that must not see it.",
+  "- An AI navigation step (`agent`) takes no more actions than the request allows, and never more than 8.",
+  "- Give every proposed check an `expectOnBase`: \"pass\" when it already holds today, \"fail\" when it tests new behaviour. AgentX tries the commands on the unchanged code and compares; without it the owner is told the plan gave no expectation.",
+  "- To test that a file holds, or lacks, some text, write the check as `{ label, kind: \"file-contains\" | \"file-not-contains\", cwd, path, text, proves }` (with an `expectOnBase`) instead of a `grep` command. Commands that print counts (`grep -c`), use `grep -L` or `-v`, or match quote marks give the wrong answer.",
+  PLAN_QUALITY_CLOSE,
+].join("\n");
+
+/** A planning prompt as a worker that does not list the plan-quality feature gets it: with no mention of the new plan members. */
+export function withoutPlanQualityText(prompt: string): string {
+  const start = prompt.indexOf(PLAN_QUALITY_OPEN);
+  const end = start < 0 ? -1 : prompt.indexOf(PLAN_QUALITY_CLOSE, start);
+  if (start < 0 || end < 0) return prompt;
+  const rest = prompt.slice(end + PLAN_QUALITY_CLOSE.length).replace(/^\n\n/u, "");
+  return `${prompt.slice(0, start).replace(/\n\n$/u, "")}${rest === "" ? "" : `\n\n${rest}`}`;
+}
+
+/** Whether a planning prompt asks for the plan-quality members. */
+export const asksForPlanQuality = (prompt: string): boolean => prompt.includes(PLAN_QUALITY_OPEN);
+
 const CHECKS_MEMBER = "checks?: { checks: { label: string; cwd: string; executable: string; args: string[]; timeoutSeconds?: number; proves: string[] }[]; none_reason: string | null }; // the checks to run, described below; proves lists the claim IDs each check proves";
 
 const KIND_NAMES: Record<PlanDocumentKind, string> = { requirements: "requirements", design: "design", plan: "coding plan" };
@@ -223,6 +257,8 @@ export function planDocumentInstructions(input: {
   noChangeOption?: boolean;
   /** Rovara Code version 2 (Plan 6 Task 7): ask a coding plan to name what changes, which files and how it is tested. Version 1 plans are asked as before. */
   requiredParts?: boolean;
+  /** Add the plan quality guidance to a coding plan's instructions (the delivery drops it for a worker that cannot read the members it names). */
+  planQuality?: boolean;
 }): string {
   const checks = input.kind === "plan";
   const featureE2E = input.kind === "plan" && input.e2ePlanningContext !== undefined;
@@ -255,6 +291,7 @@ export function planDocumentInstructions(input: {
     ...(retiredIds.length === 0 ? [] : [`These claim IDs were removed earlier and must not be used again: ${retiredIds.join(", ")}.`]),
     ...(checks ? ["`checks` goes in the coding plan only. Each check lists in `proves` the IDs of the claims it proves. Checks may prove Not changing items: use `nc1`, `nc2` and so on, counting the `notChanging` entries from 1."] : []),
     ...(checks && input.requiredParts === true ? [PLAN_PARTS_SENTENCE] : []),
+    ...(checks && input.planQuality === true ? [PLAN_QUALITY_GUIDANCE] : []),
     ...(e2eContext === undefined ? [] : [
       "E2EFeaturePlanIntent has exactly these members: { schemaVersion: 1, requestedTargetIds: string[], portableOperationRefs?: { operationId, applicationId, requestedTargetIds, packageExportSubpath, moduleSpecifier, callableSelector: { kind: \"default\" } | { kind: \"named\", exportName } }[], mockFixtureRefs?: { componentId, requestedTargetId, operationId, sourcePath, sourceSha256 }[], accountContextRefs: { applicationId, profileId, sourcePath, sourceSha256 }[], scenarios: { scenarioId, requirementId, requestedTargetIds, required, accountProfileId, minimumEvidence: \"source\" | \"mock-contract\" | \"runtime\" | \"external-live\", requiredRealComponentIds: string[], steps: E2EStep[], assertions: E2EAssertion[] }[], semanticExportDeltas: { applicationId, operationId, requestedTargetIds, expectedExportNames: string[], reason }[] }. Each scenario needs at least one assertion; `invoke-contract` steps must use a listed operation and a target listed on that operation.",
       e2eContext.status === "available"
@@ -340,14 +377,20 @@ export interface WorkflowDispatchRecord {
   workflowRevision: number;
   /**
    * CRITIQUE (Plan 6, Task 8): a Rovara Code version 2 plan is ready for its plan check; CRITIC_REPLAN: the plan check found a blocking problem and the planner revises the plan once.
+   * REPLAN (mainline #408, plan self-check): the planner is asked again once, unseen, with the plan's findings (a row at the RUNNING plan revision that carries `planPrompt`); it is NOT
+   * the critic's revision (CRITIC_REPLAN). GROUNDING (#408): the proposed plan's must-not-change checks run on the unchanged app before the owner is asked.
+   * AUTOFIX (#408): the workflow blocked in VERIFY or REVIEW before any pull request, and the automatic-fix policy looks at it once (never blocks or gives up anything itself).
+   * SYNC (Plan 6, Task 17): Rovara merges the base branch into a pull request's branch (a row at the READY revision of the wait for the merge).
    * UNDERSTAND (Plan 6, Task 4): Rovara Code version 2 reads the request and the code (a row at a READY revision starts it, a row at the RUNNING revision is its watchdog and
    * is due only after the step's time limit); PLAN: the plan step starts after Understand. UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "agent_run" | "operation_end";
-  /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "SYNC" | "REPLAN" | "AUTOFIX" | "GROUNDING" | "agent_run" | "operation_end";
+  /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. For REPLAN, the digest of `planPrompt`: there is no candidate yet. */
   candidateDigest: string;
+  /** REPLAN: what the planner is told on the automatic second run of a plan (the findings, or what was unreadable). */
+  planPrompt?: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
   readinessOperationId?: string;
   createdAt: string;
@@ -360,6 +403,10 @@ export interface WorkflowDispatchRecord {
   dispatchDueSk: string;
   /** TTL backstop (epoch seconds), in case a row is somehow never resolved. */
   indexExpiresAt: number;
+  /** AUTOFIX only (DISPATCHEXHAUST): how the block this row is for came about when no finished run wrote it. Rows from before carry none. */
+  autofixCause?: string;
+  /** AUTOFIX only (DISPATCHEXHAUST): the look must not happen before this time, the delay of the one automatic retry of an infrastructure fault. */
+  autofixNotBefore?: string;
 }
 
 /** Internal purpose binding for the one pre-admission compute warmup of a required feature E2E dispatch. */
@@ -410,17 +457,27 @@ export function operationEndDispatchItem(tableName: string, input: { taskId: str
   const base = agentRunDispatchItem(tableName, { taskId: input.taskId, orgId: input.orgId, revision: 0, dueAt, now: input.now }) as { Put: { Item: Record<string, unknown> } };
   return { Put: { TableName: tableName, Item: { ...base.Put.Item, ...key, kind: "operation_end", dispatchDueSk: `${dueAt}#${key.sk}`, workspaceId: input.workspaceId, operationId: input.operationId, ...(input.endOf === undefined ? {} : { endOf: input.endOf }) } } };
 }
+/**
+ * Plan 6 Task 17: the row that brings the broker back to a merge of the base branch whose machine was lost (it reached no result): at the merge's RUNNING revision, naming the operation, so the
+ * sweep can judge what the merge was from what GitHub shows. The task stays RUNNING until it does.
+ */
+export function branchSyncSettleItem(tableName: string, input: { taskId: string; workflowRevision: number; workspaceId: string; operationId: string; candidateDigest: string; now: string }): { Put: { TableName: string; Item: Record<string, unknown> } } {
+  const base = workflowDispatchItem(tableName, input.taskId, input.workflowRevision, "SYNC", input.candidateDigest, input.now) as { Put: { TableName: string; Item: Record<string, unknown> } };
+  return { Put: { ...base.Put, Item: { ...base.Put.Item, workspaceId: input.workspaceId, operationId: input.operationId } } };
+}
 /** The candidate digest of a dispatch row due before the task has a candidate. */
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);
 const WORKFLOW_DISPATCH_RETENTION_SECONDS = 7 * 86_400;
 
 export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string,
   /** When the sweep may run the row first: by default at once; a watchdog row is due later (`UNDERSTAND`, at the step's time limit). */
-  dueAt: string = now): TransactItems[number] {
+  dueAt: string = now,
+  /** REPLAN only: what the planner is told on the automatic second run (stored on the row; the other kinds carry none). */
+  planPrompt?: string): TransactItems[number] {
   const sk = `${taskId}#${workflowRevision}`;
   const item: WorkflowDispatchRecord = {
     pk: WORKFLOW_DISPATCH_PK, sk, entityType: "WORKFLOW_DISPATCH",
-    taskId, workflowRevision, kind, candidateDigest, createdAt: now,
+    taskId, workflowRevision, kind, candidateDigest, ...(planPrompt === undefined ? {} : { planPrompt }), createdAt: now,
     attempts: 0, nextAttemptAt: dueAt, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${dueAt}#${sk}`,
     [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
   };

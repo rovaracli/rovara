@@ -497,7 +497,7 @@ describe("sessions of reviews", () => {
     };
     const target: FileOpsTarget = { container: "task-sandbox", user: "1000:1000", node: NODE, helper: HELPER, root: rootPath };
     const reports = await runWorkflowReviews({
-      operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+      ruleFileBaseCommits: [], operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
       piAdapter: adapter, fileTools: target,
     });
     expect(reports.map(({ role, status }) => ({ role, status }))).toEqual([{ role: "CRITIC", status: "PASS" }, { role: "SECURITY", status: "PASS" }]);

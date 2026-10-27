@@ -2,6 +2,7 @@
 // session's revision and the request's own item (R18). A share with the whole company is a pending change that waits on Plan 3's confirmation page
 // (R66: a browser signed in within ten minutes, else an email code; a token never confirms) and answers `202 NEEDS_CONFIRMATION` with the ticketed link.
 // Removing a share narrows at once. The route layer (Task 5) maps these to `PUT`, `DELETE` and `GET /v1/app/sessions/{id}/shares`.
+import { undoCodeShare } from "../rovara-code/sharing.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -37,6 +38,7 @@ import {
   type OrgId,
   type OrgRole,
   type SessionLevel,
+  atLeast,
 } from "@agentx/contracts";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { grantRoleOf } from "../developer/project-roles.js";
@@ -60,12 +62,19 @@ import { removeFollower } from "./followers.js";
 import { sessionEventItem } from "./store.js";
 
 export interface SessionShareDependencies extends SessionAccessDependencies {
+  /** Existing AI-tool turn table; access changes fail closed when it is absent. */
+  turnRecordsTableName?: string;
   /** Where the names in events and the people a share names are read from. */
   signInStore: Pick<DeveloperSignInStore, "getDeveloper">;
 }
 
 /** Who shares: `DeveloperCaller` fits. `orgRole` is only passed on to Plan 3's link minting, which reads it live itself. */
-export interface ShareCaller extends SessionCaller { name: string; orgRole?: OrgRole }
+export interface ShareCaller extends SessionCaller {
+  name: string;
+  orgRole?: OrgRole;
+  /** Set only by the web boundary, for a request that carried a live browser session cookie and its CSRF token (never by a token): Merge merges at once for it, and for nothing else. */
+  browserSession?: true;
+}
 
 export type SessionShareReply =
   | { status: 200; body: { share: SessionShareRow } }
@@ -116,6 +125,15 @@ async function nameOf(deps: SessionShareDependencies, developerId: string): Prom
   }
 }
 
+/** Code tasks use the session sharing rules even through their legacy surfaces. */
+async function codeSession(deps: SessionShareDependencies, session: AgentSessionRecord): Promise<boolean> {
+  if (session.subject.kind !== "task") return false;
+  const task = await getItem(deps, { pk: `DEVTASK#${session.subject.taskId}`, sk: "META" });
+  // A task that is missing or belongs to another org is no Code task of this one: the session keeps Plan 5's own sharing rules (a take-over recorded on a foreign task is ignored the same way).
+  if (task === undefined || task["orgId"] !== session.orgId) return false;
+  return (task["workflow"] as { definitionId?: string } | undefined)?.definitionId === "agentx-task-to-pr";
+}
+
 // ---- a share's checks
 
 /** The person is a current member of the org (their member record), with the role it names. */
@@ -144,6 +162,7 @@ export async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgI
 // ---- writing one share
 
 interface ApplyInput {
+  narrowingOrg?: true;
   orgId: OrgId;
   session: AgentSessionRecord;
   sharer: { developerId: string; name: string };
@@ -188,12 +207,17 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
 
   const shares = await readSessionShares(deps, orgId, session.sessionId);
   const existing = shares.find((share) => sameKey(share.principal, principal));
+  if (input.narrowingOrg && (principal.kind !== "org" || existing === undefined || existing.level === level || !atLeast(existing.level, level))) {
+    throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
+  }
   if (existing !== undefined && existing.level === level) {
     await send(deps, [requestItem({ share: existing })], undefined, input);
     return existing;
   }
   if (existing === undefined && shares.length >= SESSION_SHARES_MAX) throw agentXError("CONFIG_INVALID", TOO_MANY);
 
+  const code = await codeSession(deps, session);
+  const widening = existing === undefined || !atLeast(existing.level, level);
   const key = principalKey(principal);
   const stamped = (item: Item): Item => (expiry === undefined ? item : { ...item, [INDEX_EXPIRY_ATTRIBUTE]: expiry });
   const put = (item: Item, condition?: string): TransactItem => ({ Put: { TableName: deps.tableName, Item: item, ...(condition === undefined ? {} : { ConditionExpression: condition }) } });
@@ -214,9 +238,15 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
       text: `${cleanSessionName(input.sharer.name) ?? "Someone"} shared this session with ${who} (${LEVEL_WORDS[level]})`,
     }),
   ];
+  if (input.narrowingOrg && existing !== undefined) {
+    const grant = items[1]!.Put!;
+    grant.ConditionExpression = "attribute_exists(pk) AND #priorLevel = :priorLevel AND sharedAt = :priorAt";
+    grant.ExpressionAttributeNames = { "#priorLevel": "level" };
+    grant.ExpressionAttributeValues = { ":priorLevel": existing.level, ":priorAt": existing.sharedAt };
+  }
   // The owner who is told is the effective one, who may be the person that took the session over (m-2).
   const ownerId = await effectiveOwnerOf(deps, session);
-  if (input.sharer.developerId !== ownerId) {
+  if (input.sharer.developerId !== ownerId && (!code || widening)) {
     // Ids, a kind and a revision only: a notice never carries a name or a title. `undo` is `DELETE …/shares/<principalKey>`.
     items.push(put({
       ...changesKey(orgId, ownerId, at, noticeNumber(`${session.sessionId}|${input.requestId}`)), entityType: "CHANGE_NOTICE", orgId, type: "session_shared",
@@ -251,7 +281,7 @@ async function send(deps: SessionShareDependencies, items: TransactItem[], revis
         return "repeat";
       }
     }
-    if (revisionIndex !== undefined && failed.has(revisionIndex)) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
+    if ((input.narrowingOrg && failed.has(1)) || (revisionIndex !== undefined && failed.has(revisionIndex))) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
     throw error;
   }
 }
@@ -293,7 +323,10 @@ export async function putSessionShare(deps: SessionShareDependencies, caller: Sh
   const { session } = access;
   const fingerprint = sha256({ op: "share", sessionId: session.sessionId, principal: input.principal, level: input.level });
 
-  if (input.principal.kind === "org") {
+  const orgShare = input.principal.kind === "org"
+    ? (await readSessionShares(deps, caller.orgId, session.sessionId)).find((share) => share.principal.kind === "org") : undefined;
+  const narrowingCodeOrg = orgShare !== undefined && atLeast(orgShare.level, input.level) && orgShare.level !== input.level && await codeSession(deps, session);
+  if (input.principal.kind === "org" && !narrowingCodeOrg) {
     if (approvals === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Sharing with everyone isn't available right now.");
     const existing = (await readSessionShares(deps, caller.orgId, session.sessionId)).find((share) => share.principal.kind === "org");
     if (existing?.level === input.level) return { status: 200, body: { share: existing } };
@@ -314,7 +347,7 @@ export async function putSessionShare(deps: SessionShareDependencies, caller: Sh
     return { status: 200, body: earlier.result as { share: SessionShareRow } };
   }
   await checkPrincipal(deps, caller.orgId, session, input.principal, input.level);
-  const share = await applyShare(deps, { orgId: caller.orgId, session, sharer: { developerId: caller.developerId, name: caller.name }, principal: input.principal, level: input.level, requestId: input.requestId, fingerprint });
+  const share = await applyShare(deps, { orgId: caller.orgId, session, sharer: { developerId: caller.developerId, name: caller.name }, principal: input.principal, level: input.level, requestId: input.requestId, fingerprint, ...(narrowingCodeOrg ? { narrowingOrg: true as const } : {}) });
   return { status: 200, body: { share } };
 }
 
@@ -333,6 +366,7 @@ export async function listSessionShares(deps: SessionShareDependencies, caller: 
  * is derived state, and the notice path re-checks levels too.
  */
 export async function deleteSessionShare(deps: SessionShareDependencies, caller: SessionCaller & { name?: string }, sessionId: string, key: string): Promise<{ removed: boolean }> {
+  if (key.startsWith("SLACK#")) return undoCodeShare(deps, caller, sessionId, key);
   if (!PRINCIPAL_KEY.test(key)) throw agentXError("CONFIG_INVALID", "principal: is not a person, a project or the company");
   const access = await resolveSessionAccess(deps, caller, sessionId);
   const { session } = access;

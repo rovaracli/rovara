@@ -245,6 +245,8 @@ export function trackingRecoveryItem(tableName: string, taskId: string, now: str
 export async function wakeTrackingRow(
   dependencies: Pick<MergeRecoveryDependencies, "documentClient" | "tableName" | "now">,
   taskId: string,
+  /** How long the wake waits so a burst of deliveries is one pass: `TRACKING_COALESCE_SECONDS`, or a review's shorter `TRACKING_REVIEW_COALESCE_SECONDS`. */
+  options: { coalesceSeconds?: number } = {},
 ): Promise<"woken" | "none"> {
   if (!validTaskId(taskId)) return "none";
   const now = dependencies.now();
@@ -259,7 +261,7 @@ export async function wakeTrackingRow(
     if (isConditional(error)) return "none";
     throw error;
   }
-  const at = now + TRACKING_COALESCE_MS;
+  const at = now + (options.coalesceSeconds === undefined ? TRACKING_COALESCE_MS : options.coalesceSeconds * 1_000);
   try {
     await dependencies.documentClient.send(new UpdateCommand({
       TableName: dependencies.tableName, Key: key, UpdateExpression: "SET nextAttemptAt = :at, dispatchDueSk = :due", ConditionExpression: `${live} AND nextAttemptAt > :at`,
@@ -300,7 +302,11 @@ export async function seedWorkflowMergeRecovery(
   return { seeded, skipped };
 }
 
-async function claimGlobalSweep(dependencies: MergeRecoveryDependencies, now: number, token: string, lane: Lane = MERGE_LANE): Promise<boolean> {
+/**
+ * Takes the lane's gate item. `bypassInterval` (the pass for review-woken rows) takes the lease without waiting for `nextSweepAt` and leaves `nextSweepAt` as it was, so the heartbeat passes keep
+ * their rhythm and their GitHub cost; the lease still keeps the two passes from running at once.
+ */
+async function claimGlobalSweep(dependencies: MergeRecoveryDependencies, now: number, token: string, lane: Lane = MERGE_LANE, bypassInterval = false): Promise<boolean> {
   // GitHub's rate limit is shared: either pass that met it wrote `rateLimitedUntil` on the merge pass's gate item, and neither starts until it has passed.
   if (lane.kind === "tracking") {
     try {
@@ -314,8 +320,8 @@ async function claimGlobalSweep(dependencies: MergeRecoveryDependencies, now: nu
     await dependencies.documentClient.send(new UpdateCommand({
       TableName: dependencies.tableName,
       Key: { pk: SWEEP_PK, sk: lane.gateSk },
-      UpdateExpression: "SET entityType = :entity, leaseToken = :token, leaseExpiresAt = :lease, nextSweepAt = :next, createdAt = if_not_exists(createdAt, :nowIso), updatedAt = :nowIso",
-      ConditionExpression: `(attribute_not_exists(leaseExpiresAt) OR leaseExpiresAt <= :now) AND (attribute_not_exists(nextSweepAt) OR nextSweepAt <= :now)${lane.kind === "merge" ? " AND (attribute_not_exists(rateLimitedUntil) OR rateLimitedUntil <= :now)" : ""}`,
+      UpdateExpression: `SET entityType = :entity, leaseToken = :token, leaseExpiresAt = :lease, nextSweepAt = ${bypassInterval ? "if_not_exists(nextSweepAt, :next)" : ":next"}, createdAt = if_not_exists(createdAt, :nowIso), updatedAt = :nowIso`,
+      ConditionExpression: `(attribute_not_exists(leaseExpiresAt) OR leaseExpiresAt <= :now)${bypassInterval ? "" : " AND (attribute_not_exists(nextSweepAt) OR nextSweepAt <= :now)"}${lane.kind === "merge" ? " AND (attribute_not_exists(rateLimitedUntil) OR rateLimitedUntil <= :now)" : ""}`,
       ExpressionAttributeValues: {
         ":entity": SWEEP_PK,
         ":token": token,
@@ -622,21 +628,34 @@ export async function runDueWorkflowMergeRecovery(
  */
 export async function runDueWorkflowMergeTracking(
   dependencies: MergeRecoveryDependencies,
-  options: { budgetMs?: number } = {},
+  /**
+   * `wokenOnly` (approval-to-ready latency): the pass for rows a webhook woke (they carry `wakeAt`) and that are due. It does not wait for the heartbeat gate and does not move it, reads only the
+   * woken rows (each once: a burst of deliveries is one row, one pass), and leaves every other due row to the gated pass. Run it on every schedule tick after the gated pass.
+   */
+  options: { budgetMs?: number; wokenOnly?: true } = {},
 ): Promise<{ attempted: number; reconciled: number; deferred: number }> {
-  return runSweep(dependencies, TRACKING_LANE, Math.min(options.budgetMs ?? GITHUB_BUDGET_MS, GITHUB_BUDGET_MS));
+  return runSweep(dependencies, TRACKING_LANE, Math.min(options.budgetMs ?? GITHUB_BUDGET_MS, GITHUB_BUDGET_MS), options.wokenOnly === true);
 }
 
 async function runSweep(
   dependencies: MergeRecoveryDependencies,
   lane: Lane,
   budgetMs: number,
+  wokenOnly = false,
 ): Promise<{ attempted: number; reconciled: number; deferred: number }> {
   const startedAt = dependencies.now();
   const globalToken = randomUUID();
   const result = { attempted: 0, reconciled: 0, deferred: 0 };
   if (budgetMs <= GITHUB_START_RESERVE_MS) return result;
-  if (!await claimGlobalSweep(dependencies, startedAt, globalToken, lane)) return result;
+  // The woken pass takes the gate only when some row is due, so a quiet tick writes nothing.
+  if (wokenOnly) {
+    try {
+      if ((await queryDueRows(dependencies, startedAt, lane)).length === 0) return result;
+    } catch {
+      return result;
+    }
+  }
+  if (!await claimGlobalSweep(dependencies, startedAt, globalToken, lane, wokenOnly)) return result;
 
   const { budget, controller, timer } = makeBudget(dependencies, startedAt, budgetMs);
   let keepGlobalLease = false;
@@ -675,6 +694,8 @@ async function runSweep(
       }
       // A row read in the other lane was converted between the query and the read: the other pass has it.
       if ((row.kind === "tracking") !== (lane.kind === "tracking")) continue;
+      // The woken pass leaves a row nobody woke to the gated heartbeat pass.
+      if (wokenOnly && row.wakeAt === undefined) continue;
       if (row.nextAttemptAt > dependencies.now() || (row.leaseExpiresAt !== undefined && row.leaseExpiresAt > dependencies.now())) continue;
 
       let task: TaskRecord | undefined;

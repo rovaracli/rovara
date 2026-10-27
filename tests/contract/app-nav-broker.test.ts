@@ -62,7 +62,8 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  expect(counts.GetCommand ?? 0).toBeLessThanOrEqual(100);
  expect(counts.QueryCommand ?? 0).toBeLessThanOrEqual(3 * projects.length + 14);
  expect(counts.BatchGetCommand ?? 0).toBeLessThanOrEqual(20);
- expect(counts).toEqual({ BatchGetCommand: 14, GetCommand: 92, QueryCommand: 133 });
+ // Release 0.4.18: two more Gets, the chosen name beside the sign-in check and beside the caller's own record (92 before), and one more BatchGet, the owners' chosen names for the live tiles (14 before).
+ expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 133 });
  expect(names).not.toContain("ScanCommand");
 });
 
