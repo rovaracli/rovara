@@ -1989,16 +1989,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           reconcile: (taskId, budget) => reconcileWorkflowMergeRecoveryTask(dependencies, taskId, budget),
         });
         // The tracking pass (Rovara Code) runs after the merge pass with the time that is left, in its own partition, behind its own gate: neither starves the other.
-        const tracking = await runDueWorkflowMergeTracking({
-          documentClient: dependencies.documentClient,
-          tableName: dependencies.tableName,
-          now: Date.now,
-          reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
-        }, { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
+        const tracking = await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
           console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { attempted: 0, reconciled: 0, deferred: 0 };
         });
-        return json({ ...result, tracking }, "workflow-merge-recovery");
+        // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
+        const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
+        return json({ ...result, tracking, woken }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -2024,7 +2021,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
           });
-        return json({ ...dispatches, planEvidence, codeMilestones, releases }, "workflow-dispatch-recovery");
+        // This schedule ticks at its own moment of the minute, so rows a review woke are passed at whichever of the two ticks comes first.
+        const woken = await runWokenTrackingPass(dependencies, 12_000);
+        return json({ ...dispatches, planEvidence, codeMilestones, releases, woken }, "workflow-dispatch-recovery");
       }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
@@ -14684,6 +14683,25 @@ async function startWorkflowE2EChecksDispatch(
 }
 
 /** Run the task's dispatch rows right after the result that wrote them committed. Never throws. */
+function trackingPassDependencies(dependencies: AwsBrokerDependencies): Parameters<typeof runDueWorkflowMergeTracking>[0] {
+  return {
+    documentClient: dependencies.documentClient,
+    tableName: dependencies.tableName,
+    now: Date.now,
+    reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
+  };
+}
+
+/** The pass for rows a webhook woke (review-woken ones first of all): never throws, reads only woken rows, and does not move the heartbeat gate. */
+async function runWokenTrackingPass(dependencies: AwsBrokerDependencies, budgetMs: number): Promise<{ attempted: number; reconciled: number; deferred: number }> {
+  try {
+    return await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs, wokenOnly: true });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_woken_failed", error: error instanceof Error ? error.name : "unknown" }));
+    return { attempted: 0, reconciled: 0, deferred: 0 };
+  }
+}
+
 async function dispatchWorkflowContinuation(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
   try {
     const rows = await queryAllItems(dependencies, WORKFLOW_DISPATCH_PK, `${taskId}#`);

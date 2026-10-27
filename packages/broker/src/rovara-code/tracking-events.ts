@@ -3,7 +3,7 @@
 // index is only a lead: the installation's org, the task, the pull request recorded in its workflow, the link of that pull request to the task and the project's pinned
 // repository all have to agree before anything is woken.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, githubInstallationKey, prHeadKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, TRACKING_REVIEW_COALESCE_SECONDS, githubInstallationKey, prHeadKey, type OrgId } from "@agentx/contracts";
 import { findLinkedGithubWorkflowPullRequest, type HeadWebhookEvent, type PullRequestWebhookEvent } from "../aws/github-webhooks.js";
 import { parseGitHubRepository } from "../github-app.js";
 import { wakeTrackingRow } from "../aws/workflow-merge-recovery.js";
@@ -116,7 +116,9 @@ export async function wakeFromPullRequestEvent(deps: HeadEventDependencies, even
   if (linked === undefined) return "unfollowed";
   const followed = await followedPullRequest(deps, orgId, fullName, { taskId: linked.taskId, repositoryId: linked.repositoryId, number: linked.number });
   if (followed === undefined) return "unfollowed";
-  return wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, followed.taskId);
+  // A person's review is waited for: its wake is due in `TRACKING_REVIEW_COALESCE_SECONDS`. The other actions keep the longer coalesce (a push's events, a draft made ready).
+  return wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, followed.taskId,
+    event.kind === "PR_COMMENT" ? { coalesceSeconds: TRACKING_REVIEW_COALESCE_SECONDS } : {});
 }
 
 /** The org a GitHub App installation is bound to, when the binding is there and active; read fresh each time (a disconnect, an uninstall or a suspension stops the next delivery's match). */
