@@ -83,6 +83,18 @@ type HostStatus = "pending" | "approved" | "rejected" | "not_requested";
 const LIST_PATH = "/v1/app/org/model-sources";
 const ORDER_PATH = "/v1/app/org/model-sources-order";
 const ITEM_PATH = /^\/v1\/app\/org\/model-sources\/([^/]+)(?:\/(check))?$/;
+/** Called only by the trusted cookie adapter; share the exact path matchers with the handlers. */
+export function requireReviewedModelSourceWebWrite(request: AdaptedHttpRequest, url: URL): void {
+  if (request.method === "PUT" && url.pathname === ORDER_PATH && !ReviewedSourceOrderBodySchema.safeParse(jsonBody(request)).success) {
+    throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
+  }
+  const item = ITEM_PATH.exec(url.pathname);
+  // Legacy removal changes routing order without the reviewed revision/authority fences.
+  if (request.method === "DELETE" && item !== null && item[2] === undefined) {
+    throw agentXError("FORBIDDEN", "Removing a company AI source is not available in the console yet.");
+  }
+}
+
 const MISSING = "no AI source has that ID";
 const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sources.";
 const CHECK_RACED = "this source changed while it was being tested; run the check again";
