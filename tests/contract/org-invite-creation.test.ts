@@ -39,3 +39,7 @@ it("keeps creation audit durable through a queue outage and delivers it without 
 it("refuses a mismatched audit State table without creating an invite or outbox entry", async () => {
  const f = fixture(), capture = capturingAuditDeps({ db: f.db });const store = new OrgStore({ documentClient: f.db, tableName: "state", now: Date.now, audit: { ...capture.audit, tableName: "other-state" } });const result = await store.createInvite({ orgId: A, createdBy: who, role: "member" }).then(() => "unexpected", error => error instanceof AgentXError ? error.code : "unknown");expect(result).toBe("AUDIT_UNAVAILABLE");expect(f.invitations()).toBe(0);expect(capture.pending().length).toBe(0);
 });
+
+it("preserves exactly one creation audit when a committed request loses its acknowledgement", async () => {
+ const f = fixture(), send = f.db.send.bind(f.db);let lose = true;f.db.send = async command => { const result = await send(command);if (lose && command.constructor.name === "TransactWriteCommand") { lose = false;throw Object.assign(new Error("fixture acknowledgement lost"), { name: "TimeoutError" }); }return result; };expect((await f.request()).status).toBe(503);expect(f.invitations()).toBe(1);expect(f.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(1);expect((await f.request()).status).toBe(409);expect(f.invitations()).toBe(1);expect(f.db.find(row => String(row.pk).startsWith("AUDIT_PENDING#")).length).toBe(1);
+});
