@@ -133,3 +133,13 @@ for (const code of ["CHANGE_STALE", "FORBIDDEN"]) it(`keeps a server failure wit
  const f = mount({ post: async () => ({ status: 503, body: { error: { code, message: "Synthetic server failure" } } }) });
  try { await review();acknowledge();fireEvent.click(screen.getByRole("button", { name: "Archive project" }));await screen.findByText(/outcome is unconfirmed/);expect(screen.queryByText(/No new archive was recorded/)).toBeNull();expect(screen.queryByRole("button", { name: "Review latest state" })).toBeNull();expect(f.posts()).toHaveLength(1); } finally { f.close(); }
 });
+
+// B9 review Important 1: a failed read must not announce a nonexistent write.
+for (const failure of ["invalid-preview", "read-refusal"]) it(`uses neutral completion wording for ${failure} without submitting an archive`, async () => {
+ const f = mount({ preview: () => failure === "invalid-preview" ? { status: 200, body: { project: "payments" } } : { status: 403, body: { error: { code: "FORBIDDEN", message: "private synthetic read refusal" } } } });
+ try {
+  fireEvent.click(await screen.findByRole("button", { name: "Review archive" }));await screen.findByText("Couldn't check this project. Refresh and review before archiving.");
+  const progress = screen.getByRole("status", { name: "Archive request progress" });expect(progress.textContent).toBe("Check finished. See the result below.");expect(progress.textContent).not.toMatch(/submission/i);expect(f.posts()).toHaveLength(0);
+  const check = screen.getByRole("button", { name: "Check current state" });await waitFor(() => expect(check).toHaveProperty("disabled", false));fireEvent.click(check);await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/archive-preview"))).toHaveLength(2));await waitFor(() => expect(progress.textContent).toBe("Check finished. See the result below."));expect(f.posts()).toHaveLength(0);expect(document.body.textContent).not.toContain("private synthetic read refusal");
+ } finally { f.close(); }
+});
