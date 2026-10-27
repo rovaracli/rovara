@@ -7,8 +7,12 @@ import { agentXError, type RecipeOverlay } from "@agentx/contracts";
 export const RULE_TEXT_MAX = 4000;
 export const RULE_TEXT_TOO_LONG_MESSAGE = "must be at most 4,000 characters";
 
-/** Format characters (zero-width, bidi, tags, soft hyphen), the controls that are neither newline nor tab, and the variation selectors (Mongolian, standard and supplementary). */
-const HIDDEN = /[\p{Cf}\p{Cc}\p{Cs}\p{Co}\p{Cn}᠋-᠏︀-️\u{E0100}-\u{E01EF}]/gu;
+/**
+ * The same classes as A4's rule-file filter (`packages/worker/src/context-text.ts`): format characters (zero-width, bidi, tags, soft hyphen), the controls that are neither
+ * newline nor tab, surrogates, private-use and unassigned code points, every other default-ignorable code point (Hangul fillers, the combining grapheme joiner) and the
+ * variation selectors (standard and supplementary).
+ */
+const HIDDEN = /[\p{Cf}\p{Cc}\p{Co}\p{Cn}\p{Cs}\p{Default_Ignorable_Code_Point}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 
 /** One rule text, inert: line ends are `\n`, hidden characters are gone, and the ends are trimmed. */
 export function inertRuleText(text: string): string {

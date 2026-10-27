@@ -27,6 +27,9 @@ describe("inertRuleText", () => {
     const dirty = "\u200B  Use\u200D tests\u202E.\u2066\nSecond\tline\u0007\u0000\uFE0F\u{E0100}\u{E0041}\uFEFF\u0085\r\nthird  ";
     expect(inertRuleText(dirty)).toBe("Use tests.\nSecond\tline\nthird");
   });
+  it("removes the default-ignorable characters A4 removes from rule files (Hangul fillers, the combining grapheme joiner, invisible operators)", () => {
+    expect(inertRuleText("Use\u3164 tests\u115F\u1160\uFFA0\u034F.\u2064")).toBe("Use tests.");
+  });
   it("leaves ordinary text, including accents and emoji, as it is", () => {
     expect(inertRuleText("Écrire des tests. 👍")).toBe("Écrire des tests. 👍");
   });
@@ -59,6 +62,17 @@ describe("rule text saved to a process layer's draft", () => {
     const layer = await processLayer(w);
     // 2,001 characters are 4,002 UTF-16 units (over 4,000) and 8,004 bytes (inside the layer's own byte limit).
     expect((await save(w, layer, { instructions: "👍".repeat(2001) })).instructions).toHaveLength(4002);
+  });
+
+  it("makes the rule text of a process layer inert when it is created with one, too", async () => {
+    const w = mergeWorld();
+    const created = await w.store.create({
+      orgId: ORG_A, name: "web process", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX,
+      overlay: { instructions: "\u200B Keep changes small.\u202E ", steps: { build: { instructions: "Run\u200D the linter.\u0007" } } },
+    });
+    const overlay = (await w.store.getDraft(ORG_A, created.agentId))!.overlay;
+    expect(overlay.instructions).toBe("Keep changes small.");
+    expect(overlay.steps?.build?.instructions).toBe("Run the linter.");
   });
 
   it("does not change what an ordinary agent's draft saves", async () => {
