@@ -3,9 +3,10 @@
 // company requires cross-company review; the builder's own model, with a note, when it is the only one usable. A model the company set on the step always stands.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { DEFAULT_AGENT_GUARDRAILS, canonicalModelName, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { WorkflowReviewFindingSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { reviewerModelFor, type ReviewerModelInput } from "../../packages/broker/src/rovara-code/reviewer-model.js";
@@ -183,7 +184,21 @@ describe("dispatching the review step of a version 2 task with no model set for 
     await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: {
       workflowCandidateRepositories: t.candidate.repositories, workflowReviews: t.reports(review.id, CLAUDE_DEFAULT.provider, CLAUDE_DEFAULT.modelId) } });
     expect(t.record().workflow.reviews).toHaveLength(2);
-    for (const report of t.record().workflow.reviews!) expect(report).toMatchObject({ provider: CLAUDE_DEFAULT.provider, version: CLAUDE_DEFAULT.modelId, sameModelAsBuild: true });
+    for (const report of t.record().workflow.reviews!) expect(report).toMatchObject({ provider: CLAUDE_DEFAULT.provider, version: CLAUDE_DEFAULT.modelId });
+    // The flag is kept on the task, beside the workflow, never inside it (see "rollback" below); it names the code it is about.
+    expect(t.record().reviewSameModel).toEqual({ candidateDigest: t.candidate.digest });
+    expect(workflowPullRequestBody({ ...task, ...pick(t.record(), "reviewSameModel") }, t.record().workflow, "# Plan\n\n1. Add the flag.\n", SESSION, {})).toContain(REVIEW_SAME_MODEL_NOTE);
+  });
+
+  it("a review on another model clears the flag an earlier review of the same code left", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    const review = t.byMode("REVIEW")[0]!;
+    expect(review.reviewSameModel).toBeUndefined();
+    t.h.db.set({ ...t.record(), reviewSameModel: { candidateDigest: t.candidate.digest } });
+    await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: {
+      workflowCandidateRepositories: t.candidate.repositories, workflowReviews: t.reports(review.id, OTHER_CLAUDE.provider, OTHER_CLAUDE.modelId) } });
+    expect(t.record().workflow.reviews).toHaveLength(2);
+    expect(t.record()).not.toHaveProperty("reviewSameModel");
   });
 
   it("leaves the reviews on the model the company set for the step, even when it is the build's", async () => {
@@ -219,6 +234,9 @@ function reviewed(extra: Record<string, unknown> = {}, more: Record<string, unkn
     ...extra,
   });
 }
+/** What the task record carries after a review on the build's model: the flag, for the code the reviews were about. */
+const sameModelTask = { ...task, reviewSameModel: { candidateDigest: code.digest } } as never;
+const pick = (record: Record<string, unknown>, name: string) => (name in record ? { [name]: record[name] } : {});
 const reviewsSection = (body: string) => body.slice(body.indexOf("## Reviews"), body.indexOf("## Risk:"));
 const SESSION = "https://rovara.example/review/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/task";
 
@@ -231,7 +249,7 @@ describe("the reviewer model, as people read it", () => {
 
   it("says the note, exactly, when the review used the build's model", () => {
     expect(REVIEW_SAME_MODEL_NOTE).toBe("Review used the same model as Build. Enable another model for an independent review.");
-    const section = reviewsSection(workflowPullRequestBody(task, reviewed({}, { sameModelAsBuild: true }), "# Plan\n\n1. Add the flag.\n", SESSION, {}));
+    const section = reviewsSection(workflowPullRequestBody(sameModelTask, reviewed(), "# Plan\n\n1. Add the flag.\n", SESSION, {}));
     expect(section).toContain("anthropic/claude-opus-4-6");
     expect(section).toContain(REVIEW_SAME_MODEL_NOTE);
   });
@@ -255,7 +273,7 @@ describe("the reviewer model, as people read it", () => {
     const other = workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: reviewed() });
     expect(other?.text).toContain("anthropic/claude-opus-4-6");
     expect(other?.text).not.toContain(REVIEW_SAME_MODEL_NOTE);
-    const same = workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: reviewed({}, { sameModelAsBuild: true }) });
+    const same = workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: reviewed(), reviewSameModel: true });
     expect(same?.text).toContain("anthropic/claude-opus-4-6");
     expect(same?.text).toContain(REVIEW_SAME_MODEL_NOTE);
   });
@@ -330,5 +348,96 @@ describe("a review model that the account could not call", () => {
     await finishReviewWith(t, review, { sameModelAsBuild: true });
     expect(t.record().workflow.reviews).toHaveLength(2);
     for (const report of t.record().workflow.reviews!) expect(report).not.toHaveProperty("sameModelAsBuild");
+  });
+});
+
+// ---- fix round 2: rollback safety, and what the model-failure sentence may reach
+
+/** The review report schema as it stood before this change (88223018): strict, with none of the keys this change adds. Only the report's own keys matter here; the findings have their own schema. */
+const PREVIOUS_REVIEW_REPORT = z.object({
+  operationId: z.string().uuid(),
+  candidateDigest: z.string(),
+  role: z.enum(["CRITIC", "SECURITY"]),
+  provider: z.string(),
+  version: z.string(),
+  status: z.enum(["PASS", "FINDINGS", "FAILED", "INTERRUPTED", "UNKNOWN"]),
+  failureReason: z.string().optional(),
+  findings: z.array(WorkflowReviewFindingSchema),
+  readOnly: z.literal(true),
+  recordedAt: z.string().datetime(),
+  partialDiff: z.literal(true).optional(),
+  risk: z.enum(["low", "medium", "high"]).optional(),
+}).strict();
+
+describe("rollback: an older broker must still read what this one stored", () => {
+  it("a workflow stored after a review on the build's model holds only keys the previous review report schema accepts", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT] } });
+    const review = t.byMode("REVIEW")[0]!;
+    expect(review.reviewSameModel, "the positive control: this review did run on the build's model").toBe(true);
+    await t.h.finish(t.workspaceId, String(review.id), "SUCCEEDED", { result: {
+      workflowCandidateRepositories: t.candidate.repositories, workflowReviews: t.reports(review.id, CLAUDE_DEFAULT.provider, CLAUDE_DEFAULT.modelId) } });
+    const stored = t.record().workflow.reviews!;
+    expect(stored).toHaveLength(2);
+    for (const report of stored) expect(PREVIOUS_REVIEW_REPORT.safeParse(report), JSON.stringify(report)).toMatchObject({ success: true });
+    expect(JSON.stringify(t.record().workflow)).not.toMatch(/sameModelAsBuild|modelFailure/);
+  });
+
+  it("a worker that sends the flag, or a model-failure sentence, changes nothing in the stored workflow, and the reviews are still taken", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    await finishReviewWith(t, t.byMode("REVIEW")[0]!, { sameModelAsBuild: true });
+    expect(t.record().workflow.reviews, JSON.stringify(t.record().workflow.blockReason)).toHaveLength(2);
+    for (const report of t.record().workflow.reviews!) expect(PREVIOUS_REVIEW_REPORT.safeParse(report).success).toBe(true);
+    expect(t.record()).not.toHaveProperty("reviewSameModel");
+  });
+
+  it("the note is about the code it was said of: a newer candidate does not carry it", () => {
+    const newer = createCandidateManifest([{ repositoryId: "payments", commitSha: "2".repeat(40), treeSha: "2".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    const body = workflowPullRequestBody({ ...task, reviewSameModel: { candidateDigest: newer.digest } } as never, reviewed(), "# Plan\n\n1. Add the flag.\n", SESSION, {});
+    expect(reviewsSection(body)).not.toContain(REVIEW_SAME_MODEL_NOTE);
+    expect(workflowMessage({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", workflow: reviewed() })?.text).not.toContain(REVIEW_SAME_MODEL_NOTE);
+  });
+});
+
+describe("the model-failure sentence stays on the operation's result", () => {
+  it("is not in the task's workflow, the pull request's description or the Slack lines after a refused review", async () => {
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
+    await finishReviewWith(t, t.byMode("REVIEW")[0]!, REFUSED);
+    const workflow = t.record().workflow;
+    expect(workflow.reviews, "the positive control: the refused reports were taken as reviews").toHaveLength(2);
+    for (const report of workflow.reviews!) expect(report).not.toHaveProperty("modelFailure");
+    expect(JSON.stringify(workflow)).not.toMatch(/model call failed|key-rejected|AccessDenied/);
+    expect(workflowMessage({ taskId: t.taskId, workflow })?.text).not.toMatch(/model call failed|key-rejected|AccessDenied/);
+    expect(workflowPullRequestBody(task, workflow, "# Plan\n\n1. Add the flag.\n", SESSION, {})).not.toMatch(/model call failed|key-rejected|AccessDenied/);
+  });
+});
+
+describe("a refused reviewer on an operation that succeeded counts toward the limit", () => {
+  it("reaches the six-try limit, takes the build's model with the note on the last try, and stops choosing after it", async () => {
+    // The build's model and six others: one refusal each leaves a model to choose until the sixth try.
+    const others = bedrockClaudeModelIds().map((modelId): ModelIdentifier => ({ provider: "amazon-bedrock", modelId }))
+      .filter((model) => canonicalModelName(model) !== canonicalModelName(CLAUDE_DEFAULT));
+    const distinctOthers = others.filter((model, index) => others.findIndex((other) => canonicalModelName(other) === canonicalModelName(model)) === index);
+    expect(distinctOthers.length, "the catalog must offer enough models for this scenario").toBeGreaterThanOrEqual(6);
+    const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, ...distinctOthers.slice(0, 6)] } });
+    const tried: Array<{ model: ModelIdentifier; same: boolean }> = [];
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      const review = t.byMode("REVIEW")[attempt]!;
+      expect(review, `try ${attempt + 1} was dispatched`).toBeDefined();
+      tried.push({ model: review.model as ModelIdentifier, same: review.reviewSameModel === true });
+      await finishReviewWith(t, review, REFUSED);
+      if (attempt < 6) await t.retryReviews();
+    }
+    // Tries 1-5 each chose a model nobody had refused yet, none of them the build's.
+    expect(new Set(tried.slice(0, 5).map((entry) => canonicalModelName(entry.model))).size).toBe(5);
+    for (const entry of tried.slice(0, 5)) {
+      expect(canonicalModelName(entry.model)).not.toBe(canonicalModelName(CLAUDE_DEFAULT));
+      expect(entry.same).toBe(false);
+    }
+    // The sixth is the last: the build's own model, with the note, although another model had not been tried.
+    expect(canonicalModelName(tried[5]!.model)).toBe(canonicalModelName(CLAUDE_DEFAULT));
+    expect(tried[5]!.same).toBe(true);
+    // After the limit nothing is chosen any more: the step runs as the project set it (the build's model), still with the note.
+    expect(canonicalModelName(tried[6]!.model)).toBe(canonicalModelName(CLAUDE_DEFAULT));
+    expect(tried[6]!.same).toBe(true);
   });
 });

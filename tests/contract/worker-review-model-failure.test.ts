@@ -16,9 +16,11 @@ const SECRET_TEXT = "AccessDeniedException: You don't have access to the model w
 
 const refused = (errorCode: string, status: number) => ({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", provider: "amazon-bedrock", errorMessage: SECRET_TEXT,
   diagnostics: [{ details: { errorCode, status, requestId: "9e7ea41c-1111-2222-3333-444455556666" } }] } });
+// An answer that is not the JSON the review asks for: the review is UNKNOWN even though the model answered.
+const answeredBadly = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "I could not tell." }], stopReason: "stop", provider: "amazon-bedrock" } };
 const answered = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ findings: [] }) }], stopReason: "stop", provider: "amazon-bedrock" } };
 
-async function review(event: unknown, options: { mainSession?: boolean } = {}) {
+async function review(events: unknown, options: { mainSession?: boolean } = {}) {
   const rootPath = await mkdtemp(join(tmpdir(), "agentx-worker-review-failure-"));
   try {
     const directory = join(rootPath, "repo/payments");
@@ -46,7 +48,7 @@ async function review(event: unknown, options: { mainSession?: boolean } = {}) {
         created += 1;
         return {
           conversationId: input.conversationId ?? "fixture", sessionFile,
-          async prompt() { if (!own || options.mainSession === true) listener?.(event); }, async abort() {},
+          async prompt() { if (!own || options.mainSession === true) for (const event of Array.isArray(events) ? events : [events]) listener?.(event); }, async abort() {},
           getModel: () => ({ provider: input.model.provider, modelId: input.model.modelId }),
           getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 } as never),
           subscribe(next) { listener = next; return () => undefined; }, dispose() {},
@@ -93,5 +95,18 @@ describe("a review whose model the account cannot call", () => {
     const reports = await review(answered);
     expect(reports.map((report) => report.status)).toEqual(["PASS", "PASS"]);
     for (const report of reports) expect(report).not.toHaveProperty("modelFailure");
+  });
+
+  it("carries no failure when a later call answered, even if that answer could not be read: the earlier failure is stale", async () => {
+    // The positive control: the same failure with no later answer is reported.
+    const stale = await review([refused("AccessDeniedException", 403)]);
+    for (const report of stale) expect(report).toMatchObject({ status: "UNKNOWN", modelFailure: expect.stringMatching(/^the model call failed: key-rejected /) });
+    // The call failed, a retry answered, and the answer was not a review: UNKNOWN, but not because of the model call.
+    const reports = await review([refused("AccessDeniedException", 403), answeredBadly]);
+    expect(reports).toHaveLength(2);
+    for (const report of reports) {
+      expect(report.status).toBe("UNKNOWN");
+      expect(report).not.toHaveProperty("modelFailure");
+    }
   });
 });
