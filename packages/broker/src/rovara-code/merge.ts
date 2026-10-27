@@ -11,7 +11,7 @@
 // - The change's handler is the single merge path: it re-reads every pull request and every reviewer from GitHub (never the stored items), re-checks readiness for the exact heads,
 //   and only then claims each pull request on its tracking item and merges it, in repository order, with the checked head as `sha`.
 import { createHash } from "node:crypto";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MERGE_CLAIM_SECONDS,
   MERGE_NOT_READY_MESSAGES as M,
@@ -520,7 +520,7 @@ export interface PullRequestMergeSubject {
 async function claimMerge(
   deps: ApprovalDependencies, task: { taskId: string; orgId: OrgId }, pr: { repositoryId: string; number: number; url: string }, headSha: string, by: string,
   audit: { occurrence: string; approvalId?: string | undefined; method: string; proof?: AuditProof | undefined },
-): Promise<boolean> {
+): Promise<string | undefined> {
   const now = deps.now();
   const at = new Date(now).toISOString();
   // The audit fact commits with the claim, so a claim that was lost leaves none and a claim that was made always leaves one (the appender drops a repeat of the same occurrence).
@@ -544,11 +544,25 @@ async function claimMerge(
       ...events.flatMap((event) => auditPending(deps, event)),
     ] }));
     await flushAuditEvents(deps, events);
-    return true;
+    return at;
   } catch (error) {
-    if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) return false;
+    if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) return undefined;
     throw error;
   }
+}
+
+/**
+ * Lets go of the claim after GitHub said no (nothing was merged, so nobody else needs to wait for the claim to age): only the claim this run made, found by who and when, so a claim somebody
+ * else took since stays. Best effort: a claim that stays only costs the next press the wait it always cost. A GitHub failure whose outcome is unknown keeps its claim (the next run finds out).
+ */
+async function releaseMergeClaim(deps: ApprovalDependencies, task: { taskId: string; orgId: OrgId }, pr: { repositoryId: string; number: number }, claim: { by: string; at: string }): Promise<void> {
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: mergeTrackingKey(task.taskId, pr.repositoryId, pr.number),
+    UpdateExpression: "REMOVE mergeClaim SET #version = #version + :one",
+    ConditionExpression: "attribute_exists(pk) AND orgId = :org AND taskId = :task AND mergeClaim.#by = :by AND mergeClaim.#at = :at",
+    ExpressionAttributeNames: { "#at": "at", "#by": "by", "#version": "version" },
+    ExpressionAttributeValues: { ":one": 1, ":org": task.orgId, ":task": task.taskId, ":by": claim.by, ":at": claim.at },
+  })).catch(() => undefined);
 }
 
 const hashNumber = (seed: string): number => Number.parseInt(createHash("sha256").update(seed).digest("hex").slice(0, 6), 16) % 1_000_000;
@@ -584,9 +598,9 @@ async function mergeTask(
   const merged: string[] = [...mergedBefore];
   for (const step of plan) {
     const { entry, url, headSha } = step;
-    const claimed = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, who.decidedBy, { occurrence: who.occurrence, approvalId: who.approvalId, method: settings.mergeMethod, proof: who.proof });
+    const claimedAt = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, who.decidedBy, { occurrence: who.occurrence, approvalId: who.approvalId, method: settings.mergeMethod, proof: who.proof });
     // Another handler holds the claim, or tracking has no item for the pull request yet: whichever it is, a later run finds out (the pull request merged, the claim gone stale).
-    if (!claimed) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara is already merging this pull request.");
+    if (claimedAt === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara is already merging this pull request.");
     const result = await host.github.mergePullRequest(url, entry.number, { sha: headSha, method: settings.mergeMethod }, scope);
     if (result.outcome === "merged" || result.outcome === "already_merged") {
       merged.push(entry.repositoryId);
@@ -599,6 +613,8 @@ async function mergeTask(
       }
       continue;
     }
+    // GitHub said no: nothing merged, so the claim goes at once and a second press right after is not told Rovara is already merging.
+    await releaseMergeClaim(deps, tracked, entry, { by: who.decidedBy, at: claimedAt });
     const why = refusalWords(result);
     if (merged.length === 0) {
       throw agentXError("MERGE_NOT_READY", result.reason === "head_changed" ? M.changedAfterConfirm : M.notMerged(entry.repositoryId, why));

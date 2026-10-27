@@ -1,6 +1,8 @@
 // Rovara Code (owner decision 2026-10-27): where the repository has a CODEOWNERS file that covers the paths a pull request changes, a code owner has to approve it before Rovara calls it
 // ready. This reads the file the way GitHub does (the last matching rule wins; a rule with no owner takes ownership away) and says who is still missing. Pure except for the team lookup the
-// caller passes in. It never trusts what it cannot read: an unreadable team is "unknown", and a path whose only owners are unknown teams is not satisfied.
+// caller passes in. It never trusts what it cannot read: an unreadable team is "unknown", and a path whose only owners are unknown teams is not satisfied. A file with anything Rovara cannot read
+// the way GitHub does (negation, character classes, an owner that is no @name or email, more rules than it reads) is unreadable as a whole: the rules after a line that was skipped could
+// otherwise take the place of the ones that were meant.
 
 export interface CodeOwnerRule {
   pattern: string;
@@ -14,6 +16,7 @@ export type CodeOwnerVerdict = { ok: true } | { ok: false; owners: string } | { 
 /** The most rules read from one file. */
 const RULES_MAX = 5_000;
 const OWNER = /^@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\/[A-Za-z0-9_.-]{1,100})?$/u;
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/u;
 
 function escapeSegment(segment: string): string {
   let out = "";
@@ -47,18 +50,20 @@ function compile(pattern: string): (path: string) => boolean {
   return (path) => regex.test(path);
 }
 
-/** The rules of a CODEOWNERS file, in order. Comments and blank lines are skipped; emails and malformed names are not owners. */
-export function parseCodeOwners(text: string): CodeOwnerRule[] {
+/** The rules of a CODEOWNERS file, in order, and whether the file held anything Rovara cannot read. Comments and blank lines are skipped. An email is an owner (Rovara cannot match it to an approver). */
+export function parseCodeOwners(text: string): { rules: CodeOwnerRule[]; unsupported: boolean } {
   const rules: CodeOwnerRule[] = [];
+  let unsupported = false;
   for (const raw of text.split(/\r?\n/u)) {
     const line = raw.replace(/(^|\s)#.*$/u, "").trim();
     if (line === "") continue;
     const [pattern, ...rest] = line.split(/\s+/u);
-    if (pattern === undefined || pattern === "" || pattern.startsWith("!") || pattern.includes("[")) continue;
-    rules.push({ pattern, owners: rest.filter((owner) => OWNER.test(owner)), matches: compile(pattern) });
-    if (rules.length >= RULES_MAX) break;
+    if (pattern === undefined || pattern === "" || pattern.startsWith("!") || pattern.includes("[") || rest.some((owner) => !OWNER.test(owner) && !EMAIL.test(owner))) { unsupported = true; continue; }
+    // More rules than are read: the later, more specific ones would be the ones lost.
+    if (rules.length >= RULES_MAX) return { rules, unsupported: true };
+    rules.push({ pattern, owners: rest, matches: compile(pattern) });
   }
-  return rules;
+  return { rules, unsupported };
 }
 
 /** The owners of one path: those of the last rule that matches it (none when that rule names none). */
@@ -83,7 +88,9 @@ const NAMED = 3;
 /** Whether every changed path that has a code owner has an approval from one of its owners. */
 export async function codeOwnerVerdict(input: CodeOwnerInput): Promise<CodeOwnerVerdict> {
   if (input.codeOwnersText === undefined) return { ok: true };
-  const rules = parseCodeOwners(input.codeOwnersText);
+  const parsed = parseCodeOwners(input.codeOwnersText);
+  if (parsed.unsupported) return { ok: false, unreadable: true };
+  const rules = parsed.rules;
   const approvers = [...new Set(input.approverLogins.map((login) => login.toLowerCase()))];
   const asked = new Map<string, Promise<"member" | "not_member" | "unknown">>();
   const inTeam = (owner: string, login: string) => {
@@ -107,6 +114,8 @@ export async function codeOwnerVerdict(input: CodeOwnerInput): Promise<CodeOwner
     let satisfied = owners.some((owner) => !owner.includes("/") && approvers.includes(owner.slice(1).toLowerCase()));
     let unknown = false;
     if (!satisfied) {
+      // An email names a person Rovara cannot tell an approver from: the path is open, not unowned.
+      if (owners.some((owner) => !owner.startsWith("@"))) unknown = true;
       for (const owner of owners.filter((candidate) => candidate.includes("/"))) {
         for (const login of approvers) {
           const answer = await inTeam(owner, login);

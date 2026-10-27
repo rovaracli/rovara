@@ -61,7 +61,7 @@ describe("assessRisk", () => {
       expect(assessRisk(riskInput({ changedFiles: [file(path)] })).level, path).toBe("high");
     }
     // The workflows folder is two segments; neither alone is sensitive.
-    expect(isSensitivePath(".github/CODEOWNERS")).toBe(false);
+    expect(isSensitivePath(".github/CODEOWNERS")).toBe(true); // since the review of 2026-10-27: who must approve is a governance file
     expect(isSensitivePath("docs/workflows/overview.md")).toBe(false);
     expect(isSensitivePath("src/Dockerfile.md")).toBe(false);
     expect(RISK_SENSITIVE_PATH_PATTERNS.length).toBeGreaterThan(0);
