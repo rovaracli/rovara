@@ -144,7 +144,14 @@ describe("an agent step in the task sandbox", () => {
       (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("linear__get_issue", { id: "ENG-7" }, { id: "r4" })); },
       (context) => { results.push(lastResult(context)); return fauxAssistantMessage("The deploy was killed (exit 137); ENG-7 tracks it."); },
     ], agentStep(), fake);
-    expect(result.agentStepResult).toEqual({ report: "The deploy was killed (exit 137); ENG-7 tracks it.", outcome: "SUCCEEDED" });
+    // The report is compared with the calls it made (task.agentGrounding.v1): four calls, and the two for tools this step does not have are recorded as failures.
+    expect(result.agentStepResult).toEqual({
+      report: "The deploy was killed (exit 137); ENG-7 tracks it.", outcome: "SUCCEEDED",
+      grounding: {
+        verdict: "grounded", reasons: [],
+        tools: { calls: 4, failed: 2, failures: [{ tool: "write", message: "Tool write not found" }, { tool: "bash", message: "Tool bash not found" }] },
+      },
+    });
     expect(offered[0]).toEqual(["find", "grep", "linear__get_issue", "ls", "read"]);
     expect(results[0]).toMatchObject({ toolName: "read", isError: false });
     expect(results[0]!.content[0]!.text).toContain("deploy log: exit 137");
@@ -202,7 +209,11 @@ describe("an agent step in the task sandbox", () => {
       toolUse(fauxToolCall("choose_branch", { branch: "fix", reason: "Clear cause." }, { id: "c1" })),
       fauxAssistantMessage("Going with the fix."),
     ], agentStep({ workspace: "none", resultContract: { branches: [{ id: "fix", description: "Fix it." }, { id: "escalate", description: "Ask a person." }] } }), fake);
-    expect(result.agentStepResult).toEqual({ report: "Going with the fix.", outcome: "SUCCEEDED", branch: "fix", reason: "Clear cause." });
+    // choose_branch is a result tool, not a lookup: the step made no tool call to ground its report in, and nothing failed.
+    expect(result.agentStepResult).toEqual({
+      report: "Going with the fix.", outcome: "SUCCEEDED", branch: "fix", reason: "Clear cause.",
+      grounding: { verdict: "grounded", reasons: [], tools: { calls: 0, failed: 0, failures: [] } },
+    });
   });
 
   it("fails before the model runs when the worker cannot start the sandbox, and starts no session", async () => {
