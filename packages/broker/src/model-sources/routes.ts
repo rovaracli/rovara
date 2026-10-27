@@ -395,7 +395,8 @@ async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise
     const reviewed = ReviewedSourceOrderBodySchema.safeParse(body);
     if (!reviewed.success) throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
     const { requestId, order, expectedRevision } = reviewed.data;
-    // Independent reviewed receipts; legacy request lookup and cleanup cannot precede this write.
+    // Preserve tombstones for the sweeper: cleanup must not precede the reviewed atomic write.
+    // RequestMark requires fingerprint, but only the reviewed digest binds this path; no legacy receipt is used.
     return deps.modelSources.store.setOrder({ orgId: caller.orgId, by: caller.developerId, order, expectedRevision, request: { orgId: caller.orgId, developerId: caller.developerId, requestId, fingerprint: fingerprintOf("reviewed-source-order", "", { order, expectedRevision }) } });
   }
   await finishOwedRemovals(deps, caller, caller);

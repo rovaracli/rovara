@@ -113,6 +113,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { ReviewedSourceOrderBodySchema } from "../model-sources/reviewed-order.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
@@ -1881,6 +1882,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // Lane C5: only the trusted cookie adapter supplies authenticated. Token/CLI compatibility stays separate.
+  if (authenticated !== undefined && request.method === "PUT" && url.pathname === "/v1/app/org/model-sources-order" && !ReviewedSourceOrderBodySchema.safeParse(jsonBody(request)).success) {
+    throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
+  }
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (request.method === "GET" && url.pathname === "/v1/app/models") {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
