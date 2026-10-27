@@ -256,3 +256,45 @@ describe("a process layer is not an agent anyone can run by id", () => {
     expect(t.sessions()).toHaveLength(0);
   });
 });
+
+const maintainer = (t: Awaited<ReturnType<typeof setup>>) => t.db.set({
+  ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "maintainer",
+});
+
+describe("a process layer's draft cannot be test-run (follow-up M4)", () => {
+  // A test run of a draft starts a real Rovara Code task on the draft's frozen recipe: plan, build, checks, review, and the pull request step. Nothing on that path asks the draft's second person,
+  // so a draft whose review was weakened could open a pull request before it was confirmed. The layer is edited and published through How we work only, and never run by id.
+  it("refuses the generic agent runs route for a draft of the project's layer (404, the words of an agent that is not there) and starts nothing", async () => {
+    const t = await setup();
+    maintainer(t);
+    const agentId = await t.processLayer();
+    t.point(agentId);
+    const reply = await t.dev(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { requestId: randomUUID(), project: "payments", version: "draft", input: { text: "Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(404);
+    expect(reply.body.error).toMatchObject({ code: "NOT_FOUND", message: "no agent has that ID" });
+    expect(t.taskCount()).toBe(0);
+    expect(t.sessions()).toHaveLength(0);
+    expect(t.charges()).toHaveLength(0);
+  });
+
+  it("refuses the draft of a layer that is not yet published, or that the playbook does not point at, the same way", async () => {
+    const t = await setup();
+    maintainer(t);
+    const unpublished = await t.processLayer({ publish: false });
+    const reply = await t.dev(MAYA, "POST", `/v1/app/agents/${unpublished}/runs`, { requestId: randomUUID(), project: "payments", version: "draft", input: { text: "Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(404);
+    expect(t.taskCount()).toBe(0);
+  });
+
+  it("still lets an ordinary custom agent's draft be test-run (a test run of any other agent is unchanged)", async () => {
+    const t = await setup();
+    maintainer(t);
+    const created = await t.store.create({
+      orgId: TEST_ORG, name: `ordinary ${randomUUID().slice(0, 6)}`, owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId },
+      extends: ROVARA_CODE_AGENT_ID, overlay: {}, createdBy: MAYA.developerId,
+    });
+    const reply = await t.dev(MAYA, "POST", `/v1/app/agents/${created.agentId}/runs`, { requestId: randomUUID(), project: "payments", version: "draft", input: { text: "Fix the retry bug" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(t.taskCount()).toBe(1);
+  });
+});

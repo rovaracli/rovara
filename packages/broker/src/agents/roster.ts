@@ -338,8 +338,9 @@ export async function resolveAgentForTask(
   const { agent } = await requireAgentAccess(deps, caller, agentId, draft ? "edit" : "use");
   await requireAgentEnabled(deps, caller.orgId, agentId);
   if ("owner" in agent) {
-    // A process layer runs only for a start that says it is the project's code intent (`allowProcessLayer`); any other person's run of it is refused.
-    if (!draft && agent.purpose === "process" && input.allowProcessLayer !== true) throw processLayerRefused();
+    // A process layer runs only for a start that says it is the project's code intent (`allowProcessLayer`); any other person's run of it is refused. Its draft is never run, not even as a
+    // test: a test run starts the whole task-to-pull-request workflow on the draft's recipe, before a second person has confirmed anything the draft weakens (follow-up M4).
+    if (agent.purpose === "process" && (draft || input.allowProcessLayer !== true)) throw processLayerRefused();
     if (!draft) await requireOnRoster(deps, caller.orgId, input.project, agent);
     requireNotArchived(agent);
   }

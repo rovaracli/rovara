@@ -42,6 +42,16 @@ describe("a process layer by id", () => {
     expect(resolved.ref).toMatchObject({ agentId, builtin: false });
   });
 
+  it("is refused as a draft test run too, even for the project's own code intent (follow-up M4), while an ordinary agent's draft is still a test run", async () => {
+    const { v, agentId, caller } = await layerWorld();
+    const draft = { agentId, version: "draft" as const };
+    expect(await failure(resolveAgentForTask(v.deps, caller, { project: "web", agent: draft, role: "maintainer" }))).toEqual(NOT_THERE);
+    expect(await failure(resolveAgentForTask(v.deps, caller, { project: "web", agent: draft, role: "maintainer", allowProcessLayer: true }))).toEqual(NOT_THERE);
+    const ordinary = await v.agents.create({ orgId: ORG_A, name: "web helper", owner: { kind: "project", project: "web" }, accountable: { developerId: DANA }, extends: "rovara-code", overlay: {}, createdBy: DANA });
+    const resolved = await resolveAgentForTask(v.deps, caller, { project: "web", agent: { agentId: ordinary.agentId, version: "draft" }, role: "maintainer" });
+    expect(resolved).toMatchObject({ testRun: true, ref: { agentId: ordinary.agentId, version: "draft" } });
+  });
+
   it("cannot have a trigger put on it", async () => {
     const { v, agentId } = await layerWorld();
     const put = await v.agentCall(DANA, "PUT", `/v1/app/agents/${agentId}/triggers/ctr_${"a".repeat(20)}`, { project: "web", spec: { kind: "event", source: "github", type: "pull_request.opened" } });
