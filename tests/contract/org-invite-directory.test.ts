@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
-import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk } from "@agentx/contracts";
+import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk, developerOrgKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
@@ -9,7 +9,7 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", actor = "a
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 function fixture(role = "owner") {
  const db = new FakeDynamoDb();let now = Date.parse("2026-10-26T12:00:00Z");
- for (const [orgId, developerId, r] of [[A, actor, role], [B, foreign, "owner"]] as const) { db.set({ ...orgMemberKey(orgId, developerId), orgId, developerId, role: r, joinedAt: "2026-10-01T00:00:00Z" });db.set({ ...orgMetaKey(orgId), orgId, name: "Company", plan: "team" }); }
+ for (const [orgId, developerId, r] of [[A, actor, role], [B, foreign, "owner"]] as const) { db.set({ ...orgMemberKey(orgId, developerId), orgId, developerId, role: r, joinedAt: "2026-10-01T00:00:00Z" });db.set({ ...developerOrgKey(developerId), orgId, role: r });db.set({ ...orgMetaKey(orgId), orgId, name: "Company", plan: "team" }); }
  const store = new OrgStore({ tableName: "state", documentClient: db, now: () => now });
  const deps: DeveloperRouteDependencies = { tableName: "state", now: () => now, documentClient: db, orgs: store, developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) } };
  const caller: DeveloperCaller = { orgId: A, developerId: actor, orgRole: "owner", name: "Priya", amr: "cloud", sessionId: "fixture" };
@@ -19,13 +19,13 @@ function fixture(role = "owner") {
 }
 it("atomically indexes each new invite with a public id independent of its token and hash", async () => {
  const f = fixture(), { token } = await f.invite(), hash = hashOf(token), global = f.db.get(orgInviteKey(hash));const index = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY");expect(index).toHaveLength(1);
- const reference = index[0]!;expect(reference.pk).toBe(orgPk(A));expect(reference.inviteId === token || reference.inviteId === hash).toBe(false);expect(typeof reference.inviteId).toBe("string");expect(reference.tokenHash === hash && reference.inviteId === global?.inviteId).toBe(true);expect(Object.keys(reference).sort()).toEqual(["entityType", "inviteId", "orgId", "pk", "sk", "tokenHash"]);expect(f.db.transactions()).toHaveLength(1);expect(f.db.transactions()[0]).toHaveLength(2);
+ const reference = index[0]!;expect(reference.pk).toBe(orgPk(A));expect(reference.inviteId === token || reference.inviteId === hash).toBe(false);expect(typeof reference.inviteId).toBe("string");expect(reference.tokenHash === hash && reference.inviteId === global?.inviteId).toBe(true);expect(Object.keys(reference).sort()).toEqual(["entityType", "inviteId", "orgId", "pk", "sk", "tokenHash"]);expect(f.db.transactions()).toHaveLength(1);expect(f.db.transactions()[0]).toHaveLength(5);
 });
 it("rolls back the invite if its directory reference cannot commit", async () => {
  const f = fixture();f.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("ORG_INVITE_DIRECTORY"), error: { name: "ServiceUnavailable" } });const outcome = await f.invite().then(() => "unexpected-success", () => "refused");expect(outcome).toBe("refused");expect(f.db.find(row => row.entityType === "ORG_INVITE")).toHaveLength(0);expect(f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")).toHaveLength(0);
 });
 for (const [role, allowed] of [["owner", true], ["admin", true], ["member", false], ["maintainer", false], ["viewer", false], ["future-role", false]] as const) it(`uses live request-org ${role} authority for the private invite directory`, async () => {
- const f = fixture(role);await f.invite();const response = await f.request();expect(response.status).toBe(allowed ? 200 : 403);if (allowed) expect(response.body.invites).toHaveLength(1);else expect(response.body.invites).toBeUndefined();
+ const f = fixture();await f.invite();f.db.set({ ...f.db.get(orgMemberKey(A, actor)), role });const response = await f.request();expect(response.status).toBe(allowed ? 200 : 403);if (allowed) expect(response.body.invites).toHaveLength(1);else expect(response.body.invites).toBeUndefined();
 });
 it("returns masked pending metadata without tokens, hashes or raw email", async () => {
  const f = fixture(), { token } = await f.invite(A, "sensitive.person@example.test"), response = await f.request();expect(response.status).toBe(200);const serialized = JSON.stringify(response.body);expect(serialized.includes(token) || serialized.includes(hashOf(token)) || serialized.includes("sensitive.person")).toBe(false);
@@ -36,8 +36,8 @@ it("never lists another org's invites or accepts its cursor", async () => {
  expect((await f.request("", { ...f.caller, orgId: B })).status).toBe(403);expect(first.body.nextCursor).toBeTruthy();expect((await f.request("?cursor=" + encodeURIComponent(first.body.nextCursor!), { ...f.caller, orgId: B, developerId: foreign })).status).toBe(400);
  const foreignPage = await f.request("", { ...f.caller, orgId: B, developerId: foreign });expect(foreignPage.status).toBe(200);expect(foreignPage.body.invites).toHaveLength(1);
 });
-it("fails closed on a misbound directory reference even when both invites are otherwise valid", async () => {
- const f = fixture();await f.invite();const foreignInvite = await f.invite(B);const local = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === A);expect(local).toHaveLength(1);expect((await f.request()).status).toBe(200);f.db.set({ ...local[0]!, tokenHash: hashOf(foreignInvite.token) });const result = await f.request();expect(result.status).toBe(503);expect(result.body.invites).toBeUndefined();
+it("isolates a misbound directory reference even when both invites are otherwise valid", async () => {
+ const f = fixture();await f.invite();const foreignInvite = await f.invite(B);const local = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === A);expect(local).toHaveLength(1);expect((await f.request()).status).toBe(200);f.db.set({ ...local[0]!, tokenHash: hashOf(foreignInvite.token) });const result = await f.request();expect(result.status).toBe(200);expect(result.body.invites).toEqual([]);expect(result.body).toMatchObject({ unavailableCount: 1 });
 });
 it("reads canonical accepted/expired state and makes unindexed legacy coverage explicit", async () => {
  const f = fixture(), accepted = await f.invite();await f.store.acceptInvite({ tokenHash: inviteTokenHash(accepted.token), developerId: joined });await f.invite(A, undefined, 0);
@@ -56,8 +56,8 @@ it("treats equivalent ISO expiry instants equally even without fractional second
  const f = fixture(), result = await f.invite();const key = orgInviteKey(hashOf(result.token));f.db.set({ ...f.db.get(key), expiresAt: "2026-10-26T12:00:00Z" });const page = await f.request();expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(0);
 });
 
-it("independently rejects a canonical org, id or hash mismatch", async () => {
- for (const changed of [{ orgId: B }, { inviteId: "22222222-2222-4222-8222-222222222222" }, { tokenHash: "e".repeat(64) }]) { const f = fixture(), invite = await f.invite(), key = orgInviteKey(hashOf(invite.token));expect((await f.request()).status).toBe(200);f.db.set({ ...f.db.get(key), ...changed });expect((await f.request()).status).toBe(503); }
+it("independently excludes and counts a canonical org, id or hash mismatch", async () => {
+ for (const changed of [{ orgId: B }, { inviteId: "22222222-2222-4222-8222-222222222222" }, { tokenHash: "e".repeat(64) }]) { const f = fixture(), invite = await f.invite(), key = orgInviteKey(hashOf(invite.token));expect((await f.request()).status).toBe(200);f.db.set({ ...f.db.get(key), ...changed });const result = await f.request();expect(result.status).toBe(200);expect(result.body.invites).toEqual([]);expect(result.body).toMatchObject({ unavailableCount: 1 }); }
 });
 it("caps a full directory page at 50 and leaves a resumable cursor", async () => {
  const f = fixture();for (let i = 0; i < 51; i++) await f.invite();const page = await f.request("?limit=50");expect(page.status).toBe(200);expect(page.body.invites).toHaveLength(50);expect(page.body.nextCursor).toBeTruthy();const next = await f.request("?limit=50&cursor=" + page.body.nextCursor!);expect(next.body.invites).toHaveLength(1);
@@ -75,4 +75,8 @@ it("does not charge unauthorized or invalid directory requests to a new or exist
 });
 it("keeps healthy invites when canonical data is corrupt and reports unavailable entries without leaking them", async () => {
  const f = fixture();await f.invite(A, "healthy@example.test");const bad = await f.invite(A, "private.person@private.test"), key = orgInviteKey(hashOf(bad.token));f.db.set({ ...f.db.get(key), role: "future-role" });const result = await f.request();expect(result.status).toBe(200);expect(result.body.invites).toHaveLength(1);expect(result.body).toMatchObject({ unavailableCount: 1 });expect(JSON.stringify(result.body).includes("private.person") || JSON.stringify(result.body).includes(hashOf(bad.token)) || JSON.stringify(result.body).includes(bad.token)).toBe(false);
+});
+
+it("marks partial coverage distinctly so older indexed-only readers cannot treat unavailable entries as complete", async () => {
+ const f = fixture(), bad = await f.invite(), key = orgInviteKey(hashOf(bad.token));f.db.set({ ...f.db.get(key), role: "future-role" });const result = await f.request();expect(result.status).toBe(200);expect(result.body.coverage).toBe("indexed_only_partial");expect(result.body).toMatchObject({ unavailableCount: 1 });
 });
