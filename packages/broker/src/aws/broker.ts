@@ -3242,6 +3242,9 @@ export async function registerProjectFor(
     if (latest === undefined || Object.hasOwn(latest, "workingBranchSelections")) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "Working branch selections must be preserved or revalidated before registering another project revision.");
     }
+    // The Put already fences this item when an identical revision won after our existence read.
+    // DynamoDB forbids a second operation on the same item; the conditional winner path handles it.
+    if (snapshot.newestRevision === definition.revision) return [];
     return [{ ConditionCheck: { TableName: dependencies.tableName, Key: latestKey,
       ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(workingBranchSelections)" } }];
   };
