@@ -316,7 +316,7 @@ describe("validateChainForPublish", () => {
   it("reports a built-in the org turned off as a problem of its step, and returns the revision of the guardrails it read", async () => {
     const { validate, store } = setup();
     expect((await validate(INVESTIGATE_THEN_FIX)).guardrailsRevision).toBe(0);
-    const off = await store.putGuardrails({ ...({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["code-reviewer", "rovara-code"] }, expectedRevision: 0, by: ALICE }), by: fixtureActor(store, ORG_A, ALICE).developerId, actor: fixtureActor(store, ORG_A, ALICE) });
+    const off = await store.putGuardrails({ ...({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["code-reviewer", "rovara-code"] }, expectedRevision: 0, by: ALICE }), by: fixtureActor(store, ORG_A, ALICE, true).developerId, actor: fixtureActor(store, ORG_A, ALICE, true) });
     const result = await validate(INVESTIGATE_THEN_FIX);
     expect(result.guardrailsRevision).toBe(off.revision);
     expect(text(result.problems)).toEqual([

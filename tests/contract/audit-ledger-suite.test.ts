@@ -255,7 +255,7 @@ function rig(options: { tsa?: boolean } = {}) {
     const before = committed.length;
     crashAfterCommit.next = how.crash === true ? 1 : 0;
     try {
-      await writeBudgets(budgetDeps, orgId, { orgMonthlyUsd: n, memberOverrides: {} }, fixtureActor(h.db, orgId, "dev_1").developerId, iso(h.clock.now), { actor: { kind: "member", id: "dev_1" }, ...({}), authority: fixtureActor(h.db, orgId, "dev_1") });
+      await writeBudgets(budgetDeps, orgId, { orgMonthlyUsd: n, memberOverrides: {} }, fixtureActor(h.db, orgId, "dev_1", true).developerId, iso(h.clock.now), { actor: { kind: "member", id: "dev_1" }, ...({}), authority: fixtureActor(h.db, orgId, "dev_1", true) });
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "ProcessDied") throw error;
     } finally {

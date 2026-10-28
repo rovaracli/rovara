@@ -422,7 +422,7 @@ async function setup(options: SetupOptions = {}) {
   };
   const setGuardrails = async (change: Partial<AgentGuardrails>) => {
     const current = await readGuardrailsWithRevision({ documentClient: h.db, tableName: "state" }, TEST_ORG);
-    await store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...change }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(store, TEST_ORG, MAYA.developerId).developerId, actor: fixtureActor(store, TEST_ORG, MAYA.developerId) });
+    await store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...change }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(store, TEST_ORG, MAYA.developerId, true) });
   };
   return { ...h, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails };
 }

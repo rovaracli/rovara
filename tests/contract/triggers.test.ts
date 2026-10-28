@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 18: the trigger routes. A chain's and an agent's triggers, a project's switch for the triggers the built-in agents suggest, turning one on only through a person on
 // the confirmation page, the checks a trigger must pass, and what archiving does. Each test starts its own world.
 import { afterEach, describe, expect, it } from "vitest";
@@ -348,7 +349,7 @@ describe("what a trigger on an agent needs", () => {
     expect(wrong).toMatchObject({ status: 400, body: { message: "spec: Triage bot can't be started by events; ask its owner to allow it" } });
     const noBudget = await v.agentCall(DANA, "PUT", path, { project: "web", spec: { kind: "event", source: "github", type: "issues.opened" } });
     expect(noBudget).toMatchObject({ status: 409, body: { code: "AGENT_BUDGET_REQUIRED" } });
-    await v.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 20 }, DANA);
+    await v.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 20 }, fixtureActor(v.agents, ORG_A, DANA).developerId, undefined, { ...({}), actor: fixtureActor(v.agents, ORG_A, DANA) });
     const accepted = await v.agentCall(DANA, "PUT", path, { project: "web", spec: { kind: "event", source: "github", type: "issues.opened" } });
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
     expect(await stored(v, ID("a"))).toMatchObject({ target: { kind: "agent", agentId: agent.agentId }, enabled: false, createdBy: DANA });

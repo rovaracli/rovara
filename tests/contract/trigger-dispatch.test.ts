@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 20: an event starts paid work with no person watching, so dispatch re-checks everything at the moment of the event, reads it live and fails closed. These tests drive
 // `dispatchTriggerEvent` over the trigger world (real stores, a recording stand-in for Plan 3's `startAgentRun`): matching by org, source, project and hook; the loop guard; the
 // requirements; the per-trigger and per-org limits; one run per event; and what the log may hold.
@@ -67,7 +68,7 @@ async function customAgent(v: TriggerWorld, specs: NonNullable<RecipeOverlay["tr
   });
   await v.agents.publish({ orgId: ORG_A, agentId: created.agentId, expectedDraftRevision: created.draftRevision, digest: "d".repeat(64), by });
   await addToRoster(v.deps, { orgId: ORG_A, project: "web", agentId: created.agentId, by: DANA });
-  await v.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: 20 }, by);
+  await v.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: 20 }, fixtureActor(v.agents, ORG_A, by).developerId, undefined, { ...({}), actor: fixtureActor(v.agents, ORG_A, by) });
   return created;
 }
 
@@ -379,7 +380,7 @@ describe("the requirements are read again at the event", () => {
     const { v, dispatch } = setup();
     const agent = await customAgent(v, [{ kind: "person" }, PR], { member: PRIYA });
     const noBudget = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: PRIYA });
-    await v.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: null }, PRIYA);
+    await v.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: null }, fixtureActor(v.agents, ORG_A, PRIYA).developerId, undefined, { ...({}), actor: fixtureActor(v.agents, ORG_A, PRIYA) });
     expect(await dispatch(prEvent())).toEqual([{ triggerId: noBudget.triggerId, outcome: "failed", reason: "trigger_invalid" }]);
     expect((await v.triggers.get(ORG_A, noBudget.triggerId))!.enabled).toBe(false);
     const other = await customAgent(v, [{ kind: "person" }, PR], { member: PRIYA });

@@ -673,7 +673,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       throw coded("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
     const actor = options.actor ?? options.overrideCap?.actor;
-    if ((request !== undefined || options.overrideCap !== undefined) && actor === undefined) throw budgetActorRefused();
+    if (actor === undefined) throw budgetActorRefused();
     if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
     if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
     // Approval actor checks are generated once by withOverride, on this store's actual scope.
@@ -875,7 +875,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (usdToWholeMicrodollars(input.guardrails.maxPerRunCeilingUsd) === undefined) {
       throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
-    if (input.actor === undefined || input.actor.developerId !== input.by || (input.request !== undefined && (input.request.orgId !== input.orgId || input.request.developerId !== input.by))) throw budgetActorRefused();
+    if (input.actor === undefined || (input.actor.role !== "owner" && input.actor.role !== "admin") || input.actor.developerId !== input.by || (input.request !== undefined && (input.request.orgId !== input.orgId || input.request.developerId !== input.by))) throw budgetActorRefused();
     const checks = budgetActorChecks(this.input.tableName, input.orgId, input.actor);
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };

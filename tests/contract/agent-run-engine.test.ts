@@ -728,7 +728,7 @@ describe("the end of a run", () => {
     await run.finishPrepare();
     // The company forbids that model after the run started.
     const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
-    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
+    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true) });
     await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "One done.");
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
@@ -1542,7 +1542,7 @@ describe("the guardrails that shape the Slack report", () => {
   async function finishedWith(report: string, guardrails: { extraCommandWords?: string[]; reportLinkDomains?: string[] }) {
     const t = await setup();
     const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
-    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...guardrails }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
+    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...guardrails }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true) });
     const run = await t.start("root-cause-analyst");
     await run.finishPrepare();
     await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
@@ -1594,7 +1594,7 @@ describe("approval steps check the task before they ask", () => {
     const run = await t.start(id);
     await run.finishPrepare();
     const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
-    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [agent] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
+    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [agent] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true) });
     await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);

@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
 import { randomUUID } from "node:crypto";
@@ -1104,7 +1105,7 @@ describe("how the broker wires chains", () => {
     const deps = broker.createAgentRouteDependencies(h.brokerInput as never)!;
     expect(deps.chains).toBeInstanceOf(ChainStore);
     const chain = await deps.chains.create({ orgId: TEST_ORG, name: "Budgeted", owner: { kind: "member", developerId: MAYA.developerId }, definition: STARTER_CHAIN_DEFINITION, createdBy: MAYA.developerId });
-    await deps.chains.setBudget(TEST_ORG, chain.chainId, 12, MAYA.developerId);
+    await deps.chains.setBudget(TEST_ORG, chain.chainId, 12, fixtureActor(deps.chains, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(deps.chains, TEST_ORG, MAYA.developerId) });
     expect(h.db.get(ownerBudgetKey(TEST_ORG, MAYA.developerId))?.["totalUsd"]).toBe(12);
     h.db.delete(ownerBudgetKey(TEST_ORG, MAYA.developerId));
     expect(await deps.store.rebuildOwnerTotal(TEST_ORG, MAYA.developerId)).toBe(12);

@@ -97,7 +97,7 @@ function limitsSetup() {
   const topUp = (month: string, scope: BudgetScope, amountUsd: number) => db.set({ ...topUpKey(TEST_ORG, month, scope), amountUsd });
   const agent = async (monthlyUsd?: number) => {
     const created = await store.create({ orgId: TEST_ORG, name: `Agent ${randomUUID().slice(0, 6)}`, owner: { kind: "member", developerId: DEV1 }, createdBy: DEV1 });
-    if (monthlyUsd !== undefined) await store.setBudget(TEST_ORG, created.agentId, { monthlyUsd }, DEV1);
+    if (monthlyUsd !== undefined) await store.setBudget(TEST_ORG, created.agentId, { monthlyUsd }, fixtureActor(store, TEST_ORG, DEV1).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DEV1) });
     return created;
   };
   return { db, access, store, deps, budgetDeps, topUp, agent, merged };
@@ -167,7 +167,7 @@ describe("effectiveLimits", () => {
     const one = await agent(30);
     topUp("2026-10", { kind: "agent", agentId: one.agentId }, 40);
     const store = new AgentStore({ documentClient: db, tableName: "state", now: () => NOW_OCTOBER });
-    await writeGuardrails({ ...deps, store }, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 80 }, fixtureActor({ ...deps, store }, TEST_ORG, DEV1).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor({ ...deps, store }, TEST_ORG, DEV1) });
+    await writeGuardrails({ ...deps, store }, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 80 }, fixtureActor({ ...deps, store }, TEST_ORG, DEV1, true).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor({ ...deps, store }, TEST_ORG, DEV1, true) });
     const limits = await effectiveLimits(deps, { orgId: TEST_ORG, month: "2026-10", scopes: [{ kind: "agent", agentId: one.agentId }] });
     expect(limits.get(`AGENT#${one.agentId}`)).toBe(70);
   });
@@ -205,7 +205,7 @@ describe("effectiveLimits", () => {
 
   it("reads a built-in's budget from the org's settings for it", async () => {
     const { deps, store } = limitsSetup();
-    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 12 }, DEV1);
+    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 12 }, fixtureActor(store, TEST_ORG, DEV1).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DEV1) });
     const limits = await effectiveLimits(deps, { orgId: TEST_ORG, month: "2026-10", scopes: [{ kind: "agent", agentId: "ticket-triage" }] });
     expect(limits.get("AGENT#ticket-triage")).toBe(12);
   });
@@ -216,14 +216,14 @@ describe("a run's own limit and a project's planning limit", () => {
     const { store, agent } = limitsSetup();
     const none = await agent();
     expect(effectiveMaxPerRun((await store.get(TEST_ORG, none.agentId))!, DEFAULT_AGENT_GUARDRAILS)).toBeUndefined();
-    await store.setBudget(TEST_ORG, none.agentId, { maxPerRunUsd: 20 }, DEV1);
+    await store.setBudget(TEST_ORG, none.agentId, { maxPerRunUsd: 20 }, fixtureActor(store, TEST_ORG, DEV1).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DEV1) });
     expect(effectiveMaxPerRun((await store.get(TEST_ORG, none.agentId))!, DEFAULT_AGENT_GUARDRAILS)).toBe(20);
     expect(effectiveMaxPerRun((await store.get(TEST_ORG, none.agentId))!, { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 15 })).toBe(15);
   });
 
   it("reads a built-in's per-run cap from its settings", async () => {
     const { store } = limitsSetup();
-    await store.setBudget(TEST_ORG, "ticket-triage", { maxPerRunUsd: 7 }, DEV1);
+    await store.setBudget(TEST_ORG, "ticket-triage", { maxPerRunUsd: 7 }, fixtureActor(store, TEST_ORG, DEV1).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DEV1) });
     expect(effectiveMaxPerRun((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))!, DEFAULT_AGENT_GUARDRAILS)).toBe(7);
   });
 
@@ -273,7 +273,7 @@ function ownerSetup() {
     const made: AgentId[] = [];
     for (const [index, monthlyUsd] of budgets.entries()) {
       const created = await base.store.create({ orgId: TEST_ORG, name: `A${String(index)}-${randomUUID().slice(0, 6)}`, owner: { kind: "member", developerId: ALICE }, createdBy: ALICE });
-      await base.store.setBudget(TEST_ORG, created.agentId, { monthlyUsd }, ALICE);
+      await base.store.setBudget(TEST_ORG, created.agentId, { monthlyUsd }, fixtureActor(base.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(base.store, TEST_ORG, ALICE) });
       made.push(created.agentId);
     }
     return made;
@@ -286,7 +286,7 @@ function ownerSetup() {
     const before = (await base.store.get(TEST_ORG, agentId))!;
     const check = await checkOwnerBudget(base.deps, { orgId: TEST_ORG, owner: ALICE, deltaUsd: monthlyUsd - (before.monthlyBudgetUsd ?? 0) });
     if (!check.ok) return check;
-    await base.store.setBudget(TEST_ORG, agentId, { monthlyUsd }, ALICE, undefined, { ownerCap: await capOf() });
+    await base.store.setBudget(TEST_ORG, agentId, { monthlyUsd }, fixtureActor(base.store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(base.store, TEST_ORG, ALICE) });
     return check;
   };
   return { ...base, ownerAgents, totalOf, raise, capOf };
@@ -297,11 +297,11 @@ describe("the one monthly total of a person's agent budgets", () => {
     const { store, ownerAgents, totalOf } = ownerSetup();
     const [first, second] = await ownerAgents(30, 40);
     expect(totalOf(ALICE)).toBe(70);
-    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 10 }, ALICE);
+    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 10 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(50);
-    await store.setBudget(TEST_ORG, second!, { monthlyUsd: null }, ALICE);
+    await store.setBudget(TEST_ORG, second!, { monthlyUsd: null }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(10);
-    await store.setBudget(TEST_ORG, second!, { maxPerRunUsd: 5 }, ALICE); // a per-run cap is not a monthly budget
+    await store.setBudget(TEST_ORG, second!, { maxPerRunUsd: 5 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }); // a per-run cap is not a monthly budget
     expect(totalOf(ALICE)).toBe(10);
   });
 
@@ -333,7 +333,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     expect(await raise(first!, 56)).toMatchObject({ ok: false, totalUsd: 95, wouldBeUsd: 101, capUsd: 100 });
     expect((await store.get(TEST_ORG, first!))?.monthlyBudgetUsd).toBe(50);
     // The check was passed over (or the total moved since): the write itself holds the cap.
-    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 56 }, ALICE, undefined, { ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
+    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 56 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, ALICE) })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
     expect((await store.get(TEST_ORG, first!))?.monthlyBudgetUsd).toBe(50);
     expect(totalOf(ALICE)).toBe(95);
     expect(await checkOwnerBudget(deps, { orgId: TEST_ORG, owner: ALICE, deltaUsd: 5 })).toMatchObject({ ok: true });
@@ -358,7 +358,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     const [first, second] = await ownerAgents(30, 40);
     await store.archive(TEST_ORG, first!, ALICE);
     expect(totalOf(ALICE)).toBe(40);
-    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 90 }, ALICE); // raised while archived: counts for no one
+    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 90 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }); // raised while archived: counts for no one
     expect(totalOf(ALICE)).toBe(40);
     await store.unarchive(TEST_ORG, first!, ALICE);
     expect(totalOf(ALICE)).toBe(130);
@@ -384,8 +384,8 @@ describe("the one monthly total of a person's agent budgets", () => {
     const cap = await capOf();
     // Each raise alone lands on $100 or less; together they would make $110.
     const results = await Promise.allSettled([
-      store.setBudget(TEST_ORG, first!, { monthlyUsd: 55 }, ALICE, undefined, { ownerCap: cap }),
-      store.setBudget(TEST_ORG, second!, { monthlyUsd: 55 }, ALICE, undefined, { ownerCap: cap }),
+      store.setBudget(TEST_ORG, first!, { monthlyUsd: 55 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: cap }), actor: fixtureActor(store, TEST_ORG, ALICE) }),
+      store.setBudget(TEST_ORG, second!, { monthlyUsd: 55 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: cap }), actor: fixtureActor(store, TEST_ORG, ALICE) }),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const refused = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
@@ -401,7 +401,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     expect(totalOf(ALICE)).toBe(80);
     expect(totalOf(BOB)).toBe(30);
     const bobs = await store.create({ orgId: TEST_ORG, name: "Bob's own", owner: { kind: "member", developerId: BOB }, createdBy: BOB });
-    await store.setBudget(TEST_ORG, bobs.agentId, { monthlyUsd: 60 }, BOB);
+    await store.setBudget(TEST_ORG, bobs.agentId, { monthlyUsd: 60 }, fixtureActor(store, TEST_ORG, BOB).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, BOB) });
     expect(totalOf(BOB)).toBe(90);
     // Alice's $80 agent would take Bob to $170: it stays Alice's, and both totals stay as they were.
     await expect(store.setOwner(TEST_ORG, big!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
@@ -417,14 +417,14 @@ describe("the one monthly total of a person's agent budgets", () => {
   it("counts a project's agent for its accountable maintainer, and moves it when the maintainer changes", async () => {
     const { totalOf, store, capOf } = ownerSetup();
     const project = await store.create({ orgId: TEST_ORG, name: "Project agent", owner: { kind: "project", project: "web" }, accountable: { developerId: ALICE }, createdBy: ALICE });
-    await store.setBudget(TEST_ORG, project.agentId, { monthlyUsd: 35 }, ALICE);
+    await store.setBudget(TEST_ORG, project.agentId, { monthlyUsd: 35 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(35);
     await store.setAccountable(TEST_ORG, project.agentId, { developerId: BOB }, ALICE, undefined, { ownerCap: await capOf() });
     expect(totalOf(ALICE)).toBe(0);
     expect(totalOf(BOB)).toBe(35);
     // A member-owned agent moved to the project counts for the maintainer who is accountable for it.
     const member = await store.create({ orgId: TEST_ORG, name: "Member agent", owner: { kind: "member", developerId: ALICE }, createdBy: ALICE });
-    await store.setBudget(TEST_ORG, member.agentId, { monthlyUsd: 20 }, ALICE);
+    await store.setBudget(TEST_ORG, member.agentId, { monthlyUsd: 20 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     await store.setOwner(TEST_ORG, member.agentId, { kind: "project", project: "web" }, ALICE, { developerId: BOB });
     expect(totalOf(ALICE)).toBe(0);
     expect(totalOf(BOB)).toBe(55);
@@ -432,11 +432,11 @@ describe("the one monthly total of a person's agent budgets", () => {
 
   it("counts a built-in's budget for its accountable person, and for no one while it has none", async () => {
     const { totalOf, store, capOf } = ownerSetup();
-    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, DANA.developerId);
+    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(0);
     await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, DANA.developerId);
     expect(totalOf(DANA.developerId)).toBe(15);
-    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 25 }, DANA.developerId, undefined, { ownerCap: await capOf() });
+    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 25 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(25);
     await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, DANA.developerId);
     expect(totalOf(DANA.developerId)).toBe(0);
@@ -693,7 +693,7 @@ describe("an agent's budget", () => {
 
   it("follows the ceilings the org set", async () => {
     const { create, putBudget, deps } = await routeSetup();
-    await writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 20, maxPerRunCeilingUsd: 8 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
+    await writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 20, maxPerRunCeilingUsd: 8 }, fixtureActor(deps, TEST_ORG, DANA.developerId, true).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId, true) });
     const agentId = await create(MAX);
     expect((await putBudget(MAX, agentId, { monthlyUsd: 25 })).status).toBe(400);
     expect((await putBudget(MAX, agentId, { maxPerRunUsd: 9 })).status).toBe(400);
@@ -925,9 +925,9 @@ describe("an owner merged into another counts for the survivor", () => {
     merged.set(GHOST, ALICE);
     const dup = await newAgent(base, GHOST);
     expect(await checkOwnerBudget(base.deps, { orgId: TEST_ORG, owner: ALICE, deltaUsd: 50 })).toMatchObject({ ok: false });
-    await expect(store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 50 }, GHOST, undefined, { ownerCap: await base.capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
+    await expect(store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 50 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({ ownerCap: await base.capOf() }), actor: fixtureActor(store, TEST_ORG, GHOST) })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
     expect(totalOf(ALICE)).toBe(100);
-    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 0 }, GHOST, undefined, { ownerCap: await base.capOf() });
+    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 0 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({ ownerCap: await base.capOf() }), actor: fixtureActor(store, TEST_ORG, GHOST) });
     expect(totalOf(GHOST)).toBe(0);
   });
 
@@ -937,7 +937,7 @@ describe("an owner merged into another counts for the survivor", () => {
     await ownerAgents(40);
     merged.set(GHOST, ALICE);
     const dup = await newAgent(base, GHOST);
-    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, GHOST, undefined, { ownerCap: await base.capOf() });
+    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({ ownerCap: await base.capOf() }), actor: fixtureActor(store, TEST_ORG, GHOST) });
     expect(totalOf(ALICE)).toBe(70);
     expect(base.db.get(ownerBudgetKey(TEST_ORG, GHOST))).toBeUndefined();
     await store.archive(TEST_ORG, dup.agentId, GHOST);
@@ -948,11 +948,11 @@ describe("an owner merged into another counts for the survivor", () => {
     const base = ownerSetup();
     const { store, totalOf, merged, ownerAgents } = base;
     const dup = await newAgent(base, GHOST);
-    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, GHOST); // counted for the duplicate while it was one person
+    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, GHOST) }); // counted for the duplicate while it was one person
     await ownerAgents(40);
     expect(totalOf(GHOST)).toBe(30);
     merged.set(GHOST, ALICE); // the merge happens; nothing has moved the counters yet
-    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 10 }, GHOST);
+    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 10 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, GHOST) });
     expect(totalOf(ALICE)).toBe(50); // 40 + 10, not 40 - 20
   });
 
@@ -960,7 +960,7 @@ describe("an owner merged into another counts for the survivor", () => {
     const base = ownerSetup();
     const { store, totalOf, merged, ownerAgents } = base;
     const dup = await newAgent(base, GHOST);
-    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, GHOST);
+    await store.setBudget(TEST_ORG, dup.agentId, { monthlyUsd: 30 }, fixtureActor(store, TEST_ORG, GHOST).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, GHOST) });
     await ownerAgents(40);
     merged.set(GHOST, ALICE);
     expect(await store.rebuildOwnerTotal(TEST_ORG, ALICE)).toBe(70);
@@ -986,10 +986,10 @@ describe("the write holds the spend policy it read", () => {
     const [first] = await ownerAgents(10);
     const read = await capOf();
     await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 20 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
-    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 50 }, ALICE, undefined, { ownerCap: read })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", message: containing("spend policy changed") });
+    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 50 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: read }), actor: fixtureActor(store, TEST_ORG, ALICE) })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", message: containing("spend policy changed") });
     expect((await store.get(TEST_ORG, first!))?.monthlyBudgetUsd).toBe(10);
     expect(totalOf(ALICE)).toBe(10);
-    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, ALICE, undefined, { ownerCap: await capOf() }); // the policy as it is now
+    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, ALICE) }); // the policy as it is now
     expect(totalOf(ALICE)).toBe(20);
   });
 });
@@ -999,8 +999,8 @@ describe("a stale read of the agent says so, and is not mistaken for the cap", (
     const { ownerAgents, store } = ownerSetup();
     const [first] = await ownerAgents(10);
     const results = await Promise.allSettled([
-      store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, ALICE),
-      store.setBudget(TEST_ORG, first!, { monthlyUsd: 30 }, ALICE),
+      store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }),
+      store.setBudget(TEST_ORG, first!, { monthlyUsd: 30 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }),
     ]);
     const refused = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
     expect(refused.reason).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
@@ -1017,7 +1017,7 @@ describe("two changes racing on one agent", () => {
     it(`lets one of a budget change and an owner change apply, and the totals match the agents (budget ${budgetFirst ? "first" : "second"})`, async () => {
       const { ownerAgents, store, totalOf } = ownerSetup();
       const [agent] = await ownerAgents(30);
-      const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, ALICE);
+      const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
       const owner = () => store.setOwner(TEST_ORG, agent!, { kind: "member", developerId: BOB }, ALICE);
       const results = await Promise.allSettled(budgetFirst ? [budget(), owner()] : [owner(), budget()]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -1028,7 +1028,7 @@ describe("two changes racing on one agent", () => {
     it(`lets one of a budget change and an archive apply, and the totals match the agents (budget ${budgetFirst ? "first" : "second"})`, async () => {
       const { ownerAgents, store, totalOf } = ownerSetup();
       const [agent] = await ownerAgents(30);
-      const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, ALICE);
+      const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
       const archive = () => store.archive(TEST_ORG, agent!, ALICE);
       const results = await Promise.allSettled(budgetFirst ? [budget(), archive()] : [archive(), budget()]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -1040,7 +1040,7 @@ describe("two changes racing on one agent", () => {
 describe("a change worked out from a stale read of the agent", () => {
   const sumOfAgents = async (store: AgentStore, owner: string) => (await store.list(TEST_ORG)).filter((agent) => agent.status === "active" && agent.owner.kind === "member" && agent.owner.developerId === owner).reduce((sum, agent) => sum + (agent.monthlyBudgetUsd ?? 0), 0);
   type Change = (store: AgentStore, agentId: AgentId) => Promise<unknown>;
-  const budget: Change = (store, agentId) => store.setBudget(TEST_ORG, agentId, { monthlyUsd: 45 }, ALICE);
+  const budget: Change = (store, agentId) => store.setBudget(TEST_ORG, agentId, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
   const owner: Change = (store, agentId) => store.setOwner(TEST_ORG, agentId, { kind: "member", developerId: BOB }, ALICE);
   const archive: Change = (store, agentId) => store.archive(TEST_ORG, agentId, ALICE);
   const cases: Array<[string, Change, Change]> = [
@@ -1070,10 +1070,10 @@ describe("a total that was never counted", () => {
     // As if the budgets had been set before the totals were kept: no counter at all.
     db.delete(ownerBudgetKey(TEST_ORG, ALICE));
     expect(db.get(ownerBudgetKey(TEST_ORG, ALICE))).toBeUndefined();
-    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 5 }, ALICE);
+    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 5 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(25);
     db.delete(ownerBudgetKey(TEST_ORG, ALICE));
-    await store.setBudget(TEST_ORG, second!, { monthlyUsd: null }, ALICE);
+    await store.setBudget(TEST_ORG, second!, { monthlyUsd: null }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(5);
     db.delete(ownerBudgetKey(TEST_ORG, ALICE));
     await store.archive(TEST_ORG, first!, ALICE);
@@ -1083,9 +1083,9 @@ describe("a total that was never counted", () => {
   it("is built for a built-in's accountable person too", async () => {
     const { store, db, totalOf } = ownerSetup();
     await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, DANA.developerId);
-    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, DANA.developerId);
+    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     db.delete(ownerBudgetKey(TEST_ORG, DANA.developerId));
-    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 4 }, DANA.developerId);
+    await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 4 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(4);
   });
 });
@@ -1111,7 +1111,7 @@ describe("a built-in's budget answer", () => {
   it("carries who set it, as stored", async () => {
     const { store } = ownerSetup();
     await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage", BOB); // someone else made the settings
-    const written = await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 8 }, DANA.developerId);
+    const written = await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 8 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(written).toMatchObject({ monthlyBudgetUsd: 8, updatedBy: DANA.developerId });
     expect(await store.getBuiltinSettings(TEST_ORG, "ticket-triage")).toMatchObject({ updatedBy: DANA.developerId });
   });

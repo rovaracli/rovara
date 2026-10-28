@@ -102,7 +102,7 @@ async function setup(options: { builtins?: ConstructorParameters<typeof AgentSto
     return agentId;
   };
   const addToRoster = async (who: Developer, project: string, agentId: AgentId): Promise<Reply> => call(who, "PUT", `/v1/app/projects/${project}/agents/${agentId}`, {});
-  const setGuardrails = (changes: Partial<AgentGuardrails>) => writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), ...changes }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
+  const setGuardrails = (changes: Partial<AgentGuardrails>) => writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), ...changes }, fixtureActor(deps, TEST_ORG, DANA.developerId, true).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId, true) });
   const rosterOf = async (who: Developer, project = "web") => {
     const listed = await call(who, "GET", `/v1/app/projects/${project}/agents`);
     expect(listed.status, JSON.stringify(listed.body)).toBe(200);

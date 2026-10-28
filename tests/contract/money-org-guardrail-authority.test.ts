@@ -51,7 +51,7 @@ for (const legacy of [false, true]) it(`refuses a concurrent org budget overwrit
     if (!raced && (input.Item?.pk === key.pk || input.TransactItems?.some(item => item.Put?.Item?.pk === key.pk))) { raced = true; await write(800, true); }
     return send(command);
   };
-  expect((await write(900).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("AGENT_REVISION_CONFLICT");
+  expect((await write(900).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("CHANGE_STALE");
   expect(raced).toBe(true); expect(t.db.get(key)?.orgMonthlyUsd).toBe(800);
   expect(capture.recorded().map(e => ({ from: e.facts?.fromCents, to: e.facts?.toCents }))).toEqual([{ from: 50000, to: 80000 }]);
   await write(900);

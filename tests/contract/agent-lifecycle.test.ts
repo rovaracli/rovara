@@ -1,3 +1,5 @@
+import { orgMetaKey } from "@agentx/contracts";
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 11: what happens to agents when a member is merged into another, a member is removed, or a project is archived. The sign-in
 // function only leaves a marker in the `MEMBER_MERGE_QUEUE` partition; the broker's 5-minute sweep drains it and moves what the duplicate
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
@@ -111,6 +113,7 @@ const skillFile = (name: string) => `---\nname: ${name}\ndescription: Use when $
 
 function agentWorld(options: { audit?: AuditCapture } = {}) {
   const db = new FakeDynamoDb();
+  for (const orgId of [ORG_A, ORG_B]) db.set({ ...orgMetaKey(orgId), entityType: "ORG", orgId });
   options.audit?.attach(db);
   const clock = { now: T0 };
   const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
@@ -148,12 +151,12 @@ function agentWorld(options: { audit?: AuditCapture } = {}) {
   /** An agent of a member, with a monthly budget; made before any merge, so the owner's total counts it where it was made. */
   const memberAgent = async (owner: string, name: string, budgetUsd?: number, orgId: OrgId = ORG_A) => {
     const agent = await store.create({ orgId, name, owner: { kind: "member", developerId: owner }, overlay: SCRATCH, createdBy: owner });
-    if (budgetUsd !== undefined) await store.setBudget(orgId, agent.agentId, { monthlyUsd: budgetUsd }, owner);
+    if (budgetUsd !== undefined) await store.setBudget(orgId, agent.agentId, { monthlyUsd: budgetUsd }, fixtureActor(store, orgId, owner).developerId, undefined, { ...({}), actor: fixtureActor(store, orgId, owner) });
     return agent;
   };
   const projectAgent = async (project: string, accountable: string, name: string, budgetUsd?: number) => {
     const agent = await store.create({ orgId: ORG_A, name, owner: { kind: "project", project }, accountable: { developerId: accountable }, overlay: SCRATCH, createdBy: accountable });
-    if (budgetUsd !== undefined) await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: budgetUsd }, accountable);
+    if (budgetUsd !== undefined) await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: budgetUsd }, fixtureActor(store, ORG_A, accountable).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, accountable) });
     return agent;
   };
   const shareWith = (agentId: AgentId, who: string, level: "view" | "use" | "edit", orgId: OrgId = ORG_A) =>

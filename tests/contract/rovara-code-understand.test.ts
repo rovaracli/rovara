@@ -569,7 +569,7 @@ describe("Understand runs as a model step: the plan step's model, the allowed mo
     const t = await world();
     const { taskId, workspaceId } = await t.start();
     const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
-    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }, { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId) });
+    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }, { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true) });
     await t.finishPrepare(workspaceId);
     expect(t.operationOf(workspaceId, "UNDERSTAND")).toBeUndefined();
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND" });

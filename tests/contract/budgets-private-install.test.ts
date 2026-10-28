@@ -1,10 +1,9 @@
-import { fixtureActor } from "../support/money-authority.js";
 // Ruling R47: a private or single-org install's org has no monthly cap until an operator sets one; only a cloud install's orgs start
-// with the placeholder limits. Per-task caps still apply; company-member authority is now required for mutation.
+// with the placeholder limits. Per-task caps still apply; operators retain their existing private-install credential authority.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgSettingsKey, singleOrgIdForEnv } from "../../packages/contracts/src/index.js";
-import { MAX_BUDGET_USD, changeBudgets, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { MAX_BUDGET_USD, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
 import { admitMember, nextKeyCap } from "../support/admission.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
@@ -100,16 +99,13 @@ describe("PUT /v1/admin/org/budget", () => {
 
   it("operator PUT refuses excessive decimal precision before storage or proxy changes with readable copy",async()=>{const access=fakeModelAccess();const {handler,db}=await createAdminBroker({extra:{modelAccess:{access,proxyUrl:PROXY_URL}}});for(const body of [{orgMonthlyUsd:12.3456789},{memberDefaultMonthlyUsd:0.30000000000000004},{memberOverrides:{dev1:0.0000001}}]){const response=await put(handler,{requestId:randomUUID(),...body});expect(response.status).toBe(400);expect(JSON.stringify(response.body).includes("at most 6 decimal places")).toBe(true);expect(db.get(orgSettingsKey(INSTALL_ORG,"BUDGET"))).toBeUndefined();expect(access.upsertOrg).not.toHaveBeenCalled();expect(access.upsertMember).not.toHaveBeenCalled();}});
 
-  it("holds an unfenced operator mutation and permits explicit company-member settings, which reach the proxy", async () => {
+  it("lets an operator set the single org's caps, which then apply and reach the proxy", async () => {
     const access = fakeModelAccess();
     const { handler, db } = await createAdminBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
     const response = await put(handler, { requestId: randomUUID(), orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 });
-    expect(response.status).toBe(403);
-    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))).toBeUndefined(); expect(access.upsertOrg).not.toHaveBeenCalled();
-    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: Date.now });
-    const authority = fixtureActor(db, INSTALL_ORG, "a".repeat(64));
-    await changeBudgets({ documentClient: db, tableName: "state", access, orgs }, { authority, orgId: INSTALL_ORG, body: { requestId: randomUUID(), orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 }, updatedBy: authority.developerId, at: new Date().toISOString() });
-    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))).toMatchObject({ orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, updatedBy: authority.developerId, revision: 1 });
+    expect(response).toMatchObject({ status: 200, body: { budget: { orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, memberOverrides: {} } } });
+    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))).toMatchObject({ orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 });
+    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))?.updatedBy).toMatch(/^op_[0-9a-f]{24}$/);
     expect(access.upsertOrg).toHaveBeenCalledWith(INSTALL_ORG, 2000);
     // The caps now apply: a member at $149.80 has too little left for a task.
     access.setMemberSpent(INSTALL_ORG, "dev1", 149.8);

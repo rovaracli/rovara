@@ -538,7 +538,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
   async setBudget(orgId: OrgId, chainId: ChainId, monthlyUsd: number | undefined, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
     checkAmount("monthlyUsd", monthlyUsd);
     const actor = options.actor ?? options.overrideCap?.actor;
-    if ((request !== undefined || options.overrideCap !== undefined) && actor === undefined) throw budgetActorRefused();
+    if (actor === undefined) throw budgetActorRefused();
     if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
     if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
     const actorChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);

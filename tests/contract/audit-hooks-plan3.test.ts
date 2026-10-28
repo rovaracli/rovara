@@ -386,7 +386,7 @@ describe("budget.changed on an agent", () => {
     const s = storeSetup();
     const agent = await s.make();
     s.clock.now += 1000;
-    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 40, maxPerRunUsd: 5 }, ALICE);
+    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 40, maxPerRunUsd: 5 }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
 
     const transaction = auditedTransactions(s.transactions).at(-1)!;
     expect(writes(transaction, agentKey(TEST_ORG, agent.agentId, "META").pk, "META")).toBe(true);
@@ -401,13 +401,13 @@ describe("budget.changed on an agent", () => {
   it("gives the old figure when there was one, leaves the new one out when a limit is cleared, and records nothing when nothing changed", async () => {
     const s = storeSetup();
     const agent = await s.make();
-    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 40 }, ALICE);
+    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 40 }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 25.5 }, ALICE);
+    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 25.5 }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 25.5 }, ALICE);
+    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: 25.5 }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: null }, ALICE);
+    await s.store.setBudget(TEST_ORG, agent.agentId, { monthlyUsd: null }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     expect(s.capture!.recordedBy("budget.changed").map((event) => event.facts)).toEqual([
       { scopeKind: "agent", field: "agent_monthly_limit", toCents: 4000 },
       { scopeKind: "agent", field: "agent_monthly_limit", fromCents: 4000, toCents: 2550 },
@@ -417,7 +417,7 @@ describe("budget.changed on an agent", () => {
 
   it("records a built-in's budget against the built-in", async () => {
     const s = storeSetup();
-    await s.store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 10 }, ALICE);
+    await s.store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 10 }, fixtureActor(s.store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     expect(s.capture!.recordedBy("budget.changed")).toMatchObject([{ target: { kind: "budget", id: "ticket-triage" }, facts: { scopeKind: "agent", field: "agent_monthly_limit", toCents: 1000 } }]);
   });
 });
@@ -425,9 +425,9 @@ describe("budget.changed on an agent", () => {
 describe("guardrails.changed", () => {
   it("records the new revision in the guardrails transaction, and whether the change widened what agents may do", async () => {
     const s = storeSetup();
-    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE) });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE, true).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE, true) });
     s.clock.now += 1000;
-    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 1, by: BOB, widened: true }), by: fixtureActor(s.store, TEST_ORG, BOB).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB) });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 1, by: BOB, widened: true }), by: fixtureActor(s.store, TEST_ORG, BOB, true).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB, true) });
 
     const [first, second] = auditedTransactions(s.transactions);
     expect(writes(first!, agentGuardrailsKey(TEST_ORG).pk)).toBe(true);
@@ -440,8 +440,8 @@ describe("guardrails.changed", () => {
 
   it("records nothing for a write against a revision that moved", async () => {
     const s = storeSetup();
-    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE) });
-    await expect(s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: BOB }), by: fixtureActor(s.store, TEST_ORG, BOB).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB) })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE, true).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE, true) });
+    await expect(s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: BOB }), by: fixtureActor(s.store, TEST_ORG, BOB, true).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB, true) })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
     expect(s.capture!.recordedBy("guardrails.changed")).toHaveLength(1);
   });
 });

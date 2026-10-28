@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -1325,7 +1326,7 @@ for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001, -1, 1_000_000.000001])
 
 for (const change of ["demoted", "removed", "pointer revoked", "org closing"]) it(`refuses an admin ${change} in a real transaction just before the budget commit`, async () => {
   const f = await setup(), key = builtinSettingsKey(TEST_ORG, "rovara-code");
-  await f.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 1 }, DANA.developerId);
+  await f.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 1 }, fixtureActor(f.store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(f.store, TEST_ORG, DANA.developerId) });
   const count = f.db.find(row => row.kind === "budget_changed").length, originalOrg = f.db.get(orgMetaKey(TEST_ORG))!;
   const send = f.db.send.bind(f.db); let demoted = false;
   f.db.send = async command => {
@@ -1382,7 +1383,7 @@ for (const withSnapshot of [false, true]) it(`keeps an invalid historical owner-
 });
 it("does not apply a held per-run value over a newer committed per-run value", async () => {
   const t = await budgetDecisionFixture();
-  await t.f.store.setBudget(TEST_ORG, t.id, { maxPerRunUsd: 1 }, MAYA.developerId);
+  await t.f.store.setBudget(TEST_ORG, t.id, { maxPerRunUsd: 1 }, fixtureActor(t.f.store, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(t.f.store, TEST_ORG, MAYA.developerId) });
   const request = await t.ask(500, 2);
   expect((await t.f.call(MAYA, "PUT", `/v1/app/agents/${t.id}/budget`, { maxPerRunUsd: 3 })).status).toBe(200);
   const audited = t.capture.recorded().length;
@@ -1431,7 +1432,7 @@ it("does not initialize builtin settings when actor removal wins the first-budge
 
 it("refuses a budget write if ownership moves after manage access but before the store reread", async () => {
   const f = await setup(), id = await f.create(MAYA), key = agentKey(TEST_ORG, id, "META");
-  await f.store.setBudget(TEST_ORG, id, { maxPerRunUsd: 1 }, MAYA.developerId);
+  await f.store.setBudget(TEST_ORG, id, { maxPerRunUsd: 1 }, fixtureActor(f.store, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(f.store, TEST_ORG, MAYA.developerId) });
   const count = f.db.find(row => row.kind === "budget_changed").length, send = f.db.send.bind(f.db); let moved = false;
   f.db.send = async command => {
     const result = await send(command), input = command.input as { Key?: { pk?: string; sk?: string } };

@@ -21,7 +21,7 @@ async function fixture() {
   const h = await createAdminBroker({ extra: { audit: capture.audit, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } }); capture.attach(h.db);
   const transport: typeof fetch = async (url, init) => {
     expect(new Headers(init?.headers).has("authorization")).toBe(true);
-    const result = await adminCall(h.handler, { method: "PUT", path: new URL(String(url)).pathname, body: JSON.parse(String(init?.body)), admin: true });
+    const result = await adminCall(h.handler, { method: "PUT", path: new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url).pathname, body: JSON.parse(typeof init?.body === "string" ? init.body : "null") as unknown, admin: true });
     return new Response(JSON.stringify(result.body), { status: result.status, headers: { "content-type": "application/json" } });
   };
   const operator = (usd: number) => setOrgBudget({ controlPlaneUrl: "https://cell.example.test", accessToken: "fixture-operator-token", orgMonthlyUsd: usd, requestId: randomUUID() }, transport);
@@ -32,11 +32,12 @@ async function fixture() {
 it("the shipped operator CLI sets a fresh private budget with no members and records an operator audit", async () => {
   const f = await fixture();
   expect(f.db.find(item => item.entityType === "ORG_MEMBER")).toHaveLength(0);
-  expect((await f.operator(800)).budget.orgMonthlyUsd).toBe(800);
+  await expect(f.operator(800)).resolves.toMatchObject({ budget: { orgMonthlyUsd: 800 } });
   expect(f.db.find(item => item.entityType === "ORG_MEMBER")).toHaveLength(0);
   expect(f.db.get(key)?.revision).toBe(1);
   const events = f.capture.recordedBy("budget.changed"); expect(events).toHaveLength(1);
-  expect(events[0]?.actor).toEqual({ kind: "operator", id: expect.stringMatching(/^op_[0-9a-f]{24}$/) });
+  expect(events[0]?.actor?.kind).toBe("operator");
+  expect(events[0]?.actor?.id).toMatch(/^op_[0-9a-f]{24}$/);
   expect(f.access.upsertOrg).toHaveBeenCalledWith(orgId, 800);
 });
 for (const outer of ["operator", "admin"] as const) it(`one concurrent ${outer}/other budget wins, loser gets CHANGE_STALE and exact audit before`, async () => {
@@ -59,8 +60,8 @@ for (const outer of ["operator", "admin"] as const) it(`one concurrent ${outer}/
 for (const revision of [0, 1.5, "broken"] as const) for (const authority of ["operator", "admin"] as const) it(`repairs raw revision ${revision} through ${authority}, then member removal works`, async () => {
   const f = await fixture(), victim = "b".repeat(64); seedMembership(f.db, MAYA.developerId, { orgId, role: "admin" }); seedMembership(f.db, victim, { orgId, role: "member" });
   f.db.set({ ...key, entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberOverrides: { [victim]: 30 }, revision });
-  if (authority === "operator") await f.operator(500);
-  else await writeBudgets(f.deps, orgId, { orgMonthlyUsd: 500, memberOverrides: { [victim]: 30 } }, MAYA.developerId, new Date().toISOString(), { authority: { developerId: MAYA.developerId, role: "admin" } });
+  if (authority === "operator") await expect(f.operator(500)).resolves.toMatchObject({ budget: { orgMonthlyUsd: 500 } });
+  else await expect(writeBudgets(f.deps, orgId, { orgMonthlyUsd: 500, memberOverrides: { [victim]: 30 } }, MAYA.developerId, new Date().toISOString(), { authority: { developerId: MAYA.developerId, role: "admin" } })).resolves.toBeUndefined();
   expect(f.db.get(key)).toMatchObject({ orgMonthlyUsd: 500, memberOverrides: { [victim]: 30 }, revision: 1 });
   await new OrgStore({ documentClient: f.db, tableName: "state", now: Date.now }).removeMember({ orgId, developerId: victim, emails: [], ban: false });
   expect(f.db.get(orgMemberKey(orgId, victim))).toBeUndefined(); expect(f.db.get(key)).toMatchObject({ orgMonthlyUsd: 500, memberOverrides: {}, revision: 2 });
@@ -76,7 +77,7 @@ for (const kind of ["agent", "chain"] as const) it(`${kind} budgets require an a
   const t = await setup(), plural = kind === "agent" ? "agents" : "chains";
   const made = await t.api(MAYA, "POST", `/v1/app/${plural}`, { name: "Owned money", ...(kind === "agent" ? { overlay: TRIAGE } : {}) }); expect(made.status).toBe(201);
   const row = made.body[kind] as Record<string, string>, id = row[kind === "agent" ? "agentId" : "chainId"]!;
-  const set = (withActor: boolean) => kind === "agent" ? t.store.setBudget(TEST_ORG, id as never, { monthlyUsd: 10 }, MAYA.developerId, undefined, withActor ? { actor: { developerId: MAYA.developerId, role: "member" } } : {})
+  const set = (withActor: boolean) => kind === "agent" ? t.store.setBudget(TEST_ORG, id, { monthlyUsd: 10 }, MAYA.developerId, undefined, withActor ? { actor: { developerId: MAYA.developerId, role: "member" } } : {})
     : t.deps().chains!.setBudget(TEST_ORG, id, 10, MAYA.developerId, undefined, withActor ? { actor: { developerId: MAYA.developerId, role: "member" } } : {});
   expect((await set(false).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("FORBIDDEN"); await set(true);
 });
@@ -93,4 +94,13 @@ for (const authority of ["operator", "admin"] as const) it(`refuses ${authority}
   expect((await (authority === "operator" ? f.operator(500) : f.admin(500)).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("CHANGE_STALE");
   expect(raced).toBe(true); expect(f.db.get(key)).toMatchObject({ orgMonthlyUsd: 500, revision: "changed-corrupt-revision" });
   expect(f.capture.recordedBy("budget.changed")).toHaveLength(0);
+});
+
+for (const count of [98, 99]) it(`preserves the operator's existing atomic ${count}-event boundary`, async () => {
+  const f = await fixture(), overrides: Record<string, number> = {};
+  for (let i = 0; i < count; i += 1) { const id = i.toString(16).padStart(64, "0"); seedMembership(f.db, id, { orgId, role: "member" }); overrides[id] = 100 + i; }
+  const result = await adminCall(f.handler, { method: "PUT", path: "/v1/admin/org/budget", body: { requestId: randomUUID(), memberOverrides: overrides }, admin: true });
+  expect(result.status).toBe(count === 98 ? 200 : 400);
+  expect(f.capture.recordedBy("budget.changed")).toHaveLength(count === 98 ? 98 : 0);
+  if (count === 99) { expect(f.db.get(key)).toBeUndefined(); expect(f.access.upsertOrg).not.toHaveBeenCalled(); }
 });

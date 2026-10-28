@@ -85,8 +85,8 @@ for (const kind of ["agent", "chain"] as const) it(`preserves a competing commit
     const items = (command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> }).TransactItems;
     if (!raced && items?.some(item => item.Update?.Key?.pk === f.s.key.pk && item.Update.Key.sk === f.s.key.sk)) {
       raced = true;
-      if (kind === "agent") await f.store.setBudget(TEST_ORG, f.s.id, { monthlyUsd: 25 }, MAYA.developerId);
-      else await f.chains.setBudget(TEST_ORG, f.s.id, 25, MAYA.developerId);
+      if (kind === "agent") await f.store.setBudget(TEST_ORG, f.s.id, { monthlyUsd: 25 }, MAYA.developerId, undefined, { actor: { developerId: MAYA.developerId, role: "member" } });
+      else await f.chains.setBudget(TEST_ORG, f.s.id, 25, MAYA.developerId, undefined, { actor: { developerId: MAYA.developerId, role: "member" } });
     }
     return send(command);
   };

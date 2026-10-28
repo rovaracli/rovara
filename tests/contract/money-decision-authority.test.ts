@@ -65,7 +65,7 @@ it("prioritizes monthly actor loss over a simultaneous owner-counter reroute", a
   t.db.send = async command => {
     const items = (command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> }).TransactItems;
     if (!raced && items?.some(item => item.Update?.Key?.pk === requestKey.pk && item.Update.Key.sk === requestKey.sk)) {
-      raced = true; await store.setBudget(TEST_ORG, id, { monthlyUsd: 31 }, MAYA.developerId);
+      raced = true; await store.setBudget(TEST_ORG, id, { monthlyUsd: 31 }, MAYA.developerId, undefined, { actor: { developerId: MAYA.developerId, role: "member" } });
       await send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) } }] }));
     }
     return send(command);
