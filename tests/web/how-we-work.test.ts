@@ -398,3 +398,28 @@ for (const theme of ["light", "dark"] as const) it("has no accessibility violati
  await screen.findByRole("heading", { name: "Version 2 · Running now" });
  await expectNoAxeViolations(f.container);
 });
+
+describe("the pull request stage", () => {
+ const UNUSED = "Rules for this stage aren't used yet.";
+ it("shows rules written there read-only, with the line that they aren't used yet, and no box for them", async () => {
+  const view = howWeWorkView();
+  (view.stages[5]!.knows.instructions as unknown[]).push({ value: "Mention the ticket.", source: "project", locked: false });
+  await open({ view });
+  await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Keep changes small."));
+  const pull = card("Pull request");
+  expect(within(pull).getByText("Mention the ticket.")).toBeTruthy();
+  expect(within(pull).getByText(UNUSED)).toBeTruthy();
+  expect(within(pull).queryByRole("textbox")).toBeNull();
+  for (const name of ["Plan", "Plan check", "Build", "Review"]) {
+   expect(within(card(name)).queryByText(UNUSED)).toBeNull();
+   expect(within(card(name)).getByRole("textbox", { name: "Instructions for this stage" })).toBeTruthy();
+  }
+  expect(within(card("Checks")).queryByText(UNUSED)).toBeNull();
+ });
+
+ it("says so even when nothing is written there", async () => {
+  await open();
+  expect(within(card("Pull request")).getByText(UNUSED)).toBeTruthy();
+  expect(within(card("Pull request")).queryByRole("textbox")).toBeNull();
+ });
+});

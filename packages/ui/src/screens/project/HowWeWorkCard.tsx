@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { HOW_WE_WORK_UNUSED_STAGE_NOTE } from "@agentx/contracts/web";
 import { Card } from "../../design/Card.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
@@ -10,6 +11,7 @@ export function HowWeWorkCard({ stage, view, filter, showUnchanged, editor }: { 
  const forced = new Set<RowId>(filter === "all" && (stage.knows.note !== undefined || editor !== undefined) ? ["knows"] : []), rows = visibleRows(stageRows(stage, view), filter, showUnchanged, forced), id = stageDomId(stage.id);
  return <Card className="rv-hww-card" aria-labelledby={id + "-title"} id={id}>
   <h3 id={id + "-title"} tabIndex={-1}><VisibleText text={stage.name} /></h3>
+  {stage.kind === "pull_request" && <p className="rv-hww-note">{HOW_WE_WORK_UNUSED_STAGE_NOTE}</p>}
   {rows.length === 0 ? <p className="rv-muted">Nothing here is changed or locked. Show unchanged settings to see everything.</p> : <dl className="rv-hww-rows">{rows.map(row => <div className="rv-hww-row" key={row.id}>
    <dt>{row.title}</dt>
    <dd>

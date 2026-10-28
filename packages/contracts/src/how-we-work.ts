@@ -27,6 +27,9 @@ export const HOW_WE_WORK_NOTE_MAX = 200;
 /** What a reviewing stage (plan check, code and security review) says about the project's rules, word for word. */
 export const HOW_WE_WORK_REVIEWER_NOTE = "Project rules apply to Understand, Plan and Build. Reviewers only follow rules written for them.";
 
+/** What the pull request stage says about rules written for it (nothing reads them yet); also the words a process layer's write of them is refused with. */
+export const HOW_WE_WORK_UNUSED_STAGE_NOTE = "Rules for this stage aren't used yet.";
+
 /** A value and where it comes from. `lockedBy` is there exactly when `locked` is true. */
 function marked<T extends z.ZodType>(value: T) {
   return z

@@ -60,6 +60,7 @@ import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireBaseIsNotProcess, requireNoOwnerMoveOnProcess, requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
+import { requireNoNewPullRequestInstructionsForProcess, requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
 import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
@@ -414,6 +415,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const parsed = parseOverlay(input.overlay ?? {});
     requireNoSequenceForProcess({ purpose: input.purpose }, parsed);
     requireNoSkillsForProcess({ purpose: input.purpose }, parsed);
+    requireNoNewPullRequestInstructionsForProcess({ purpose: input.purpose }, parsed);
     requireRovaraCodeBaseForProcess({ purpose: input.purpose }, input.extends);
     const overlay = inertProcessOverlay({ purpose: input.purpose }, parsed);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
@@ -461,6 +463,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const overlay = inertProcessOverlay(agent, parsed);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
+    // Pull request stage rules are used nowhere: kept as they are or removed, never added or changed.
+    requireNoNewPullRequestInstructionsForProcess(agent, parsed, draft.overlay);
     if (draft.revision !== input.expectedRevision) throw conflict();
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     // A process layer stays on Rovara Code: checked before the new base is read.
@@ -552,6 +556,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const publishedAt = this.iso();
     // A process layer's stored draft with skills is not published, whatever stored it.
     requireNoSkillsForProcess(agent, draft.overlay);
+    await requireNoNewPullRequestInstructionsToPublish(this, agent, draft.overlay);
     const added = draft.overlay.skills?.add;
     const pinned = added === undefined ? undefined : await this.skills.pin(input.orgId, added, input.skillDigests);
     const overlay: RecipeOverlay = pinned === undefined ? draft.overlay : { ...draft.overlay, skills: { ...draft.overlay.skills, add: pinned.refs } };

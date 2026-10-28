@@ -42,6 +42,7 @@ import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
+import { requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -180,6 +181,8 @@ export async function publishDraft(
   requireNoSequenceForProcess(agent, draft.overlay);
   // Nor can it add skills.
   requireNoSkillsForProcess(agent, draft.overlay);
+  // Nor can it add or change pull request stage rules, which nothing reads.
+  await requireNoNewPullRequestInstructionsToPublish(deps.store, agent, draft.overlay);
   // And it builds on Rovara Code.
   requireRovaraCodeBaseForProcess(agent, draft.extends);
   const next = await resolveRecipe(deps, agent.orgId, agent.agentId, "draft");
@@ -327,6 +330,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
   requireRovaraCodeBaseForProcess(agent, draft.extends);
   requireNoSkillsForProcess(agent, draft.overlay);
+  await requireNoNewPullRequestInstructionsToPublish(deps.store, agent, draft.overlay);
   if (agent.currentVersion !== subject.expectedCurrentVersion) {
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
