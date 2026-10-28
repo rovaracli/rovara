@@ -86,15 +86,15 @@ export async function commitReviewedProjectWorkingBranch(deps:WorkingBranchSaveD
   if(current.status!=="active"||current.epoch!==state.epoch||current.projectRevision!==state.projectRevision||canonicalJson(current.definition)!==canonicalJson(state.definition))throw stale();
   const next=state.projectRevision+1,savedAt=new Date(deps.now()).toISOString(),selection=selectionSchema.parse({branch:checked.branch,commit:checked.commit,installationId:checked.installationId,repositoryId:checked.repositoryId});
   const receipt=receiptSchema.parse({orgId:scope.orgId,project:name,repository:input.repository,branch:selection.branch,commit:selection.commit,fromProjectRevision:state.projectRevision,projectRevision:next,lifecycleRevision:state.epoch,savedAt});
-  const nextRecord:Record<string,unknown> & {definition:Record<string,unknown>}={...registered,...projectRevisionKey(scope.orgId,name,next),definition:{...(registered.definition as Record<string,unknown>),revision:next},registeredAt:savedAt,registeredBy:scope.developerId,workingBranchSelections:{...selections.data,[input.repository]:selection}};
-  // A prior setup approval is not approval of a newly registered configuration revision.
-  delete nextRecord.setupApproval;
+  const nextRecord:Record<string,unknown> & {definition:Record<string,unknown>}={...registered,...projectRevisionKey(scope.orgId,name,next),definition:{...(registered.definition as Record<string,unknown>),revision:next},workingBranchSavedAt:savedAt,workingBranchSavedBy:scope.developerId,workingBranchSelections:{...selections.data,[input.repository]:selection}};
+  // Branch selection metadata changes no setup, source policy, runtime or registration owner pin.
+  // Keep those registration fields verbatim; the branch saver is recorded separately.
   StoredProjectDefinitionSchema.parse(nextRecord.definition);
   const labels:string[]=[],items:TransactItem[]=[],add=(label:string,item:TransactItem)=>{labels.push(label);items.push(item);};
   add("meta",{ConditionCheck:snapshot(deps.tableName,state.metaKey,state.meta,["orgId","status","archiveRevision"])});
   const catalogFence=snapshot(deps.tableName,state.catalogKey,catalog,["orgId"]);
   add("catalog",{Update:{...catalogFence,UpdateExpression:"SET latestRevision = :next",ExpressionAttributeValues:{...catalogFence.ExpressionAttributeValues,":next":next}}});
-  add("registered",{ConditionCheck:snapshot(deps.tableName,state.registeredKey,registered,["workingBranchSelections","runtimeBinding","setupApproval"])});
+  add("registered",{ConditionCheck:snapshot(deps.tableName,state.registeredKey,registered,["workingBranchSelections","runtimeBinding","setupApproval","registeredBy","registeredAt","workingBranchSavedBy","workingBranchSavedAt"])});
   add("actor",{ConditionCheck:snapshot(deps.tableName,auth.actorKey,auth.actor,["orgId","developerId","role"])});
   add("pointer",{ConditionCheck:snapshot(deps.tableName,auth.pointerKey,pointer,["orgId","role"])});
   add("org",{ConditionCheck:snapshot(deps.tableName,auth.orgKey,org,["orgId","closingAt","closedAt"])});

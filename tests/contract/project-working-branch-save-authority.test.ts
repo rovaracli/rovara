@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { canonicalJson, developerOrgKey, githubInstallationKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectSetupApprovalKey, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, WorkerInvocationSchema, type DeveloperTaskRecord } from "@agentx/contracts";
+import { canonicalJson, developerOrgKey, githubInstallationKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectSetupApprovalKey, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, projectMemberKey, WorkerInvocationSchema } from "@agentx/contracts";
+import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { currentWorkflowPublicationAuthorityForTask } from "../../packages/broker/src/aws/developer-tasks.js";
 import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-settings.js";
@@ -10,7 +11,7 @@ import { startApplicationRound } from "../support/e2e-application-round-harness.
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 afterEach(disposeRealCandidates);
 const name="payments",saver="f".repeat(64),commit="c".repeat(40);
@@ -32,9 +33,11 @@ function setupDispatch(f:Awaited<ReturnType<typeof fixture>>,revision:number){
  const runnerEnvironment={ci:true,trustNoticeShown:false,os:"Linux",arch:"arm64",runtime:"Node.js 22"},runnerToolchain={execPath:"/usr/bin/node",version:"v22.23.2",platform:"linux",arch:"arm64"},hash=(value:unknown)=>createHash("sha256").update(canonicalJson(value)).digest("hex");
  const runtime=ProjectSetupRuntimeRecordSchema.parse({schemaVersion:1,entityType:"PROJECT_SETUP_RUNTIME",runtimeCatalogId,catalogRevision:1,bindingDigest,binding,manifestDigest:"a".repeat(64),runnerEnvironment,runnerEnvironmentDigest:hash(runnerEnvironment),runnerToolchain,runnerToolchainDigest:hash(runnerToolchain),endpoint:"https://verifier.example.test",generation:1,transportCorrelationId:correlation,supportedSetupScopes:["source-interface"],state:"READY",qualifiedAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+3_600_000).toISOString()});f.db.set({...projectSetupRuntimeKey(runtimeCatalogId,bindingDigest),...runtime});
  const executionRef={key:`project-setup-executions/sha256/${"a".repeat(64)}.json`,sha256:"a".repeat(64),byteLength:1};
- f.db.set({...projectSetupExecutionKey(setupExecutionId),entityType:"PROJECT_SETUP_EXECUTION",orgId:TEST_ORG,schemaVersion:1,setupExecutionId,subjectId,transportCorrelationId:correlation,projectName:name,projectRevision:revision,ownerKey,approvalRevision:1,proposalRef:approval.proposalRef,proposalSha256:approval.proposalSha256,candidateDigest:approval.candidateDigest,policyDigest:approved.policyDigest,bindingDigest,runtimeGeneration:1,executionRef,runtimeCatalogId,runtimeCatalogRevision:1,state:"DISPATCHING",operationId,outboxId,fence:1,deadlineAt:new Date(now+60_000).toISOString(),retryOfExecutionId:randomUUID(),retryActorKey:ownerKey,evidenceByteLimit:1_000_000,createdAt:stamp,updatedAt:stamp});
- f.db.set({...projectSetupOperationKey(setupExecutionId,operationId),entityType:"PROJECT_SETUP_OPERATION",orgId:TEST_ORG,schemaVersion:1,setupExecutionId,operationId,transportCorrelationId:correlation,fence:1,status:"DISPATCHING",createdAt:stamp,updatedAt:stamp});
- f.db.set({...projectSetupSessionKey(setupExecutionId),entityType:"PROJECT_SETUP_SESSION",orgId:TEST_ORG,schemaVersion:1,setupExecutionId,subjectId,transportCorrelationId:correlation,approvalRevision:1,bindingDigest,state:"READY",generation:1});
+ f.db.set({...projectSetupExecutionKey(setupExecutionId),entityType:"PROJECT_SETUP_EXECUTION",schemaVersion:1,setupExecutionId,subjectId,transportCorrelationId:correlation,projectName:name,projectRevision:revision,ownerKey,approvalRevision:1,proposalRef:approval.proposalRef,proposalSha256:approval.proposalSha256,candidateDigest:approval.candidateDigest,policyDigest:approved.policyDigest,bindingDigest,runtimeGeneration:1,executionRef,runtimeCatalogId,runtimeCatalogRevision:1,state:"DISPATCHING",operationId,outboxId,fence:1,deadlineAt:new Date(now+60_000).toISOString(),retryOfExecutionId:randomUUID(),retryActorKey:ownerKey,evidenceByteLimit:1_000_000,createdAt:stamp,updatedAt:stamp});
+ f.db.set({...projectSetupOperationKey(setupExecutionId,operationId),entityType:"PROJECT_SETUP_OPERATION",schemaVersion:1,setupExecutionId,operationId,transportCorrelationId:correlation,fence:1,status:"DISPATCHING",createdAt:stamp,updatedAt:stamp});
+ f.db.set({...projectSetupSessionKey(setupExecutionId),entityType:"PROJECT_SETUP_SESSION",schemaVersion:1,setupExecutionId,subjectId,transportCorrelationId:correlation,approvalRevision:1,bindingDigest,state:"READY",generation:1,privateIp:"10.0.0.8"});
+ for(const [key,schema] of [[projectSetupExecutionKey(setupExecutionId),ProjectSetupExecutionSchema],[projectSetupOperationKey(setupExecutionId,operationId),ProjectSetupOperationSchema],[projectSetupSessionKey(setupExecutionId),ProjectSetupSessionSchema]] as const){const row=f.db.get(key)!,{pk:_pk,sk:_sk,entityType:_entity,...domain}=row;void _pk;void _sk;void _entity;schema.parse(domain);}
+ expect(f.db.get(projectMemberKey(TEST_ORG,ownerKey,name))?.role).toBe("administrator");
  const invocation=WorkerInvocationSchema.parse({protocolVersion:1,kind:"project-setup-smoke",operationId,workspaceId:correlation,fence:1,projectRevision:revision,callbackCapability:"synthetic".repeat(8),payload:{domain:"project-setup-source-interface/v1",setupExecutionId,subjectId,approvalRevision:1,transportCorrelationId:correlation,executionRef}}),record={id:outboxId,workspaceId:correlation,operationId,invocation};
  const guard=createProjectSetupDispatchGuard({documentClient:f.db as never,tableName:"state",orgId:TEST_ORG,runtimeCatalogId,now:()=>now});return()=>guard(record as never);
 }
