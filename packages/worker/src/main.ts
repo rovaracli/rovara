@@ -9,7 +9,7 @@ import { publishWorkspace } from "./publish.js";
 import { maintainPullRequest } from "./maintain-pull-request.js";
 import { WorkerCancellationController } from "./cancel.js";
 import { inspectWorkspaceForClose } from "./close-workspace.js";
-import { advertisedInvocationFeatures, createWorkerServerState, startWorkerServer } from "./server.js";
+import { advertisedInvocationFeatures, anotherOperationActive, createWorkerServerState, startWorkerServer } from "./server.js";
 import { consoleWorkerLog, logWorkerStarted } from "./worker-log.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
 import { modelFallbackReporter, resolveTaskSessionModel } from "./task-model.js";
@@ -127,6 +127,8 @@ const state = createWorkerServerState(
             workflowE2EApplicationRuntime: () => createWorkflowE2EApplicationRuntime(process.env),
           }),
           cancellationController,
+          // The steps that only read the workspace stop first what earlier work left running; they do not start while another operation still runs here.
+          stopBeforeReading: { otherOperationActive: () => anotherOperationActive(state, invocation.operationId) },
         });
       }
       if (invocation.kind === "publish") {
@@ -138,6 +140,7 @@ const state = createWorkerServerState(
           credentialProvider: createRepositoryCredentialProvider({ controlPlaneUrl, invocation }),
           pullRequestSink: callbacks.pullRequestSink,
           codeBuildSink: callbacks.codeBuildSink,
+          otherOperationActive: () => anotherOperationActive(state, invocation.operationId),
         });
       }
       if (invocation.kind === "maintain") {
@@ -149,6 +152,7 @@ const state = createWorkerServerState(
           credentialProvider: createRepositoryCredentialProvider({ controlPlaneUrl, invocation }),
           pullRequestUpdateSink: callbacks.pullRequestUpdateSink,
           codeBuildSink: callbacks.codeBuildSink,
+          otherOperationActive: () => anotherOperationActive(state, invocation.operationId),
         });
       }
       if (invocation.kind === "cancel") {

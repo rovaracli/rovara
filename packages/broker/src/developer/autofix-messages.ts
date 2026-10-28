@@ -77,6 +77,8 @@ const CODE_SENTENCES: Readonly<Record<AutoFixCode, string>> = Object.freeze({
   "fails-on-original-code": "A check fails on the original code too.",
   "review-unusable": "A review could not be used.",
   "rule-files-unverified": "The base rule files could not be verified, so the review did not run.",
+  "setup-changed-files": "The dev container's setup changed the project's files, so the checks did not run.",
+  "leftover-processes": "The programs left running from earlier work could not be stopped, so the step did not run.",
   "pull-request-open": "A pull request is already open for part of this change.",
   "unknown-group-code": "A check group ended in a way Rovara has no wording for.",
   unreadable: "The block could not be read.",

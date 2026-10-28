@@ -15,7 +15,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
-import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
@@ -1346,6 +1346,28 @@ describe("a plan check whose base rule files could not be verified (C84)", () =>
   it("words the reason for the plan check and Understand as a step that did not run, apart from the review's wording", () => {
     expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toBe("AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.");
     expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toContain(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
+  });
+});
+
+// Programs earlier work left running could not be stopped before the plan check read anything: like the rule-files stop, it is visible, not a model failure, and not started again by itself.
+describe("a plan check that could not first stop the programs earlier work left running", () => {
+  const LEFTOVER_ERROR = `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace`;
+
+  it("is not read as a model the account can't use", () => {
+    expect(criticModelUnusable(LEFTOVER_ERROR)).toBe(false);
+  });
+
+  it("blocks the plan check with the fixed reason, does not pass the plan on unchecked, and starts no second check", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: LEFTOVER_ERROR });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    expect(record.workflow.critique).toBeUndefined();
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.dispatchRows(taskId)).toEqual([]);
   });
 });
 

@@ -140,7 +140,9 @@ const REWORDED_REASONS: ReadonlyMap<string, string> = new Map([
 
 /** Whether a pull request's feedback review failed, by the reason stored now or before its wording changed. */
 export function isFeedbackReviewFailure(blockReason: string | undefined): boolean {
-  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
+  // The feedback review also stops, before it reads anything, when the programs earlier work left running cannot be stopped.
+  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses
+    || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
