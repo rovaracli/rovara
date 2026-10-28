@@ -1,7 +1,7 @@
 // Ruling R56: on an EC2 worker, task-controlled code never runs in the worker's own process, network or user. It runs
 // in a sandbox container with no Docker socket, no host network, no capabilities and only the workspace mounted.
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { availableParallelism, tmpdir } from "node:os";
+import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -10,6 +10,7 @@ import {
   assertLocalTaskExecutionAllowed,
   removeLeftoverTaskSandboxes,
   sandboxCpuLimit,
+  sandboxMemoryLimit,
   taskSandboxRunArgs,
   taskShellFromEnvironment,
   taskShellSelection,
@@ -72,6 +73,29 @@ describe("the task sandbox's docker run arguments (R56)", () => {
     // Without a count, this machine's own is used, and the limit is always below it.
     const own = taskSandboxRunArgs({ name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [] });
     if (own.includes("--cpus")) expect(Number(own[own.indexOf("--cpus") + 1])).toBeLessThan(availableParallelism());
+  });
+
+  it("cap the sandbox's memory and its swap at the same size, sized from the host with a reserve for the worker and the Docker daemon", () => {
+    const GIB = 1024 ** 3;
+    const memory = (hostMemoryBytes: number) => {
+      const given = taskSandboxRunArgs({ name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [], hostMemoryBytes });
+      const value = given.includes("--memory") ? given[given.indexOf("--memory") + 1] : undefined;
+      // Swap equal to memory means no swap beyond the limit.
+      expect(given[given.indexOf("--memory-swap") + 1]).toBe(value);
+      return value;
+    };
+    // Reserve: the larger of 1.5 GiB and 20% of the host. Floor: 1 GiB.
+    expect(memory(16 * GIB)).toBe("13107m");
+    expect(memory(8 * GIB)).toBe("6553m");
+    expect(memory(4 * GIB)).toBe("2560m");
+    expect(memory(2 * GIB)).toBe("1024m");
+    expect(memory(GIB)).toBe("1024m");
+    expect([sandboxMemoryLimit(16 * GIB), sandboxMemoryLimit(4 * GIB), sandboxMemoryLimit(GIB / 2), sandboxMemoryLimit(0), sandboxMemoryLimit(Number.NaN)]).toEqual(["13107m", "2560m", "1024m", undefined, undefined]);
+    // Without a size, this machine's own is used, and the limit leaves a reserve.
+    const own = taskSandboxRunArgs({ name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [] });
+    expect(own.includes("--memory")).toBe(true);
+    expect(own[own.indexOf("--memory") + 1]).toBe(sandboxMemoryLimit(totalmem()));
+    expect(own[own.indexOf("--memory-swap") + 1]).toBe(own[own.indexOf("--memory") + 1]);
   });
 
   it("mount only the workspace, and never the Docker socket, the host network or privileges", () => {
