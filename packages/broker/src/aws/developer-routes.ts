@@ -1,4 +1,5 @@
 import { readProjectWorkingBranchHttp } from "../org/project-working-branch-http.js";
+import type { WorkingBranchReviewDependencies } from "../org/project-working-branch.js";
 import type { WorkingBranchListDependencies } from "../org/project-working-branch-list.js";
 import { readReviewedProjectRestoreAppPreview } from "../org/reviewed-project-restore-app.js";
 import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-archive-app.js";
@@ -280,6 +281,7 @@ export interface DeveloperRouteDependencies {
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
   /** Lane B: pinned, explicitly org-bound read-only branch provider; absent fails closed. */
   projectWorkingBranches?: Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">;
+  projectWorkingBranchPreview?: Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">;
   /**
    * Plan 2, Task 18: pushes the approved domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Without it an approved change
    * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
@@ -1930,6 +1932,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Lane B: read-only branch pages; all other method/path pairs fall through.
   const workingBranchesRoute = /^\/v1\/app\/projects\/([^/]+)\/repositories\/([^/]+)\/branches$/.exec(url.pathname);
   if (request.method === "GET" && workingBranchesRoute !== null) return readProjectWorkingBranchHttp(deps, caller, workingBranchesRoute[1]!, workingBranchesRoute[2]!, url, request.headers);
+  const workingBranchPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/repositories\/([^/]+)\/branches\/preview$/.exec(url.pathname);
+  if (request.method === "GET" && workingBranchPreviewRoute !== null) return readProjectWorkingBranchHttp(deps, caller, workingBranchPreviewRoute[1]!, workingBranchPreviewRoute[2]!, url, request.headers, true);
   // Lane B reviewed archive: strict pinned preview + acknowledged write; legacy routes remain compatible.
   const reviewedArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive-preview|reviewed-archive)$/.exec(url.pathname);
   if (reviewedArchiveRoute !== null && ((request.method === "GET" && reviewedArchiveRoute[2] === "archive-preview") || (request.method === "POST" && reviewedArchiveRoute[2] === "reviewed-archive"))) {

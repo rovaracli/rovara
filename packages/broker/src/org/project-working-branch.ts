@@ -1,4 +1,4 @@
-// Unexposed working-branch review. No save, admission decision, route or GitHub HTTP adapter.
+// Exact working-branch review core. No save or task admission decision.
 import { z } from "zod";
 import { AgentXError, AgentXNameSchema, GitBranchNameSchema, OrgIdSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
@@ -37,6 +37,7 @@ export async function readProjectWorkingBranchPreview(deps:WorkingBranchReviewDe
   if(state.status!=="active"||state.epoch!==input.expectedRevision||state.projectRevision!==input.expectedProjectRevision)throw stale();
   const repository=state.definition.repositories.find(repo=>repo.name===input.repository);if(repository===undefined)throw agentXError("NOT_FOUND","Repository unavailable.");
   const definitionSnapshot=canonicalJson(state.definition),registered=structuredClone(repository),github=parseGitHubRepository(registered.url),fullName=`${github.owner}/${github.name}`;
+  if (/^\.+$/.test(github.name)) throw invalid();
   const checkRepository=deps.checkRepository,resolveBranch=deps.resolveBranch;if(checkRepository===undefined||resolveBranch===undefined)throw unavailable();
   async function connected(){
    try{const identity=identitySchema.parse(await checkRepository!(scope.orgId,structuredClone(registered)));

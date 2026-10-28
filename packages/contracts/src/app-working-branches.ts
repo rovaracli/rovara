@@ -23,3 +23,10 @@ export type ProjectWorkingBranchPageBody = z.infer<typeof ProjectWorkingBranchPa
 
 // Transport envelope fields are discarded before browser caching; page checks remain strict.
 export const ProjectWorkingBranchPageReaderSchema = ProjectWorkingBranchPageSchema.strip();
+
+// A checked exact ref is point-in-time information, never save or task-start authority.
+export const ProjectWorkingBranchPreviewBodySchema = z.object({ expectedOrgId: OrgIdSchema, expectedRevision: lifecycle, expectedProjectRevision: config, repository: AgentXNameSchema, branch: WorkingBranchNameSchema }).strict();
+export const ProjectWorkingBranchPreviewSchema = z.object({ orgId: OrgIdSchema, project: AgentXNameSchema, repository: AgentXNameSchema, repositoryFullName: z.string().max(140).regex(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/), branch: WorkingBranchNameSchema, commit: z.string().regex(/^[a-f0-9]{40}$/), expectedRevision: lifecycle, expectedProjectRevision: config, checkedAt: z.string().datetime() }).strict();
+export const ProjectWorkingBranchPreviewReaderSchema = ProjectWorkingBranchPreviewSchema.strip();
+export type ProjectWorkingBranchPreview = z.infer<typeof ProjectWorkingBranchPreviewSchema>;
+export type ProjectWorkingBranchPreviewBody = z.infer<typeof ProjectWorkingBranchPreviewBodySchema>;
