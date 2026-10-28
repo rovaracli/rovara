@@ -1,7 +1,7 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
+import { access, link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -66,6 +66,8 @@ export const EMPTY_GIT_DIRECTORY_ROOT = "/usr/share/agentx";
 export const EMPTY_GIT_DIRECTORY_ROOT_VARIABLE = "AGENTX_EMPTY_GIT_DIRECTORY_ROOT";
 const SCRATCH_PREFIX = "agentx-base-rules-";
 const STALE_SCRATCH_MS = 60 * 60 * 1000;
+/** The name of a test link (and of the empty file one is made from): a worker killed between making it and removing it leaves it behind. */
+const LINK_PROBE_PREFIX = "agentx-link-probe-";
 
 type Algorithm = "sha1" | "sha256";
 
@@ -126,6 +128,8 @@ export interface ReadOptions {
   maxPackFiles?: number;
   /** The most a blob whose bytes are hashed may hold. */
   maxBlobBytes?: number;
+  /** Test seam: the clock the leftover sweeps judge age by (default Date.now). A link's change time cannot be set back, so a test moves the clock instead. */
+  now?: () => number;
   /** Test seam: called once the scratch directory and its objects directory exist, before git runs. */
   onScratchReady?: (paths: { scratch: string; objects: string }) => Promise<void>;
   /**
@@ -194,10 +198,11 @@ export async function chooseScratchRoot(workspaceRoot: string | undefined, devic
  * is linked in (or, when there is none, a small file made for the purpose in the object store and removed afterwards) under a name of its own, which
  * is checked to be that file and removed. Any failure of the test means that candidate does not take a link.
  */
-async function scratchRootFor(objects: string, workspaceRoot: string | undefined, link: (source: string, target: string) => Promise<void>): Promise<string> {
+async function scratchRootFor(objects: string, workspaceRoot: string | undefined, link: (source: string, target: string) => Promise<void>, now: () => number): Promise<string> {
   const packs = join(objects, "pack");
   let source: string | undefined;
   let made: string | undefined;
+  await removeStaleLinkProbes(objects, now);
   try {
     if (await plainDirectory(packs)) {
       for (const name of (await readdir(packs)).filter((entry) => PACK_FILE.test(entry)).sort()) {
@@ -205,7 +210,7 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
       }
     }
     if (source === undefined) {
-      const path = join(objects, `agentx-link-probe-${String(process.pid)}-${randomBytes(6).toString("hex")}`);
+      const path = join(objects, `${LINK_PROBE_PREFIX}${String(process.pid)}-${randomBytes(6).toString("hex")}`);
       try {
         await (await open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)).close();
         made = path;
@@ -214,7 +219,8 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
     }
     const canLink = async (root: string): Promise<boolean> => {
       if (source === undefined) return false;
-      const target = join(root, `agentx-link-probe-${String(process.pid)}-${randomBytes(6).toString("hex")}`);
+      await removeStaleLinkProbes(root, now);
+      const target = join(root, `${LINK_PROBE_PREFIX}${String(process.pid)}-${randomBytes(6).toString("hex")}`);
       try {
         const before = await lstat(source);
         await link(source, target);
@@ -233,14 +239,43 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
 }
 
 /** Removes scratch directories an earlier read left behind (a killed worker), so they cannot pile up. Best effort. */
-async function removeStaleScratch(root: string): Promise<void> {
+async function removeStaleScratch(root: string, now: () => number): Promise<void> {
   try {
     for (const name of await readdir(root)) {
       if (!name.startsWith(SCRATCH_PREFIX)) continue;
       const stat = await lstat(join(root, name)).catch(() => undefined);
-      if (stat?.isDirectory() === true && Date.now() - stat.mtimeMs > STALE_SCRATCH_MS) await rm(join(root, name), { recursive: true, force: true });
+      if (stat?.isDirectory() === true && now() - stat.mtimeMs > STALE_SCRATCH_MS) await rm(join(root, name), { recursive: true, force: true });
     }
   } catch { /* nothing to clean */ }
+  await removeStaleLinkProbes(root, now);
+}
+
+/**
+ * Removes the test links an earlier read left behind in `directory` (a killed worker): entries named like one that are older than the scratch age limit.
+ * Only a regular file goes: it is opened without following a link (and without blocking, so a pipe is passed over), checked to be a regular file, and the
+ * name is unlinked only while it still leads to that file. Links, pipes, directories and every other name are left alone. Best effort.
+ * Age is the later of the file's modification and change times: a test link to a pack shares the pack's (often old) modification time, but making the
+ * link sets its change time, so a link another read made a moment ago is never judged old.
+ */
+async function removeStaleLinkProbes(directory: string, now: () => number): Promise<void> {
+  let names: string[];
+  try {
+    names = (await readdir(directory)).filter((name) => name.startsWith(LINK_PROBE_PREFIX));
+  } catch { return; }
+  for (const name of names) {
+    const path = join(directory, name);
+    try {
+      const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || now() - Math.max(opened.mtimeMs, opened.ctimeMs) <= STALE_SCRATCH_MS) continue;
+        const named = await lstat(path);
+        if (named.isFile() && named.ino === opened.ino && named.dev === opened.dev) await unlink(path);
+      } finally {
+        await handle.close();
+      }
+    } catch { /* gone, a link, or not readable: not ours to remove */ }
+  }
 }
 
 interface Placement {
@@ -313,8 +348,9 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
   let scratch: string | undefined;
   try {
     const layout = await candidateLayout(directory);
-    const root = await scratchRootFor(layout.objects, options.workspaceRoot, options.linkFile ?? link);
-    await removeStaleScratch(root);
+    const now = options.now ?? Date.now;
+    const root = await scratchRootFor(layout.objects, options.workspaceRoot, options.linkFile ?? link, now);
+    await removeStaleScratch(root, now);
     scratch = await mkdtemp(join(root, SCRATCH_PREFIX));
     const objectsDirectory = join(scratch, "objects");
     await mkdir(join(objectsDirectory, "pack"), { recursive: true, mode: 0o700 });
