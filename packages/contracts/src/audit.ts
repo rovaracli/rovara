@@ -123,6 +123,7 @@ export const AUDIT_ACTIONS = [
   // Lane B: reviewed project archive.
   "project.archived",
   "project.restored",
+  "project.working_branch_changed",
   "project_member.changed",
   "project_member.removed",
   "identity.linked",
@@ -231,6 +232,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "org.invite_revoked": ["role"],
   "project.archived": ["fromRevision", "toRevision", "projectRevision", "requestId"],
   "project.restored": ["fromRevision", "toRevision", "projectRevision", "requestId"],
+  "project.working_branch_changed": ["fromRevision", "toRevision", "lifecycleRevision", "requestId", "previousConfigured"],
   "project_member.changed": ["fromRole", "toRole"],
   "project_member.removed": ["role"],
   "identity.linked": ["provider"],

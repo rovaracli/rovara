@@ -416,3 +416,10 @@ export function auditProjectArchived(input: AuditBuilderBase & { projectName: st
 export function auditProjectRestored(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
  return build("project.restored", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
 }
+
+// Unexposed working-branch save; repository/ref strings are erasable details, never facts.
+export function auditProjectWorkingBranchChanged(input: AuditBuilderBase & {projectName:string;fromRevision:number;toRevision:number;lifecycleRevision:number;installationId:number;repositoryId:number;requestId:string;previousConfigured:boolean}): AuditEventInput {
+ const identity = { installationId: String(input.installationId), repositoryId: String(input.repositoryId) };
+ const details = input.details === undefined || input.details.length === 0 ? [{ subject: "org", fields: identity }] : input.details.map((part, index) => index === 0 ? { ...part, fields: { ...part.fields, ...identity } } : part);
+ return build("project.working_branch_changed",{...input,details},{kind:"project",name:input.projectName},{fromRevision:input.fromRevision,toRevision:input.toRevision,lifecycleRevision:input.lifecycleRevision,requestId:input.requestId,previousConfigured:input.previousConfigured});
+}

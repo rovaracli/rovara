@@ -352,3 +352,6 @@ async function writeDescription(deps: Pick<ProjectSettingsDependencies, "documen
 export { readProjectWorkingBranchPreview, type WorkingBranchReviewDependencies } from "./project-working-branch.js";
 export { createWorkingBranchProvider, createWorkingBranchLister } from "./project-working-branch-provider.js";
 export { readProjectWorkingBranchPage, type WorkingBranchListDependencies } from "./project-working-branch-list.js";
+
+// Unexposed audited working-branch revision primitive. No HTTP/UI or consumer wiring.
+export { commitReviewedProjectWorkingBranch, type WorkingBranchSaveDependencies } from "./project-working-branch-save.js";

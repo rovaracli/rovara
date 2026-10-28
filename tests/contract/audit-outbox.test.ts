@@ -698,6 +698,7 @@ describe("I4: the builders", () => {
     ["auditOrgInviteRevoked", (occurrence) => builders.auditOrgInviteRevoked({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member" })],
     ["auditProjectRestored", (occurrence) => builders.auditProjectRestored({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
     ["auditProjectArchived", (occurrence) => builders.auditProjectArchived({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
+    ["auditProjectWorkingBranchChanged", (occurrence) => builders.auditProjectWorkingBranchChanged({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 1, toRevision: 2, lifecycleRevision: 3, installationId: 11, repositoryId: 22, requestId: "22222222-2222-4222-8222-222222222222", previousConfigured: false })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],
