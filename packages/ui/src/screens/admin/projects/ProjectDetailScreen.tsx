@@ -1,3 +1,4 @@
+import { WorkingBranches } from "./WorkingBranches.js";
 import { RestoreProject } from "./RestoreProject.js";
 import { ArchiveProject } from "./ArchiveProject.js";
 import { useAdminContext } from "../AdminLayout.js";
@@ -23,6 +24,7 @@ export function ProjectDetailScreen() {
  <ArchiveProject key={`${context.orgId}:${context.developerId}:${name}`} name={name} observedStatus={p.status} available={p.name === name && p.status === "active" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  <RestoreProject key={`restore:${context.orgId}:${context.developerId}:${name}`} name={name} observedStatus={p.status} available={p.name === name && p.status === "archived" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  <h2>Repositories and working branch</h2>{p.repositories.length === 0 ? <p>No repositories returned. Repository connection status is unavailable here.</p> : p.repositories.map(r => <div className="rv-admin-section" key={r.fullName}><h3><VisibleText text={r.fullName} /></h3><p>GitHub default branch: <VisibleText text={r.defaultBranch} /></p><p>Using GitHub default branch</p><p className="rv-muted">A project working-branch setting is not available yet.</p></div>)}
+ <WorkingBranches name={name} projectRevision={p.latestRevision} available={p.name === name && p.status === "active" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  <h2>Setup</h2><p>Setup status: {projectSetupLabel[p.setup.status]}</p><p>Checked revision: {p.setup.checkedRevision ?? "Unavailable"}</p><p>Setup commands: {p.settings.setupCommandCount} configured. Test commands: {p.settings.testCommandCount} configured.</p><p>Devcontainer: {p.settings.devcontainer ? <VisibleText text={`${p.settings.devcontainer.repository} · ${p.settings.devcontainer.configPath}`} /> : "Not configured"}</p>
  <h2>Allowed websites</h2>{p.settings.allowedDomains.length === 0 ? <p>No project websites returned.</p> : <ul>{p.settings.allowedDomains.map(d=><li key={d.domain}><VisibleText text={d.domain} /> · {d.status}</li>)}</ul>}<p>Always-allowed website list is unavailable in this view. Pending websites require staff approval on Rovara Cloud.</p>
  <p>Spending, AI source order, connector grants and code rules are not included in this read-only view.</p><ProjectPeople key={name} name={p.name} />

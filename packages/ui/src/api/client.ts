@@ -22,7 +22,7 @@ export function createApiClient(host: AppHost) {
     throw new ApiError(0, "NETWORK_ERROR", "Couldn't reach Rovara. Check your connection and try again.");
    }
    if (response.status === 429 && retry && attempt < RETRY_DELAYS_MS.length) { await sleep(retryDelay(attempt));continue; }
-   if (response.status >= 500 && response.status <= 599 && readRequest && attempt < 2) { await sleep(retryDelay(attempt));continue; }
+   if (response.status >= 500 && response.status <= 599 && readRequest && retry && attempt < 2) { await sleep(retryDelay(attempt));continue; }
    if (response.status < 200 || response.status >= 300) {
     const error = apiError(response.status, response.body, host.origin);
     if ((error.code === "AUTH_REQUIRED" || response.status === 401) && !redirectedHosts.has(host)) { redirectedHosts.add(host);host.signIn(host.currentPath(), { automatic: true }); }
@@ -33,7 +33,7 @@ export function createApiClient(host: AppHost) {
  }
  function read<T>(body: unknown, schema: Reader<T>): T { try { return schema.parse(body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."); } }
  return {
-  async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }) })).body, schema); },
+  async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>, options?: { retry: "never" }): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }), ...options })).body, schema); },
   async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<SendResult<T>> {
    const response = await request({ method, path, body, ...options });
    if (response.status === 202) {

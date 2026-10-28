@@ -1,3 +1,7 @@
+import { generateKeyPairSync } from "node:crypto";
+import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
+import { installationBindingCheck } from "../../../packages/broker/src/org/github-connection.js";
+import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "../../../packages/broker/src/org/project-working-branch-provider.js";
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -7,6 +11,7 @@ import { OrgStore } from "../../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { AuditRuntime } from "../../../packages/broker/src/audit/outbox.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER } from "../../web/support/fixtures.js";
+const syntheticKey = generateKeyPairSync("rsa", {modulusLength:2048}).privateKey.export({type:"pkcs8",format:"pem"}).toString();
 type Row = Record<string, unknown>;
 const keyOf = (key: Row | { pk: string; sk: string } | undefined) => `${String(key?.pk)}|${String(key?.sk)}`;
 export function createAdminDirectory() {
@@ -50,7 +55,7 @@ export function createAdminDirectory() {
   if (command instanceof UpdateCommand) {
    const input = command.input, values = input.ExpressionAttributeValues ?? {}, key = input.Key ?? {}, row = rows.get(keyOf(key));
    if (input.UpdateExpression === "SET #count = #count + :one" && input.ConditionExpression === "windowStart = :window AND #count < :limit") {
-    if (row === undefined || row.windowStart !== values[":window"] || typeof row.count !== "number" || typeof values[":limit"] !== "number" || row.count >= values[":limit"]) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...row, count: row.count + 1 });return {};
+    if (row === undefined || row.windowStart !== values[":window"] || typeof row.count !== "number" || typeof values[":limit"] !== "number" || row.count >= values[":limit"]) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });if (typeof values[":one"] !== "number") throw new Error("Invalid fixture rate weight");put({ ...row, count: row.count + values[":one"] });return {};
    }
    if (input.UpdateExpression === "SET entityType = :type, windowStart = :window, #count = :one" && input.ConditionExpression === "attribute_not_exists(windowStart) OR windowStart < :window") {
     if (row?.windowStart !== undefined && !(typeof row.windowStart === "number" && typeof values[":window"] === "number" && row.windowStart < values[":window"])) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...key, entityType: values[":type"], windowStart: values[":window"], count: values[":one"] });return {};
@@ -85,6 +90,17 @@ export function createAdminDirectory() {
   }
   return {};
  } };
+ const providerCalls: {method:string;path:string}[] = [];
+ const github = new GitHubAppCredentialProvider({credentialRef:"github-app",appId:"123",getPrivateKey:async()=>syntheticKey,requireInstallationBound:installationBindingCheck({documentClient,tableName:"mock-state"}),fetchImplementation:(async(input,init)=>{
+  const url=new URL(typeof input==="string"?input:input instanceof URL?input.href:input.url);providerCalls.push({method:init?.method??"GET",path:url.pathname+url.search});
+  if(url.hostname!=="api.github.com")throw new Error("Unexpected synthetic provider host");
+  if(url.pathname.endsWith("/installation"))return Response.json({id:11,account:{login:"acme"}});
+  if(url.pathname.includes("/access_tokens"))return Response.json({token:"synthetic-browser-branch-token"},{status:201});
+  if(url.pathname==="/repos/acme/payments")return Response.json({id:22,full_name:"acme/payments"});
+  if(url.pathname.endsWith("/branches")){const page=Number(url.searchParams.get("page"));const names=page===1?["main","release/current",...Array.from({length:98},(_,i)=>`topic-${i}`)]:["feature/final","release/current"];return Response.json(names.map(name=>({name,commit:{sha:"c".repeat(40)}})));}
+  if(url.pathname.includes("/git/ref/heads/")){const branch=decodeURIComponent(url.pathname.split("/git/ref/heads/")[1]!);return Response.json({ref:`refs/heads/${branch}`,object:{type:"commit",sha:"c".repeat(40)}});}
+  throw new Error("Unexpected synthetic provider path");
+ })});
  return {
   setRole,
   seedLaneB() { seedLaneB(put); },
@@ -92,12 +108,12 @@ export function createAdminDirectory() {
   async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },
-  evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST" || row.entityType === "REVIEWED_PROJECT_RESTORE_REQUEST"), audit }; },
-  async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown) {
+  evidence() { return { providerCalls, branchRates:[...rows.values()].filter(row=>String(row.pk).includes("WORKING_BRANCH")), members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST" || row.entityType === "REVIEWED_PROJECT_RESTORE_REQUEST"), audit }; },
+  async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown, headers: Record<string,string|undefined> = {}) {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
-   const deps = { ...base, documentClient, audit: runtime, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now }) };
+   const deps = { ...base, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now }) };
    if (method === "GET" && (path.startsWith("/v1/app/agents") || path.startsWith("/v1/app/org/agent-guardrails"))) return readLaneBAgents(deps, caller, path);
-   return routeDeveloperRequest(deps, { method, path, headers: {}, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
+   return routeDeveloperRequest(deps, { method, path, headers, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },
  };
 }

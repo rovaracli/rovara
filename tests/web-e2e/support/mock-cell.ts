@@ -100,6 +100,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }
   const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body);json(200,result);return;
  }
+ // B23: real cookie gate, project context/core and scoped SDK over synthetic HTTP/bindings.
+ if(current.name==="admin"&&method==="GET"&&/^\/v1\/web\/projects\/[^/]+\/(?:working-branches|repositories\/[^/]+\/branches(?:\/preview)?)$/.test(url.pathname)){
+  const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),undefined,headers);json(200,result);return;
+ }
  // Lane B: real read handlers; the scenario endpoint seeds only synthetic persisted rows.
  if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/projects" || /^\/v1\/web\/projects\/[^/]+(?:\/members)?$/.test(url.pathname) || url.pathname === "/v1/web/agents" || /^\/v1\/web\/agents\/[^/]+\/versions$/.test(url.pathname) || url.pathname === "/v1/web/org/agent-guardrails")) {
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"));json(200,result);return;
