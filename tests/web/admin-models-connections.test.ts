@@ -227,7 +227,7 @@ function directSlack(role:string){
  const router=createMemoryRouter([{path:"/",element:h(Boundary),children:[{index:true,element:h(SlackWorkspaceEvidence)}]}]);const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(RouterProvider,{router})})}));return {...f,...view,query,changeRole:(next:string)=>changeRole(next),close:()=>{view.unmount();router.dispose();query.clear();}};
 }
 for(const role of ["owner","admin"])it(`direct Slack component allows ${role} without relying on AdminLayout`,async()=>{
- const f=directSlack(role);try{await screen.findByText("3 stored associations observed in this read.",{exact:true});expect(f.request).toHaveBeenCalledExactlyOnceWith({method:"GET",path:slackPath});expect(screen.getByRole("button",{name:"Refresh Slack workspace details"})).toBeTruthy();}finally{f.close();}
+ const f=directSlack(role);try{await waitFor(()=>expect(f.request).toHaveBeenCalledExactlyOnceWith({method:"GET",path:slackPath}));await screen.findByText("3 stored associations observed in this read.",{exact:true});expect(screen.getByRole("button",{name:"Refresh Slack workspace details"})).toBeTruthy();}finally{f.close();}
 });
 for(const role of ["member","maintainer","viewer","unknown"])it(`direct Slack component refuses ${role} without a query or bypassing Refresh`,async()=>{
  const f=directSlack(role);try{await waitFor(()=>expect(f.container.textContent).toContain("Slack workspace details aren't available here yet."));expect(screen.queryByRole("button",{name:"Refresh Slack workspace details"})).toBeNull();expect(screen.queryByRole("progressbar")).toBeNull();expect(f.request).not.toHaveBeenCalled();expect(f.query.getQueriesData({queryKey:slackKey})).toEqual([]);}finally{f.close();}

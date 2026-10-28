@@ -12,6 +12,10 @@ import { checkedTime } from "../models/read.js";
 const unavailable = "Slack workspace details aren't available here yet.";
 /** Stored company associations only. Rollout and installed grants are verified by the release controller. */
 export function SlackWorkspaceEvidence() {
+ const { role } = useAdminContext();
+ return role === "owner" || role === "admin" ? <SlackWorkspaceEvidenceRead /> : <p>{unavailable}</p>;
+}
+function SlackWorkspaceEvidenceRead() {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const { orgId, developerId, role } = useAdminContext();
  const key = useMemo(() => ["admin", "lane-c", "slack-workspace-evidence", orgId, developerId, role], [orgId, developerId, role]);
@@ -23,7 +27,7 @@ export function SlackWorkspaceEvidence() {
    // Do not retain server/vendor messages in the query cache, even when rendering fixed copy.
    throw new ApiError(error instanceof ApiError ? error.status : 0, error instanceof ApiError && error.code === "INVALID_RESPONSE" ? "INVALID_RESPONSE" : "REQUEST_FAILED", unavailable);
   }
- }, enabled: role === "owner" || role === "admin", gcTime: 0, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
+ }, gcTime: 0, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false });
  const refused = read.error instanceof ApiError && ([401, 403, 404, 503].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");
  const data = !refused ? read.data : undefined;
  return <section aria-label="Slack workspace details" aria-busy={read.isFetching}>
