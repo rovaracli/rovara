@@ -173,7 +173,8 @@ describe("hosted Slack GitHub MCP", () => {
       ["@org/security [x](https://e.test) `code`", "`` @org/security [x](https://e.test) `code` ``"],
       ["https://evil.example/login www.evil.example", "`https://evil.example/login www.evil.example`"],
       ["fixes #1 and GH-2", "`fixes #1 and GH-2`"],
-      ["<img src=\"https://t.example/p.gif\"> Bob", "`<img src=\"https://t.example/p.gif\"> Bob`"],
+      // Angle brackets are taken out of a requester name before it is written (7fcba29a0, C55: "Maya <maya@example.com>" must leave no stray brackets), so no HTML tag can start; what is left is still one code span.
+      ["<img src=\"https://t.example/p.gif\"> Bob", "`img src=\"https://t.example/p.gif\" Bob`"],
       ["a``b`c", "```a``b`c```"],
       ["`lead", "`` `lead ``"],
     ];
