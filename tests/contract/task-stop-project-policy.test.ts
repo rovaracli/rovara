@@ -1,7 +1,7 @@
 import * as Web from "../../packages/contracts/src/web.js";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS, orgProjectCatalogKey, projectAiKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS, orgProjectCatalogKey, projectAiKey, projectMetaKey } from "@agentx/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -182,4 +182,25 @@ it("rejects an invalid project name before any state reads", async () => {
   try { await routeDeveloperRequest(f.deps, { method: "GET", path: path.replace("/web", "/Bad"), headers: {}, requestId: "invalid-project" }, new URL(path.replace("/web", "/Bad"), "https://cell.example"), { caller: f.caller, csrf: "" }); throw new Error("Expected refusal"); }
   catch (error) { if (!(error instanceof AgentXError)) throw error; expect(errorStatus(error.code)).toBe(400); }
   expect(f.db.commandNames()).toHaveLength(0);
+});
+
+for (const row of ["member", "pointer"]) {
+  it(`refuses a project policy actor whose ${row} row was revoked`, async () => {
+    const f = fixture(); f.ai({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1 } });
+    expect((await f.call()).status).toBe(200);
+    f.db.delete(row === "member" ? orgMemberKey(A, who) : developerOrgKey(who));
+    expect((await f.call()).status).toBe(403);
+    expect(f.db.transactions()).toHaveLength(0);
+  });
+}
+it("keeps an archived project's source readable without claiming lifecycle or start readiness", async () => {
+  const f = fixture(); f.ai({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1 } });
+  f.db.set({ ...projectMetaKey(A, "web"), entityType: "PROJECT_META", name: "web", status: "archived" });
+  const result = await f.call(); expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ projectLifecycle: "not_loaded", locks: "not_loaded", calculation: "unavailable", enforcement: "not_connected" });
+  expect(Object.hasOwn(result.body!, "paidStartAllowed") || Object.hasOwn(result.body!, "effectiveStopMicrousd")).toBe(false);
+});
+it("refuses unsupported locks on the default-only company source instead of assuming unlocked", async () => {
+  const f = fixture(); f.policy(1, { policy: { schemaVersion: 1, defaultStopMicrousd: 1, locks: { project: false, agent: false } } });
+  expect((await f.call()).status).toBe(503);
 });
