@@ -278,3 +278,7 @@ it("keeps accent distinctions instead of silently adding fuzzy connection matchi
 it("keeps normalized connection matching restricted to names/types rather than association metadata",async()=>{
  const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"ＳＥＲＶＩＣＥ"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("0 of 2 registered connections shown in this returned list.");}finally{f.close();}
 });
+
+it("matches a decomposed connection query against a composed label without changing returned data",async()=>{
+ const rows=[{...filterRows[0],label:"Café tracker"},filterRows[1]],f=guidedConnections("owner",rows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});await waitFor(()=>expect(screen.queryAllByRole("progressbar")).toHaveLength(0));const before=f.request.mock.calls.length;fireEvent.change(input,{target:{value:" CAFE\u0301 "}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("1 of 2 registered connections shown in this returned list.");expect(region.textContent).toContain("Café tracker");expect(f.query.getQueryData(["admin","lane-c","connections",f.liveMe.org.orgId,f.liveMe.developer.id,"owner"])).toEqual({connections:rows});expect(f.request.mock.calls).toHaveLength(before);}finally{f.close();}
+});
