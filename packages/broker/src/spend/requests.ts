@@ -1327,9 +1327,8 @@ async function requireSameOwner(deps: SpendRequestDependencies, record: SpendReq
 }
 
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
-async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], actor: AgentCaller): Promise<void> {
+async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], decisionActor: BudgetActor): Promise<void> {
   const agentId = record.agentId as never;
-  const decisionActor = { developerId: by, role: actor.orgRole };
   const options = { actor: decisionActor, overrideCap: { actor: decisionActor, spendRequestId: record.spendRequestId, items, closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
@@ -1356,7 +1355,7 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
     case "set_budget": {
       if (change.budget.maxPerRunUsd !== undefined && change.expectedMaxPerRunUsd === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This pending budget request predates per-run snapshots. Deny this request, then submit a new budget change for review.");
       await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, { ...options,
-        ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: { developerId: by, role: actor.orgRole } });
+        ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: decisionActor });
       return;
     }
     case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, options); return;
@@ -1424,13 +1423,17 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     await expireOne(deps, record, "task_closed");
     throw closed({ status: "EXPIRED", endedBecause: "task_closed" });
   };
-  const decisionActor = { developerId: decidedBy, role: caller.orgRole };
+  const survivorRole = decidedBy === caller.developerId ? caller.orgRole : await orgRoleOf(deps, caller.orgId, decidedBy);
+  if (survivorRole === undefined) throw budgetActorRefused();
+  const decisionActor: BudgetActor = { developerId: decidedBy, role: survivorRole,
+    ...(decidedBy === caller.developerId ? {} : { signedIn: { developerId: caller.developerId, role: caller.orgRole } }),
+  };
   if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused, actor: decisionActor });
   if (record.kind === "owner_cap") {
     const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
     try {
-      await applyOwnerCap(deps, record, change, decidedBy, ending, caller);
+      await applyOwnerCap(deps, record, change, decidedBy, ending, decisionActor);
     } catch (error) {
       if (error instanceof AgentXError) throw error;
       await refused(error);
