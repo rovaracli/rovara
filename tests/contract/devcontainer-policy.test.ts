@@ -236,7 +236,7 @@ describe("dev container settings AgentX refuses (docker containment)", () => {
   ])("refuses the named volume %s (%s) in mounts, workspaceMount and runArgs, as a string and as an object", (name, kind) => {
     const reason = (name: string) => {
       if (kind === "agentx") return `a volume named ${name} (volumes named agentx… are AgentX's own)`;
-      if (kind === "variable") return `a volume named ${name} (a named volume must have \${devcontainerId} or \${localWorkspaceFolderBasename} in its name, so it is not one of the worker's other volumes)`;
+      if (kind === "variable") return `a volume named ${name} (a named volume must have \${devcontainerId} or \${localWorkspaceFolderBasename} in its name, so it is specific to the project folder)`;
       return `a volume named ${name}`;
     };
     const text = `type=volume,source=${name},target=/v`;
@@ -267,6 +267,42 @@ describe("dev container settings AgentX refuses (docker containment)", () => {
     expect(refusal({ mounts: [`type=bind,source=${OWN},target=/t`, { type: "bind", source: OWN, target: "/t" }, `type=BIND,source=${OWN},target=/t`, { type: "Bind", source: "${localWorkspaceFolder}/.cache", target: "/c" }], runArgs: ["--mount", `type=Bind,source=${OWN},target=/t`] })).toBeUndefined();
     expect(refusal({ workspaceMount: "source=${localWorkspaceFolder},target=/workspaces/sample,type=bind", workspaceFolder: "/workspaces/sample" })).toBeUndefined();
     expect(refusal({ workspaceMount: "source=${localWorkspaceFolder},target=/workspaces/sample,type=BIND", workspaceFolder: "/workspaces/sample" })).toBeUndefined();
+  });
+
+  it("checks the agentx prefix on the name as the devcontainer CLI fills it in, not only as written", () => {
+    const folderNamedLikeOurs = { rootPath: "/mnt/workspace", workspaceFolder: "/mnt/workspace/repo/agentx-docker-data-mask" };
+    const check = (config: Record<string, unknown>) => devcontainerConfigRefusal({ image: "node:22", ...config }, folderNamedLikeOurs);
+    const reason = (name: string) => `a volume named ${name} (volumes named agentx… are AgentX's own)`;
+    const name = "${localWorkspaceFolderBasename}";
+    expect(check({ mounts: [`type=volume,source=${name},target=/v`] })).toBe(`mounts with ${reason(name)}`);
+    expect(check({ mounts: [{ type: "volume", source: name, target: "/v" }] })).toBe(`mounts with ${reason(name)}`);
+    expect(check({ runArgs: ["-v", `${name}:/x`] })).toBe(`runArgs ${reason(name)}`);
+    expect(check({ runArgs: ["--mount", `type=volume,source=${name},target=/v`] })).toBe(`runArgs ${reason(name)}`);
+    expect(check({ workspaceMount: `type=volume,source=${name},target=/v` })).toBe(`workspaceMount with ${reason(name)}`);
+    // A folder with another name is fine.
+    expect(refusal({ runArgs: ["-v", `${name}:/x`] })).toBeUndefined();
+  });
+
+  it.each([
+    ["--cidfile", ["--cidfile", "/etc/cron.d/x"]],
+    ["--cidfile", ["--cidfile=/tmp/id"]],
+    ["--label-file", ["--label-file", "/etc/hostname"]],
+    ["--label-file", ["--label-file=labels"]],
+    ["--volume-driver", ["--volume-driver", "local"]],
+    ["--volume-driver", ["--volume-driver=nfs"]],
+  ])("refuses runArgs with %s, which writes or reads a file of the worker or changes the volume driver", (expected, runArgs) => {
+    expect(refusal({ runArgs })).toBe(`runArgs ${expected}`);
+  });
+
+  it.each([
+    ["--push", ["--push"]],
+    ["--push", ["--pull", "--push"]],
+    ["--push", ["--push=true"]],
+    ["--output", ["--output", "type=registry"]],
+    ["--output", ["-o", "type=image,push=true"]],
+    ["--output", ["-qo", "type=image,push=true"]],
+  ])("refuses build.options %s (%j), which uses the worker's registry credentials or writes outside the build", (expected, options) => {
+    expect(refusal({ build: { dockerfile: "Dockerfile", options } })).toBe(`build.options ${expected}`);
   });
 
   it("reads the mount type without regard to case, as Docker does", () => {

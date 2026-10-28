@@ -143,7 +143,7 @@ const isBuildKitArgument = (name: string) => /^buildkit_/iu.test(name);
  * `docker build` options that reach outside the build: the host's network or extra privileges, files written to or
  * read from the worker, or another build context.
  */
-const BUILD_REFUSED = new Set(["--output", "--iidfile", "--metadata-file", "--allow", "--security-opt", "--secret", "--ssh", "--build-context", "--cache-to", "--file"]);
+const BUILD_REFUSED = new Set(["--output", "--iidfile", "--metadata-file", "--allow", "--security-opt", "--secret", "--ssh", "--build-context", "--cache-to", "--file", "--push"]);
 const BUILD_SHORT = new Map([["o", "--output"], ["f", "--file"]]);
 
 function buildOptionsRefusal(args: readonly string[]): string | undefined {
@@ -186,7 +186,7 @@ function substituteLocal(value: string, context: DevcontainerPolicyContext): str
 }
 
 /** Long `docker run` flags that hand the container part of the host whatever their value. */
-const ALWAYS_REFUSED = new Set(["--pid", "--security-opt", "--device", "--device-cgroup-rule", "--volumes-from", "--gpus"]);
+const ALWAYS_REFUSED = new Set(["--pid", "--security-opt", "--device", "--device-cgroup-rule", "--volumes-from", "--gpus", "--cidfile", "--label-file", "--volume-driver"]);
 /** Long flags refused when their value is `host` (and, for these three, another container's namespace). */
 const HOST_VALUE = new Map([["--ipc", true], ["--network", true], ["--net", true], ["--userns", false], ["--uts", false], ["--cgroupns", false]]);
 /** `docker run` short flags without a value; every other short flag takes one. */
@@ -273,17 +273,18 @@ function substituteVolumeName(source: string, context: DevcontainerPolicyContext
 
 /**
  * A named volume attaches whatever volume of that name already exists on the worker host's Docker, so a name is allowed
- * only when it is the project's own: it must hold ${devcontainerId} or ${localWorkspaceFolderBasename}, which the
- * devcontainer CLI fills in per container and per project folder, and it must not be one of AgentX's (`agentx` prefix).
- * A volume without a source is anonymous and new.
+ * only when it carries a part specific to the project folder: ${devcontainerId} (a hash of the local folder and the
+ * config path, the same across rebuilds) or ${localWorkspaceFolderBasename} (the folder's name, which another project
+ * with the same folder name shares). It must not be one of AgentX's, by the `agentx` prefix as written or as the
+ * devcontainer CLI fills the name in. A volume without a source is anonymous and new.
  */
 function namedVolumeRefusal(source: string, context: DevcontainerPolicyContext): string | undefined {
   if (source === "") return undefined;
   const name = substituteVolumeName(source, context);
   if (name.includes("/") || name.includes("${")) return `a volume named ${source}`;
-  if (AGENTX_VOLUME_PREFIX.test(source)) return `a volume named ${source} (volumes named agentx… are AgentX's own)`;
+  if (AGENTX_VOLUME_PREFIX.test(source) || AGENTX_VOLUME_PREFIX.test(name)) return `a volume named ${source} (volumes named agentx… are AgentX's own)`;
   if (!VOLUME_NAME_VARIABLES.some((variable) => source.includes(variable))) {
-    return `a volume named ${source} (a named volume must have \${devcontainerId} or \${localWorkspaceFolderBasename} in its name, so it is not one of the worker's other volumes)`;
+    return `a volume named ${source} (a named volume must have \${devcontainerId} or \${localWorkspaceFolderBasename} in its name, so it is specific to the project folder)`;
   }
   return undefined;
 }
