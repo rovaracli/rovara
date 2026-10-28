@@ -1444,16 +1444,20 @@ export class GitHubAppCredentialProvider {
   async listWorkingBranches(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope, page = 1): Promise<WorkingBranchPage> {
     if (!Number.isSafeInteger(page) || page < 1 || page > 1_000) throw workingBranchInvalid();
     const input = workingBranchInput(repositoryUrl, expected, scope);
+    return this.workingBranchList(input, page);
+  }
+
+  private async workingBranchList(input: WorkingBranchInput, page: number, lookup?: () => Promise<{ id: number; login: string }>): Promise<WorkingBranchPage> {
     try {
       const check = this.options.requireInstallationBound;
       if (check === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection unavailable.");
       const connected = async () => {
-        const current = await this.lookedUp(input, true);
+        const current = await (lookup === undefined ? this.lookedUp(input, true) : lookup());
         if (current.id !== input.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection changed.");
         await check(input.orgId, current.id, { owner: input.owner, name: input.name });
       };
       await connected();
-      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, false, { installationId: input.installationId });
+      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, lookup !== undefined, { installationId: input.installationId });
       const read = (path: string) => this.fetchImplementation(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" });
       const repository = await read("");
       if (repository.status !== 200) throw workingBranchUnavailable();
@@ -1497,7 +1501,7 @@ export class GitHubAppCredentialProvider {
     return { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
   }
 
-  /** Isolated exact-preview read session: no cross-request/org cache; finish rechecks fresh installation identity. */
+  /** Isolated exact-preview/list read session: no cross-request/org cache; finish rechecks fresh installation identity. */
   createWorkingBranchPreviewSession() {
     const scoped = new GitHubAppCredentialProvider(this.options);
     scoped.tokenCache = new Map();
@@ -1523,6 +1527,11 @@ export class GitHubAppCredentialProvider {
         if (!GitBranchNameSchema.safeParse(branch).success || branch === "HEAD" || branch.startsWith("refs/")) throw workingBranchInvalid();
         const input = prepare(url, expected, scope), result = await scoped.workingBranchRead(input, branch, lookup);
         return result.commit === undefined ? undefined : { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
+      },
+      listWorkingBranches: async (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope, page = 1) => {
+        if (!Number.isSafeInteger(page) || page < 1 || page > 1_000) throw workingBranchInvalid();
+        const input = prepare(url, expected, scope);
+        return scoped.workingBranchList(input, page, lookup);
       },
       finish: async () => {
         if (closed) throw workingBranchUnavailable();

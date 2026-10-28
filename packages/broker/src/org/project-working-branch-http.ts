@@ -8,6 +8,17 @@ import { readProjectWorkingBranchPage } from "./project-working-branch-list.js";
 const invalid = (preview: boolean) => agentXError("CONFIG_INVALID", preview ? "Review valid company, project and branch preview values." : "Review valid company, project and branch page values.");
 const forbidden = (preview: boolean) => agentXError("FORBIDDEN", preview ? "Only a current project maintainer can preview a working branch." : "Only a current project maintainer can list working branches.");
 const unavailable = (preview: boolean) => agentXError("RUNTIME_UNAVAILABLE", preview ? "The working branch preview could not be checked. Try again." : "Working branches could not be checked. Try again.");
+async function withBranchSession<T>(session: { finish: () => Promise<void> }, read: () => Promise<T>): Promise<T> {
+  let result;
+  try { result = await read(); }
+  catch (error) {
+    // Cleanup cannot replace an already-sanitized core refusal.
+    try { await session.finish(); } catch { /* preserve the core failure */ }
+    throw error;
+  }
+  await session.finish();
+  return result;
+}
 export async function readProjectWorkingBranchHttp(deps: DeveloperRouteDependencies, caller: DeveloperCaller, encodedProject: string, encodedRepository: string, url: URL, headers: Record<string, string | undefined>, preview = false) {
   let project: string, repository: string;
   try { project = decodeURIComponent(encodedProject); repository = decodeURIComponent(encodedRepository); } catch { throw agentXError("NOT_FOUND", "That project repository is unavailable."); }
@@ -36,21 +47,16 @@ export async function readProjectWorkingBranchHttp(deps: DeveloperRouteDependenc
   // Sequential conservative admission: later refusal does not refund earlier debits.
   try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_PAGES"), sk: "ALL" }, 30, 60_000); } catch { throw unavailable(preview); }
   if (!admitted) throw agentXError("TOO_MANY_REQUESTS", preview ? "Too many company working branch previews. Try again shortly." : "Too many company branch pages. Try again shortly.");
-  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_HOURLY_PAGES"), sk: "ALL" }, 1_200, 3_600_000, undefined, 2); } catch { throw unavailable(preview); }
+  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_HOURLY_PAGES"), sk: "ALL" }, 1_200, 3_600_000, undefined, 3); } catch { throw unavailable(preview); }
   if (!admitted) throw agentXError("TOO_MANY_REQUESTS", preview ? "Too many working branch previews this hour. Try again later." : "Too many company branch pages this hour. Try again later.");
   if (preview) {
     const session = deps.projectWorkingBranchPreview?.();
     if (session === undefined) throw unavailable(preview);
-    let result;
-    try { result = await readProjectWorkingBranchPreview({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...session }, scope, project, parsed.data); }
-    catch (error) {
-      // Cleanup still runs, but cannot replace an already-sanitized core refusal.
-      try { await session.finish(); } catch { /* preserve the core failure */ }
-      throw error;
-    }
-    await session.finish();
+    const result = await withBranchSession(session, () => readProjectWorkingBranchPreview({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...session }, scope, project, parsed.data));
     const { orgId, project: name, repository: registered, repositoryFullName, branch, commit, expectedRevision, expectedProjectRevision, checkedAt } = result;
     return ProjectWorkingBranchPreviewSchema.parse({ orgId, project: name, repository: registered, repositoryFullName, branch, commit, expectedRevision, expectedProjectRevision, checkedAt });
   }
-  return readProjectWorkingBranchPage({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...deps.projectWorkingBranches }, scope, project, parsed.data);
+  const session = deps.projectWorkingBranches?.();
+  if (session === undefined) throw unavailable(preview);
+  return withBranchSession(session, () => readProjectWorkingBranchPage({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...session }, scope, project, parsed.data));
 }

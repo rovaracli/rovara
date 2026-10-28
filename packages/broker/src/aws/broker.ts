@@ -1364,8 +1364,11 @@ function repositoryGateOf(dependencies: AwsBrokerDependencies): RepositoryGateDe
 /** Lane B: no legacy provider/private-install fallback for branch listing. */
 function workingBranchPagesRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "projectWorkingBranches"> {
   const app = dependencies.githubPullRequests;
-  if (app.readWorkingBranchRepository === undefined || app.listWorkingBranches === undefined) return {};
-  return { projectWorkingBranches: createWorkingBranchPageProvider({ readWorkingBranchRepository: app.readWorkingBranchRepository.bind(app), listWorkingBranches: app.listWorkingBranches.bind(app) }) };
+  if (app.createWorkingBranchPreviewSession === undefined) return {};
+  return { projectWorkingBranches: () => {
+    const session = app.createWorkingBranchPreviewSession!();
+    return { ...createWorkingBranchPageProvider(session), finish: () => session.finish() };
+  } };
 }
 
 /** Lane B: exact previews require both pinned SDK methods; no legacy fallback. */

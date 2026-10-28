@@ -280,7 +280,7 @@ export interface DeveloperRouteDependencies {
    */
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
   /** Lane B: pinned, explicitly org-bound read-only branch provider; absent fails closed. */
-  projectWorkingBranches?: Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">;
+  projectWorkingBranches?: () => Required<Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">> & { finish: () => Promise<void> };
   projectWorkingBranchPreview?: () => Required<Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">> & { finish: () => Promise<void> };
   /**
    * Plan 2, Task 18: pushes the approved domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Without it an approved change

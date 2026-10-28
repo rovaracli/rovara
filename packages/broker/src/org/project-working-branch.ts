@@ -45,7 +45,7 @@ export async function readProjectWorkingBranchPreview(deps:WorkingBranchReviewDe
    }catch(error){if(error instanceof AgentXError&&error.code==="GITHUB_NOT_CONNECTED")throw error;throw unavailable();}
   }
   const before=await connected();let raw:unknown;
-  try{raw=await resolveBranch(scope.orgId,structuredClone(registered),input.branch);}catch{throw unavailable();}
+  try{raw=await resolveBranch(scope.orgId,structuredClone(registered),input.branch);}catch(error){if(error instanceof AgentXError&&error.code==="GITHUB_NOT_CONNECTED")throw error;throw unavailable();}
   if(raw===undefined)throw missingBranch();
   const result=resolvedSchema.safeParse(raw);if(!result.success)throw unavailable();const resolved=result.data;
   if(resolved.fullName.toLowerCase()!==fullName.toLowerCase()||resolved.branch!==input.branch||resolved.installationId!==before.installationId||resolved.repositoryId!==before.repositoryId)throw unavailable();
