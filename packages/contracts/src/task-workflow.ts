@@ -36,6 +36,8 @@ export const WORKFLOW_BLOCK_REASONS = {
   stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
   leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
+  /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */
+  setupChangedFiles: "The dev container's setup changed the project's files, so the checks did not run. Look at what its setup commands change, then retry, or close the task.",
   /** An approved PR feedback fix left every repository's code as its open pull request holds it: nothing was pushed. */
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",

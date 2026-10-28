@@ -264,6 +264,7 @@ describe("pull request maintenance", () => {
         credentialProvider: credential,
         pullRequestUpdateSink: sink(),
         otherOperationActive: () => true,
+        otherOperationWait: { timeoutMs: 60, pollMs: 5 },
       })).rejects.toThrow(/another operation still running.*did not push/);
       expect(credential).not.toHaveBeenCalled();
       expect(await git(fixture.bare, ["rev-parse", `refs/heads/${fixture.headBranch}`])).toBe(`${fixture.pullRequestHead}\n`);

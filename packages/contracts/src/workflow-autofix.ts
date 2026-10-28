@@ -37,7 +37,7 @@ export const AUTO_FIX_CODES = [
   // A person must act.
   "runtime-expired", "runtime-environment-drifted", "model-environment-unsafe", "login-failed", "model-route-changed-reapprove", "agent-route-not-approved", "model-route-not-tested",
   "runtime-unusable", "selection-changed", "accounts-changed", "plan-not-approvable", "history-rewritten", "cancelled-by-owner", "check-broken", "fails-on-original-code",
-  "review-unusable", "rule-files-unverified", "leftover-processes", "pull-request-open", "unknown-group-code", "unreadable",
+  "review-unusable", "rule-files-unverified", "leftover-processes", "setup-changed-files", "pull-request-open", "unknown-group-code", "unreadable",
   // DISPATCHEXHAUST: why a block was written outside a finished run (see `AutoFixBlockCause`): the start was tried until its budget ran out and the run was lost (Rovara's side, transient),
   // or the owner stopped the run (a person's choice, never retried).
   "dispatch-exhausted", "run-lost", "owner-stopped",
@@ -174,6 +174,7 @@ function verifySignals(workflow: WorkflowSnapshot, facts: AutoFixFacts): Signal[
   else if (reason?.startsWith(WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX) === true) signals.push(person("plan-not-approvable"));
   else if (reason?.startsWith(WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX) === true) signals.push(workflow.e2e?.required === true ? code("round-refused") : person("unreadable"));
   else if (reason === WORKFLOW_BLOCK_REASONS.leftoverProcesses) signals.push(person("leftover-processes"));
+  else if (reason === WORKFLOW_BLOCK_REASONS.setupChangedFiles) signals.push(person("setup-changed-files"));
   else if (reason === WORKFLOW_BLOCK_REASONS.regressionFound) signals.push(code("regression-found"));
   else if (reason === WORKFLOW_BLOCK_REASONS.checkRunnerFailed) signals.push(transient("check-runner-failed"));
   else if (reason?.startsWith(WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX) === true) {

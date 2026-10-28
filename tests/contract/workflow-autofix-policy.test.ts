@@ -191,6 +191,13 @@ describe("AUTOFIX policy: reviews", () => {
     expect(decide(blocked("VERIFY", WORKFLOW_BLOCK_REASONS.leftoverProcesses))).toEqual({ action: "ASK", reason: "needs-a-person", codes: ["leftover-processes"] });
   });
 
+  it("asks, and never sends back or retries by itself, when the dev container's setup changed the project's files before the checks", () => {
+    expect(decide(blocked("VERIFY", WORKFLOW_BLOCK_REASONS.setupChangedFiles))).toEqual({ action: "ASK", reason: "needs-a-person", codes: ["setup-changed-files"] });
+    const stuck = blocked("VERIFY", WORKFLOW_BLOCK_REASONS.setupChangedFiles);
+    expect(() => returnWorkflowToImplementationAutomatically(stuck, { expectedRevision: 7, reason: "r", spend: SPEND, now: NOW })).toThrow(/new code does not fix it/);
+    expect(() => workflowAutomaticRetryDecision(stuck, { expectedRevision: 7, stage: "VERIFY", reason: "r", spend: SPEND, now: NOW })).toThrow(/a retry does not fix it/);
+  });
+
   it("sends back when findings and a stopped run come together", () => {
     expect(decide(blocked("REVIEW", undefined, { reviews: [review("CRITIC", "FINDINGS", [finding("bug")]), review("SECURITY", "INTERRUPTED", [], { failureReason: "INTERRUPTED" })] })))
       .toEqual({ action: "SEND_BACK", codes: ["review-findings", "review-run-failed"] });

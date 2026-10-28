@@ -5,7 +5,7 @@ import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependenc
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkItemProgressV1 } from "@agentx/contracts";
 import { SlackThreadWorkspaceResultSchema } from "@agentx/contracts";
-import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
 import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
 import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
@@ -1993,6 +1993,14 @@ describe("native developer task workflow", () => {
     await harness.finish(workspaceId, String(retryOperation?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not run the checks` });
     const leftover = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
     expect(leftover.workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+
+    // A fresh dev container whose setup changed the project's files before the checks ran: its own reason, and a person decides.
+    const again = await harness.dev(MAYA, "POST", retryRoute, { requestId: randomUUID(), instructions: "Run the selected check again.", expectedRevision: (leftover.workflow as { revision?: number }).revision });
+    expect(again.status).toBe(200);
+    const secondChecks = harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").filter((item) => item.workflowMode === "CHECKS").find((item) => item.id !== retryOperation?.id);
+    await harness.finish(workspaceId, String(secondChecks?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX found that ${WORKFLOW_SETUP_CHANGED_FILES_MESSAGE}, so the checks did not run` });
+    const changed = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    expect(changed.workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.setupChangedFiles });
   });
 
   it("keeps an interrupted plan blocked and requires a new read-only planning run to recover", async () => {

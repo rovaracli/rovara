@@ -36,6 +36,9 @@ export const WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE = "couldn't verify the base 
  */
 export const WORKFLOW_LEFTOVER_PROCESSES_MESSAGE = "couldn't stop the programs left running from earlier work";
 
+/** The worker's one fixed reason when the checks' fresh dev container ran its setup and that changed the project's files: the checks are not run on code nobody wrote or reviewed. */
+export const WORKFLOW_SETUP_CHANGED_FILES_MESSAGE = "the dev container's setup changed the project's files";
+
 /** Shown to the owner when the code no longer descends from the commit the task started from. */
 export const WORKFLOW_HISTORY_REWRITTEN_MESSAGE = "The change history was rewritten past where this task started, so AgentX can't compare it. Ask for the change again in a new task.";
 
@@ -2200,7 +2203,7 @@ export function workflowAutoFixCounts(decisions: readonly WorkflowDecision[]): W
 
 /** Block reasons only a person can resolve: sending the work back to coding never helps, so the broker never does it on its own. */
 function personOnlyBlock(blockReason: string | undefined): boolean {
-  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses
+  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses || blockReason === WORKFLOW_BLOCK_REASONS.setupChangedFiles
     || [WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX]
       .some((prefix) => blockReason?.startsWith(prefix) === true);
 }

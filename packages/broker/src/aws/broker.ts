@@ -108,6 +108,7 @@ import {
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
   WORKFLOW_LEFTOVER_PROCESSES_MESSAGE,
+  WORKFLOW_SETUP_CHANGED_FILES_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   type IntentAssessment,
@@ -16081,6 +16082,8 @@ async function completedWorkflowItems(
         : terminalError?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.noCodeChanged
         // The checks' rerun could not first stop the programs earlier work left running, so no check ran: its own reason, and a person decides (nothing sends it back or retries it by itself).
         : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        // The checks' fresh dev container ran its setup and that changed the project's files: the checks did not run on them, and a person decides.
+        : terminalError?.includes(WORKFLOW_SETUP_CHANGED_FILES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.setupChangedFiles
         // Plan 3, Task 32: the step's budget ran out; a spend request is asked for at the end of this result, and its approval retries the step.
         : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
         // Plan 6 Task 16: Rovara's own decision was refused when the worker started (a commenter lost write access, or the autonomy was lowered): the owner is told which.

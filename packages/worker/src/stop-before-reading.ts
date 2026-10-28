@@ -1,5 +1,5 @@
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, agentXError, redactText } from "@agentx/contracts";
-import { containWorkspace } from "./publish.js";
+import { containWorkspace, type OtherOperationWait } from "./publish.js";
 import { stopWorkspaceProcesses } from "./workspace-processes.js";
 import { sweepWorkspaceContainers } from "./workspace-containers.js";
 
@@ -23,6 +23,8 @@ export interface StopBeforeReadingOptions {
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
   /** Whether another operation is still running in this worker (server.ts). */
   otherOperationActive?: () => boolean;
+  /** How long to wait for it to end before failing closed (30 s by default). */
+  otherOperationWait?: OtherOperationWait;
   log?: (event: Record<string, unknown>) => void;
 }
 
@@ -30,8 +32,8 @@ export interface StopBeforeReadingOptions {
  * Before one of those steps reads anything, stops every program the coding session started the way publication does before it
  * takes a push token (publish.ts): the worker's own leftover processes (workspace-processes.ts), then every container but the
  * worker's own (workspace-containers.ts), the task sandbox and the dev container included, repeated until a round finds neither.
- * If another operation is still running in this worker (an earlier coding run the broker wrote off as lost), nothing is stopped and the step fails the same way: killing its
- * children would not stop its own code, which keeps writing the workspace.
+ * If another operation is still running in this worker (an earlier coding run the broker wrote off as lost), nothing is stopped and the step fails the same way once a bounded wait
+ * (30 s; a cancel reports before the cancelled run has left the list) is over: killing its children would not stop its own code, which keeps writing the workspace.
  * Nothing is started in their place here: the step opens its own task sandbox afterwards, and does not start the dev container
  * (its lifecycle commands are the repository's), so no program of the project runs before the read.
  *
@@ -46,6 +48,7 @@ export async function stopProgramsBeforeReading(rootPath: string, options: StopB
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
       ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
+      ...(options.otherOperationWait === undefined ? {} : { otherOperationWait: options.otherOperationWait }),
     });
   } catch (error) {
     log({ event: "read-step.stop-programs.failed", reason: redactText(error instanceof Error ? error.message : String(error)).slice(0, 300) });

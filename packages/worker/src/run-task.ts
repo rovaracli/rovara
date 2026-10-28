@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
@@ -265,7 +265,14 @@ async function runTask(
   let startedDevcontainer: DevcontainerUpResult | undefined;
   if (devcontainer !== undefined) {
     devcontainerCli = dependencies.devcontainerCli ?? createDevcontainerCli();
+    // The checks' fresh dev container runs the project's setup commands (postCreate and the like). If those rewrite the project's files (`npm install` changing a lockfile, say), the code
+    // the checks would run on, and report as the candidate, is not the code that was written and reviewed. The files are compared before and after the start; a difference stops the
+    // checks with one fixed reason, and the files are left as they are for a person to look at.
+    const filesBeforeStart = mode === "CHECKS" ? await candidateDigestOrUndefined(manifest, canonicalRoot, invocation.payload.workflowBase) : undefined;
     const started = await ensureDevcontainer(devcontainerCli, devcontainer);
+    if (filesBeforeStart !== undefined && await candidateDigestOrUndefined(manifest, canonicalRoot, invocation.payload.workflowBase) !== filesBeforeStart) {
+      throw agentXError("RUNTIME_UNAVAILABLE", `AgentX found that ${WORKFLOW_SETUP_CHANGED_FILES_MESSAGE}, so the checks did not run`);
+    }
     startedDevcontainer = started;
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
@@ -1742,6 +1749,15 @@ async function saveTestProof(sink: ArtifactSink, proof: NonNullable<Awaited<Retu
     await sink({ name: TEST_PROOF_ARTIFACT, mediaType: "application/json", content: serializeTestProof(proof) });
   } catch {
     await events.append("progress", { message: "AgentX could not save its check of the new tests against the original code." }).catch(() => undefined);
+  }
+}
+
+/** The digest of the code in every prepared repository as it is now, or undefined when it cannot be read (the checks' own read then fails as it always did). */
+async function candidateDigestOrUndefined(manifest: PreparationManifest, root: string, base?: ReadonlyArray<{ repositoryId: string; baseCommitSha: string }>): Promise<string | undefined> {
+  try {
+    return createCandidateManifest(await readCandidateRepositories(candidateInputs(manifest, root, base))).digest;
+  } catch {
+    return undefined;
   }
 }
 

@@ -3,11 +3,11 @@
 // sandbox, the project's dev container). Nothing here starts a real process or container: the operating system and Docker are fakes that keep one timeline of what happened.
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
-import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, type WorkerInvocation } from "@agentx/contracts";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, type WorkerInvocation } from "@agentx/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DevcontainerCli } from "../../packages/worker/src/devcontainer.js";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";
@@ -40,6 +40,7 @@ async function workspace(options: { manifest?: boolean; git?: boolean; devcontai
   await writeFile(join(root, "app/.devcontainer/devcontainer.json"), "{\"image\":\"node:22\"}\n");
   if (options.git === true) {
     const git = (...args: string[]) => execFileAsync("git", ["-C", join(root, "app"), "-c", "user.name=T", "-c", "user.email=t@example.test", ...args]);
+    await writeFile(join(root, "app/package-lock.json"), "{\"lockfileVersion\":3}\n");
     await git("init", "--quiet", "--initial-branch=main");
     await git("add", ".");
     await git("commit", "--quiet", "-m", "fixture");
@@ -98,6 +99,8 @@ function fakeWorld(root: string) {
           },
         });
       },
+      // Tests do not wait the real thirty seconds for another operation.
+      otherOperationWait: { timeoutMs: 80, pollMs: 5 },
       log: () => undefined,
     },
     docker: {
@@ -108,11 +111,13 @@ function fakeWorld(root: string) {
       },
       async execBytes() { return { exitCode: 0, stdout: Buffer.from("{\"ok\":true,\"result\":{\"removed\":0}}\n"), stderr: "" }; },
     } satisfies DockerCli,
+    /** What the dev container's lifecycle commands (postCreate) do to the workspace when it starts. */
+    onUp: undefined as undefined | (() => Promise<void>),
     devcontainerCli: {
-      run: (args) => {
+      run: async (args) => {
         timeline.push(`devcontainer:${args[0] ?? ""}`);
-        if (args[0] === "up") world.upCalls += 1;
-        return Promise.resolve({ exitCode: 0, stdout: args[0] === "up" ? UP_OUTPUT : "", stderr: "" });
+        if (args[0] === "up") { world.upCalls += 1; await world.onUp?.(); }
+        return { exitCode: 0, stdout: args[0] === "up" ? UP_OUTPUT : "", stderr: "" };
       },
     } satisfies DevcontainerCli,
     /** The project's checks: each command records what was alive at that moment. */
@@ -144,7 +149,7 @@ function invocation(mode: Mode | "IMPLEMENT" | "CHECKS"): WorkerInvocation {
   };
 }
 
-async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT" | "CHECKS", extra: { otherOperationActive?: () => boolean } = {}) {
+async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT" | "CHECKS", extra: { otherOperationActive?: () => boolean; otherOperationWait?: { timeoutMs: number; pollMs: number } } = {}) {
   const events: WorkerEvent[] = [];
   const outcome = await runTaskInvocation(invocation(mode), {
     rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: world.piAdapter, docker: world.docker, devcontainerCli: world.devcontainerCli,
@@ -238,6 +243,26 @@ describe.each(MODES)("%s and another operation still running in the worker", (mo
     expect(world.upCalls).toBe(0);
   });
 
+  // A cancel reports its result before the cancelled run has left the worker's list: a step that arrives right after waits a little rather than blocking for nothing.
+  it("waits for an operation that is ending, then goes on and reads", async () => {
+    const root = await workspace();
+    const world = fakeWorld(root);
+    let polls = 0;
+    const { outcome } = await run(root, world, mode, { otherOperationActive: () => { polls += 1; return polls <= 3; }, otherOperationWait: { timeoutMs: 2_000, pollMs: 5 } });
+    expect(outcome?.message).toBe(SENTINEL);
+    expect(polls).toBeGreaterThan(3);
+  });
+
+  it("stops with the fixed reason, after the wait, when the other operation never ends", async () => {
+    const root = await workspace();
+    const world = fakeWorld(root);
+    const started = Date.now();
+    const { outcome } = await run(root, world, mode, { otherOperationActive: () => true, otherOperationWait: { timeoutMs: 120, pollMs: 10 } });
+    expect(outcome?.message).toBe(FIXED);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(110);
+    expect(world.timeline).toEqual([]);
+  });
+
   it("control: with no other operation running it stops what was left and reads", async () => {
     const root = await workspace();
     const world = fakeWorld(root);
@@ -311,6 +336,28 @@ describe("the worker's own record of running operations", () => {
 });
 
 // The checks run the project's code, so they need the project's environment, but not the one the coding session left: the same containment first, then a fresh dev container.
+describe("CHECKS when the dev container's setup changes the project's files", () => {
+  it("stops with a fixed reason, runs no check, and leaves the changed files as they are", async () => {
+    const root = await workspace({ git: true });
+    const world = fakeWorld(root);
+    // postCreate: `npm install` rewrites a tracked lockfile.
+    world.onUp = async () => { await writeFile(join(root, "app/package-lock.json"), "{\"lockfileVersion\":3,\"rewritten\":true}\n"); };
+    const { outcome } = await run(root, world, "CHECKS");
+    expect(outcome?.message).toBe(`RUNTIME_UNAVAILABLE: AgentX found that ${WORKFLOW_SETUP_CHANGED_FILES_MESSAGE}, so the checks did not run`);
+    expect(world.upCalls).toBe(1);
+    expect(world.timeline.some((entry) => entry.startsWith("checks:run"))).toBe(false);
+    expect(await readFile(join(root, "app/package-lock.json"), "utf8")).toContain("rewritten");
+  });
+
+  it("control: a start that changes nothing runs the checks, and a sandbox start (no lifecycle commands) is not compared", async () => {
+    const root = await workspace({ git: true });
+    const world = fakeWorld(root);
+    world.onUp = async () => undefined;
+    expect((await run(root, world, "CHECKS")).outcome).toBeUndefined();
+    expect(world.timeline.some((entry) => entry.startsWith("checks:run"))).toBe(true);
+  });
+});
+
 describe("CHECKS starts from a clean workspace", () => {
   const FIXED = `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not run the checks`;
   const CHECK_RUN = (entry: string) => entry.startsWith("checks:run");
