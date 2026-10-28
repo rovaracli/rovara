@@ -637,7 +637,7 @@ describe("Suite 11: MCP parity", () => {
     const beforeTakeoverProposal = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "PEOPLE"));
     // Taking a session over needs "can edit" on it (Plan 5): Maya, its owner, shares it with Bailey at that level. The task has no session yet (it is made the first time it is needed).
     const taskMeta = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")! as unknown as Parameters<typeof ensureTaskSession>[1] & { developerName: string; title: string };
-    const sessionId = await ensureTaskSession({ documentClient: e2e.db as never, tableName: "state", now: Date.now }, taskMeta, { ownerName: taskMeta.developerName, title: taskMeta.title });
+    const sessionId = await ensureTaskSession({ documentClient: e2e.db, tableName: "state", now: Date.now }, taskMeta, { ownerName: taskMeta.developerName, title: taskMeta.title });
     expect(sessionId).toBeDefined();
     e2e.db.set({ ...agentSessionKey(TEST_ORG, sessionId!, `SHARE#MEMBER#${SLACK_BAILEY.developerId}`), entityType: "AGENT_SESSION_SHARE", orgId: TEST_ORG, sessionId, principal: { kind: "member", developerId: SLACK_BAILEY.developerId },
       level: "edit", sharedBy: { developerId: SLACK_MAYA.developerId, name: SLACK_MAYA.name }, sharedAt: new Date().toISOString() });
@@ -656,7 +656,7 @@ describe("Suite 11: MCP parity", () => {
       expect.objectContaining({ slackUserId: BAILEY.slackUserId, role: "viewer" }),
     ] });
     // The session take-over names the new owner on the task itself (its current owner), and lowers the People list's owners; it does not add an owner entry.
-    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toMatchObject({ currentOwner: expect.objectContaining({ developerId: SLACK_BAILEY.developerId }) });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toMatchObject({ currentOwner: { developerId: SLACK_BAILEY.developerId } });
     expect(e2e.db.get(String(queued.pk), String(queued.sk))?.status).toBe("WAITING_FOR_TASK_ACCESS");
     expect(e2e.invocations).toHaveLength(invocationsBeforeApproval);
     expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!.charge).toEqual(charge);
