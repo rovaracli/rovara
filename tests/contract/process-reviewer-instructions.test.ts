@@ -86,7 +86,7 @@ describe("a process layer's project-wide rules", () => {
     expect(texts("FEEDBACK_REVIEW")).not.toContain(FEEDBACK_RULE);
     // Only the stage's layers written by the process layer are dropped: a built-in stage layer stays.
     const withBuiltinStage = applyOverlay(applyOverlay(V2, { steps: { pull_request: { instructions: "BUILT-IN-STAGE-RULE" } } }, builtinLayer), OVERLAY, layer);
-    expect(stepInstructionLayers(withBuiltinStage, withBuiltinStage.steps.find((candidate) => candidate.kind === "pull_request")!, "FEEDBACK_REVIEW").map((entry) => entry.text)).toEqual(["BUILT-IN-STAGE-RULE"]);
+    expect(stepInstructionLayers(withBuiltinStage, withBuiltinStage.steps.find((candidate) => candidate.kind === "pull_request"), "FEEDBACK_REVIEW").map((entry) => entry.text)).toEqual(["BUILT-IN-STAGE-RULE"]);
   });
 
   it("a rule written on the review stage reaches the reviewers, and a rule on the plan check reaches the plan check, and neither reaches Build", () => {
