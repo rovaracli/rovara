@@ -660,3 +660,19 @@ for (const builtin of [false, true]) for (const initial of [undefined, 0, 1]) it
   expect(raced).toBe(true); expect(f.db.get(key)?.maxPerRunUsd).toBe(3);
   expect(capture.recorded().length).toBe(before + 1); expect(capture.pending()).toHaveLength(0);
 });
+
+it("conditionally creates a first builtin budget without overwriting a competing first writer", async () => {
+  const f = setup(), key = builtinSettingsKey(ORG_A, "code-reviewer"), capture = capturingAuditDeps({ db: f.db });
+  const store = new AgentStore({ documentClient: f.db, tableName: "state", now: () => START, audit: capture.audit });
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } } }> };
+    if (!raced && input.TransactItems?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk)) {
+      raced = true; await store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: 3 }, ALICE);
+    }
+    return send(command);
+  };
+  expect(await code(store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: 2 }, ALICE))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+  expect(raced).toBe(true); expect(f.db.get(key)?.maxPerRunUsd).toBe(3);
+  expect(capture.recorded()).toHaveLength(1); expect(capture.pending()).toHaveLength(0);
+});
