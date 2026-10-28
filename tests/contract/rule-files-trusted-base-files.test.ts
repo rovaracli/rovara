@@ -375,10 +375,11 @@ describe("the test link that decides where the scratch directory goes leaves not
     });
   });
 
-  it("probe files an earlier read left behind (a killed worker) are removed once they are old, wherever probes are made, and a recent one is kept", async () => {
+  it("probe files an earlier read left behind (a killed worker) are removed once they are old by both their times, wherever probes are made", async () => {
     const subject = await repository();
     const outside = join(subject.root, "outside-target");
     writeFileSync(outside, "keep\n");
+    utimesSync(outside, OLD(), OLD());
     await withTemporaryArea(async (area) => {
       git(subject.directory, "gc", "--quiet", "--prune=now");
       const runtime = join(subject.root, ".agentx-runtime", "tmp");
@@ -398,10 +399,19 @@ describe("the test link that decides where the scratch directory goes leaves not
         // Old, but not regular files: these are never touched.
         utimesSync(join(directory, names.dir), old, old);
       }
+      // Made a moment ago: an old modification time alone (a link to an old pack has one) does not make a leftover old, so nothing is removed yet.
       expect(text(await read(subject, { linkFile: exdev }))).toBe(BASE_RULE);
       for (const directory of [runtime, area, subject.objects]) {
         const left = readdirSync(directory).filter((name) => name.startsWith("agentx-link-probe-") || name === names.other).sort();
-        expect(left).toEqual([names.recent, names.link, names.fifo, names.dir, names.other].sort());
+        expect(left).toEqual([names.stale, names.recent, names.link, names.fifo, names.dir, names.other].sort());
+      }
+      // Two hours on, the regular leftovers are removed; links, pipes, directories and other names are not. The link's target is old by then too, so
+      // only opening without following the link keeps it.
+      const later = Date.now() + 2 * 60 * 60 * 1000;
+      expect(text(await read(subject, { linkFile: exdev, now: () => later }))).toBe(BASE_RULE);
+      for (const directory of [runtime, area, subject.objects]) {
+        const left = readdirSync(directory).filter((name) => name.startsWith("agentx-link-probe-") || name === names.other).sort();
+        expect(left).toEqual([names.link, names.fifo, names.dir, names.other].sort());
         expect(lstatSync(join(directory, names.link)).isSymbolicLink()).toBe(true);
       }
       expect(readFileSync(outside, "utf8")).toBe("keep\n");
