@@ -1,6 +1,6 @@
 // What a coding run did, kept only to answer for it when the run ends with no code change: the commands the agent ran, what they printed, and the agent's last words. It reads the session's own
 // tool events (nothing else is stored or asked of a model). The block it builds is redacted and bounded (`buildNoChangeFindings`) before it leaves the worker.
-import { NO_CHANGE_FINDINGS_OMITTED_MAX, buildNoChangeFindings, type NoChangeFindings } from "@agentx/contracts";
+import { NO_CHANGE_FINDINGS_CONCLUSION_MAX, NO_CHANGE_FINDINGS_OMITTED_MAX, buildNoChangeFindings, type NoChangeFindings } from "@agentx/contracts";
 
 /** The tools whose calls are told as "commands the agent ran": the shell and the tools that only read. A tool that writes is never listed. */
 const LISTED_TOOLS: ReadonlySet<string> = new Set(["bash", "grep", "find", "ls", "read"]);
@@ -47,14 +47,83 @@ export class FindingsRecorder {
     this.conclusion = text;
   }
 
-  /** The block for the run's result: bounded and redacted. */
-  build(): NoChangeFindings {
+  /** What this session held, for the block (here, or combined with the other parts'): its calls, the count of earlier ones it dropped, and its last words without the result marker. */
+  held(): { calls: readonly Call[]; dropped: number; conclusion: string } {
     const lines = (this.conclusion ?? "").split("\n");
     while (lines.length > 0 && (lines.at(-1)!.trim() === "" || MARKER.test(lines.at(-1)!.trim()))) lines.pop();
-    const built = buildNoChangeFindings({ commands: this.calls, conclusion: lines.join("\n") });
-    const omitted = Math.min((built.omitted ?? 0) + this.dropped, NO_CHANGE_FINDINGS_OMITTED_MAX);
-    return { ...built, ...(omitted > 0 ? { omitted } : {}) };
+    return { calls: this.calls, dropped: this.dropped, conclusion: lines.join("\n") };
   }
+
+  /** The block for the run's result: bounded and redacted. */
+  build(): NoChangeFindings {
+    const { calls, dropped, conclusion } = this.held();
+    return finish(calls, dropped, conclusion);
+  }
+}
+
+function finish(calls: readonly Call[], dropped: number, conclusion: string): NoChangeFindings {
+  const built = buildNoChangeFindings({ commands: calls, conclusion });
+  const omitted = Math.min((built.omitted ?? 0) + dropped, NO_CHANGE_FINDINGS_OMITTED_MAX);
+  return { ...built, ...(omitted > 0 ? { omitted } : {}) };
+}
+
+/**
+ * What a whole run did. A run split into parts (parallel or ordered) has a session for each part, and each part's session has a recorder of its own, so two parts' commands never mix and
+ * the same tool-call id in two sessions never collides. When the run ends with no change the parts are combined in the plan's order (`setOrder`); a run with one session reads as that
+ * session's recorder does.
+ */
+export class RunFindings {
+  /** The recorder of the run's own session, for a run that is not split into parts. */
+  readonly main = new FindingsRecorder();
+  private order: readonly string[] = [];
+  private readonly parts = new Map<string, FindingsRecorder>();
+
+  /** The plan's order of the parts (their ids); a part not named here follows the named ones, in the order its session began. */
+  setOrder(partIds: readonly string[]): void {
+    this.order = [...partIds];
+  }
+
+  /** The recorder of one part's session (made the first time it is asked for). */
+  forPart(partId: string): FindingsRecorder {
+    let recorder = this.parts.get(partId);
+    if (recorder === undefined) { recorder = new FindingsRecorder(); this.parts.set(partId, recorder); }
+    return recorder;
+  }
+
+  /**
+   * The block for the run's result: bounded and redacted. With more than one part: the commands of each part in the plan's order, one list (the last ten overall are kept, and `omitted` counts
+   * the rest), and each part's own conclusion, labelled "Part N:" (N is the part's place in the plan), sharing the conclusion's one limit so a long part does not crowd out the others.
+   */
+  build(): NoChangeFindings {
+    if (this.parts.size === 0) return this.main.build();
+    const known = this.order.filter((id) => this.parts.has(id));
+    const keys = [...known, ...[...this.parts.keys()].filter((id) => !known.includes(id))];
+    if (keys.length === 1) return this.parts.get(keys[0]!)!.build();
+    const held = keys.map((id) => ({ id, ...this.parts.get(id)!.held() }));
+    const labelled = held.flatMap((part) => {
+      // Redacted and cut here to the conclusion's limit first, so that cutting it again to the part's share only ever cuts text that is already safe.
+      const text = buildNoChangeFindings({ commands: [], conclusion: part.conclusion }).conclusion;
+      const place = this.order.indexOf(part.id);
+      return text === undefined ? [] : [{ label: `Part ${String(place >= 0 ? place + 1 : this.order.length + keys.indexOf(part.id) + 1)}: `, text }];
+    });
+    const separator = "\n\n";
+    let room = NO_CHANGE_FINDINGS_CONCLUSION_MAX - labelled.reduce((sum, part) => sum + part.label.length, 0) - separator.length * Math.max(0, labelled.length - 1);
+    // Each part gets an equal share of the room, and what a short part does not use goes to the longer ones.
+    const shares = new Array<number>(labelled.length).fill(0);
+    const order = labelled.map((part, index) => index).sort((x, y) => Array.from(labelled[x]!.text).length - Array.from(labelled[y]!.text).length);
+    order.forEach((index, rank) => {
+      const share = Math.max(0, Math.floor(room / (order.length - rank)));
+      shares[index] = Math.min(Array.from(labelled[index]!.text).length, share);
+      room -= shares[index];
+    });
+    const conclusion = labelled.flatMap((part, index) => { const text = cutText(part.text, shares[index]!); return text === "" ? [] : [`${part.label}${text}`]; }).join(separator);
+    return finish(held.flatMap((part) => part.calls), held.reduce((sum, part) => sum + part.dropped, 0), conclusion);
+  }
+}
+
+function cutText(text: string, max: number): string {
+  const points = Array.from(text);
+  return points.length <= max ? text : max < 2 ? "" : `${points.slice(0, max - 1).join("").trimEnd()}…`;
 }
 
 function describe(tool: string, args: unknown): string {

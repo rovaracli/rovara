@@ -6,7 +6,7 @@ import {
   NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_REASON, NoChangeFindingsSchema, buildNoChangeFindings, isNoCodeChangedReason, noChangeFindingsFrom, noChangeFindingsSize,
   NO_CHANGE_FINDINGS_OMITTED_MAX, NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_VALUE_HIDDEN, commandReadsSecrets, maskSecretValues, isSecretName, noChangeHasThread,
 } from "../../packages/contracts/src/no-change-findings.js";
-import { FindingsRecorder } from "../../packages/worker/src/no-change-findings.js";
+import { FindingsRecorder, RunFindings } from "../../packages/worker/src/no-change-findings.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WorkflowSnapshotSchema, blockWorkflow, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 
@@ -218,6 +218,118 @@ describe("the worker's recorder", () => {
     recorder.observe({ type: "tool_execution_start", toolCallId: "b", toolName: "read", args: { path: "src/a.ts" } });
     recorder.observe({ type: "tool_execution_end", toolCallId: "b", toolName: "read", result: { content: [{ type: "text", text: "FILE TEXT" }] } });
     expect(recorder.build().commands).toEqual([{ command: "ls src", output: "a.ts\nb.ts" }, { command: "read src/a.ts" }]);
+  });
+});
+
+/** One tool call's two events, as a session emits them. */
+const callEvents = (id: string, command: string, text: string): [unknown, unknown] => [
+  { type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command } },
+  { type: "tool_execution_end", toolCallId: id, toolName: "bash", result: { content: [{ type: "text", text }] } },
+];
+
+describe("a run split into parts: one recorder for each part's session", () => {
+  const A = "part-a", B = "part-b", C = "part-c";
+
+  it("groups the commands in the plan's order when the parts run at once and interleave their events, even with the same tool-call id in two sessions", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    // The sessions start in a different order from the plan, and each uses the ids "t1", "t2".
+    const c = run.forPart(C), a = run.forPart(A), b = run.forPart(B);
+    const [a1s, a1e] = callEvents("t1", "grep -rn alpha src", "a-out-1");
+    const [a2s, a2e] = callEvents("t2", "ls alpha", "a-out-2");
+    const [b1s, b1e] = callEvents("t1", "grep -rn beta src", "b-out-1");
+    const [b2s, b2e] = callEvents("t2", "ls beta", "b-out-2");
+    const [c1s, c1e] = callEvents("t1", "grep -rn gamma src", "c-out-1");
+    // Starts of the same id in two sessions are open together; the ends arrive crossed.
+    a.observe(a1s); b.observe(b1s); c.observe(c1s);
+    c.observe(c1e); b.observe(b1e); a.observe(a1e);
+    b.observe(b2s); a.observe(a2s); a.observe(a2e); b.observe(b2e);
+    const found = run.build();
+    expect(found.commands).toEqual([
+      { command: "grep -rn alpha src", output: "a-out-1" }, { command: "ls alpha", output: "a-out-2" },
+      { command: "grep -rn beta src", output: "b-out-1" }, { command: "ls beta", output: "b-out-2" },
+      { command: "grep -rn gamma src", output: "c-out-1" },
+    ]);
+    expect(found.omitted).toBeUndefined();
+  });
+
+  it("lists each part's final text in the plan's order, labelled by part", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    run.forPart(B).concludeWith("Beta uses retry in src/b.ts.");
+    run.forPart(C).concludeWith("Gamma has no retry.\nAgentX result: done");
+    run.forPart(A).concludeWith("Alpha uses retry in src/a.ts.");
+    run.forPart(A).concludeWith("Alpha uses retry in src/a.ts, twice.");
+    expect(run.build().conclusion).toBe("Part 1: Alpha uses retry in src/a.ts, twice.\n\nPart 2: Beta uses retry in src/b.ts.\n\nPart 3: Gamma has no retry.");
+  });
+
+  it("numbers a part by its place in the plan, and leaves out a part that wrote no conclusion", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    run.forPart(A).concludeWith(undefined);
+    run.forPart(C).concludeWith("Only the last part spoke.");
+    run.forPart(B).concludeWith("The middle part spoke.");
+    expect(run.build().conclusion).toBe("Part 2: The middle part spoke.\n\nPart 3: Only the last part spoke.");
+  });
+
+  it("keeps the caps over the combined list: the last ten commands overall, the omitted count, and the conclusion cap with every part still heard", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    let id = 0;
+    for (const [key, name] of [[A, "a"], [B, "b"], [C, "c"]] as const) {
+      for (let index = 0; index < 70; index += 1) {
+        const [start, end] = callEvents(`t${String(id += 1)}`, `${name}-${String(index)} ${"x".repeat(1000)}`, `out-${name}-${String(index)} ${"y".repeat(50_000)}`);
+        run.forPart(key).observe(start); run.forPart(key).observe(end);
+      }
+      run.forPart(key).concludeWith(`${name.toUpperCase()}-START ${"z".repeat(30_000)} ${name.toUpperCase()}-END`);
+    }
+    const found = run.build();
+    expect(found.commands).toHaveLength(NO_CHANGE_FINDINGS_COMMANDS_MAX);
+    // 210 calls were made; each recorder holds its last 60 and counts the rest (10 each); the block keeps the last ten of the combined list.
+    expect(found.omitted).toBe(200);
+    expect(found.commands.every((item) => item.command.startsWith("c-"))).toBe(true);
+    expect(found.commands.at(-1)!.command.startsWith("c-69 ")).toBe(true);
+    for (const item of found.commands) {
+      expect(item.command.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_COMMAND_MAX);
+      expect((item.output ?? "").length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_OUTPUT_MAX);
+    }
+    expect(found.conclusion!.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_CONCLUSION_MAX);
+    expect(found.conclusion).toMatch(/^Part 1: A-START[\s\S]*\n\nPart 2: B-START[\s\S]*\n\nPart 3: C-START/u);
+    expect(noChangeFindingsSize(found)).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_TOTAL_MAX);
+    expect(NoChangeFindingsSchema.safeParse(found).success).toBe(true);
+  });
+
+  it("still redacts and masks what the parts held (positive control: the raw text did hold the secret)", () => {
+    const token = secret();
+    const run = new RunFindings();
+    run.setOrder([A, B]);
+    const [start, end] = callEvents("t1", `curl -H "Authorization: Bearer ${token}" https://example.test`, `apiKey=${hmac()}\nfound ${token}`);
+    run.forPart(A).observe(start); run.forPart(A).observe(end);
+    run.forPart(A).concludeWith(`Part A saw ${token}.`);
+    run.forPart(B).concludeWith(`DB_PASS=x1 and ${token}`);
+    const found = run.build();
+    const text = JSON.stringify(found);
+    expect(text).not.toContain(token);
+    expect(text).not.toContain(hmac());
+    expect(found.conclusion).toContain(`DB_PASS=${NO_CHANGE_VALUE_HIDDEN}`);
+    expect(found.commands[0]!.output).toContain(`apiKey=${NO_CHANGE_VALUE_HIDDEN}`);
+  });
+
+  it("a run with one part, or with none, reads exactly as one recorder did: no label", () => {
+    const single = new FindingsRecorder();
+    const run = new RunFindings();
+    run.setOrder([A]);
+    const part = run.forPart(A);
+    for (const recorder of [single, part]) {
+      for (const event of callEvents("t1", "npm test", "3 passed")) recorder.observe(event);
+      recorder.concludeWith("We do use retry.\nAgentX result: done");
+    }
+    expect(run.build()).toEqual(single.build());
+    expect(run.build().conclusion).toBe("We do use retry.");
+    const none = new RunFindings();
+    for (const event of callEvents("t1", "npm test", "3 passed")) none.main.observe(event);
+    none.main.concludeWith("Plain.");
+    expect(none.build()).toEqual({ commands: [{ command: "npm test", output: "3 passed" }], conclusion: "Plain." });
   });
 });
 

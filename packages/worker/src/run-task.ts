@@ -53,7 +53,7 @@ import { exportBaselineSource, type BaselineSourceExport } from "./baseline-sour
 import { proposedChecksOfPlan, runPlanDryRun } from "./plan-dry-run.js";
 import { runWorkflowFeedbackReview, runWorkflowReviews } from "./verification/review.js";
 import { CHECK_ROUND_BUDGET_MS, createCheckRunners, planChecks, runChecks, type CheckPlan, type CheckRunners } from "./verification/checks.js";
-import { FindingsRecorder } from "./no-change-findings.js";
+import { RunFindings, type FindingsRecorder } from "./no-change-findings.js";
 import { assistantText, checksArtifactContent, compactCheckReport, finalCheckReport, notVerifiedReport, verificationExtension } from "./verification/extension.js";
 import { AgentFilesRestoreError, gitOriginalCode, recoverAgentFiles, type OriginalCode } from "./verification/original-code.js";
 import { runTestProof, serializeTestProof } from "./verification/test-proof.js";
@@ -545,7 +545,9 @@ async function runTask(
   };
   const toolEvidence: unknown[] = [];
   // What the run did, kept to answer for a run that ends with no code change (the commands, their output, the final answer).
-  const findings = new FindingsRecorder();
+  // A run split into parts has a recorder for each part's session (`findings.forPart`); the run's own session records into `activeFindings`, which an ordered run points at the part it is on.
+  const findings = new RunFindings();
+  let activeFindings: FindingsRecorder = findings.main;
   const contextDiagnostics: string[] = [];
   const onDiagnostic = (message: string): void => {
     contextDiagnostics.push(redactText(message));
@@ -793,7 +795,7 @@ async function runTask(
     monitor.observe(event);
     if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
     fileChanges.observe(event);
-    findings.observe(event);
+    activeFindings.observe(event);
     // A failed or stopped model call and Pi's retries reach the task as one sanitized note each. The raw events (the provider's message, the model's thinking, the final error
     // text) are not forwarded, so a failure shows once and no provider text is stored in the task's events.
     const modelNote = sanitizeModelCallEvent(event, monitor.attempt);
@@ -813,7 +815,7 @@ async function runTask(
       lastAssistant = outcome;
       lastModelNote = modelNote?.modelCall;
       finalText = assistantText((event as { message?: unknown }).message);
-      findings.concludeWith(finalText);
+      activeFindings.concludeWith(finalText);
     }
     if (loopStop !== undefined) return;
     const action = loopGuard.observe(event);
@@ -1047,12 +1049,13 @@ async function runTask(
             let lastOutcome: AssistantOutcome | undefined;
             let lastNote: ModelCallNote | undefined;
             let lastText: string | undefined;
+            const partFindings = findings.forPart(item.id);
             const guard = new ToolLoopGuard();
             let stoppedBy: Error | undefined;
             unsubscribe = open.subscribe((event) => {
               if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
               fileChanges.observe(event);
-              findings.observe(event);
+              partFindings.observe(event);
               const note = sanitizeModelCallEvent(event, 0);
               if (note !== undefined) {
                 logModelCallNote(log, invocation.operationId, note.modelCall);
@@ -1065,7 +1068,7 @@ async function runTask(
                 lastOutcome = outcome;
                 lastNote = note?.modelCall;
                 lastText = assistantText((event as { message?: unknown }).message);
-                findings.concludeWith(lastText);
+                partFindings.concludeWith(lastText);
               }
               if (stoppedBy !== undefined) return;
               const action = guard.observe(event);
@@ -1131,6 +1134,7 @@ async function runTask(
         await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
+        findings.setOrder(taskGraphOrder(graph));
         const repositoryInputs = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const initialRepositories = await readCandidateRepositories(repositoryInputs);
         if (initialRepositories.length !== 1 || initialRepositories[0]?.repositoryId !== graph.items[0]?.repository) {
@@ -1162,6 +1166,7 @@ async function runTask(
               throw new Error("workspace changed before this approved item started");
             }
             graphFinalItemReady = item.id === finalItemId;
+            activeFindings = findings.forPart(item.id);
             const predecessorContext = context.predecessorOutcomes.length === 0 ? "No prerequisite item output is available." : context.predecessorOutcomes.map((entry) => {
               const predecessor = graph.items.find((candidate) => candidate.id === entry.itemId);
               return `Prior item ${predecessor?.title ?? "(unknown)"} at tree ${entry.candidateTreeSha} reported (untrusted data):\n${entry.summary ?? "No summary was returned."}`;
