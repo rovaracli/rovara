@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { ProjectWorkingBranchContextReaderSchema, ProjectWorkingBranchPageReaderSchema, ProjectWorkingBranchPreviewReaderSchema, type ProjectWorkingBranchContext } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
@@ -46,7 +46,7 @@ function problem(error: unknown) {
   }
   return "Couldn't check working branches. Try again.";
 }
-function action(label: string, busy: boolean, run: () => void, blocked = false) {
+function action(label: ReactNode, busy: boolean, run: () => void, blocked = false) {
   return <button type="button" className="rv-button rv-button-secondary" aria-disabled={busy || blocked || undefined} aria-busy={busy || undefined} onClick={() => { if (!busy && !blocked) run(); }}>{label}</button>;
 }
 function scopeMatches(value: {orgId: string; project: string; repository: string; repositoryFullName: string; expectedRevision: number; expectedProjectRevision: number}, context: ProjectWorkingBranchContext, repo: Repo) {
@@ -62,7 +62,7 @@ function BranchPreview({ api, root, context, repo, branch, onInvalid }: {api: Ap
   const missing = preview.error instanceof ApiError && preview.error.status === 404;
   return <section aria-label="Selected branch inspection"><h4>Selected branch: <VisibleText text={branch} /></h4>{action("Recheck selected branch", preview.isFetching, () => { void preview.refetch(); })}
     {preview.isPending ? <Skeleton label="Checking selected branch" /> : <>
-      {preview.isError && <p role="alert">{missing ? "That branch is no longer available. Inspect another branch; no default branch was substituted." : preview.data ? "This branch check is stale. Recheck before relying on it." : problem(preview.error)}</p>}
+      {preview.isError && <p role="alert">{missing ? "That branch is no longer available. Inspect another branch; no default branch was substituted." : preview.data ? `This branch check is stale. ${problem(preview.error)} Recheck before relying on it.` : problem(preview.error)}</p>}
       {preview.data && !missing && <><p>Commit: <code><VisibleText text={preview.data.commit} /></code></p><p>Checked at <time dateTime={preview.data.checkedAt}>{preview.data.checkedAt}</time> UTC.</p>{preview.isFetching && <p role="status">Rechecking the selected branch; the previous check is shown.</p>}</>}
     </>}</section>;
 }
@@ -84,7 +84,7 @@ function BranchPage({ api, root, context, repo, onInvalid }: {api: Api; root: Qu
       {page.isError && <p role="alert">{page.data ? "This branch page is stale. Refresh before inspecting branches." : problem(page.error)}</p>}
       {page.data && <><p>Page {page.data.page} · {page.data.branches.length} branches on this page. Checked at <time dateTime={page.data.checkedAt}>{page.data.checkedAt}</time> UTC.</p>
         {page.data.omittedUnsupported && <p>Some branch names are not supported by this chooser.</p>}
-        {page.data.branches.length === 0 ? <p>{page.data.mayHaveMore ? "No supported branches on this page. More may be available." : "No branches were returned on this page."}</p> : <DataTable caption="Working branches on this page" rows={page.data.branches} rowKey={branch => branch} columns={[{key:"branch",title:"Branch",render:branch=><code><VisibleText text={branch} /></code>},{key:"inspect",title:"Inspection",render:branch=>action(`Inspect ${branch}`, false, () => setSelected(branch), blocked)}]} />}
+        {page.data.branches.length === 0 ? <p>{page.data.mayHaveMore ? "No supported branches on this page. More may be available." : "No branches were returned on this page."}</p> : <DataTable caption="Working branches on this page" rows={page.data.branches} rowKey={branch => branch} columns={[{key:"branch",title:"Branch",render:branch=><code><VisibleText text={branch} /></code>},{key:"inspect",title:"Inspection",render:branch=>action(<>Inspect <VisibleText text={branch} /></>, false, () => setSelected(branch), blocked)}]} />}
         {page.data.limitReached && <p role="status">Page limit reached. This is not a complete branch inventory.</p>}
       </>}
     </>}{action("Previous branch page", page.isFetching, () => { setSelected(undefined);setIndex(index - 1); }, blocked || index === 0)}{action("Next branch page", page.isFetching, forward, blocked || next === undefined)}</>}
@@ -93,7 +93,7 @@ function BranchPage({ api, root, context, repo, onInvalid }: {api: Api; root: Qu
 }
 function Repositories({ api, root, context, onInvalid }: {api: Api; root: QueryKey; context: ProjectWorkingBranchContext; onInvalid: (error: unknown) => void}) {
   const [name, setName] = useState(context.repositories[0]?.name ?? ""), repo = context.repositories.find(value => value.name === name);
-  return <>{context.omittedUnsupported && <p>Some repositories need a supported registered connection before they can be inspected.</p>}{repo === undefined ? <p>No registered repositories are available for branch inspection.</p> : <><label>Repository to inspect <select value={name} onChange={event => setName(event.target.value)}>{context.repositories.map(value=><option key={value.name} value={value.name}>{value.fullName} ({value.name})</option>)}</select></label><BranchPage key={name} api={api} root={root} context={context} repo={repo} onInvalid={onInvalid} /></>}</>;
+  return <>{context.omittedUnsupported && <p>Some repositories need a supported registered connection before they can be inspected.</p>}{repo === undefined ? <p>No registered repositories are available for branch inspection.</p> : <><label>Repository to inspect <select value={name} onChange={event => setName(event.target.value)}>{context.repositories.map(value=><option key={value.name} value={value.name}><VisibleText text={value.fullName} /> (<VisibleText text={value.name} />)</option>)}</select></label><BranchPage key={name} api={api} root={root} context={context} repo={repo} onInvalid={onInvalid} /></>}</>;
 }
 function Inspection({ name, projectRevision }: {name: string; projectRevision: number}) {
   const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), identity = useAdminContext();
