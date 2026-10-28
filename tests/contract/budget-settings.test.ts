@@ -1,3 +1,4 @@
+import { projectMemberKey } from "@agentx/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 28: budget settings. The keys and scopes the spend engine reads, what a scope's limit is once the month's top-up and the
 // guardrails are counted (`effectiveLimits`), the project AI settings, the agent budget and spend-policy routes, and the one monthly
@@ -483,8 +484,11 @@ async function routeSetup(options: { orgSourceOrder?: string[]; trial?: boolean 
   for (const who of [MAX, CARL, EVE, VIV]) await enroll(who, "member");
   if (options.trial === true) h.db.set({ ...orgMetaKey(TEST_ORG), entityType: "ORG", orgId: TEST_ORG, name: "test", createdAt: new Date().toISOString(), createdBy: "system", plan: "trial" });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+  h.db.set({ ...projectMemberKey(TEST_ORG, MAX.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: MAX.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
+  h.db.set({ ...projectMemberKey(TEST_ORG, CARL.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: CARL.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
+  h.db.set({ ...projectMemberKey(TEST_ORG, VIV.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: VIV.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "viewer" });
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
   const deps: ApprovalDependencies = {

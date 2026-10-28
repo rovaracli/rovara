@@ -1,3 +1,4 @@
+import { projectMemberKey } from "@agentx/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Task 19: the Audit Ledger's hooks in Plan 3's code. Each audited action adds its pending audit item to the DynamoDB transaction that commits
 // the action, so the action and its audit item are written together or not at all; the flush after the commit is best effort.
@@ -779,7 +780,9 @@ describe("through the routes", () => {
     await enroll(CARL, "member");
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
     members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+    h.db.set({ ...projectMemberKey(TEST_ORG, MAX.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: MAX.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
     members.grant(TEST_ORG, "web", CARL.developerId, "maintainer");
+    h.db.set({ ...projectMemberKey(TEST_ORG, CARL.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: CARL.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
     // What a page confirming a change hands to the registered handler: a store of its own on the broker's table, auditing into the same capture.
     const store = new AgentStore({ documentClient: h.db, tableName: AUDIT_CAPTURE_TABLE, now: Date.now, audit: capture.audit });
     const deps: ApprovalDependencies = {

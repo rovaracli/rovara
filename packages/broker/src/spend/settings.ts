@@ -1,3 +1,4 @@
+import { grantRoleOf } from "../developer/project-roles.js";
 // Plan 3 Task 28: the budget settings the spend engine reads. A scope's limit is its base (the org's, a member's, a project's, an agent's
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
@@ -20,6 +21,7 @@ import {
   orgSettingsKey,
   ownerBudgetKey,
   projectAiKey,
+  projectMemberKey,
   scopeKey,
   type AgentGuardrails,
   type BudgetScope,
@@ -31,7 +33,7 @@ import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agen
 import { readGuardrails } from "../agents/guardrails.js";
 import type { OwnerShare } from "./owner-total.js";
 import type { AgentRecord, BuiltinSettings, OwnerCap } from "../agents/store.js";
-import { commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { Aliases, commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { memberLimitOf, readBudgets, type OrgBudgetSettings } from "../org/budget.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
@@ -141,11 +143,24 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
+  options: { actor: BudgetActor; /** Selected grant identity from the server resolver; direct internal calls default to own grant. */ projectGrantDeveloperId?: string; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
 ): Promise<StoredProjectAi> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
   const current = await readProjectAiWithRevision(deps, orgId, project);
+  if (options.actor.role !== "owner" && options.actor.role !== "admin") {
+    const unchangedFields = (value: ProjectAiSettings) => {
+      const copy = { ...value }; delete copy.memberAcceptRunLimitUpToUsd; delete copy.taskStopPolicy; return copy;
+    };
+    if (!sameJsonContent(unchangedFields(settings), unchangedFields(current.settings))) throw budgetActorRefused();
+    const source = options.projectGrantDeveloperId ?? by;
+    if (!/^[a-f0-9]{64}$/.test(source)) throw budgetActorRefused();
+    const key = projectMemberKey(orgId, source, project), grant = await getItem(deps, key);
+    if (grantRoleOf(grant) !== "maintainer") throw budgetActorRefused();
+    const aliases = new Aliases();
+    const condition = ["attribute_exists(pk)", ...["entityType", "ownerKey", "projectName", "grantId", "role", "projectRole", "grantedAt", "grantedBy"].map(field => grant?.[field] === undefined ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(grant[field])}`)].join(" AND ");
+    checks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } });
+  }
   const expected = options.expectedRevision ?? current.revision;
   if (!Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER) {
     throw agentXError("CONFIG_INVALID", "expectedRevision: cannot advance this settings revision");

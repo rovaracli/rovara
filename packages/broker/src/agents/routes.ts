@@ -1,3 +1,4 @@
+import { budgetActorRefused } from "./budget-authority.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
@@ -870,6 +871,9 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
   if (!admin && !acceptOnly) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
   const role = await roleOnProject(deps, caller, project);
   if (!admin && role !== "maintainer") throw agentXError("FORBIDDEN", "Only a project maintainer, or an org owner or admin, can change what a member may accept as a run limit.");
+  // Resolve the same survivor-first grant as roleOf; this is server context, never a request-body field.
+  const projectGrantDeveloperId = admin ? undefined : deps.projectMembers.maintainerGrantOf === undefined ? caller.developerId : await deps.projectMembers.maintainerGrantOf(caller.orgId, project, caller);
+  if (!admin && projectGrantDeveloperId === undefined) throw budgetActorRefused();
   const { mark, replay } = await markRequest(deps, caller, "project-ai", project, input);
   if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
   const current = await readProjectAiWithRevision(deps, caller.orgId, project);
@@ -887,7 +891,7 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
     const unknown = next.sourceOrder.find((source) => !allowed.has(source));
     if (unknown !== undefined) throw agentXError("CONFIG_INVALID", `sourceOrder: ${unknown} is not one of your company's model sources`);
   }
-  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.settings });
+  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { ...(projectGrantDeveloperId === undefined ? {} : { projectGrantDeveloperId }), actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.settings });
   return projectAiView(deps, caller.orgId, written);
 }
 
