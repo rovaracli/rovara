@@ -18,7 +18,7 @@ for (const who of [BEN, DEB]) for (const existing of [false,true]) for (const ra
   t.db.send=async command=>{const items=(command.input as {TransactItems?:Array<{Put?:{Item?:{pk?:string}}}>}).TransactItems;
     if(race&&!raced&&items?.some(i=>i.Put?.Item?.pk===key.pk)){raced=true;await send(new TransactWriteCommand({TransactItems:[{Put:{TableName:"state",Item:archive}}]}));}return send(command);};
   const answer=await t.api(who,"PUT","/v1/app/projects/payments/ai",{memberAcceptRunLimitUpToUsd:2});
-  expect(answer.status).toBe(race?409:400);expect(t.db.get(key)).toEqual(before);expect(capture.recorded()).toHaveLength(0);expect(capture.pending()).toHaveLength(0);if(race)expect(raced).toBe(true);
+  expect(answer.status).toBe(409);expect(t.db.get(key)).toEqual(before);expect(capture.recorded()).toHaveLength(0);expect(capture.pending()).toHaveLength(0);if(race)expect(raced).toBe(true);
   if(original===undefined)t.db.delete(meta);else t.db.set(original);
   expect((await t.api(who,"PUT","/v1/app/projects/payments/ai",{memberAcceptRunLimitUpToUsd:2})).status).toBe(200);
 });
@@ -36,9 +36,31 @@ for(const loss of ["member_role","removed","pointer"] as const)it(`binds selecte
  if(!raced&&items?.some(i=>i.Put?.Item?.pk===key.pk)){raced=true;await send(new TransactWriteCommand({TransactItems:loss==="member_role"?[{Put:{TableName:"state",Item:{...t.db.get(orgMemberKey(TEST_ORG,source))!,role:"member"}}}]:[{Delete:{TableName:"state",Key:loss==="removed"?orgMemberKey(TEST_ORG,source):developerOrgKey(source)}}]}));}return send(command);};
  const write=()=>writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false,memberAcceptRunLimitUpToUsd:2},BEN.developerId,{actor:{developerId:BEN.developerId,role:"member"},projectGrantDeveloperId:source});
  await expect(write()).rejects.toMatchObject({code:"FORBIDDEN"});expect(raced).toBe(true);expect(t.db.get(key)).toBeUndefined();
- seedMembership(t.db,source,{orgId:TEST_ORG,role:"owner"});await write();
+ seedMembership(t.db,source,{orgId:TEST_ORG,role:"owner"});await expect(write()).resolves.toMatchObject({revision:1});
 });
 it("missing native registration is not an active project for an internal writer",async()=>{
  const t=await setup();t.db.delete(projectRevisionKey(TEST_ORG,"payments",1));
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).rejects.toMatchObject({code:"PROJECT_NOT_FOUND"});
+});
+it("a verified legacy registration with absent META and catalog stays writable without creating lifecycle records",async()=>{
+ const t=await setup(),meta=projectMetaKey(TEST_ORG,"payments"),catalog=orgProjectCatalogKey(TEST_ORG,"payments");t.db.delete(meta);t.db.delete(catalog);
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false,memberAcceptRunLimitUpToUsd:2},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).resolves.toMatchObject({revision:1});
+ expect(t.db.get(meta)).toBeUndefined();expect(t.db.get(catalog)).toBeUndefined();
+});
+it("a legacy catalog without latestRevision is pinned absent rather than repaired",async()=>{
+ const t=await setup(),key=orgProjectCatalogKey(TEST_ORG,"payments"),row={...t.db.get(key)!};delete row.latestRevision;t.db.set(row);
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).resolves.toMatchObject({revision:1});
+ expect(t.db.get(key)).toEqual(row);
+});
+it("a mismatched current catalog pointer is unavailable",async()=>{
+ const t=await setup(),key=orgProjectCatalogKey(TEST_ORG,"payments");t.db.set({...t.db.get(key)!,latestRevision:2});
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).rejects.toMatchObject({code:"RUNTIME_UNAVAILABLE"});
+});
+it("unknown lifecycle status is unavailable rather than active",async()=>{
+ const t=await setup();t.db.set({...projectMetaKey(TEST_ORG,"payments"),entityType:"PROJECT_META",name:"payments",status:"unknown"});
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).rejects.toMatchObject({code:"RUNTIME_UNAVAILABLE"});
+});
+it("another company's same-name registration cannot replace missing current-company history",async()=>{
+ const t=await setup(),own=projectRevisionKey(TEST_ORG,"payments",1),row=t.db.get(own)!;t.db.delete(own);t.db.set({...row,...projectRevisionKey("org_bbbbbbbbbbbbbbbbbbbb","payments",1)});
  await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false},DEB.developerId,{actor:{developerId:DEB.developerId,role:"admin"}})).rejects.toMatchObject({code:"PROJECT_NOT_FOUND"});
 });

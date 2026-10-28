@@ -1,3 +1,4 @@
+import { fixtureProject } from "../support/project-ai-source.js";
 import { fixtureActor } from "../support/money-authority.js";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -14,6 +15,7 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", who = "a".
 const policy = { schemaVersion: 1, stopMicrousd: 20_000_000 } as const;
 function fixture() {
   const db = new FakeDynamoDb();
+  fixtureProject(db, A, "web");
   const capture = capturingAuditDeps({ db });
   const deps = { documentClient: db, tableName: "state", now: () => Date.parse("2026-10-27T21:00:00Z"), audit: capture.audit };
   db.set({ ...projectAiKey(A, "web"), entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 200, taskStopPolicy: policy, revision: 1 });

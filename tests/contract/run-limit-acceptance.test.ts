@@ -1,3 +1,4 @@
+import { fixtureProject } from "../support/project-ai-source.js";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 final fix wave (owner decision 3, option E): who can accept a run limit when a plan is approved.
 //   - the member pays: as it always was (up to the lead threshold; a maintainer up to the admin threshold; an admin any amount);
@@ -33,6 +34,7 @@ const task = (limit: number, extra: Partial<DeveloperTaskRecord> = {}): Develope
 
 async function accepting(options: { role?: ProjectRole; setting?: number; policy?: Partial<ReturnType<typeof defaultSpendPolicy>> } = {}) {
   const db = new FakeDynamoDb();
+  fixtureProject(db, TEST_ORG, "payments");
   const members = new FakeProjectMembers();
   members.addProject(TEST_ORG, "payments");
   if (options.role !== undefined) members.grant(TEST_ORG, "payments", "dev", options.role);

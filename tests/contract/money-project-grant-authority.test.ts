@@ -1,3 +1,4 @@
+import { seedMembership } from "../support/developer-task-broker.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 // M31: one existing maintainer accept-only settings flow, using real table grants.
 import { randomUUID } from "node:crypto";
@@ -71,6 +72,7 @@ it("a grant in a different company cannot authorize this company", async () => {
 it("the writer conditions the server-selected survivor grant rather than demanding the absent own grant (synthetic source control)", async () => {
   const t = await setup(), source = "a".repeat(64), own = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), selected = projectMemberKey(TEST_ORG, source, "payments"), grant = t.db.get(own)!;
   t.db.delete(own); t.db.set({ ...grant, ...selected, ownerKey: source });
+  seedMembership(t.db, source, { orgId: TEST_ORG, role: "owner" });
   const options = { actor: { developerId: BEN.developerId, role: "member" as const }, projectGrantDeveloperId: source };
   await writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 1 }, BEN.developerId, options);
   const before = t.db.get(projectAiKey(TEST_ORG, "payments")), send = t.db.send.bind(t.db); let raced = false;
@@ -85,6 +87,7 @@ it("the writer conditions the server-selected survivor grant rather than demandi
 it("the route forwards the real resolver's selected survivor grant (synthetic retained-member source control)", async () => {
   const t = await setup(), survivor = "a".repeat(64), own = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), grant = t.db.get(own)!;
   t.db.delete(own); t.db.set({ ...grant, ...projectMemberKey(TEST_ORG, survivor, "payments"), ownerKey: survivor });
+  seedMembership(t.db, survivor, { orgId: TEST_ORG, role: "owner" });
   const members = createProjectMembers({ documentClient: t.db, tableName: "state", developerRecord: id => Promise.resolve(id === BEN.developerId ? { mergedInto: survivor } : {}) });
   const path = "/v1/app/projects/payments/ai", request = { method: "PUT", path, headers: {}, requestId: randomUUID(), body: JSON.stringify({ requestId: randomUUID(), memberAcceptRunLimitUpToUsd: 2 }) };
   await expect(routeAgentRequest({ ...t.deps(), projectMembers: members }, t.caller(BEN), request, new URL(path, "https://cell.example.test"))).resolves.toMatchObject({ settings: { memberAcceptRunLimitUpToUsd: 2 } });

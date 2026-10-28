@@ -1,8 +1,9 @@
-import { grantRoleOf } from "../developer/project-roles.js";
 // Plan 3 Task 28: the budget settings the spend engine reads. A scope's limit is its base (the org's, a member's, a project's, an agent's
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
 // reads the limits, Task 32's requests raise them and Task 33's top-ups add to them.
+import { grantRoleOf } from "../developer/project-roles.js";
+import { projectAiLifecycleChecks, selectedProjectSourceChecks } from "./project-ai-authority.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PLANNING_LIMIT_USD,
@@ -155,12 +156,14 @@ export async function writeProjectAi(
     if (!sameJsonContent(unchangedFields(settings), unchangedFields(current.settings))) throw budgetActorRefused();
     const source = options.projectGrantDeveloperId ?? by;
     if (!/^[a-f0-9]{64}$/.test(source)) throw budgetActorRefused();
+    if (source !== by) checks.push(...await selectedProjectSourceChecks(deps, orgId, source));
     const key = projectMemberKey(orgId, source, project), grant = await getItem(deps, key);
     if (grantRoleOf(grant) !== "maintainer") throw budgetActorRefused();
     const aliases = new Aliases();
     const condition = ["attribute_exists(pk)", ...["entityType", "ownerKey", "projectName", "grantId", "role", "projectRole", "grantedAt", "grantedBy"].map(field => grant?.[field] === undefined ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(grant[field])}`)].join(" AND ");
     checks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } });
   }
+  const lifecycle = await projectAiLifecycleChecks(deps, orgId, project);
   const expected = options.expectedRevision ?? current.revision;
   if (!Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER) {
     throw agentXError("CONFIG_INVALID", "expectedRevision: cannot advance this settings revision");
@@ -184,7 +187,7 @@ export async function writeProjectAi(
   const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
   const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
   const actorStart = items.length;
-  await commit(deps, [...items, ...checks], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
+  await commit(deps, [...items, ...checks, ...lifecycle], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : [...failed].some(index => index >= actorStart + checks.length && index < actorStart + checks.length + lifecycle.length) ? coded("PROJECT_REVISION_MISMATCH", "The project registration or status changed. Reload and review your settings again.") : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
   await flushAuditEvents(deps, events);
   return { settings: preserved, revision: expected + 1 };
 }

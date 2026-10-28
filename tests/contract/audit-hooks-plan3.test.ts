@@ -1,3 +1,4 @@
+import { fixtureProject } from "../support/project-ai-source.js";
 import { projectMemberKey } from "@agentx/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Task 19: the Audit Ledger's hooks in Plan 3's code. Each audited action adds its pending audit item to the DynamoDB transaction that commits
@@ -455,6 +456,7 @@ describe("budget.changed on a project, and spend_policy.changed", () => {
   function settingsSetup() {
     const capture = capturingAuditDeps();
     const db = new FakeDynamoDb();
+    fixtureProject(db, TEST_ORG, "web");
     capture.attach(db);
     const transactions = recordTransactions(db);
     const clock = { now: T0 };
@@ -779,6 +781,7 @@ describe("through the routes", () => {
     await enroll(MAX, "member");
     await enroll(CARL, "member");
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    fixtureProject(h.db, TEST_ORG, "web");
     members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
     h.db.set({ ...projectMemberKey(TEST_ORG, MAX.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: MAX.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
     members.grant(TEST_ORG, "web", CARL.developerId, "maintainer");

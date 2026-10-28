@@ -1,3 +1,4 @@
+import { fixtureProject } from "../support/project-ai-source.js";
 import { projectMemberKey } from "@agentx/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 28: budget settings. The keys and scopes the spend engine reads, what a scope's limit is once the month's top-up and the
@@ -490,6 +491,7 @@ async function routeSetup(options: { orgSourceOrder?: string[]; trial?: boolean 
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
   h.db.set({ ...projectMemberKey(TEST_ORG, VIV.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: VIV.developerId, projectName: "web", grantId: randomUUID(), role: "developer", projectRole: "viewer" });
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+  fixtureProject(h.db, TEST_ORG, "web");
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
   const deps: ApprovalDependencies = {
     store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
