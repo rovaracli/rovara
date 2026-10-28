@@ -1,33 +1,20 @@
-import { mkdtempSync, rmdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import fs from "node:fs";
 import { afterAll } from "vitest";
-import { removeCdkAssemblies } from "./cdk-assemblies.js";
-import { TEST_TMP_PREFIX } from "./test-temp-dir.js";
+import { trackCdkAssemblies } from "./cdk-assemblies.js";
 
 /**
- * Vitest setup file, run before every test file: gives the file its own temporary directory inside the run's
- * (tests/support/test-temp-dir.ts) and, when the file ends, removes the cdk.out* assemblies it left there.
+ * Vitest setup file, run before every test file: removes the CDK assemblies the file made when it ends.
  *
  * Every Template.fromStack / app.synth of an App built without an outdir writes a whole cloud assembly under
  * os.tmpdir(), and a stack with a Lambda layer or a bucket deployment copies the 22 MB awscli layer.zip into it. The run's
- * directory is removed only at teardown, so across a CI shard the assemblies filled the runner's disk (EDQUOT, errno -122,
- * on a copyfile). Workers share the run's directory, so one worker may not delete a cdk.out* in it (another worker's synth
- * may be mid-flight); a directory per file makes every cdk.out* in it this file's own.
+ * directory (tests/support/test-temp-dir.ts) is removed only at teardown, so across a CI shard the assemblies filled the runner's disk
+ * (EDQUOT, errno -122, on a copyfile).
  *
- * Only entries named cdk.out* inside the file's own directory are removed. Anything else the file left stays until the run's teardown.
+ * Workers share that directory, so a cleanup by name could delete another worker's synth in progress. This records the directories this process
+ * creates (fs.mkdtempSync on a cdk.out* name) and removes exactly those. It does not move os.tmpdir(): paths under it hold unix sockets, and
+ * macOS allows only 104 bytes of socket path, so no directory level may be added to them.
  */
-const runDirectory = tmpdir();
-if (basename(runDirectory).startsWith(TEST_TMP_PREFIX)) {
-  const fileDirectory = mkdtempSync(join(runDirectory, "f"));
-  process.env.TMPDIR = fileDirectory;
-  afterAll(() => {
-    removeCdkAssemblies(fileDirectory);
-    try {
-      rmdirSync(fileDirectory);
-    } catch {
-      // The file left other things in it; the run's teardown removes them.
-    }
-    process.env.TMPDIR = runDirectory;
-  });
-}
+const tracker = trackCdkAssemblies(fs);
+afterAll(() => {
+  tracker.finish();
+});
