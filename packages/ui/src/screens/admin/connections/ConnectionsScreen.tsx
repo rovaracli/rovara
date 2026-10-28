@@ -27,10 +27,11 @@ function ConnectionGuidance({ connection: c }: { connection: ConnectionInfo }) {
  <p>Opening this guidance does not run a vendor check or change configuration.</p>
  </details>;
 }
+function connectionMatchText(value: string) { return value.normalize("NFKC").toLowerCase(); }
 function RegisteredConnections({ connections }: { connections: ConnectionInfo[] }) {
  const [filter, setFilter] = useState("");
- const term = filter.trim().toLowerCase();
- const shown = connections.filter(c => visibleText(c.label).toLowerCase().includes(term) || visibleText(c.type).toLowerCase().includes(term));
+ const term = connectionMatchText(filter.trim());
+ const shown = connections.filter(c => connectionMatchText(visibleText(c.label)).includes(term) || connectionMatchText(visibleText(c.type)).includes(term));
  return <>
  <TextField type="search" maxLength={200} label="Find registered connections" hint="Filters only names and types in this returned list. It does not check connection health." value={filter} onChange={event => setFilter(event.target.value)} />
  <p role="status" aria-live="polite" aria-atomic="true">{shown.length} of {connections.length} registered connections shown in this returned list.</p>

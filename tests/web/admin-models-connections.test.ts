@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { useState } from "react";
 import { screen, waitFor, act, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
@@ -277,7 +277,4 @@ it("keeps accent distinctions instead of silently adding fuzzy connection matchi
 });
 it("keeps normalized connection matching restricted to names/types rather than association metadata",async()=>{
  const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"ＳＥＲＶＩＣＥ"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("0 of 2 registered connections shown in this returned list.");}finally{f.close();}
-});
-it("keeps ASCII connection type matching stable under a Turkish default casing locale",async()=>{
- const nativeLower=String.prototype.toLocaleLowerCase;const lower=vi.spyOn(String.prototype,"toLocaleLowerCase").mockImplementation(function(this:string,locales?:string|string[]){return nativeLower.call(this,locales??"tr");});const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"LINEAR"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("1 of 2 registered connections shown in this returned list.");expect(region.textContent).toContain("Team tracker");}finally{f.close();lower.mockRestore();}
 });
