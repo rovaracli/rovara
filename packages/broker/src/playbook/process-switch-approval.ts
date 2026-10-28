@@ -4,7 +4,7 @@
 // This file does not import the agent changes module (which registers it), so there is no import cycle.
 import { PLAYBOOK_STALE_MESSAGE, agentXError } from "@agentx/contracts";
 import { registerApprovalSubjectHandler } from "../agents/approvals.js";
-import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
+import { readProjectPlaybookState, writeProjectPlaybook } from "./project-playbook-store.js";
 
 /** Registers what confirming a `playbook_default_process` change does. The approvers are the process layer's (the `agent_publish` rule, read when the decision is made). Safe to call more than once. */
 export function registerPlaybookApprovals(): void {
@@ -13,11 +13,12 @@ export function registerPlaybookApprovals(): void {
     // A record nobody has decided is never applied.
     if (record.decidedBy === undefined) throw agentXError("CONFIG_INVALID", "this change has not been decided by anyone, so it can't be applied");
     const subject = record.subject;
-    const current = await readProjectPlaybook(deps, record.orgId, subject.project, { lenient: true });
+    const { playbook: current, unreadable } = await readProjectPlaybookState(deps, record.orgId, subject.project);
     // Already applied (a redrive after a crash): the revision it made, pointing at the built-in.
     if (current.revision === subject.expectedRevision + 1 && current.defaultProcess.kind === "builtin") return;
     const layer = await deps.store.get(record.orgId, subject.agentId);
-    const unchanged = current.revision === subject.expectedRevision && current.defaultProcess.kind === "project_process" && current.defaultProcess.agentId === subject.agentId
+    // A document that could not be read when the switch was held (F2) is still unreadable at the same revision: nothing changed since.
+    const unchanged = current.revision === subject.expectedRevision && (unreadable || (current.defaultProcess.kind === "project_process" && current.defaultProcess.agentId === subject.agentId))
       && layer !== undefined && layer.currentVersion === subject.layerVersion;
     if (!unchanged) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
     await writeProjectPlaybook(deps, { orgId: record.orgId, project: subject.project, developerId: record.decidedBy, expectedRevision: subject.expectedRevision, defaultProcess: { kind: "builtin" } });

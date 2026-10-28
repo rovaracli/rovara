@@ -54,6 +54,19 @@ export async function readProjectPlaybook(deps: ProjectPlaybookReader, orgId: Or
 }
 
 /**
+ * The same read as `lenient`, with what the document is: `exists` (an item is there) and `unreadable` (it is there but is not a playbook). A switch to the built-in and an archive of a
+ * process layer must not take an unreadable document for the built-in: the project chose something and we can't tell what (F2). A missing document is the built-in, as ever.
+ */
+export async function readProjectPlaybookState(deps: ProjectPlaybookReader, orgId: OrgId, project: string): Promise<{ playbook: ProjectPlaybook; exists: boolean; unreadable: boolean }> {
+  const item = await readItem(deps, orgId, project);
+  const parsed = playbookOf(item);
+  if (parsed !== undefined) return { playbook: parsed, exists: item !== undefined, unreadable: false };
+  const revision = item?.["revision"];
+  if (typeof revision === "number" && Number.isInteger(revision) && revision >= 0) return { playbook: { revision, defaultProcess: { kind: "builtin" } }, exists: true, unreadable: true };
+  throw agentXError("PROCESS_UNAVAILABLE", PROCESS_UNAVAILABLE_MESSAGE);
+}
+
+/**
  * When the playbook document was last written: `exists: false` for a project with no document. The first-version repair (process-layer.ts) uses it to tell a lost write from a
  * maintainer's choice made since.
  */

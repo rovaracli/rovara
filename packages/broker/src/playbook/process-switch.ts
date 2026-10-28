@@ -3,7 +3,7 @@
 // adopted, the switch waits for a second person on the confirmation page, like a less-safe publish of the layer: the same approvers, the same process self-confirm rules (a project of one
 // may confirm its own). "Stricter" is the layer-to-built-in reading of the rules a publish uses (`lessSafeChanges` and `processLessSafeChanges`). Pointing at the layer, and a switch that
 // loses nothing, apply at once.
-import { PLAYBOOK_STALE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError } from "@agentx/contracts";
+import { PLAYBOOK_STALE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type OrgId } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
 import { createPendingChange, type ApprovalDependencies } from "../agents/approvals.js";
 import { agentApprovers, resolveRecipe } from "../agents/changes.js";
@@ -11,13 +11,14 @@ import { lessSafeChanges } from "../agents/less-safe.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { confirmationReply } from "../agent-sessions/shares.js";
 import { StatusReply } from "../aws/status-reply.js";
+import type { AgentRecord } from "../agents/store.js";
 import { processLessSafeChanges } from "./process-less-safe.js";
-import { readProjectPlaybook, type ProjectPlaybookReader } from "./project-playbook-store.js";
+import { readProjectPlaybookState, type ProjectPlaybookReader } from "./project-playbook-store.js";
 import type { ProcessAgentReader } from "./project-process.js";
 
 /** What the switch needs: the playbook documents, the agent store, and (for a switch that must wait) the approvals. */
 export interface BuiltinSwitchDependencies extends ProjectPlaybookReader {
-  store: ProcessAgentReader | undefined;
+  store: (ProcessAgentReader & { list?(orgId: OrgId): Promise<AgentRecord[]> }) | undefined;
   approvals?: ApprovalDependencies | undefined;
 }
 
@@ -32,25 +33,36 @@ export async function switchLosses(approvals: ApprovalDependencies, orgId: strin
   return [...new Set([...lessSafeChanges(layer, builtin), ...processLessSafeChanges(layer, builtin, { firstPublish: false })])];
 }
 
+/** The line the confirmation page shows when the project's saved way of working can't be read, so what the switch drops can't be listed. */
+const UNREADABLE_REASON = "Replaces the project's saved way of working, which can't be read right now.";
+
+/** The project's process layer when its playbook can't say which it is: the one process layer it owns (an active one first), as `existingLayer` finds it. */
+async function ownedLayer(deps: BuiltinSwitchDependencies, orgId: OrgId, project: string): Promise<AgentRecord | undefined> {
+  const owned = ((await deps.store?.list?.(orgId)) ?? []).filter((agent) => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project);
+  return owned.find((agent) => agent.status === "active") ?? owned[0];
+}
+
 /**
  * The reply that holds a switch of `project` to the built-in, or undefined when it may apply at once. The caller has checked the role and that `expectedRevision` is what the maintainer read.
  * A layer with no published version, or one that is gone, loses nothing. An archived layer that still has a published version is compared like any other: archiving it is no way round the second person (and the archive of the project's current default is refused anyway, process-in-use.ts). When the layer must be compared and the approvals are not available the switch
  * is refused (`RUNTIME_UNAVAILABLE`), never applied.
+ * A playbook document that exists but can't be read is not the built-in (F2, PB16): the project chose something we can't see, so a project that has a published process layer is held
+ * for a second person whatever the comparison says. A project with no such layer has nothing to lose, and the write repairs the document.
  */
 export async function holdBuiltinSwitch(
   deps: BuiltinSwitchDependencies, caller: DeveloperCaller, project: string, expectedRevision: number,
 ): Promise<StatusReply | undefined> {
-  const current = await readProjectPlaybook(deps, caller.orgId, project, { lenient: true });
-  if (current.defaultProcess.kind !== "project_process") return undefined;
+  const { playbook: current, unreadable } = await readProjectPlaybookState(deps, caller.orgId, project);
+  if (current.defaultProcess.kind !== "project_process" && !unreadable) return undefined;
   if (expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
-  const { agentId } = current.defaultProcess;
-  const layer = await deps.store?.get(caller.orgId, agentId);
+  const layer = current.defaultProcess.kind === "project_process" ? await deps.store?.get(caller.orgId, current.defaultProcess.agentId) : await ownedLayer(deps, caller.orgId, project);
   if (layer === undefined || layer.currentVersion === undefined) return undefined;
+  const { agentId } = layer;
   const approvals = deps.approvals;
   if (approvals === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Switching back to the built-in way of working needs a second person's confirmation, which isn't available right now.");
   const lost = await switchLosses(approvals, caller.orgId, agentId, layer.currentVersion);
-  if (lost.length === 0) return undefined;
-  const reasons = lost.slice(0, REASONS_MAX);
+  if (lost.length === 0 && !unreadable) return undefined;
+  const reasons = lost.length === 0 ? [UNREADABLE_REASON] : lost.slice(0, REASONS_MAX);
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId: randomUUID(), requestedBy: caller.developerId,
     subject: { kind: "playbook_default_process", project, agentId, layerVersion: layer.currentVersion, expectedRevision },
