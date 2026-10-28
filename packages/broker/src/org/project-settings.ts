@@ -355,3 +355,5 @@ export { readProjectWorkingBranchPage, type WorkingBranchListDependencies } from
 
 // Unexposed audited working-branch revision primitive. No HTTP/UI or consumer wiring.
 export { commitReviewedProjectWorkingBranch, type WorkingBranchSaveDependencies } from "./project-working-branch-save.js";
+// Lane B: unexposed cleanup prerequisite; company-close integration remains with lane A.
+export { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
