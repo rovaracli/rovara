@@ -173,6 +173,7 @@ function verifySignals(workflow: WorkflowSnapshot, facts: AutoFixFacts): Signal[
   else if (reason?.startsWith(WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX) === true) signals.push(person("accounts-changed"));
   else if (reason?.startsWith(WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX) === true) signals.push(person("plan-not-approvable"));
   else if (reason?.startsWith(WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX) === true) signals.push(workflow.e2e?.required === true ? code("round-refused") : person("unreadable"));
+  else if (reason === WORKFLOW_BLOCK_REASONS.leftoverProcesses) signals.push(person("leftover-processes"));
   else if (reason === WORKFLOW_BLOCK_REASONS.regressionFound) signals.push(code("regression-found"));
   else if (reason === WORKFLOW_BLOCK_REASONS.checkRunnerFailed) signals.push(transient("check-runner-failed"));
   else if (reason?.startsWith(WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX) === true) {

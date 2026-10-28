@@ -1,9 +1,11 @@
 // A step that only reads the workspace (the reviews, the plan check, Understand, the PR feedback review) runs after the coding session, in a workspace that session wrote. Before any of
 // them begins, every program the session started is stopped, the way publication does before a push: the worker's own leftover processes, then every container but the worker's (a task
 // sandbox, the project's dev container). Nothing here starts a real process or container: the operating system and Docker are fakes that keep one timeline of what happened.
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, type WorkerInvocation } from "@agentx/contracts";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,9 +16,11 @@ import { OperationJournal } from "../../packages/worker/src/journal.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { anotherOperationActive, createWorkerServerState, handleWorkerRequest, type WorkerServerState } from "../../packages/worker/src/server.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
+import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { sweepWorkspaceContainers, type DockerContainer } from "../../packages/worker/src/workspace-containers.js";
 import { stopWorkspaceProcesses, type ProcessEntry } from "../../packages/worker/src/workspace-processes.js";
 
+const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
@@ -28,16 +32,22 @@ const SENTINEL = "the session was about to open";
 type Mode = "REVIEW" | "FEEDBACK_REVIEW" | "PLAN_CRITIQUE" | "UNDERSTAND";
 const MODES: readonly Mode[] = ["REVIEW", "FEEDBACK_REVIEW", "PLAN_CRITIQUE", "UNDERSTAND"];
 
-async function workspace(options: { manifest?: boolean } = {}): Promise<string> {
+async function workspace(options: { manifest?: boolean; git?: boolean; devcontainer?: boolean } = {}): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "stop-before-reading-")));
   roots.push(root);
   await mkdir(join(root, ".agentx"));
   await mkdir(join(root, "app/.devcontainer"), { recursive: true });
   await writeFile(join(root, "app/.devcontainer/devcontainer.json"), "{\"image\":\"node:22\"}\n");
+  if (options.git === true) {
+    const git = (...args: string[]) => execFileAsync("git", ["-C", join(root, "app"), "-c", "user.name=T", "-c", "user.email=t@example.test", ...args]);
+    await git("init", "--quiet", "--initial-branch=main");
+    await git("add", ".");
+    await git("commit", "--quiet", "-m", "fixture");
+  }
   if (options.manifest !== false) await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({
     schemaVersion: 2, projectName: "x", projectRevision: 1, creationIdentity: "fixture", complete: true, updatedAt: new Date().toISOString(), completedSetupSteps: [], readinessResults: [],
     repositories: [{ name: "app", path: "app", url: "http://127.0.0.1/app.git", defaultBranch: "main" }],
-    devcontainer: { repository: "app", configPath: "app/.devcontainer/devcontainer.json" },
+    ...(options.devcontainer === false ? {} : { devcontainer: { repository: "app", configPath: "app/.devcontainer/devcontainer.json" } }),
   }));
   return root;
 }
@@ -105,6 +115,14 @@ function fakeWorld(root: string) {
         return Promise.resolve({ exitCode: 0, stdout: args[0] === "up" ? UP_OUTPUT : "", stderr: "" });
       },
     } satisfies DevcontainerCli,
+    /** The project's checks: each command records what was alive at that moment. */
+    checkRunners: {
+      async runAgentCommand() { return { exitCode: 0, timedOut: false, output: "" }; },
+      async runProjectCommand() {
+        timeline.push(`checks:run(processes=${processes.size},containers=${containers.map((entry) => entry.id).join("+")},up=${world.upCalls})`);
+        return { exitCode: 0, timedOut: false, stdout: "ok\n", stderr: "" };
+      },
+    } satisfies CheckRunners,
     /** Pi: the first session a step opens ends the run, after recording what was alive at that moment. */
     piAdapter: {
       async create() {
@@ -117,20 +135,21 @@ function fakeWorld(root: string) {
   return world;
 }
 
-function invocation(mode: Mode | "IMPLEMENT"): WorkerInvocation {
+function invocation(mode: Mode | "IMPLEMENT" | "CHECKS"): WorkerInvocation {
   return {
     protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
     payload: { conversationId: randomUUID(), prompt: "Read it.", workflowMode: mode,
+      ...(mode === "CHECKS" ? { readiness: [{ cwd: "app", executable: "true", args: [], timeoutSeconds: 10 }] } : {}),
       ...(mode === "FEEDBACK_REVIEW" ? { workflowFeedbackReview: { taskId: randomUUID(), workflowRevision: 1, candidateDigest: "a".repeat(64) } } : {}) },
   };
 }
 
-async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT", extra: { otherOperationActive?: () => boolean } = {}) {
+async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT" | "CHECKS", extra: { otherOperationActive?: () => boolean } = {}) {
   const events: WorkerEvent[] = [];
   const outcome = await runTaskInvocation(invocation(mode), {
     rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: world.piAdapter, docker: world.docker, devcontainerCli: world.devcontainerCli,
     taskShell: { kind: "sandbox", docker: world.docker, image: "sandbox-image" },
-    stopBeforeReading: { ...world.options, ...extra },
+    stopBeforeReading: { ...world.options, ...extra }, checkRunners: world.checkRunners,
     // The feedback review reads its bundles right after the programs are stopped; reading them is where this test ends that run.
     feedbackBundleReader: async () => { world.timeline.push(`session:open(processes=${world.processes.size},containers=${world.containers.map((entry) => entry.id).join("+")})`); throw new Error(SENTINEL); },
     eventSink: async (batch) => { events.push(...batch); }, artifactSink: async () => undefined, log: () => undefined,
@@ -288,6 +307,79 @@ describe("the worker's own record of running operations", () => {
     expect(anotherOperationActive(state, "a")).toBe(true);
     expect(anotherOperationActive({ activeOperations: new Set(["a"]) }, "a")).toBe(false);
     expect(anotherOperationActive({ activeOperations: new Set() } as unknown as WorkerServerState, "a")).toBe(false);
+  });
+});
+
+// The checks run the project's code, so they need the project's environment, but not the one the coding session left: the same containment first, then a fresh dev container.
+describe("CHECKS starts from a clean workspace", () => {
+  const FIXED = `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not run the checks`;
+  const CHECK_RUN = (entry: string) => entry.startsWith("checks:run");
+
+  it("does not run the checks while a program the coding session left is alive, and runs them in a dev container started fresh after the old one was removed", async () => {
+    const root = await workspace({ git: true });
+    const world = fakeWorld(root);
+    const background = world.leave();
+    const daemon = world.leave(1);
+    const { outcome } = await run(root, world, "CHECKS");
+
+    expect(outcome).toBeUndefined();
+    const at = (predicate: (entry: string) => boolean) => world.timeline.findIndex(predicate);
+    const checks = at(CHECK_RUN);
+    expect(checks).toBeGreaterThan(-1);
+    // Nothing was alive when the checks ran, and the worker's own container is the only one left (the fresh dev container is the CLI's, not in Docker's fake list).
+    expect(world.timeline[checks]).toBe("checks:run(processes=0,containers=worker-own,up=1)");
+    const removedDevcontainer = world.timeline.indexOf("remove:devcontainer-1");
+    const up = world.timeline.indexOf("devcontainer:up");
+    expect(world.timeline).toEqual(expect.arrayContaining([`kill:${background}`, `kill:${daemon}`, "remove:old-sandbox-1"]));
+    expect(removedDevcontainer).toBeGreaterThan(-1);
+    expect(up).toBeGreaterThan(removedDevcontainer);
+    expect(checks).toBeGreaterThan(up);
+    expect(world.upCalls).toBe(1);
+    // Nothing is killed or removed once the dev container is started.
+    expect(world.timeline.slice(up).filter((entry) => /^(kill|remove):/u.test(entry))).toEqual([]);
+  });
+
+  it("without a dev container, removes what is left first and runs the checks in a sandbox started after", async () => {
+    const root = await workspace({ git: true, devcontainer: false });
+    const world = fakeWorld(root);
+    const background = world.leave();
+    const { outcome } = await run(root, world, "CHECKS");
+
+    expect(outcome).toBeUndefined();
+    const checks = world.timeline.findIndex(CHECK_RUN);
+    const sandboxStart = world.timeline.indexOf("docker:run");
+    expect(world.timeline).toEqual(expect.arrayContaining([`kill:${background}`, "remove:old-sandbox-1", "remove:devcontainer-1"]));
+    expect(sandboxStart).toBeGreaterThan(world.timeline.lastIndexOf("remove:old-sandbox-1"));
+    expect(checks).toBeGreaterThan(sandboxStart);
+    expect(world.timeline[checks]).toContain("processes=0");
+    expect(world.upCalls).toBe(0);
+  });
+
+  it("stops with the fixed reason, starts no dev container and runs no check, when a program cannot be stopped", async () => {
+    const root = await workspace({ git: true });
+    const world = fakeWorld(root);
+    world.leave();
+    world.killsDoNothing = true;
+    const { outcome } = await run(root, world, "CHECKS");
+    expect(outcome?.message).toBe(FIXED);
+    expect(world.upCalls).toBe(0);
+    expect(world.timeline.some(CHECK_RUN)).toBe(false);
+    expect(world.timeline.filter((entry) => entry.startsWith("docker:run"))).toEqual([]);
+  });
+
+  it("stops with the fixed reason, and none of Docker's words, when a container cannot be removed, and while another operation is running", async () => {
+    const root = await workspace({ git: true });
+    const world = fakeWorld(root);
+    world.removeFails = true;
+    const refused = await run(root, world, "CHECKS");
+    expect(refused.outcome?.message).toBe(FIXED);
+    expect(refused.outcome?.message).not.toContain("agentx-secret-customer-container");
+    expect(world.upCalls).toBe(0);
+
+    const busy = fakeWorld(root);
+    const waiting = await run(root, busy, "CHECKS", { otherOperationActive: () => true });
+    expect(waiting.outcome?.message).toBe(FIXED);
+    expect(busy.timeline).toEqual([]);
   });
 });
 

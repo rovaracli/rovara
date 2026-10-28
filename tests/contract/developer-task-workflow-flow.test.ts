@@ -1988,6 +1988,11 @@ describe("native developer task workflow", () => {
     expect(retryOperation).toMatchObject({ kind: "task", workflowMode: "CHECKS" });
     const retryInvocation = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === retryOperation?.id)[0]?.invocation as { payload?: { readiness?: unknown[] } };
     expect(retryInvocation.payload?.readiness).toEqual([selectedCheck.command]);
+
+    // The rerun could not first stop the programs earlier work left running: it stops visibly, with the fixed reason, and no check result is recorded.
+    await harness.finish(workspaceId, String(retryOperation?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not run the checks` });
+    const leftover = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    expect(leftover.workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
   });
 
   it("keeps an interrupted plan blocked and requires a new read-only planning run to recover", async () => {

@@ -9,7 +9,13 @@ import { sweepWorkspaceContainers } from "./workspace-containers.js";
  * project's dev container, which persists between operations) could change files, the rule-file scratch area or results while
  * the reader reads them.
  */
-export const STOPS_PROGRAMS_FIRST_MODES: ReadonlySet<string> = new Set(["REVIEW", "FEEDBACK_REVIEW", "PLAN_CRITIQUE", "UNDERSTAND"]);
+export const READ_ONLY_STEP_MODES: ReadonlySet<string> = new Set(["REVIEW", "FEEDBACK_REVIEW", "PLAN_CRITIQUE", "UNDERSTAND"]);
+
+/**
+ * Every mode that stops first: the reading steps, and AgentX's rerun of the project's checks (CHECKS). The checks run the project's code, so unlike the reading steps they do start the
+ * project's dev container (or a sandbox), but a fresh one: a program left in the old one could change files, ports or results while the checks run.
+ */
+export const STOPS_PROGRAMS_FIRST_MODES: ReadonlySet<string> = new Set([...READ_ONLY_STEP_MODES, "CHECKS"]);
 
 export interface StopBeforeReadingOptions {
   /** Test seams: the same two steps publication takes. */
@@ -33,7 +39,7 @@ export interface StopBeforeReadingOptions {
  * part of the reason: it can carry a container name or a program's output. The attempt is bounded by the rounds of
  * `containWorkspace`; nothing here retries.
  */
-export async function stopProgramsBeforeReading(rootPath: string, options: StopBeforeReadingOptions = {}): Promise<void> {
+export async function stopProgramsBeforeReading(rootPath: string, options: StopBeforeReadingOptions = {}, step: "read the workspace" | "run the checks" = "read the workspace"): Promise<void> {
   const log = options.log ?? ((event: Record<string, unknown>) => console.log(JSON.stringify({ component: "worker", ...event })));
   try {
     await containWorkspace(rootPath, {
@@ -43,6 +49,6 @@ export async function stopProgramsBeforeReading(rootPath: string, options: StopB
     });
   } catch (error) {
     log({ event: "read-step.stop-programs.failed", reason: redactText(error instanceof Error ? error.message : String(error)).slice(0, 300) });
-    throw agentXError("RUNTIME_UNAVAILABLE", `AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace`);
+    throw agentXError("RUNTIME_UNAVAILABLE", `AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not ${step}`);
   }
 }

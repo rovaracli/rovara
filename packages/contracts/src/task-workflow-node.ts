@@ -2200,7 +2200,7 @@ export function workflowAutoFixCounts(decisions: readonly WorkflowDecision[]): W
 
 /** Block reasons only a person can resolve: sending the work back to coding never helps, so the broker never does it on its own. */
 function personOnlyBlock(blockReason: string | undefined): boolean {
-  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE
+  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses
     || [WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX]
       .some((prefix) => blockReason?.startsWith(prefix) === true);
 }

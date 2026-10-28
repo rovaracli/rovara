@@ -67,7 +67,7 @@ import { WorkflowPartsHaltedError, executeParallelWorkflowDependencies, type Par
 import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWorkingCopy, integrateTrees, partsFolderIsOutside } from "./parallel-parts-git.js";
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
-import { STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
+import { READ_ONLY_STEP_MODES, STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -198,9 +198,13 @@ async function runTask(
     }
     throw error;
   };
-  const readsOnly = invocation.payload.workflowMode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(invocation.payload.workflowMode);
+  const mode = invocation.payload.workflowMode;
+  const readsOnly = mode !== undefined && READ_ONLY_STEP_MODES.has(mode);
   const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  if (readsOnly) await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading).catch((error: unknown) => reportFeedbackReviewStartFailure(error));
+  // AgentX's rerun of the project's checks (CHECKS) stops first too, and then starts the project's dev container fresh, through the same checked start as ever.
+  if (mode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(mode)) {
+    await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading, mode === "CHECKS" ? "run the checks" : "read the workspace").catch((error: unknown) => reportFeedbackReviewStartFailure(error));
+  }
   const step = invocation.payload.agentStep;
   // What a coding step adds to this task's sessions; an agent step is a run of its own, which takes none of the coding paths below.
   const agentStep = step?.kind === "coding" ? step : undefined;
