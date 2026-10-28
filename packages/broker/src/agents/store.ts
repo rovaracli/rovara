@@ -32,6 +32,7 @@ import {
   orgScoped,
   overlayProblems,
   recipeProblems,
+  sameJsonContent,
   type AgentGuardrails,
   type AgentId,
   type AgentOrigin,
@@ -734,10 +735,19 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * and whether the new owner's budget total allows it, is the route's check.
    */
   async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
+    const actor = options.actor;
+    if ((request !== undefined && actor === undefined) ||
+      (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+      (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+      (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and belongs to the whole company`);
     if (owner.kind === "project" && accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (owner.kind === "member" && accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const agent = await this.require(orgId, agentId);
+    // A different owner/accountable can invalidate the route's manage authority before this writer reads it.
+    const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
+    if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
@@ -749,16 +759,20 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, from: agent.owner, to: owner,
       ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
     })]);
-    await this.commit(...withOverride([
+    const items = [
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
-        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}`,
+        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`,
       }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, moved);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }

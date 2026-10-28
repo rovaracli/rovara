@@ -616,7 +616,7 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   // The agent's budget leaves its owner's total and joins the new owner's (the maintainer accountable for a project's agent).
   const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
-  const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, options));
+  const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent }));
   if (updated instanceof StatusReply) return updated;
   return { agent: customView(updated, access) };
 }

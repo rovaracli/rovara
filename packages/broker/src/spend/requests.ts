@@ -1358,7 +1358,7 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
         ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: decisionActor });
       return;
     }
-    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, options); return;
+    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap }); return;
     case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, options); return;
     case "unarchive": await deps.store.unarchive(record.orgId, agentId, by, undefined, options); return;
   }

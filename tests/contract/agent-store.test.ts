@@ -483,7 +483,7 @@ describe("archive, budget, owner, accountable and events", () => {
     await store.unarchive(ORG_A, c.agentId, BOB);
     await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE);
-    await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE);
+    await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     await store.saveDraft({ orgId: ORG_A, agentId: b.agentId, overlay: scratch("B2"), expectedRevision: 1, by: ALICE });
     await publish(b.agentId);
     await store.updateBase({ orgId: ORG_A, agentId: c.agentId, expectedRevision: 1, by: ALICE });
@@ -533,15 +533,15 @@ describe("archive, budget, owner, accountable and events", () => {
     const member = await make("Mine", scratch("a"));
     expect(await code(store.setAccountable(ORG_A, member.agentId, { developerId: BOB }, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
     const project: AgentOwner = { kind: "project", project: "web" };
-    expect(await code(store.setOwner(ORG_A, member.agentId, project, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
-    const moved = await store.setOwner(ORG_A, member.agentId, project, ALICE, { developerId: BOB });
+    expect(await code(store.setOwner(ORG_A, member.agentId, project, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const moved = await store.setOwner(ORG_A, member.agentId, project, ALICE, { developerId: BOB }, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(moved).toMatchObject({ owner: project, accountable: { developerId: BOB } });
     await store.setAccountable(ORG_A, member.agentId, { developerId: ALICE }, BOB);
     expect((await store.get(ORG_A, member.agentId))?.accountable).toEqual({ developerId: ALICE });
-    const back = await store.setOwner(ORG_A, member.agentId, { kind: "member", developerId: BOB }, ALICE);
+    const back = await store.setOwner(ORG_A, member.agentId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(back).not.toHaveProperty("accountable");
     expect(await store.get(ORG_A, member.agentId)).not.toHaveProperty("accountable");
-    expect(await code(store.setOwner(ORG_A, "rovara-code", MEMBER, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(store.setOwner(ORG_A, "rovara-code", MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(store.archive(ORG_A, "rovara-code", ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 

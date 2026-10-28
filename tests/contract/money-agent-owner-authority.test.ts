@@ -54,3 +54,11 @@ it("an unrelated member cannot transfer and a foreign org cannot borrow current 
  const f=await fixture(),before=f.snapshot();expect((await f.t.api(OMAR,"PUT",f.path+"/owner",{owner:{kind:"member",developerId:OMAR.developerId}})).status).toBe(404);
  await expect(f.t.deps().store.setOwner(otherOrg,f.id,{kind:"member",developerId:OMAR.developerId},DEB.developerId,undefined,{orgId:TEST_ORG,developerId:DEB.developerId,requestId:f.requestId,fingerprint:"fixture"},{actor:{developerId:DEB.developerId,role:"admin"}})).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.snapshot()).toEqual(before);
 });
+for(const field of ["budget","status"] as const)it(`pins the route's ${field} snapshot while preserving native resource-conflict mapping`,async()=>{
+ const f=await fixture(),send=f.t.db.send.bind(f.t.db);let reads=0,raced=false,afterRace=f.snapshot();
+ f.t.db.send=async command=>{const input=command.input as {Key?:{pk?:string;sk?:string}};
+ if(command.constructor.name==="GetCommand"&&input.Key?.pk===f.key.pk&&input.Key.sk===f.key.sk&&!raced&&++reads===2){
+  raced=true;const result=field==="budget"?await f.t.api(ADA,"PUT",f.path+"/budget",{monthlyUsd:12}):await f.t.api(ADA,"POST",f.path+"/archive",{});expect(result.status).toBe(200);afterRace=f.snapshot();
+ }return send(command);};
+ expect((await f.transfer()).status).toBe(409);expect(raced).toBe(true);expect(f.snapshot()).toEqual(afterRace);expect(f.t.db.get(agentRequestKey(TEST_ORG,DEB.developerId,f.requestId))).toBeUndefined();
+});

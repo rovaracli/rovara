@@ -339,7 +339,7 @@ describe("agent.owner_changed", () => {
     const s = storeSetup();
     const agent = await s.make();
     s.clock.now += 1000;
-    await s.store.setOwner(TEST_ORG, agent.agentId, { kind: "member", developerId: BOB }, ALICE);
+    await s.store.setOwner(TEST_ORG, agent.agentId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(s.store, TEST_ORG, ALICE) });
 
     const transaction = auditedTransactions(s.transactions).at(-1)!;
     expect(writes(transaction, agentKey(TEST_ORG, agent.agentId, "META").pk, "META")).toBe(true);
@@ -354,7 +354,7 @@ describe("agent.owner_changed", () => {
     const s = storeSetup();
     const agent = await s.make();
     s.clock.now += 1000;
-    await s.store.setOwner(TEST_ORG, agent.agentId, { kind: "project", project: "web" }, ALICE, { developerId: BOB });
+    await s.store.setOwner(TEST_ORG, agent.agentId, { kind: "project", project: "web" }, ALICE, { developerId: BOB }, undefined, { actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     const [event] = s.capture!.recordedBy("agent.owner_changed");
     expect(event).toMatchObject({ facts: { field: "owner" }, related: [ALICE, BOB], details: [{ subject: "org", fields: { toProject: "web" } }] });
     expect(JSON.stringify({ ...event, details: undefined })).not.toContain("web");
@@ -378,7 +378,7 @@ describe("agent.owner_changed", () => {
   it("records no move that is refused", async () => {
     const s = storeSetup();
     const agent = await s.make();
-    await expect(s.store.setOwner(TEST_ORG, agent.agentId, { kind: "project", project: "web" }, ALICE)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(s.store.setOwner(TEST_ORG, agent.agentId, { kind: "project", project: "web" }, ALICE, undefined, undefined, { actor: fixtureActor(s.store, TEST_ORG, ALICE) })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(s.capture!.recorded()).toEqual([]);
   });
 });

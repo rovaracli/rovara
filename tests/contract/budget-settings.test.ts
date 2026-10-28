@@ -399,19 +399,19 @@ describe("the one monthly total of a person's agent budgets", () => {
   it("moves an agent's budget to the new owner's total, and holds the new owner to the cap", async () => {
     const { ownerAgents, totalOf, store, capOf } = ownerSetup();
     const [small, big] = await ownerAgents(30, 80);
-    await store.setOwner(TEST_ORG, small!, { kind: "member", developerId: BOB }, ALICE);
+    await store.setOwner(TEST_ORG, small!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(80);
     expect(totalOf(BOB)).toBe(30);
     const bobs = await store.create({ orgId: TEST_ORG, name: "Bob's own", owner: { kind: "member", developerId: BOB }, createdBy: BOB });
     await store.setBudget(TEST_ORG, bobs.agentId, { monthlyUsd: 60 }, fixtureActor(store, TEST_ORG, BOB).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, BOB) });
     expect(totalOf(BOB)).toBe(90);
     // Alice's $80 agent would take Bob to $170: it stays Alice's, and both totals stay as they were.
-    await expect(store.setOwner(TEST_ORG, big!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
+    await expect(store.setOwner(TEST_ORG, big!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { ownerCap: await capOf(), actor: fixtureActor(store, TEST_ORG, ALICE) })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
     expect((await store.get(TEST_ORG, big!))?.owner).toEqual({ kind: "member", developerId: ALICE });
     expect(totalOf(ALICE)).toBe(80);
     expect(totalOf(BOB)).toBe(90);
     // Bob's $30 agent can go back to Alice (80 + 30 = 110 is over, so only without the cap, as Rovara's own moves are made).
-    await store.setOwner(TEST_ORG, small!, { kind: "member", developerId: ALICE }, BOB);
+    await store.setOwner(TEST_ORG, small!, { kind: "member", developerId: ALICE }, BOB, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, BOB) });
     expect(totalOf(ALICE)).toBe(110);
     expect(totalOf(BOB)).toBe(60);
   });
@@ -427,7 +427,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     // A member-owned agent moved to the project counts for the maintainer who is accountable for it.
     const member = await store.create({ orgId: TEST_ORG, name: "Member agent", owner: { kind: "member", developerId: ALICE }, createdBy: ALICE });
     await store.setBudget(TEST_ORG, member.agentId, { monthlyUsd: 20 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
-    await store.setOwner(TEST_ORG, member.agentId, { kind: "project", project: "web" }, ALICE, { developerId: BOB });
+    await store.setOwner(TEST_ORG, member.agentId, { kind: "project", project: "web" }, ALICE, { developerId: BOB }, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(0);
     expect(totalOf(BOB)).toBe(55);
   });
@@ -1024,7 +1024,7 @@ describe("two changes racing on one agent", () => {
       const { ownerAgents, store, totalOf } = ownerSetup();
       const [agent] = await ownerAgents(30);
       const budget = () => store.setBudget(TEST_ORG, agent!, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
-      const owner = () => store.setOwner(TEST_ORG, agent!, { kind: "member", developerId: BOB }, ALICE);
+      const owner = () => store.setOwner(TEST_ORG, agent!, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
       const results = await Promise.allSettled(budgetFirst ? [budget(), owner()] : [owner(), budget()]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(totalOf(ALICE)).toBe(await sumOfAgents(store, ALICE));
@@ -1047,7 +1047,7 @@ describe("a change worked out from a stale read of the agent", () => {
   const sumOfAgents = async (store: AgentStore, owner: string) => (await store.list(TEST_ORG)).filter((agent) => agent.status === "active" && agent.owner.kind === "member" && agent.owner.developerId === owner).reduce((sum, agent) => sum + (agent.monthlyBudgetUsd ?? 0), 0);
   type Change = (store: AgentStore, agentId: AgentId) => Promise<unknown>;
   const budget: Change = (store, agentId) => store.setBudget(TEST_ORG, agentId, { monthlyUsd: 45 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
-  const owner: Change = (store, agentId) => store.setOwner(TEST_ORG, agentId, { kind: "member", developerId: BOB }, ALICE);
+  const owner: Change = (store, agentId) => store.setOwner(TEST_ORG, agentId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
   const archive: Change = (store, agentId) => store.archive(TEST_ORG, agentId, ALICE);
   const cases: Array<[string, Change, Change]> = [
     ["a budget change after the owner moved", owner, budget], ["a budget change after the agent was archived", archive, budget],

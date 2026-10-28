@@ -1437,7 +1437,7 @@ it("refuses a budget write if ownership moves after manage access but before the
   f.db.send = async command => {
     const result = await send(command), input = command.input as { Key?: { pk?: string; sk?: string } };
     if (!moved && command.constructor.name === "GetCommand" && input.Key?.pk === key.pk && input.Key.sk === key.sk) {
-      moved = true; await f.store.setOwner(TEST_ORG, id, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+      moved = true; await f.store.setOwner(TEST_ORG, id, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(f.store, TEST_ORG, DANA.developerId) });
     }
     return result;
   };
