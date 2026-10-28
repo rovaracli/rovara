@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { useState } from "react";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { DataTable } from "../../../design/DataTable.js";
-import { VisibleText } from "../../../design/VisibleText.js";
+import { TextField } from "../../../design/TextField.js";
+import { VisibleText, visibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 import "./connections.css";
 import { SlackWorkspaceEvidence } from "./SlackWorkspaceEvidence.js";
@@ -24,6 +26,25 @@ function ConnectionGuidance({ connection: c }: { connection: ConnectionInfo }) {
  <li>Verify delivery through your team's usual review process before relying on this connection. This page does not perform that check.</li></ol>
  <p>Opening this guidance does not run a vendor check or change configuration.</p>
  </details>;
+}
+function RegisteredConnections({ connections }: { connections: ConnectionInfo[] }) {
+ const [filter, setFilter] = useState("");
+ const term = filter.trim().toLowerCase();
+ const shown = connections.filter(c => visibleText(c.label).toLowerCase().includes(term) || visibleText(c.type).toLowerCase().includes(term));
+ return <>
+ <TextField type="search" maxLength={200} label="Find registered connections" hint="Filters only names and types in this returned list. It does not check connection health." value={filter} onChange={event => setFilter(event.target.value)} />
+ <p role="status" aria-live="polite" aria-atomic="true">{shown.length} of {connections.length} registered connections shown in this returned list.</p>
+ {!connections.some(c => c.type === "linear") && <p>Linear: Not configured.</p>}
+ {connections.length === 0 ? <p>No registered connections were returned.</p> : shown.length === 0 ? <p>No registered connections match this filter in the returned list.</p> : <DataTable caption="Registered company connections" rows={shown} rowKey={c => c.connectionId} columns={[
+ { key: "label", title: "Connection", render: c => <VisibleText text={c.label} /> }, { key: "type", title: "Type", render: c => <VisibleText text={c.type} /> },
+ { key: "credential", title: "Credential", render: c => c.type === "cloudwatch" ? "External setup" : c.hasCredential ? "Configured" : "Not configured" },
+ { key: "association", title: "Account association", render: c => c.identity === "service" ? "Service account (declared)" : c.identity === "personal" ? "Personal account (declared)" : "Not returned" },
+ { key: "check", title: "Stored check", render: c => c.lastCheck === undefined ? "Unknown" : c.lastCheck.ok ? "Previously passed · current health unknown" : "Needs action" },
+ { key: "checked", title: "Last check", render: c => checkedTime(c.lastCheck?.at) }, { key: "changed", title: "Changed", render: c => checkedTime(c.updatedAt) },
+ ]} />}
+ {shown.length > 0 && <><h3>Connection guidance</h3>{shown.map(c => <ConnectionGuidance key={c.connectionId} connection={c} />)}</>}
+ <p>Fix connection: ask a company admin to review the vendor integration's account, credential configuration and required permissions. Linear needs an authorized account and workspace access. No credential entry or permission expansion is performed here.</p>
+ </>;
 }
 function GitHubGuidance({ installation: i }: { installation: GitHubInfo }) {
  return <details className="rv-connection-guidance"><summary>GitHub guidance for <VisibleText text={i.accountLogin} /></summary>
@@ -51,16 +72,5 @@ function ConnectionsView() {
  <h2>GitHub</h2><ReadSection read={github} label="GitHub installations">{data => data.installations.length === 0 ? <p>Not configured. Ask a company admin to arrange the GitHub App connection using a linked GitHub identity.</p> : <><DataTable caption="Company GitHub installations" rows={data.installations} rowKey={i => String(i.installationId)} columns={[{ key: "account", title: "Account", render: i => <VisibleText text={i.accountLogin} /> }, { key: "status", title: "Status", render: i => i.status === "active" ? "Installed · current health unknown" : "Needs action" }]} /><p>Fix connection: a company admin must review the GitHub App installation, suspension and repository permissions with the GitHub organization owner. Stored installation status does not verify delivery.</p><h3>Installation guidance</h3>{data.installations.map(i => <GitHubGuidance key={i.installationId} installation={i} />)}</>}</ReadSection>
  <h3>GitHub installation requests</h3><ReadSection read={requests} label="GitHub installation requests">{data => data.requests.length === 0 ? <p>No installation requests returned.</p> : <ul>{data.requests.map((r, i) => <li key={i}><VisibleText text={r.accountLogin ?? "GitHub organization not yet returned"} />: {r.status === "waiting" ? "Waiting for GitHub admin" : r.status === "connected" ? "Connected request · see installation status" : r.status === "expired" ? "Expired" : r.status === "cancelled" ? "Cancelled" : "Needs action"}. Requested {checkedTime(r.requestedAt)}.</li>)}</ul>}</ReadSection>
  <h2>Slack</h2><p>Unknown. Company-scoped Slack installation, permissions and event health are not available here. Ask an installation administrator to check Slack delivery for this company.</p><SlackWorkspaceEvidence /><SlackGuidance />
- <h2>Registered connections</h2><ReadSection read={registry} label="Registered connections">{data => <>
- {!data.connections.some(c => c.type === "linear") && <p>Linear: Not configured.</p>}
- {data.connections.length === 0 ? <p>No registered connections were returned.</p> : <DataTable caption="Registered company connections" rows={data.connections} rowKey={c => c.connectionId} columns={[
- { key: "label", title: "Connection", render: c => <VisibleText text={c.label} /> }, { key: "type", title: "Type", render: c => <VisibleText text={c.type} /> },
- { key: "credential", title: "Credential", render: c => c.type === "cloudwatch" ? "External setup" : c.hasCredential ? "Configured" : "Not configured" },
- { key: "association", title: "Account association", render: c => c.identity === "service" ? "Service account (declared)" : c.identity === "personal" ? "Personal account (declared)" : "Not returned" },
- { key: "check", title: "Stored check", render: c => c.lastCheck === undefined ? "Unknown" : c.lastCheck.ok ? "Previously passed · current health unknown" : "Needs action" },
- { key: "checked", title: "Last check", render: c => checkedTime(c.lastCheck?.at) }, { key: "changed", title: "Changed", render: c => checkedTime(c.updatedAt) },
- ]} />}
- {data.connections.length > 0 && <><h3>Connection guidance</h3>{data.connections.map(c => <ConnectionGuidance key={c.connectionId} connection={c} />)}</>}
- <p>Fix connection: ask a company admin to review the vendor integration's account, credential configuration and required permissions. Linear needs an authorized account and workspace access. No credential entry or permission expansion is performed here.</p>
- </>}</ReadSection><p>Coverage: affected projects, missing permissions and last event delivery are unavailable in this view. A stored successful check is not live validity.</p></section>;
+ <h2>Registered connections</h2><ReadSection read={registry} label="Registered connections">{data => <RegisteredConnections connections={data.connections} />}</ReadSection><p>Coverage: affected projects, missing permissions and last event delivery are unavailable in this view. A stored successful check is not live validity.</p></section>;
 }
