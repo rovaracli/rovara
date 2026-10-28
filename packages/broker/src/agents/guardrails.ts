@@ -1,3 +1,4 @@
+import { budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 // Plan 3 Task 8: the company's agent guardrails as the broker uses them. This file reads and writes the document, says which changes to it
 // are less safe (those wait for an org admin on the confirmation page, changes.ts), checks a recipe against it when the recipe is
 // published (`validateRecipeForOrg`) and decides whether a built-in agent is turned off. It does not import access.ts or changes.ts,
@@ -76,12 +77,13 @@ export async function writeGuardrails(
   orgId: OrgId,
   value: AgentGuardrails,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** A person confirmed a change that makes something less safe; the audit event says so. */ widened?: boolean } = {},
+  options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** A person confirmed a change that makes something less safe; the audit event says so. */ widened?: boolean },
 ): Promise<StoredGuardrails> {
+  if (options?.actor === undefined) throw budgetActorRefused();
   const parsed = AgentGuardrailsSchema.safeParse(value);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "guardrails"}: ${parsed.error.issues[0]?.message ?? "is not valid"}`);
   const expectedRevision = options.expectedRevision ?? (await readGuardrailsWithRevision(deps, orgId)).revision;
-  return deps.store.putGuardrails({ orgId, guardrails: parsed.data, expectedRevision, by, ...(options.request === undefined ? {} : { request: options.request }), ...(options.widened === true ? { widened: true } : {}) });
+  return deps.store.putGuardrails({ actor: options.actor, orgId, guardrails: parsed.data, expectedRevision, by, ...(options.request === undefined ? {} : { request: options.request }), ...(options.widened === true ? { widened: true } : {}) });
 }
 
 // ---- which changes are less safe

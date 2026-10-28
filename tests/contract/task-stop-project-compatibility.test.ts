@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { ProjectAiSettingsSchema, defaultProjectAiSettings, type ProjectAiSettings } from "../../packages/contracts/src/spend.js";
@@ -35,7 +36,7 @@ it("keeps the project override through the canonical reader and unrelated patch 
 });
 it("preserves the override omitted by an old caller and audits only the ordinary monthly change", async () => {
   const f = fixture();
-  const result = await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 });
+  const result = await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) });
   expect(result).toMatchObject({ revision: 2, settings: { monthlyBudgetUsd: 300, taskStopPolicy: policy } });
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
   expect(f.capture.recordedBy("budget.changed").length).toBe(1);
@@ -43,13 +44,13 @@ it("preserves the override omitted by an old caller and audits only the ordinary
 });
 it("uses canonical source policy rather than an incomplete caller before snapshot", async () => {
   const f = fixture();
-  await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } });
+  await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } }), actor: fixtureActor(f.deps, A, who) });
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
 });
 it("accepts the exact same policy payload without granting mutation rights", async () => {
   const f = fixture();
   const next = { projectPays: false, monthlyBudgetUsd: 200, taskStopPolicy: { stopMicrousd: 20_000_000, schemaVersion: 1 } };
-  await writeProjectAi(f.deps, A, "web", next as ProjectAiSettings, who, { expectedRevision: 1 });
+  await writeProjectAi(f.deps, A, "web", next as ProjectAiSettings, fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) });
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
   expect(f.capture.recorded().length).toBe(0);
 });
@@ -57,7 +58,7 @@ for (const [name, value] of [["changed", { schemaVersion: 1, stopMicrousd: 0 }],
   it(`refuses an ordinary writer's ${name} task-stop payload`, async () => {
     const f = fixture();
     const input = { ...oldClient(), taskStopPolicy: value } as unknown as ProjectAiSettings;
-    const error = await refused(writeProjectAi(f.deps, A, "web", input, who, { expectedRevision: 1 }));
+    const error = await refused(writeProjectAi(f.deps, A, "web", input, fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) }));
     expect(error?.code).toBe("CONFIG_INVALID");
     expect(error?.message?.startsWith("CONFIG_INVALID: taskStopPolicy:")).toBe(true);
     expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
@@ -69,7 +70,7 @@ it("refuses introducing a task-stop override through the ordinary settings write
   const f = fixture();
   f.db.set({ ...projectAiKey(A, "web"), entityType: "PROJECT_AI", projectPays: false, revision: 1 });
   const input = { ...oldClient(), taskStopPolicy: policy };
-  const error = await refused(writeProjectAi(f.deps, A, "web", input, who, { expectedRevision: 1 }));
+  const error = await refused(writeProjectAi(f.deps, A, "web", input, fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) }));
   expect(error?.code).toBe("CONFIG_INVALID");
   expect(Object.hasOwn(f.db.get(projectAiKey(A, "web"))!, "taskStopPolicy")).toBe(false);
   expect(f.db.transactions().length).toBe(0);
@@ -78,7 +79,7 @@ for (const [name, value] of [["undefined", undefined], ["null", null], ["missing
   it(`refuses a stored ${name} project override instead of losing it on re-save`, async () => {
     const f = fixture();
     f.db.set({ ...f.db.get(projectAiKey(A, "web")), taskStopPolicy: value });
-    const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 }));
+    const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) }));
     expect(error?.code).toBe("CONFIG_INVALID");
     expect(error?.message?.includes("project web")).toBe(true);
     expect(error?.message?.includes("Ask an org owner or admin")).toBe(true);
@@ -89,7 +90,7 @@ for (const [name, value] of [["undefined", undefined], ["null", null], ["missing
 it("refuses an unavailable canonical source even when the caller supplies before", async () => {
   const f = fixture();
   f.db.injectFault({ command: "GetCommand", error: { name: "ServiceUnavailable", message: "private source failure" } });
-  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } }));
+  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } }), actor: fixtureActor(f.deps, A, who) }));
   expect(error !== undefined).toBe(true);
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
   expect(f.db.transactions().length).toBe(0);
@@ -97,7 +98,7 @@ it("refuses an unavailable canonical source even when the caller supplies before
 it("cannot advance a maximum safe revision into an unsafe value", async () => {
   const f = fixture();
   f.db.set({ ...f.db.get(projectAiKey(A, "web")), revision: Number.MAX_SAFE_INTEGER });
-  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: Number.MAX_SAFE_INTEGER }));
+  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: Number.MAX_SAFE_INTEGER }), actor: fixtureActor(f.deps, A, who) }));
   expect(error?.code).toBe("CONFIG_INVALID");
   expect(f.db.get(projectAiKey(A, "web"))?.revision).toBe(Number.MAX_SAFE_INTEGER);
   expect(f.db.transactions().length).toBe(0);
@@ -115,7 +116,7 @@ it("does not overwrite an intervening configured policy revision or audit the re
     }
     return result;
   };
-  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } }));
+  const error = await refused(writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1, before: { projectPays: false, monthlyBudgetUsd: 200 } }), actor: fixtureActor(f.deps, A, who) }));
   expect(moved).toBe(true);
   expect(error?.code).toBe("AGENT_REVISION_CONFLICT");
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 30_000_000 });
@@ -125,7 +126,7 @@ it("does not overwrite an intervening configured policy revision or audit the re
 it("keeps project policy preservation in the caller's org", async () => {
   const f = fixture();
   f.db.set({ ...projectAiKey(B, "web"), entityType: "PROJECT_AI", projectPays: false, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1 }, revision: 5 });
-  await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 });
+  await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) });
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual(policy);
   expect(f.db.get(projectAiKey(B, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 1 });
   expect(f.db.get(projectAiKey(B, "web"))?.revision).toBe(5);
@@ -136,7 +137,7 @@ for (const firstWrite of [false, true]) {
     const f = fixture();
     if (firstWrite) f.db.delete(projectAiKey(A, "web"));
     else f.db.set({ ...projectAiKey(A, "web"), entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 200, revision: 1 });
-    const result = await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: firstWrite ? 0 : 1 });
+    const result = await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: firstWrite ? 0 : 1 }), actor: fixtureActor(f.deps, A, who) });
     expect(Object.hasOwn(f.db.get(projectAiKey(A, "web"))!, "taskStopPolicy")).toBe(false);
     expect(Object.hasOwn(result.settings, "taskStopPolicy")).toBe(false);
   });
@@ -158,7 +159,7 @@ it("names the project and org owner/admin remedy when malformed stop settings bl
 it("preserves an explicit zero stop during an ordinary edit instead of turning it into unset", async () => {
   const f = fixture();
   f.db.set({ ...f.db.get(projectAiKey(A, "web")), taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
-  const result = await writeProjectAi(f.deps, A, "web", oldClient(), who, { expectedRevision: 1 });
+  const result = await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(f.deps, A, who) });
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 0 });
   expect(result.settings).toMatchObject({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
 });

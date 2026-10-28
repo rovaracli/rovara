@@ -1,3 +1,6 @@
+import { budgetDocumentFence } from "./budget-snapshot.js";
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
+import { coded, transact } from "../agents/table-writes.js";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 // Monthly AI budgets (ruling R29 for the numbers). An org has one monthly limit and each member one, with
 // per-member overrides; the model proxy enforces them, and this module keeps the proxy told what they are
@@ -10,11 +13,11 @@ import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/l
 import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD,
-  AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type AuditActor, type AuditEventInput, type BudgetScope, type OrgId, type OrgKey,
+  AgentXError, agentXError, sameJsonContent, budgetSyncedKey, orgSettingsKey, type AuditActor, type AuditEventInput, type BudgetScope, type OrgId, type OrgKey,
 } from "@agentx/contracts";
 import { auditBudgetChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
 import { readTopUp, withTopUp } from "../spend/top-ups.js";
@@ -75,8 +78,11 @@ async function get(deps: Pick<BudgetDependencies, "documentClient" | "tableName"
 
 /** The org's budget settings; an org that never set any, or a record that does not read, has the defaults. */
 export async function readBudgets<D extends Pick<BudgetDependencies, "documentClient" | "tableName" | "cloud">>(deps: D, orgId: OrgId): Promise<OrgBudgetSettings> {
+  return budgetsFromItem(deps, await get(deps, orgSettingsKey(orgId, "BUDGET")));
+}
+
+function budgetsFromItem(deps: Pick<BudgetDependencies, "cloud">, item: Record<string, unknown> | undefined): OrgBudgetSettings {
   const base = defaults(deps.cloud);
-  const item = await get(deps, orgSettingsKey(orgId, "BUDGET"));
   if (item === undefined) return base;
   const overrides: Record<string, number> = {};
   if (isRecord(item.memberOverrides)) for (const [developerId, limit] of Object.entries(item.memberOverrides)) if (isBudgetAmount(limit)) overrides[developerId] = limit;
@@ -100,9 +106,9 @@ export const memberLimitOf = (settings: OrgBudgetSettings, developerId: string):
 
 /**
  * The most `budget.changed` events one change may record. They commit in the same transaction as the settings, which holds
- * 100 items: the write and at most 98 pending items (one item is left spare).
+ * 100 items: the document, three actor checks and at most 96 pending items.
  */
-export const BUDGET_CHANGE_EVENTS_MAX = 98;
+export const BUDGET_CHANGE_EVENTS_MAX = 96;
 
 const toCents = (usd: number | undefined): number | undefined => usd === undefined ? undefined : Math.round(usd * 100);
 
@@ -112,10 +118,10 @@ const toCents = (usd: number | undefined): number | undefined => usd === undefin
  * equals the default figure, added or removed, moves nothing). A member whose only change is the default is covered by the
  * default's event. Each event has its own id, from the write's time and writer plus the limit it is about.
  */
-function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; after: OrgBudgetSettings; updatedBy: string; at: string; actor: AuditActor }): AuditEventInput[] {
+function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; after: OrgBudgetSettings; updatedBy: string; at: string; actor: AuditActor; revision?: number }): AuditEventInput[] {
   const { orgId, before, after, updatedBy, at, actor } = input;
   const event = (scopeKind: string, field: string, targetId: string, from: number | undefined, to: number | undefined, related?: string[]) => auditBudgetChanged({
-    orgId, actor, occurredAt: at, occurrence: auditOccurrence(at, updatedBy, field, targetId),
+    orgId, actor, occurredAt: at, occurrence: auditOccurrence(String(input.revision ?? 0), at, updatedBy, field, targetId),
     target: { kind: "budget", id: targetId }, scopeKind, field,
     ...(from === undefined ? {} : { fromCents: toCents(from)! }), ...(to === undefined ? {} : { toCents: toCents(to)! }),
     ...(related === undefined ? {} : { related }),
@@ -136,7 +142,7 @@ function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; af
  * The events a change would record: none on an install with no ledger, and none (the failure logged) when the settings to
  * compare with cannot be read or an event cannot be built. `before` is read here when the caller has not.
  */
-function plannedBudgetEvents(deps: BudgetDependencies, input: { orgId: OrgId; before?: OrgBudgetSettings | undefined; after: OrgBudgetSettings; updatedBy: string; at: string; actor?: AuditActor | undefined }): Promise<AuditEventInput[]> {
+function plannedBudgetEvents(deps: BudgetDependencies, input: { orgId: OrgId; before?: OrgBudgetSettings | undefined; after: OrgBudgetSettings; updatedBy: string; at: string; actor?: AuditActor | undefined; revision?: number }): Promise<AuditEventInput[]> {
   return tryAuditEvents(deps, async () => budgetChangeEvents({
     ...input, before: input.before ?? await readBudgets(deps, input.orgId), actor: input.actor ?? { kind: "member", id: input.updatedBy },
   }));
@@ -156,17 +162,34 @@ function refuseUnrecordableChange(events: readonly AuditEventInput[]): void {
  * Writes the settings whole. The caller has validated them; `syncBudgets` then tells the proxy. On an install with a ledger the
  * write is one transaction with a `budget.changed` pending item for each limit it changes, and the events are sent after the
  * commit. A change of more than `BUDGET_CHANGE_EVENTS_MAX` limits is refused with CONFIG_INVALID before anything is written.
- * `options.before` is the settings the caller has just read (read here when absent); `options.actor` is who changed them (the
- * member `updatedBy` when absent).
+ * `options.before`/expectedRevision pin the caller snapshot; the audit always compares the canonical read.
+ * `options.authority` is mandatory; the optional audit actor keeps the existing audit vocabulary.
  */
+/** Canonical snapshot for writes. Legacy revisionless documents advance only under their exact stored field fence. */
+async function budgetSnapshot(deps: BudgetDependencies, orgId: OrgId) {
+  const raw = await get(deps, orgSettingsKey(orgId, "BUDGET"));
+  const fence = budgetDocumentFence(raw);
+  if (raw !== undefined && ((raw.orgMonthlyUsd !== undefined && !isBudgetAmount(raw.orgMonthlyUsd)) || (raw.memberDefaultMonthlyUsd !== undefined && !isBudgetAmount(raw.memberDefaultMonthlyUsd)) || (raw.memberOverrides !== undefined && (!isRecord(raw.memberOverrides) || Object.values(raw.memberOverrides).some(value => !isBudgetAmount(value)))))) throw agentXError("CONFIG_INVALID", "The company budget cannot be read for a change. Ask an org owner or admin to repair it.");
+  return { raw, revision: fence.revision, fence, settings: budgetsFromItem(deps, raw) };
+}
+
 export async function writeBudgets(
   deps: BudgetDependencies, orgId: OrgId, settings: OrgBudgetSettings, updatedBy: string, at: string,
-  options: { before?: OrgBudgetSettings; actor?: AuditActor } = {},
+  options: { authority: BudgetActor; expectedRevision?: number; before?: OrgBudgetSettings; actor?: AuditActor },
 ): Promise<void> {
-  const item = { ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", ...settings, updatedBy, updatedAt: at };
-  const events = await plannedBudgetEvents(deps, { orgId, before: options.before, after: settings, updatedBy, at, actor: options.actor });
+  if (options?.authority === undefined || options.authority.developerId !== updatedBy) throw budgetActorRefused();
+  const checks = budgetActorChecks(deps.tableName, orgId, options.authority);
+  const current = await budgetSnapshot(deps, orgId);
+  const conflict = () => coded("AGENT_REVISION_CONFLICT", "The company budget changed. Reload it and review your change again.");
+  if ((options.expectedRevision !== undefined && options.expectedRevision !== current.revision) || (options.before !== undefined && !sameJsonContent(options.before, current.settings))) throw conflict();
+  const revision = current.fence.nextRevision;
+  const item = { ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", ...settings, revision, updatedBy, updatedAt: at };
+  const events = await plannedBudgetEvents(deps, { orgId, before: current.settings, after: settings, updatedBy, at, actor: options.actor, revision });
   refuseUnrecordableChange(events);
-  await auditTransact(deps, { Put: { TableName: deps.tableName, Item: item } }, events);
+  if (events.length > 99 - checks.length) throw agentXError("CONFIG_INVALID", "This change has too many budget audit entries for one atomic request; change fewer limits.");
+  const items = [{ Put: { TableName: deps.tableName, Item: item, ...current.fence.condition } }, ...events.flatMap(event => auditPending(deps, event))];
+  const actorStart = items.length;
+  await transact({ ...deps, now: deps.now ?? Date.now }, [...items, ...checks], failed => [...failed].some(index => index >= actorStart) ? budgetActorRefused() : conflict());
   await flushAuditEvents(deps, events);
 }
 
@@ -229,7 +252,7 @@ export const PutBudgetBodySchema = z.object({
  */
 export async function changeBudgets(
   deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper" | "getOrg"> },
-  input: { orgId: OrgId; body: unknown; updatedBy: string; at: string; /** Who is recorded as the changer; the member `updatedBy` when absent. */ actor?: AuditActor },
+  input: { authority: BudgetActor; orgId: OrgId; body: unknown; updatedBy: string; at: string; /** Who is recorded as the changer; the member `updatedBy` when absent. */ actor?: AuditActor },
 ): Promise<OrgBudgetSettings> {
   const parsed = PutBudgetBodySchema.safeParse(input.body);
   if (!parsed.success) {
@@ -253,14 +276,15 @@ export async function changeBudgets(
   for (const developerId of Object.keys(memberOverrides ?? {})) {
     if ((await deps.orgs.orgForDeveloper(developerId))?.orgId !== input.orgId) throw agentXError("CONFIG_INVALID", "memberOverrides: every override must name a member of this organization");
   }
-  const before = await readBudgets(deps, input.orgId);
+  const snapshot = await budgetSnapshot(deps, input.orgId);
+  const before = snapshot.settings;
   const after = withLimits({
     orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
     memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
   }, memberOverrides ?? before.memberOverrides);
   // Refused before anything is written or the proxy is told, as writeBudgets would refuse it.
   refuseUnrecordableChange(await plannedBudgetEvents(deps, { orgId: input.orgId, before, after, updatedBy: input.updatedBy, at: input.at, actor: input.actor }));
-  await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at, { before, ...(input.actor === undefined ? {} : { actor: input.actor }) });
+  await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at, { authority: input.authority, expectedRevision: snapshot.revision, before, ...(input.actor === undefined ? {} : { actor: input.actor }) });
   await syncBudgets(deps, input.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
   return after;
 }

@@ -102,7 +102,7 @@ describe("mergeDuplicateMember", () => {
     expect(w.db.get(orgMemberKey(orgId, D1))).toMatchObject({ role: "owner" });
     expect(w.db.get(developerOrgKey(D1))).toMatchObject({ role: "owner" });
     const budget = w.db.get(orgSettingsKey(orgId, "BUDGET"))!;
-    expect(budget).toMatchObject({ orgMonthlyUsd: 500, memberOverrides: { [D1]: 50, other: 7 }, updatedBy: "admin" });
+    expect(budget).toMatchObject({ orgMonthlyUsd: 500, memberOverrides: { [D1]: 50, other: 7 }, updatedBy: "system", revision: 1 });
     expect(Object.keys(budget.memberOverrides as object)).not.toContain(D2);
   });
 

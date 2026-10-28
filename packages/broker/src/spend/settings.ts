@@ -52,12 +52,12 @@ export interface SpendSettingsDependencies {
 
 type Document = Record<string, unknown>;
 
-/** Request-bearing writes need server-bound identity; no-request internal setup/system calls retain the legacy boundary. */
-function settingsActorChecks(deps: SpendSettingsDependencies, orgId: OrgId, by: string, options: { actor?: BudgetActor; request?: RequestMark }): TransactItem[] {
-  if ((options.request !== undefined && options.actor === undefined) ||
-    (options.actor !== undefined && options.actor.developerId !== by) ||
+/** Every settings write needs server-bound identity, including internal calls without an HTTP receipt. */
+function settingsActorChecks(deps: SpendSettingsDependencies, orgId: OrgId, by: string, options: { actor?: BudgetActor; request?: RequestMark } = {}): TransactItem[] {
+  if ((options.actor === undefined) ||
+    (options.actor.developerId !== by) ||
     (options.request !== undefined && (options.request.orgId !== orgId || options.request.developerId !== by))) throw budgetActorRefused();
-  return options.actor === undefined ? [] : budgetActorChecks(deps.tableName, orgId, options.actor);
+  return budgetActorChecks(deps.tableName, orgId, options.actor);
 }
 
 
@@ -141,7 +141,7 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { actor?: BudgetActor; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings } = {},
+  options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
 ): Promise<StoredProjectAi> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
@@ -253,7 +253,7 @@ export async function writeSpendPolicy(
   orgId: OrgId,
   policy: SpendPolicy,
   by: string,
-  options: { actor?: BudgetActor; expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy } = {},
+  options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy },
 ): Promise<StoredSpendPolicy> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   const now = deps.now ?? Date.now;

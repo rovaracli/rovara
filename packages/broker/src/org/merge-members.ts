@@ -1,3 +1,4 @@
+import { budgetDocumentFence } from "./budget-snapshot.js";
 // packages/broker/src/org/merge-members.ts
 // Plan 2, Task 3: one person who signed in two ways before identity links became two members. Merging moves the duplicate's project
 // grants, budget override and role to the survivor (the member the person's verified email names), then retires the duplicate: its
@@ -237,10 +238,11 @@ async function moveBudgetOverride(deps: Deps, orgId: OrgId, survivorId: string, 
     const item = await getItem(deps, key);
     const seen = item?.memberOverrides;
     if (item === undefined || !isRecord(seen) || !Object.hasOwn(seen, duplicateId)) return false;
+    const fence = budgetDocumentFence(item);
     const { [duplicateId]: limit, ...others } = seen;
     const survivorHasOne = Object.hasOwn(others, survivorId);
     // Recorded as Rovara's own change, in the write that makes it: the duplicate's limit falls back to the members' default, and the survivor's
-    // takes the duplicate's figure when the survivor had none. The rewrite does not bump the settings' `updatedAt`, so its time makes each one its own occurrence.
+    // takes the duplicate's figure when the survivor had none. The shared snapshot holds every budget field and advances the revision.
     const at = new Date(deps.now()).toISOString();
     const fallback = typeof item.memberDefaultMonthlyUsd === "number" ? item.memberDefaultMonthlyUsd : undefined;
     const events = await tryAuditEvents(deps, () => typeof limit !== "number" ? [] : [
@@ -251,13 +253,12 @@ async function moveBudgetOverride(deps: Deps, orgId: OrgId, survivorId: string, 
       occurrence: auditOccurrence("override_merged", duplicateId, survivorId, at, String(limit), change.developerId), ...change,
     })));
     try {
-      // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
+      // A changed company/default amount or revision must also refuse this old snapshot, not only a changed override map.
       await auditTransact(deps, {
         Put: {
           TableName: deps.tableName,
-          Item: { ...item, memberOverrides: survivorHasOne ? others : { ...others, [survivorId]: limit } },
-          ConditionExpression: "memberOverrides = :seen",
-          ExpressionAttributeValues: { ":seen": seen },
+          Item: { ...item, memberOverrides: survivorHasOne ? others : { ...others, [survivorId]: limit }, revision: fence.nextRevision, updatedBy: "system", updatedAt: at },
+          ...fence.condition,
         },
       }, events);
       await flushAuditEvents(deps, events);

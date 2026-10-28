@@ -1,3 +1,4 @@
+import { budgetDocumentFence } from "./budget-snapshot.js";
 import { inviteCreateBodyHash } from "./invite-creation.js";
 import { takeRateAt } from "../developer/page-comments.js";
 // packages/broker/src/org/store.ts
@@ -670,9 +671,10 @@ export class OrgStore {
       const item = await this.get(key);
       const seen = item?.memberOverrides;
       if (item === undefined || typeof seen !== "object" || seen === null || !Object.hasOwn(seen, developerId)) return;
+      const fence = budgetDocumentFence(item);
       const others = Object.fromEntries(Object.entries(seen).filter(([id]) => id !== developerId));
       // The limit is the member's own until now and the members' default after. The change is Rovara's (the system), recorded with the write that makes it.
-      // The settings' `updatedAt` is not bumped by this rewrite, so the time of the rewrite makes each one its own occurrence.
+      // The shared field snapshot and revision also protect concurrent company/default budget changes.
       const own = (seen as Record<string, unknown>)[developerId];
       const fallback = item.memberDefaultMonthlyUsd;
       const at = this.iso();
@@ -681,10 +683,10 @@ export class OrgStore {
         developerId, from: own, to: typeof fallback === "number" ? fallback : undefined,
       })]);
       try {
-        // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
+        // Refuse any changed money snapshot before rewriting the whole document; then re-read it once more.
         await auditTransact(
           { ...this.deps(), documentClient: this.input.documentClient },
-          { Put: { TableName: this.input.tableName, Item: { ...item, memberOverrides: others }, ConditionExpression: "memberOverrides = :seen", ExpressionAttributeValues: { ":seen": seen } } },
+          { Put: { TableName: this.input.tableName, Item: { ...item, memberOverrides: others, revision: fence.nextRevision, updatedBy: "system", updatedAt: at }, ...fence.condition } },
           events,
         );
         await flushAuditEvents(this.deps(), events);

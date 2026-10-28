@@ -467,7 +467,7 @@ import type { HookProvider } from "../triggers/providers/types.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { changeBudgets, keyIdOf, mintKeyHealing, taskSpendBaseline, type OrgBudgetSettings } from "../org/budget.js";
+import { PutBudgetBodySchema, keyIdOf, mintKeyHealing, taskSpendBaseline } from "../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../spend/payer.js";
@@ -964,25 +964,18 @@ async function ensureInstallOrg(dependencies: AwsBrokerDependencies, orgId: OrgI
 }
 
 /**
- * Ruling R47: `PUT /v1/admin/org/budget`. The operator (admin pool) sets the monthly limits of the install's single org, which has
- * none until they do. A cloud install has no such org (its operators belong to none, ruling R6) and every org there sets its own.
+ * The legacy R47 operator mutation is held: operators have no transactional company-membership authority source.
+ * Company owner/admin budget changes use the developer route; no operator membership is fabricated.
  */
-async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
+async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<never> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
   if (dependencies.cloud === true) throw agentXError("FORBIDDEN", "organizations on this install set their own budgets; ask an owner or admin of the organization");
-  const modelAccess = dependencies.modelAccess;
-  if (modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
-  const orgId = requireOrgId(identity.orgId);
-  const orgs = orgStoreOf(dependencies);
-  // The install's org is created on first use; an operator may set its budgets before anyone has signed in.
-  await orgs.ensureOrg(orgId, brokerEnvironmentName(dependencies));
-  const budget = await changeBudgets(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
-    // The chain names an operator by a pseudonymous id, never by their identity.
-    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString(), actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } },
-  );
-  console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
-  return { budget };
+  if (dependencies.modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
+  const parsed = PutBudgetBodySchema.safeParse(body);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "body"}: ${parsed.error.issues[0]?.message ?? "invalid"}`);
+  if (parsed.data.orgMonthlyUsd === undefined && parsed.data.memberDefaultMonthlyUsd === undefined && parsed.data.memberOverrides === undefined) throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
+  // An operator has no company member/pointer source to fence. Do not manufacture membership from an administrator claim.
+  throw agentXError("FORBIDDEN", "Use a current company owner or admin session to change budgets. Operator budget changes need reviewed transactional authority.");
 }
 
 /** What an install may set about company AI sources beyond the model proxy itself (Task 24b); the rest of their dependencies come from the broker's own. */

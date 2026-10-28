@@ -2335,7 +2335,7 @@ async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: D
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can change the organization's budgets");
   const budgets = budgetDependencies(deps);
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  const budget = await changeBudgets({ ...budgets, orgs: deps.orgs }, { orgId: caller.orgId, body, updatedBy: caller.developerId, at: new Date(deps.now()).toISOString() });
+  const budget = await changeBudgets({ ...budgets, orgs: deps.orgs }, { authority: { developerId: caller.developerId, role: caller.orgRole }, orgId: caller.orgId, body, updatedBy: caller.developerId, at: new Date(deps.now()).toISOString() });
   logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(budget.memberOverrides).length) });
   return { budget };
 }

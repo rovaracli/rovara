@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 3: the chain store (records, drafts, immutable versions, names, events, owner totals), who can do what with a chain, and its shares.
 import { seedMembership } from "../support/developer-task-broker.js";
 import { describe, expect, it } from "vitest";
@@ -565,10 +566,10 @@ describe("publish checks the agents again, inside the transaction", () => {
     const ctx = setup();
     const chain = await ctx.create("Reviewing");
     const input = await ctx.publishInput(chain.chainId);
-    const off = await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["code-reviewer"] }, expectedRevision: 0, by: DAN });
+    const off = await ctx.agents.putGuardrails({ ...({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["code-reviewer"] }, expectedRevision: 0, by: DAN }), by: fixtureActor(ctx.db, ORG_A, DAN).developerId, actor: fixtureActor(ctx.db, ORG_A, DAN) });
     expect(await code(ctx.chains.publish(input))).toEqual({ code: "AGENT_UNAVAILABLE", message: "Code reviewer is turned off in your company. Ask an admin to turn it on." });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
-    await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: off.revision, by: DAN });
+    await ctx.agents.putGuardrails({ ...({ orgId: ORG_A, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: off.revision, by: DAN }), by: fixtureActor(ctx.db, ORG_A, DAN).developerId, actor: fixtureActor(ctx.db, ORG_A, DAN) });
     await expect(ctx.chains.publish(await ctx.publishInput(chain.chainId))).resolves.toMatchObject({ version: 1 });
   });
 
@@ -576,7 +577,7 @@ describe("publish checks the agents again, inside the transaction", () => {
     const ctx = setup();
     const chain = await ctx.create("Reviewing");
     const input = await ctx.publishInput(chain.chainId);
-    ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["root-cause-analyst"] }, expectedRevision: 0, by: DAN }); });
+    ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ ...({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["root-cause-analyst"] }, expectedRevision: 0, by: DAN }), by: fixtureActor(ctx.db, ORG_A, DAN).developerId, actor: fixtureActor(ctx.db, ORG_A, DAN) }); });
     expect(await code(ctx.chains.publish(input))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
     // Validated again, the step says it (the store's own refusal is the backstop for a caller that did not look).
@@ -637,7 +638,7 @@ describe("publish checks the agents again, inside the transaction", () => {
     const input = await ctx.publishInput(chain.chainId);
     expect(input.guardrailsRevision).toBe(0);
     // An admin changes the guardrails between the validation and the write: the chain was checked against the old ones.
-    ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [{ provider: "openai", modelId: "gpt-x" }] }, expectedRevision: 0, by: DAN }); });
+    ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ ...({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [{ provider: "openai", modelId: "gpt-x" }] }, expectedRevision: 0, by: DAN }), by: fixtureActor(ctx.db, ORG_A, DAN).developerId, actor: fixtureActor(ctx.db, ORG_A, DAN) }); });
     expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again." });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
     // Validated again, it publishes, at the revision it read now.

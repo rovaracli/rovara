@@ -1,4 +1,6 @@
 // Existing company/member budget and guardrail writes: authority and exact replaced snapshot.
+import { randomUUID } from "node:crypto";
+import { decideApproval, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/contracts";
@@ -51,8 +53,40 @@ for (const legacy of [false, true]) it(`refuses a concurrent org budget overwrit
   };
   expect((await write(900).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("AGENT_REVISION_CONFLICT");
   expect(raced).toBe(true); expect(t.db.get(key)?.orgMonthlyUsd).toBe(800);
-  expect(capture.recorded().map(e => ({ from: e.facts.fromCents, to: e.facts.toCents }))).toEqual([{ from: 50000, to: 80000 }]);
+  expect(capture.recorded().map(e => ({ from: e.facts?.fromCents, to: e.facts?.toCents }))).toEqual([{ from: 50000, to: 80000 }]);
   await write(900);
-  expect(capture.recorded().map(e => ({ from: e.facts.fromCents, to: e.facts.toCents }))).toEqual([{ from: 50000, to: 80000 }, { from: 80000, to: 90000 }]);
+  expect(capture.recorded().map(e => ({ from: e.facts?.fromCents, to: e.facts?.toCents }))).toEqual([{ from: 50000, to: 80000 }, { from: 80000, to: 90000 }]);
   expect(t.db.get(key)?.revision).toBe(legacy ? 2 : 3);
+});
+
+async function guardrailApproval() {
+  const t = await setup();
+  expect((await t.api(DEB, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: 0, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 90 } })).status).toBe(200);
+  expect((await t.api(DEB, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: 1, guardrails: DEFAULT_AGENT_GUARDRAILS })).status).toBe(202);
+  const capture = capturingAuditDeps({ db: t.db }), deps = { ...t.deps(), audit: capture.audit, store: new AgentStore({ documentClient: t.db, tableName: "state", now: Date.now, audit: capture.audit }) };
+  const record = t.db.find(item => item.entityType === "APPROVAL" && item.status === "PENDING")[0] as unknown as ApprovalRecord;
+  expect(record.subject.kind).toBe("guardrails");
+  const decide = () => decideApproval(deps, { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record.approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+  return { t, capture, decide };
+}
+for (const loss of ["demoted", "removed"] as const) it(`refuses real guardrails confirmation when actual decider is ${loss} at money commit`, async () => {
+  const f = await guardrailApproval(), key = agentGuardrailsKey(TEST_ORG), before = f.t.db.get(key), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string } } }> }).TransactItems;
+    if (!changed && items?.some(item => item.Put?.Item?.pk === key.pk)) {
+      changed = true;
+      await send(new TransactWriteCommand({ TransactItems: loss === "demoted" ? [{ Update: { TableName: "state", Key: orgMemberKey(TEST_ORG, ADA.developerId), UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } }] : [{ Delete: { TableName: "state", Key: orgMemberKey(TEST_ORG, ADA.developerId) } }] }));
+    }
+    return send(command);
+  };
+  expect((await f.decide()).status).toBe("APPROVED_FAILED"); expect(changed).toBe(true); expect(f.t.db.get(key)).toEqual(before);
+  expect(f.capture.recordedBy("guardrails.changed")).toHaveLength(0);
+  const control = await guardrailApproval(); expect((await control.decide()).status).toBe("APPROVED_DONE");
+  expect(control.capture.recordedBy("guardrails.changed")).toHaveLength(1);
+});
+for (const kind of ["budgets", "guardrails"] as const) it(`refuses low-level ${kind} writer with no actor even without a request`, async () => {
+  const t = await setup();
+  const job = kind === "budgets" ? writeBudgets({ documentClient: t.db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, { orgMonthlyUsd: 800, memberOverrides: {} }, DEB.developerId, new Date().toISOString(), {} as Parameters<typeof writeBudgets>[5])
+    : t.store.putGuardrails({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: DEB.developerId } as Parameters<AgentStore["putGuardrails"]>[0]);
+  expect((await job.then(() => undefined, (e: { code?: string }) => e))?.code).toBe("FORBIDDEN");
 });

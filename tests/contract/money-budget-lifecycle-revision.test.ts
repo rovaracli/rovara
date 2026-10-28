@@ -36,6 +36,6 @@ for (const kind of ["merge", "remove"] as const) for (const legacy of [false, tr
     const overrides = t.db.get(key)?.memberOverrides as Record<string, number>;
     expect(overrides[DEB.developerId]).toBeUndefined(); if (kind === "merge") expect(overrides[BEN.developerId]).toBe(30);
     const systemChanges = capture.recordedBy("budget.changed").filter(event => event.actor.kind === "system");
-    expect(systemChanges.some(event => event.target.id === DEB.developerId && event.facts?.fromCents === 3000 && event.facts.toCents === 4000)).toBe(true);
+    expect(systemChanges.some(event => "id" in event.target && event.target.id === DEB.developerId && event.facts?.fromCents === 3000 && event.facts.toCents === 4000)).toBe(true);
   });
 }

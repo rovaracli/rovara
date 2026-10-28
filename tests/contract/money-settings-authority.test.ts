@@ -43,7 +43,8 @@ for (const kind of ["project", "policy"] as const) for (const mismatch of ["miss
   it(`refuses request-bearing ${kind} writer with ${mismatch} authority context`, async () => {
     const t = await setup(), request = { orgId: TEST_ORG, developerId: mismatch === "request" ? "a".repeat(64) : DEB.developerId, requestId: randomUUID(), fingerprint: "settings-bound" };
     const options = { request, ...(mismatch === "missing" ? {} : { actor: { developerId: mismatch === "actor" ? "a".repeat(64) : DEB.developerId, role: "admin" as const } }) };
-    const write = kind === "project" ? writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false }, DEB.developerId, options) : writeSpendPolicy(t.deps(), TEST_ORG, defaultSpendPolicy(), DEB.developerId, options);
+    const unsafe = options as { request: typeof request; actor: { developerId: string; role: "admin" } };
+    const write = kind === "project" ? writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false }, DEB.developerId, unsafe) : writeSpendPolicy(t.deps(), TEST_ORG, defaultSpendPolicy(), DEB.developerId, unsafe);
     expect((await write.then(() => undefined, (error: { code?: string }) => error))?.code).toBe("FORBIDDEN");
   });
 }
@@ -62,7 +63,7 @@ it("fences the existing maintainer accept-only path when company membership is r
 });
 for (const kind of ["project", "policy"] as const) it(`refuses ${kind} settings with neither request nor actor`, async () => {
   const t = await setup();
-  const options = {} as unknown as Parameters<typeof writeProjectAi>[5];
+  const options = {} as unknown as { actor: { developerId: string; role: "admin" } };
   const job = kind === "project" ? writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false }, DEB.developerId, options) : writeSpendPolicy(t.deps(), TEST_ORG, defaultSpendPolicy(), DEB.developerId, options);
   expect((await job.then(() => undefined, (e: { code?: string }) => e))?.code).toBe("FORBIDDEN");
 });

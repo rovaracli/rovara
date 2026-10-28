@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 28: budget settings. The keys and scopes the spend engine reads, what a scope's limit is once the month's top-up and the
 // guardrails are counted (`effectiveLimits`), the project AI settings, the agent budget and spend-policy routes, and the one monthly
 // total each person's agent budgets count against.
@@ -166,7 +167,7 @@ describe("effectiveLimits", () => {
     const one = await agent(30);
     topUp("2026-10", { kind: "agent", agentId: one.agentId }, 40);
     const store = new AgentStore({ documentClient: db, tableName: "state", now: () => NOW_OCTOBER });
-    await writeGuardrails({ ...deps, store }, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 80 }, DEV1, { expectedRevision: 0 });
+    await writeGuardrails({ ...deps, store }, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 80 }, fixtureActor({ ...deps, store }, TEST_ORG, DEV1).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor({ ...deps, store }, TEST_ORG, DEV1) });
     const limits = await effectiveLimits(deps, { orgId: TEST_ORG, month: "2026-10", scopes: [{ kind: "agent", agentId: one.agentId }] });
     expect(limits.get(`AGENT#${one.agentId}`)).toBe(70);
   });
@@ -181,7 +182,7 @@ describe("effectiveLimits", () => {
 
   it("uses the allowance the org's spend policy sets", async () => {
     const { deps } = limitsSetup();
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), testingAllowanceUsd: 25 }, DEV1);
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), testingAllowanceUsd: 25 }, fixtureActor(deps, TEST_ORG, DEV1).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DEV1) });
     expect((await effectiveLimits(deps, { orgId: TEST_ORG, month: "2026-10", scopes: [{ kind: "testing", developerId: DEV1 }] })).get(`TESTING#${DEV1}`)).toBe(25);
   });
 
@@ -252,7 +253,7 @@ describe("the spend policy", () => {
   it("reads as the defaults until it is written, then as written", async () => {
     const { deps } = limitsSetup();
     expect(await readSpendPolicy(deps, TEST_ORG)).toEqual(defaultSpendPolicy());
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 150 }, DEV1);
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 150 }, fixtureActor(deps, TEST_ORG, DEV1).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DEV1) });
     expect((await readSpendPolicy(deps, TEST_ORG)).ownerAgentBudgetCapUsd).toBe(150);
   });
 });
@@ -342,10 +343,10 @@ describe("the one monthly total of a person's agent budgets", () => {
     const { ownerAgents, raise, totalOf, deps } = ownerSetup();
     const [first] = await ownerAgents(50, 50);
     expect(await raise(first!, 60)).toMatchObject({ ok: false });
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 150 }, DANA.developerId);
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 150 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(await raise(first!, 60)).toMatchObject({ ok: true, capUsd: 150 });
     expect(totalOf(ALICE)).toBe(110);
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 20 }, DANA.developerId);
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 20 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(totalOf(ALICE)).toBe(110); // nothing was changed by lowering the cap
     expect(await raise(first!, 61)).toMatchObject({ ok: false });
     expect(await raise(first!, 40)).toMatchObject({ ok: true }); // lowering still passes, though the total is over the cap
@@ -692,7 +693,7 @@ describe("an agent's budget", () => {
 
   it("follows the ceilings the org set", async () => {
     const { create, putBudget, deps } = await routeSetup();
-    await writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 20, maxPerRunCeilingUsd: 8 }, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), maxAgentMonthlyUsd: 20, maxPerRunCeilingUsd: 8 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const agentId = await create(MAX);
     expect((await putBudget(MAX, agentId, { monthlyUsd: 25 })).status).toBe(400);
     expect((await putBudget(MAX, agentId, { maxPerRunUsd: 9 })).status).toBe(400);
@@ -984,7 +985,7 @@ describe("the write holds the spend policy it read", () => {
     const { ownerAgents, store, deps, totalOf, capOf } = ownerSetup();
     const [first] = await ownerAgents(10);
     const read = await capOf();
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 20 }, DANA.developerId);
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), ownerAgentBudgetCapUsd: 20 }, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({}), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 50 }, ALICE, undefined, { ownerCap: read })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", message: containing("spend policy changed") });
     expect((await store.get(TEST_ORG, first!))?.monthlyBudgetUsd).toBe(10);
     expect(totalOf(ALICE)).toBe(10);

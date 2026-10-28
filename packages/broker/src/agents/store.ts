@@ -867,7 +867,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Returns the document as stored, with its new revision; that is also what a repeat of the request is answered with.
    */
   async putGuardrails(input: {
-    orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; request?: RequestMark;
+    orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; actor: BudgetActor; request?: RequestMark;
     /** Whether this write makes anything less safe, which a person confirmed; the audit event says so. Default: no. */
     widened?: boolean;
   }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
@@ -875,6 +875,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (usdToWholeMicrodollars(input.guardrails.maxPerRunCeilingUsd) === undefined) {
       throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
+    if (input.actor === undefined || input.actor.developerId !== input.by || (input.request !== undefined && (input.request.orgId !== input.orgId || input.request.developerId !== input.by))) throw budgetActorRefused();
+    const checks = budgetActorChecks(this.input.tableName, input.orgId, input.actor);
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };
     const aliases = new Aliases();
@@ -892,7 +894,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         ...(expected === 0 ? {} : { ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values }),
       },
     };
-    await this.commit([item, ...audit.items], () => guardrailsConflict(), input.request, stored);
+    const items = [item, ...audit.items], actorStart = items.length;
+    await this.commit([...items, ...checks], failed => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : guardrailsConflict(), input.request, stored);
     await flushAuditEvents(this.input, audit.events);
     return stored;
   }

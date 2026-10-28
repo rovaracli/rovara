@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 8: the company's agent guardrails. What they hold and how a request to change them is checked (the schema), which changes
 // are less safe and wait for the confirmation page (R9-3, R69), how a recipe is checked against them when it is published, and how
 // an admin turns a built-in agent off. Deciding a waiting change is Task 21a's page; its tests cover the decide side.
@@ -175,20 +176,20 @@ describe("reading and writing", () => {
 
   it("writes the document and counts the revision, each org apart", async () => {
     const { deps, h } = await stores();
-    const first = await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest", forbiddenModels: [OPUS] }), DANA.developerId, { expectedRevision: 0 });
+    const first = await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest", forbiddenModels: [OPUS] }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(first).toMatchObject({ revision: 1, guardrails: { maxAutonomy: "suggest" } });
     expect(await readGuardrails(deps, TEST_ORG)).toMatchObject({ maxAutonomy: "suggest", forbiddenModels: [OPUS] });
     expect(h.db.get(agentGuardrailsKey(TEST_ORG))).toMatchObject({ entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: DANA.developerId });
     expect(await readGuardrails(deps, ORG_B)).toEqual(defaults());
-    const second = await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), OWEN.developerId, { expectedRevision: 1 });
+    const second = await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), fixtureActor(deps, TEST_ORG, OWEN.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, OWEN.developerId) });
     expect(second.revision).toBe(2);
   });
 
   it("refuses a write against a revision that moved, and writes nothing", async () => {
     const { deps } = await stores();
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     for (const expectedRevision of [0, 5]) {
-      const error = await writeGuardrails(deps, TEST_ORG, guardrails(), DANA.developerId, { expectedRevision }).then(() => undefined, (thrown: Error) => thrown);
+      const error = await writeGuardrails(deps, TEST_ORG, guardrails(), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) }).then(() => undefined, (thrown: Error) => thrown);
       expect(error?.message).toMatch(/^AGENT_REVISION_CONFLICT: Someone else changed the company's agent guardrails/);
     }
     expect(await readGuardrails(deps, TEST_ORG)).toMatchObject({ maxAutonomy: "suggest" });
@@ -196,9 +197,9 @@ describe("reading and writing", () => {
 
   it("stores no step limit when none is set", async () => {
     const { deps, h } = await stores();
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxStepBudgetUsd: 4 }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxStepBudgetUsd: 4 }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect((await readGuardrails(deps, TEST_ORG)).maxStepBudgetUsd).toBe(4);
-    await writeGuardrails(deps, TEST_ORG, guardrails(), DANA.developerId, { expectedRevision: 1 });
+    await writeGuardrails(deps, TEST_ORG, guardrails(), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(await readGuardrails(deps, TEST_ORG)).not.toHaveProperty("maxStepBudgetUsd");
     expect(JSON.stringify(h.db.get(agentGuardrailsKey(TEST_ORG)))).not.toContain("maxStepBudgetUsd");
   });
@@ -212,7 +213,7 @@ describe("reading and writing", () => {
 
   it("is not marked as an approval record, a request item or another org's", async () => {
     const { deps, h } = await stores();
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "suggest" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(h.db.get(approvalKey(TEST_ORG, "apr_aaaaaaaaaaaaaaaaaaaa"))).toBeUndefined();
     expect(h.db.get(orgProjectCatalogKey(TEST_ORG, "x"))).toBeUndefined();
   });
@@ -362,7 +363,7 @@ describe("relaxations wait for the confirmation page (R9-3, R69)", () => {
   const stricter = async () => {
     const made = await setup();
     // Seeded directly: asking for these on the defaults would itself wait (it adds a report host).
-    await writeGuardrails(made.deps, TEST_ORG, strict, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(made.deps, TEST_ORG, strict, fixtureActor(made.deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(made.deps, TEST_ORG, DANA.developerId) });
     return made;
   };
 
@@ -509,7 +510,7 @@ const SONNET = claude("claude-sonnet-4-6");
 describe("validateRecipeForOrg", () => {
   async function check(recipe: ResolvedRecipe, options: { guardrails?: AgentGuardrails; servable?: ModelIdentifier[] } = {}) {
     const made = await setup(options.servable === undefined ? {} : { servable: options.servable });
-    if (options.guardrails !== undefined) await writeGuardrails(made.deps, TEST_ORG, options.guardrails, DANA.developerId, { expectedRevision: 0 });
+    if (options.guardrails !== undefined) await writeGuardrails(made.deps, TEST_ORG, options.guardrails, fixtureActor(made.deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(made.deps, TEST_ORG, DANA.developerId) });
     return validateRecipeForOrg(made.deps, TEST_ORG, recipe);
   }
 
@@ -660,7 +661,7 @@ async function agents(options: { servable?: ModelIdentifier[] } = {}) {
     const agent = (await made.store.get(TEST_ORG, agentId))!;
     await made.store.publish({ orgId: TEST_ORG, agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(made.store, TEST_ORG, agentId, "draft")), by: DANA.developerId });
   };
-  const forbid = (next: Partial<AgentGuardrails>) => writeGuardrails(made.deps, TEST_ORG, guardrails(next), DANA.developerId, { expectedRevision: 0 });
+  const forbid = (next: Partial<AgentGuardrails>) => writeGuardrails(made.deps, TEST_ORG, guardrails(next), fixtureActor(made.deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(made.deps, TEST_ORG, DANA.developerId) });
   return { ...made, create, saveDraft, publish, seed, forbid };
 }
 
@@ -727,7 +728,7 @@ describe("publishing is refused when the guardrails forbid the recipe", () => {
 
   it("checks a confirmed publish against the guardrails as they are then, so a tightening in between refuses it", async () => {
     const { create, seed, saveDraft, publish, approvals, deps, store } = await agents();
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "run" }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "run" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const agentId = await create(EVE, overlayWith());
     await seed(agentId, overlayWith());
     expect((await saveDraft(EVE, agentId, overlayWith({}, { autonomy: "run" }))).status).toBe(200);
@@ -735,7 +736,7 @@ describe("publishing is refused when the guardrails forbid the recipe", () => {
     expect(asked.status, JSON.stringify(asked.body)).toBe(202);
     const [record] = approvals();
     // An admin lowers the most autonomy allowed before anyone confirms.
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "prepare" }), DANA.developerId, { expectedRevision: 1 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "prepare" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const error = await getApprovalSubjectHandler("agent_publish")!(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
     expect(error?.message).toBe("CONFIG_INVALID: autonomy: run is more than your company allows (prepare)");
     expect((await store.get(TEST_ORG, agentId))?.currentVersion).toBe(1);
@@ -755,13 +756,13 @@ describe("publishing is refused when the guardrails forbid the recipe", () => {
 
   it("checks a confirmed rollback against the guardrails as they are then", async () => {
     const { create, seed, call, approvals, deps, store } = await agents();
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "run" }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "run" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const agentId = await create(EVE, overlayWith());
     await seed(agentId, overlayWith({}, { autonomy: "run" }));
     await seed(agentId, overlayWith());
     const asked = await call(EVE, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 });
     expect(asked.status, JSON.stringify(asked.body)).toBe(202);
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "prepare" }), DANA.developerId, { expectedRevision: 1 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxAutonomy: "prepare" }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const error = await getApprovalSubjectHandler("agent_rollback")!(deps, { ...approvals()[0]!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
     expect(error?.message).toBe("CONFIG_INVALID: autonomy: run is more than your company allows (prepare)");
     expect((await store.get(TEST_ORG, agentId))?.currentVersion).toBe(2);
@@ -784,7 +785,7 @@ describe("a built-in agent turned off", () => {
 
   it("is hidden from a member's list and shown to an admin as disabled", async () => {
     const { call, deps } = await setup();
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     for (const scope of ["builtin", "all"]) {
       const member = await call(EVE, "GET", `/v1/app/agents?scope=${scope}`);
       expect(builtinIds(member)).not.toContain("service-reviewer");
@@ -801,7 +802,7 @@ describe("a built-in agent turned off", () => {
     const caller = (developerId: string, orgRole: OrgRole) => ({ orgId: TEST_ORG, developerId, orgRole });
     const ids = async (who: ReturnType<typeof caller>) => (await listVisibleAgentsOf(deps, who, "all")).map((agent) => agent.agentId);
     expect(await ids(caller(EVE.developerId, "member"))).toContain("service-reviewer");
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect(await ids(caller(EVE.developerId, "member"))).not.toContain("service-reviewer");
     expect(await ids(caller(OWEN.developerId, "owner"))).toContain("service-reviewer");
     expect((await listVisibleAgentsOf(deps, caller(OWEN.developerId, "owner"), "all")).find((agent) => agent.agentId === "service-reviewer")?.disabled).toBe(true);
@@ -811,7 +812,7 @@ describe("a built-in agent turned off", () => {
   it("can't start a run, with the turned-off text, while other built-ins and custom agents can", async () => {
     const { deps } = await setup();
     await requireAgentEnabled(deps, TEST_ORG, "service-reviewer");
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const error = await requireAgentEnabled(deps, TEST_ORG, "service-reviewer").then(() => undefined, (thrown: Error) => thrown);
     expect(error?.message).toBe(`AGENT_UNAVAILABLE: ${TEXT}`);
     await requireAgentEnabled(deps, TEST_ORG, "ticket-triage");
@@ -824,7 +825,7 @@ describe("a built-in agent turned off", () => {
     const { call, deps } = await setup();
     const other = await call(EVE, "POST", "/v1/app/agents", { name: "Other", overlay: overlayWith() });
     const otherId = (other.body.agent as { agentId: AgentId }).agentId;
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const created = await call(EVE, "POST", "/v1/app/agents", { name: "Child", extends: "service-reviewer" });
     expect(created.status).toBe(409);
     expect(errorOf(created)).toEqual({ code: "AGENT_UNAVAILABLE", message: TEXT });
@@ -842,7 +843,7 @@ describe("a built-in agent turned off", () => {
     const childId = (child.body.agent as { agentId: AgentId }).agentId;
     const pinned = (await store.getDraft(TEST_ORG, childId))!.extends;
     expect(pinned).toMatchObject({ agentId: "service-reviewer", version: currentBuiltinVersion("service-reviewer") });
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect((await resolveAgent(store, TEST_ORG, childId, "draft")).chain.map((layer) => layer.agentId)).toEqual(["service-reviewer", childId]);
     const shown = await call(EVE, "GET", `/v1/app/agents/${childId}`);
     expect(shown.status).toBe(200);
@@ -858,7 +859,7 @@ describe("a built-in agent turned off", () => {
     const { call, deps } = await setup();
     expect((await call(DANA, "GET", "/v1/app/agents/service-reviewer")).body.agent).not.toHaveProperty("disabled");
     expect((await call(EVE, "GET", "/v1/app/agents/service-reviewer")).status).toBe(200);
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     for (const path of ["", "/versions", "/versions/1", "/diff?from=1&to=1"]) {
       const hidden = await call(EVE, "GET", `/v1/app/agents/service-reviewer${path}`);
       expect([path, hidden.status, errorOf(hidden).code]).toEqual([path, 404, "NOT_FOUND"]);
@@ -876,7 +877,7 @@ describe("a built-in agent turned off", () => {
     await store.publish({ orgId: TEST_ORG, agentId: baseId, expectedDraftRevision: 1, digest: recipeDigest(await resolveAgent(store, TEST_ORG, baseId, "draft")), by: EVE.developerId });
     const middle = await call(EVE, "POST", "/v1/app/agents", { name: "Middle", extends: baseId, overlay: overlayWith() });
     expect(middle.status).toBe(201);
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const child = await call(EVE, "POST", "/v1/app/agents", { name: "Child", extends: baseId });
     expect([child.status, errorOf(child)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: TEXT }]);
     const other = await call(EVE, "POST", "/v1/app/agents", { name: "Other", overlay: overlayWith() });
@@ -903,12 +904,12 @@ describe("a built-in agent turned off", () => {
     const baseDraft = (await store.getDraft(TEST_ORG, base.agentId))!;
     await store.saveDraft({ orgId: TEST_ORG, agentId: base.agentId, overlay: overlayWith({}, { instructions: "Newer." }), expectedRevision: baseDraft.revision, by: EVE.developerId });
     await publishDirect(base.agentId);
-    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, OFF, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const refused = await call(EVE, "POST", `/v1/app/agents/${child.agentId}/update-base`, { expectedRevision: 1 });
     expect([refused.status, errorOf(refused)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: TEXT }]);
     expect((await store.getDraft(TEST_ORG, child.agentId))?.extends?.version).toBe(1);
     // Turned back on, the same request moves it.
-    await writeGuardrails(deps, TEST_ORG, defaults(), DANA.developerId, { expectedRevision: 1 });
+    await writeGuardrails(deps, TEST_ORG, defaults(), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect((await call(EVE, "POST", `/v1/app/agents/${child.agentId}/update-base`, { expectedRevision: 1 })).status).toBe(200);
   });
 
@@ -926,7 +927,7 @@ describe("a built-in agent turned off", () => {
     state.latest = 3;
     // The pin moves to 2 while the built-in is on, then it is turned off.
     expect((await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 2 })).status).toBe(200);
-    await writeGuardrails(deps, TEST_ORG, guardrails({ disabledBuiltins: ["ticket-triage"] }), DANA.developerId, { expectedRevision: 0 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ disabledBuiltins: ["ticket-triage"] }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     const refused = await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 3 });
     expect([refused.status, errorOf(refused)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: "Ticket triage is turned off in your company. Ask an admin to turn it on." }]);
     expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
@@ -965,7 +966,7 @@ describe("canonical ceiling write precision compatibility", () => {
     it(`refuses ${name} at the sole store writer before audit or commit`, async () => {
       const { db, deps } = await setup();
       const before = db.transactions().length;
-      const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
+      const error = await deps.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId }), by: fixtureActor(deps.store, TEST_ORG, DANA.developerId).developerId, actor: fixtureActor(deps.store, TEST_ORG, DANA.developerId) }).then(() => undefined, (e: Error) => e);
       expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
       expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
       expect(db.transactions().length).toBe(before);
@@ -974,7 +975,7 @@ describe("canonical ceiling write precision compatibility", () => {
   for (const value of [0, -0, 0.000001, 0.29, 999999.999999, 1000000]) {
     it(`stores an exact ceiling of ${String(value)} USD unchanged`, async () => {
       const { deps } = await setup();
-      const result = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId });
+      const result = await deps.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: guardrails({ maxPerRunCeilingUsd: value }), expectedRevision: 0, by: DANA.developerId }), by: fixtureActor(deps.store, TEST_ORG, DANA.developerId).developerId, actor: fixtureActor(deps.store, TEST_ORG, DANA.developerId) });
       expect(result.revision).toBe(1);
       expect((await readGuardrails(deps, TEST_ORG)).maxPerRunCeilingUsd).toBe(value);
     });
@@ -984,10 +985,10 @@ describe("canonical ceiling write precision compatibility", () => {
     const old = guardrails({ maxPerRunCeilingUsd: 0.0000001 });
     db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: old });
     expect((await readGuardrails(deps, TEST_ORG)).maxPerRunCeilingUsd).toBe(old.maxPerRunCeilingUsd);
-    const error = await writeGuardrails(deps, TEST_ORG, old, DANA.developerId, { expectedRevision: 1 }).then(() => undefined, (e: Error) => e);
+    const error = await writeGuardrails(deps, TEST_ORG, old, fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) }).then(() => undefined, (e: Error) => e);
     expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(1);
-    await writeGuardrails(deps, TEST_ORG, guardrails({ maxPerRunCeilingUsd: 0.000001 }), DANA.developerId, { expectedRevision: 1 });
+    await writeGuardrails(deps, TEST_ORG, guardrails({ maxPerRunCeilingUsd: 0.000001 }), fixtureActor(deps, TEST_ORG, DANA.developerId).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId) });
     expect((await readGuardrailsWithRevision(deps, TEST_ORG)).revision).toBe(2);
   });
 });
@@ -1003,7 +1004,7 @@ describe("required ceiling authority-boundary regressions", () => {
       const next: Record<string, unknown> = { ...defaults(), maxPerRunCeilingUsd: value };
       if (name === "missing") delete next.maxPerRunCeilingUsd;
       const before = db.transactions().length;
-      const error = await deps.store.putGuardrails({ orgId: TEST_ORG, guardrails: next as unknown as AgentGuardrails, expectedRevision: 0, by: DANA.developerId }).then(() => undefined, (e: Error) => e);
+      const error = await deps.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: next as unknown as AgentGuardrails, expectedRevision: 0, by: DANA.developerId }), by: fixtureActor(deps.store, TEST_ORG, DANA.developerId).developerId, actor: fixtureActor(deps.store, TEST_ORG, DANA.developerId) }).then(() => undefined, (e: Error) => e);
       expect(error?.message).toBe("CONFIG_INVALID: maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
       expect(db.get(agentGuardrailsKey(TEST_ORG))).toBeUndefined();
       expect(db.transactions().length).toBe(before);

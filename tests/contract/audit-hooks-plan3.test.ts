@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Task 19: the Audit Ledger's hooks in Plan 3's code. Each audited action adds its pending audit item to the DynamoDB transaction that commits
 // the action, so the action and its audit item are written together or not at all; the flush after the commit is best effort.
 //
@@ -424,9 +425,9 @@ describe("budget.changed on an agent", () => {
 describe("guardrails.changed", () => {
   it("records the new revision in the guardrails transaction, and whether the change widened what agents may do", async () => {
     const s = storeSetup();
-    await s.store.putGuardrails({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await s.store.putGuardrails({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 1, by: BOB, widened: true });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 1, by: BOB, widened: true }), by: fixtureActor(s.store, TEST_ORG, BOB).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB) });
 
     const [first, second] = auditedTransactions(s.transactions);
     expect(writes(first!, agentGuardrailsKey(TEST_ORG).pk)).toBe(true);
@@ -439,8 +440,8 @@ describe("guardrails.changed", () => {
 
   it("records nothing for a write against a revision that moved", async () => {
     const s = storeSetup();
-    await s.store.putGuardrails({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE });
-    await expect(s.store.putGuardrails({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: BOB })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    await s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: ALICE }), by: fixtureActor(s.store, TEST_ORG, ALICE).developerId, actor: fixtureActor(s.store, TEST_ORG, ALICE) });
+    await expect(s.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: DEFAULT_AGENT_GUARDRAILS, expectedRevision: 0, by: BOB }), by: fixtureActor(s.store, TEST_ORG, BOB).developerId, actor: fixtureActor(s.store, TEST_ORG, BOB) })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
     expect(s.capture!.recordedBy("guardrails.changed")).toHaveLength(1);
   });
 });
@@ -462,9 +463,9 @@ describe("budget.changed on a project, and spend_policy.changed", () => {
 
   it("records a project's monthly budget in the transaction that writes the settings; the project is a name-keyed target", async () => {
     const s = settingsSetup();
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 200 }, ALICE, { expectedRevision: 0 });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 200 }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 300 }, ALICE, { expectedRevision: 1 });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 300 }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
 
     const [first, second] = auditedTransactions(s.transactions);
     expect(writes(first!, projectAiKey(TEST_ORG, "web").pk, "SETTINGS")).toBe(true);
@@ -478,11 +479,11 @@ describe("budget.changed on a project, and spend_policy.changed", () => {
 
   it("records each planning limit that moved, and nothing for a change that moves no money", async () => {
     const s = settingsSetup();
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, planningLimitUsd: { QUICK: 4 } }, ALICE, { expectedRevision: 0 });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, planningLimitUsd: { QUICK: 4 } }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: true, planningLimitUsd: { QUICK: 4, FULL: 9 } }, ALICE, { expectedRevision: 1 });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: true, planningLimitUsd: { QUICK: 4, FULL: 9 } }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, planningLimitUsd: { QUICK: 4, FULL: 9 } }, ALICE, { expectedRevision: 2 });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, planningLimitUsd: { QUICK: 4, FULL: 9 } }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 2 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
     expect(s.capture.recordedBy("budget.changed").map((event) => event.facts)).toEqual([
       { scopeKind: "project", field: "project_planning_limit_quick", toCents: 400 },
       { scopeKind: "project", field: "project_planning_limit_full", toCents: 900 },
@@ -491,15 +492,15 @@ describe("budget.changed on a project, and spend_policy.changed", () => {
 
   it("records nothing for a write that is refused because the settings moved", async () => {
     const s = settingsSetup();
-    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 200 }, ALICE, { expectedRevision: 0 });
-    await expect(writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 500 }, BOB, { expectedRevision: 0 })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    await writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 200 }, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
+    await expect(writeProjectAi(s.deps, TEST_ORG, "web", { projectPays: false, monthlyBudgetUsd: 500 }, fixtureActor(s.deps, TEST_ORG, BOB).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, BOB) })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
     expect(s.capture.recordedBy("budget.changed")).toHaveLength(1);
   });
 
   it("records each spend policy figure that changed, as whole numbers: cents, and the multiplier in hundredths", async () => {
     const s = settingsSetup();
     const first = { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20, runLimitMultiplier: 3 };
-    await writeSpendPolicy(s.deps, TEST_ORG, first, ALICE, { expectedRevision: 0 });
+    await writeSpendPolicy(s.deps, TEST_ORG, first, fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
 
     const [transaction] = auditedTransactions(s.transactions);
     expect(writes(transaction!, orgSettingsKey(TEST_ORG, "SPEND_POLICY").pk, "SPEND_POLICY")).toBe(true);
@@ -514,18 +515,18 @@ describe("budget.changed on a project, and spend_policy.changed", () => {
     ]);
 
     s.clock.now += 1000;
-    await writeSpendPolicy(s.deps, TEST_ORG, { ...first, ownerAgentBudgetCapUsd: 150.5 }, BOB, { expectedRevision: 1 });
+    await writeSpendPolicy(s.deps, TEST_ORG, { ...first, ownerAgentBudgetCapUsd: 150.5 }, fixtureActor(s.deps, TEST_ORG, BOB).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(s.deps, TEST_ORG, BOB) });
     expect(s.capture.recordedBy("spend_policy.changed").at(-1)).toMatchObject({ actor: { kind: "member", id: BOB }, facts: { field: "ownerAgentBudgetCapUsd", from: defaults.ownerAgentBudgetCapUsd * 100, to: 15050 } });
   });
 
   it("records nothing for a write that changes no figure, and nothing on an install with no ledger", async () => {
     const s = settingsSetup();
-    await writeSpendPolicy(s.deps, TEST_ORG, defaultSpendPolicy(), ALICE, { expectedRevision: 0 });
+    await writeSpendPolicy(s.deps, TEST_ORG, defaultSpendPolicy(), fixtureActor(s.deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(s.deps, TEST_ORG, ALICE) });
     expect(s.capture.recorded()).toEqual([]);
 
     const plain = new FakeDynamoDb();
     const plainTransactions = recordTransactions(plain);
-    await writeSpendPolicy({ documentClient: plain, tableName: "state", now: () => T0 }, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20 }, ALICE, { expectedRevision: 0 });
+    await writeSpendPolicy({ documentClient: plain, tableName: "state", now: () => T0 }, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20 }, fixtureActor({ documentClient: plain, tableName: "state", now: () => T0 }, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor({ documentClient: plain, tableName: "state", now: () => T0 }, TEST_ORG, ALICE) });
     expect(plainTransactions.every((transaction) => !transaction.some(isPendingItem))).toBe(true);
   });
 });
@@ -886,6 +887,7 @@ describe("through the routes", () => {
     expect(s.capture.recordedBy("guardrails.changed")).toHaveLength(1);
 
     const [record] = s.approvals();
+    seedMembership(s.deps.documentClient as FakeDynamoDb, CARL.developerId, { orgId: TEST_ORG, role: "admin" });
     await getApprovalSubjectHandler("guardrails")!(s.deps, { ...record!, decidedBy: CARL.developerId });
     expect(s.capture.recordedBy("guardrails.changed").map((event) => [event.actor.id, event.facts])).toEqual([
       [DANA.developerId, { revision: 1, widened: false }],
@@ -926,7 +928,7 @@ describe("the figures an event compares with", () => {
     const db = new FakeDynamoDb();
     capture.attach(db);
     const deps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => T0, audit: capture.audit };
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20 }, ALICE, { expectedRevision: 0 });
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20 }, fixtureActor(deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, ALICE) });
     // The first read of the policy (the hook's, when the caller passes no `before`) sees a newer revision than the one the write is conditioned on.
     const key = orgSettingsKey(TEST_ORG, "SPEND_POLICY");
     const original = db.send.bind(db) as (command: unknown) => Promise<unknown>;
@@ -939,7 +941,7 @@ describe("the figures an event compares with", () => {
       }
       return reply;
     };
-    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 30 }, ALICE, { expectedRevision: 1 });
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 30 }, fixtureActor(deps, TEST_ORG, ALICE).developerId, { ...({ expectedRevision: 1 }), actor: fixtureActor(deps, TEST_ORG, ALICE) });
     expect(capture.recordedBy("spend_policy.changed").map((event) => event.facts)).toEqual([{ field: "leadApprovalThresholdUsd", from: defaultSpendPolicy().leadApprovalThresholdUsd * 100, to: 2000 }]);
   });
 });
