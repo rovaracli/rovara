@@ -32,8 +32,10 @@ export async function readProjectWorkingBranchHttp(deps: DeveloperRouteDependenc
   let admitted: boolean;
   try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_PAGES"), sk: scope.developerId }, 10, 60_000); } catch { throw unavailable(); }
   if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many branch pages. Try again shortly.");
-  // Sequential conservative admission: later refusal does not refund the personal debit.
+  // Sequential conservative admission: later refusal does not refund earlier debits.
   try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_PAGES"), sk: "ALL" }, 30, 60_000); } catch { throw unavailable(); }
   if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many company branch pages. Try again shortly.");
+  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_HOURLY_PAGES"), sk: "ALL" }, 1_200, 3_600_000); } catch { throw unavailable(); }
+  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many company branch pages this hour. Try again later.");
   return readProjectWorkingBranchPage({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...deps.projectWorkingBranches }, scope, project, parsed.data);
 }
