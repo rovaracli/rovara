@@ -106,6 +106,7 @@ import {
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
   FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
+  noChangeFindingsFrom,
   WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
   WORKFLOW_LEFTOVER_PROCESSES_MESSAGE,
   WORKFLOW_SETUP_CHANGED_FILES_MESSAGE,
@@ -16088,7 +16089,9 @@ async function completedWorkflowItems(
         : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
         // Plan 6 Task 16: Rovara's own decision was refused when the worker started (a commenter lost write access, or the autonomy was lowered): the owner is told which.
         : task.workflow.fixSource === "feedback" && operation.workflowFeedbackApproval?.autonomy !== undefined && terminalError?.includes("feedback-approval failed") === true ? FEEDBACK_NOT_RUN_REASON
-        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
+        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now,
+        // A coding run that left the code as it was reports what it found; it is rebuilt here (redacted and bounded again) and kept only with that stop, whatever else the result held.
+        { noChangeFindings: noChangeFindingsFrom(reported.noChangeFindings) });
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
       if (dependencyBinding?.parallel !== undefined) {
@@ -17279,6 +17282,17 @@ async function plainTaskLeftCodeAsItWas(dependencies: AwsBrokerDependencies, ope
   return task !== undefined && task.workflow === undefined;
 }
 
+/**
+ * A result's findings block (a coding run that left the code as it was) is rebuilt before the result is stored: redacted and bounded here as well as in the worker, so what a worker sent (an older, a
+ * newer or a hostile one) never reaches the table as it came. A block that cannot be read is dropped; every other field of the result is left as it is.
+ */
+function withSafeNoChangeFindings(result: unknown): unknown {
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !("noChangeFindings" in result)) return result;
+  const { noChangeFindings, ...rest } = result as Record<string, unknown>;
+  const safe = noChangeFindingsFrom(noChangeFindings);
+  return safe === undefined ? rest : { ...rest, noChangeFindings: safe };
+}
+
 async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -17324,7 +17338,7 @@ async function recordTerminalResult(
     ? PullRequestResultSchema.parse(input.result)
     : operation.kind === "close" && status === "SUCCEEDED"
       ? WorkspaceClosePreflightResultSchema.parse(input.result)
-      : input.result;
+      : withSafeNoChangeFindings(input.result);
   const closePreflight = operation.kind === "close" && terminalStatus === "SUCCEEDED"
     ? WorkspaceClosePreflightResultSchema.parse(result)
     : undefined;

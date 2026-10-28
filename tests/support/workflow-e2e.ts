@@ -952,7 +952,9 @@ export async function createWorkflowE2E(options: {
         cancellationController,
       });
     } catch (error) {
-      await callbacks.terminalSink({ operationId, status: "FAILED", error: error instanceof Error ? error.message : String(error) });
+      // As worker/server.ts sends a failure: a coding run that left the code as it was carries what it found.
+      const found = typeof error === "object" && error !== null && "noChangeFindings" in error ? error.noChangeFindings : undefined;
+      await callbacks.terminalSink({ operationId, status: "FAILED", error: error instanceof Error ? error.message : String(error), ...(found === undefined ? {} : { result: { noChangeFindings: found } }) });
       return;
     } finally {
       github.during = undefined;

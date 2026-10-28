@@ -228,6 +228,80 @@ describe("the build source manifest is only computed for a run that changed the 
   });
 });
 
+describe("a coding run that leaves the code as it was keeps what it found", () => {
+  // Built at run time: no key-shaped literal is in this file.
+  const token = ["ghp_", "Ab12".repeat(9)].join("");
+  type Found = { commands: Array<{ command: string; output?: string; failed?: boolean }>; omitted?: number; conclusion?: string };
+  const findingsOf = (failure: unknown): Found | undefined => (failure as { noChangeFindings?: Found }).noChangeFindings;
+
+  it("carries the commands the agent ran, their output and its final answer on the refusal, redacted", async () => {
+    const shell = scriptedShell({ "grep -rn retry app": { exitCode: 0, output: `app/a.ts:4: retry(${token})\n` } });
+    const run = await runTask({
+      steps: [bash("grep -rn retry app", "b1"), fauxAssistantMessage(`We use retry in app/a.ts only. The key ${token} sits in the config.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], shell, rootPath: await gitWorkspaceRoot(),
+    });
+    expect(String(run.failure)).toContain("the coding run left the code as it was when the task started");
+    const found = findingsOf(run.failure)!;
+    expect(found.commands).toHaveLength(1);
+    expect(found.commands[0]!.command).toBe("grep -rn retry app");
+    expect(found.commands[0]!.output).toContain("app/a.ts:4: retry(");
+    expect(found.conclusion).toContain("We use retry in app/a.ts only.");
+    // The completion marker is the worker's, not the agent's words.
+    expect(found.conclusion).not.toContain("AgentX result");
+    // Positive control: the shell did print the token, so its absence below is the redaction's work.
+    expect(shell.commands).toEqual(["grep -rn retry app"]);
+    expect(JSON.stringify(found)).not.toContain(token);
+    expect(JSON.stringify(found)).toContain("[REDACTED]");
+  });
+
+  it("keeps no output of a command that reads the environment or a secret file, and hides secret-looking values in the other outputs and in the conclusion, before the block leaves the worker", async () => {
+    const salt = ["s4lt", "Zq81".repeat(4)].join("-"), hmac = ["h", "9f3a".repeat(8)].join("");
+    const dotenv = `SIGNING_SALT=${salt}\nHMAC=${hmac}\nPORT=3000\n`;
+    const shell = scriptedShell({ "cat .env": { exitCode: 0, output: dotenv }, env: { exitCode: 0, output: dotenv }, "node report.js": { exitCode: 0, output: `AUTH_TOKEN=${hmac}\nrows: 3\n` } });
+    const run = await runTask({
+      steps: [bash("cat .env", "b1"), bash("env", "b2"), bash("node report.js", "b3"), fauxAssistantMessage(`The salt SIGNING_SALT=${salt} is set.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], shell, rootPath: await gitWorkspaceRoot(),
+    });
+    const found = findingsOf(run.failure)!;
+    // Positive control: the shell ran all three and printed the values.
+    expect(shell.commands).toEqual(["cat .env", "env", "node report.js"]);
+    expect(found.commands.map((item) => item.output)).toEqual(["(output not shown)", "(output not shown)", "AUTH_TOKEN=[hidden]\nrows: 3"]);
+    expect(found.conclusion).toBe("The salt SIGNING_SALT=[hidden] is set.");
+    for (const value of [salt, hmac]) expect(JSON.stringify(found)).not.toContain(value);
+  });
+
+  it("says nothing of a conclusion when the agent wrote none, and still lists what it ran", async () => {
+    const run = await runTask({ steps: [bash("ls app", "b1"), fauxAssistantMessage("")], workflowMode: "IMPLEMENT", readiness: [], rootPath: await gitWorkspaceRoot() });
+    const found = findingsOf(run.failure)!;
+    expect(found.commands.map((item) => item.command)).toEqual(["ls app"]);
+    expect(found.conclusion).toBeUndefined();
+  });
+
+  it("bounds a run with many commands and huge output: at most ten commands, each output and the whole capped", async () => {
+    const big = Object.fromEntries(Array.from({ length: 25 }, (_, index) => [`echo ${String(index)}`, { exitCode: 0, output: `line ${String(index)} ${"z".repeat(40_000)}` }]));
+    const shell = scriptedShell(big);
+    const run = await runTask({
+      steps: [...Array.from({ length: 25 }, (_, index) => bash(`echo ${String(index)}`, `b${String(index)}`)), fauxAssistantMessage(`${"c".repeat(20_000)}\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], shell, rootPath: await gitWorkspaceRoot(),
+    });
+    const found = findingsOf(run.failure)!;
+    expect(found.commands).toHaveLength(10);
+    // The agent's loop guard may redirect some calls, so the count is what the shell really ran: more than ten, the last ten kept, the earlier ones counted.
+    expect(shell.commands.length).toBeGreaterThan(10);
+    expect(found.omitted).toBe(shell.commands.length - 10);
+    expect(found.commands.map((item) => item.command)).toEqual(shell.commands.slice(-10));
+    const size = found.commands.reduce((sum, item) => sum + item.command.length + (item.output?.length ?? 0), 0) + (found.conclusion?.length ?? 0);
+    expect(size).toBeLessThanOrEqual(5000);
+    expect(JSON.stringify(found).length).toBeLessThan(12_000);
+  });
+
+  it("a run that changed the code has no findings block (positive control: the block is only for the refusal)", async () => {
+    const run = await runTask({ steps: CHANGED_ONE_FILE, workflowMode: "IMPLEMENT", readiness: [], rootPath: await gitWorkspaceRoot() });
+    expect(run.failure).toBeUndefined();
+    expect(JSON.stringify(run.result)).not.toContain("noChangeFindings");
+  });
+});
+
 describe("verification-only retries", () => {
   it("runs only selected project checks without opening a model session or editing files", async () => {
     const fake = fakeRunners({ project: [{ exitCode: 0, timedOut: false, stdout: "lint passed\n", stderr: "" }] });

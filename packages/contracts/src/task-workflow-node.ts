@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS } from "./workflow-check-input.js";
 import { E2EQualifiedRoundSchema } from "./e2e.js";
+import { isNoCodeChangedReason, type NoChangeFindings } from "./no-change-findings.js";
 
 export interface WorkflowOwnerAuthority { actorId: string; ownerIds: readonly string[] }
 
@@ -2021,11 +2022,12 @@ export function skipPlanRevision(currentInput: unknown, input: { expectedRevisio
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */
-export function blockWorkflow(currentInput: unknown, reason: string, now: string, detail: { regressedChecks?: readonly string[];
+export function blockWorkflow(currentInput: unknown, reason: string, now: string, detail: { regressedChecks?: readonly string[]; noChangeFindings?: NoChangeFindings | undefined;
   failedE2ERound?: { status: "FAILED"; candidateDigest: string; roundId: string; groupRunIds: readonly string[]; admissionSha256: string; evidenceSha256: string } } = {}): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  const { regressedChecks: _prior, ...withoutRegressions } = current;
+  const { regressedChecks: _prior, noChangeFindings: _priorFindings, ...withoutRegressions } = current;
   void _prior;
+  void _priorFindings;
   const failure = detail.failedE2ERound;
   const failedRound = failure !== undefined && current.e2e?.required === true && current.candidate?.digest === failure.candidateDigest
     && current.e2e.currentRoundId === failure.roundId && current.e2e.currentGroupRunIds.length === failure.groupRunIds.length
@@ -2035,6 +2037,8 @@ export function blockWorkflow(currentInput: unknown, reason: string, now: string
   return WorkflowSnapshotSchema.parse({
     ...withoutRegressions, revision: current.revision + 1, state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now,
     ...(detail.regressedChecks === undefined || detail.regressedChecks.length === 0 ? {} : { regressedChecks: detail.regressedChecks }),
+    // Only the no-code-change stop keeps what the run found; any other block drops an earlier run's findings with the block they belonged to.
+    ...(detail.noChangeFindings === undefined || !isNoCodeChangedReason(reason) ? {} : { noChangeFindings: detail.noChangeFindings }),
     ...(current.e2e === undefined ? {} : { e2e: { ...e2eWithoutFailure, ...(failedRound === undefined ? {} : { failedRound }) } }),
   });
 }
