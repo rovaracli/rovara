@@ -67,6 +67,7 @@ import { WorkflowPartsHaltedError, executeParallelWorkflowDependencies, type Par
 import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWorkingCopy, integrateTrees, partsFolderIsOutside } from "./parallel-parts-git.js";
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
+import { STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -151,6 +152,11 @@ export interface TaskInvocationDependencies {
    * worker cannot run an agent step. Tests supply fakes for the catalogs and the call.
    */
   agentRun?: Pick<RunAgentStepInput, "fetch" | "catalogs" | "call"> & { brokerUrl: string };
+  /**
+   * How the programs and containers the coding session left are stopped before a step that only reads the workspace (REVIEW, FEEDBACK_REVIEW, PLAN_CRITIQUE, UNDERSTAND) begins; the same two steps
+   * publication uses before a push. Tests supply fakes. Default: the real ones.
+   */
+  stopBeforeReading?: StopBeforeReadingOptions;
 }
 
 export async function runTaskInvocation(
@@ -228,11 +234,26 @@ async function runTask(
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
   const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // A feedback review only reads (read, grep, find, ls) and runs no project command, and no agent step starts the project's
-  // devcontainer (its lifecycle commands are the repository's, and a read step's checkout may be a contributor's pull request
-  // head): they run in the task sandbox, whose file tools keep R56's containment.
+  // The reading steps (below) run no project command, and no agent step starts the project's devcontainer (its lifecycle commands
+  // are the repository's, and a read step's checkout may be a contributor's pull request head): they run in the task sandbox,
+  // whose file tools keep R56's containment.
   const feedbackReview = invocation.payload.workflowMode === "FEEDBACK_REVIEW";
-  const devcontainer = step?.kind === "agent" || feedbackReview ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
+  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
+    // The review's own error handling starts after this; a start that fails still reports as the review does.
+    if (feedbackReview) {
+      const events = new EventBatcher(dependencies.eventSink);
+      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
+      await events.flush().catch(() => undefined);
+    }
+    throw error;
+  };
+  // The reviews, the plan check, Understand and the feedback review read a workspace the coding session wrote. Before any of them starts, every program and container that session left
+  // running is stopped, as publication does before a push (a background job, a process in the task sandbox, a process in the dev container, which persists between operations). Nothing is
+  // read over a live program: if they cannot all be stopped, the step stops here with one fixed reason. These steps then do not start the dev container (its lifecycle commands are the
+  // repository's, and would run before the read): their file tools run in the task sandbox, as the feedback review's do.
+  const readsOnly = invocation.payload.workflowMode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(invocation.payload.workflowMode);
+  if (readsOnly) await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading).catch((error: unknown) => reportFeedbackReviewStartFailure(error));
+  const devcontainer = step?.kind === "agent" || readsOnly ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
   let devcontainerCli: DevcontainerCli | undefined;
@@ -244,15 +265,6 @@ async function runTask(
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
   }
-  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
-    // The review's own error handling starts after this; a start that fails still reports as the review does.
-    if (feedbackReview) {
-      const events = new EventBatcher(dependencies.eventSink);
-      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
-      await events.flush().catch(() => undefined);
-    }
-    throw error;
-  };
   // R56: without a devcontainer the agent's shell, the checks and the project's commands run in the task sandbox, never as
   // children of the worker. A sandbox that cannot start fails the task here, before the agent runs; it is not a reason to
   // fall back to the local shell.
