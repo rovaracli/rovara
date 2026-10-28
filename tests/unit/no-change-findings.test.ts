@@ -260,7 +260,7 @@ describe("a run split into parts: one recorder for each part's session", () => {
     run.forPart(C).concludeWith("Gamma has no retry.\nAgentX result: done");
     run.forPart(A).concludeWith("Alpha uses retry in src/a.ts.");
     run.forPart(A).concludeWith("Alpha uses retry in src/a.ts, twice.");
-    expect(run.build().conclusion).toBe("Part 1: Alpha uses retry in src/a.ts, twice.\n\nPart 2: Beta uses retry in src/b.ts.\n\nPart 3: Gamma has no retry.");
+    expect(run.build().conclusion).toBe("Part 1:\nAlpha uses retry in src/a.ts, twice.\n\nPart 2:\nBeta uses retry in src/b.ts.\n\nPart 3:\nGamma has no retry.");
   });
 
   it("numbers a part by its place in the plan, and leaves out a part that wrote no conclusion", () => {
@@ -269,7 +269,7 @@ describe("a run split into parts: one recorder for each part's session", () => {
     run.forPart(A).concludeWith(undefined);
     run.forPart(C).concludeWith("Only the last part spoke.");
     run.forPart(B).concludeWith("The middle part spoke.");
-    expect(run.build().conclusion).toBe("Part 2: The middle part spoke.\n\nPart 3: Only the last part spoke.");
+    expect(run.build().conclusion).toBe("Part 2:\nThe middle part spoke.\n\nPart 3:\nOnly the last part spoke.");
   });
 
   it("keeps the caps over the combined list: the last ten commands overall, the omitted count, and the conclusion cap with every part still heard", () => {
@@ -287,16 +287,71 @@ describe("a run split into parts: one recorder for each part's session", () => {
     expect(found.commands).toHaveLength(NO_CHANGE_FINDINGS_COMMANDS_MAX);
     // 210 calls were made; each recorder holds its last 60 and counts the rest (10 each); the block keeps the last ten of the combined list.
     expect(found.omitted).toBe(200);
-    expect(found.commands.every((item) => item.command.startsWith("c-"))).toBe(true);
-    expect(found.commands.at(-1)!.command.startsWith("c-69 ")).toBe(true);
+    // Each part's last command is kept first (a-69, b-69, c-69 are the last each part ran), then the most recent overall.
+    expect(found.commands.map((item) => item.command.split(" ")[0])).toEqual(["a-69", "b-69", ...Array.from({ length: 8 }, (_, index) => `c-${String(62 + index)}`)]);
     for (const item of found.commands) {
       expect(item.command.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_COMMAND_MAX);
       expect((item.output ?? "").length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_OUTPUT_MAX);
     }
     expect(found.conclusion!.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_CONCLUSION_MAX);
-    expect(found.conclusion).toMatch(/^Part 1: A-START[\s\S]*\n\nPart 2: B-START[\s\S]*\n\nPart 3: C-START/u);
+    expect(found.conclusion).toMatch(/^Part 1:\nA-START[\s\S]*\n\nPart 2:\nB-START[\s\S]*\n\nPart 3:\nC-START/u);
     expect(noChangeFindingsSize(found)).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_TOTAL_MAX);
     expect(NoChangeFindingsSchema.safeParse(found).success).toBe(true);
+  });
+
+  it("keeps each part's last command first, then the most recent overall, so no part is named without evidence; omitted stays exact", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    let id = 0;
+    const call = (key: string, name: string) => { const [start, end] = callEvents(`t${String(id += 1)}`, name, `out ${name}`); run.forPart(key).observe(start); run.forPart(key).observe(end); };
+    call(A, "a-0");
+    for (let index = 0; index < 30; index += 1) call(B, `b-${String(index)}`);
+    for (let index = 0; index < 30; index += 1) call(C, `c-${String(index)}`);
+    for (const key of [A, B, C]) run.forPart(key).concludeWith(`${key} spoke.`);
+    const found = run.build();
+    expect(found.commands.map((item) => item.command)).toEqual(["a-0", "b-29", ...Array.from({ length: 8 }, (_, index) => `c-${String(22 + index)}`)]);
+    expect(found.omitted).toBe(61 - 10);
+  });
+
+  it("keeps the label of every part shown, however many parts there are: the first 20 are told, the rest are counted", () => {
+    const run = new RunFindings();
+    const ids = Array.from({ length: 100 }, (_, index) => `p${String(index)}`);
+    run.setOrder(ids);
+    for (const key of ids) run.forPart(key).concludeWith(`${key} found a long answer ${"w".repeat(500)}`);
+    const found = run.build();
+    const text = found.conclusion!;
+    expect(text.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_CONCLUSION_MAX);
+    for (let number = 1; number <= 20; number += 1) expect(text, `Part ${String(number)}`).toContain(`Part ${String(number)}:\np${String(number - 1)} found`);
+    expect(text).not.toContain("Part 21:");
+    expect(text.endsWith("…and 80 more parts")).toBe(true);
+  });
+
+  it("a short part keeps its whole text under the shared limit, and the long ones are cut to what is left", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B, C]);
+    run.forPart(A).concludeWith("Short answer.");
+    run.forPart(B).concludeWith(`B-START ${"b".repeat(5000)}`);
+    run.forPart(C).concludeWith(`C-START ${"c".repeat(5000)}`);
+    const text = run.build().conclusion!;
+    expect(text.startsWith("Part 1:\nShort answer.\n\nPart 2:\nB-START")).toBe(true);
+    expect(text).toContain("\n\nPart 3:\nC-START");
+    expect(text.length).toBeGreaterThan(NO_CHANGE_FINDINGS_CONCLUSION_MAX - 10);
+    expect(text.length).toBeLessThanOrEqual(NO_CHANGE_FINDINGS_CONCLUSION_MAX);
+    const [, second, third] = text.split("\n\n");
+    expect(Math.abs(second!.length - third!.length)).toBeLessThanOrEqual(2);
+  });
+
+  it("a part's recorder asked for again (a re-run of the part, as in a conflict fix) appends its commands and replaces its conclusion", () => {
+    const run = new RunFindings();
+    run.setOrder([A, B]);
+    for (const event of callEvents("t1", "first run", "out 1")) run.forPart(A).observe(event);
+    run.forPart(A).concludeWith("First words.");
+    run.forPart(B).concludeWith("B words.");
+    for (const event of callEvents("t1", "second run", "out 2")) run.forPart(A).observe(event);
+    run.forPart(A).concludeWith("Second words.");
+    const found = run.build();
+    expect(found.commands).toEqual([{ command: "first run", output: "out 1" }, { command: "second run", output: "out 2" }]);
+    expect(found.conclusion).toBe("Part 1:\nSecond words.\n\nPart 2:\nB words.");
   });
 
   it("still redacts and masks what the parts held (positive control: the raw text did hold the secret)", () => {

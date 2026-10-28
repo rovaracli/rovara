@@ -1,6 +1,6 @@
 // What a coding run did, kept only to answer for it when the run ends with no code change: the commands the agent ran, what they printed, and the agent's last words. It reads the session's own
 // tool events (nothing else is stored or asked of a model). The block it builds is redacted and bounded (`buildNoChangeFindings`) before it leaves the worker.
-import { NO_CHANGE_FINDINGS_CONCLUSION_MAX, NO_CHANGE_FINDINGS_OMITTED_MAX, buildNoChangeFindings, type NoChangeFindings } from "@agentx/contracts";
+import { NO_CHANGE_FINDINGS_COMMANDS_MAX, NO_CHANGE_FINDINGS_CONCLUSION_MAX, NO_CHANGE_FINDINGS_OMITTED_MAX, buildNoChangeFindings, type NoChangeFindings } from "@agentx/contracts";
 
 /** The tools whose calls are told as "commands the agent ran": the shell and the tools that only read. A tool that writes is never listed. */
 const LISTED_TOOLS: ReadonlySet<string> = new Set(["bash", "grep", "find", "ls", "read"]);
@@ -10,6 +10,8 @@ const NO_OUTPUT_TOOLS: ReadonlySet<string> = new Set(["read"]);
 const KEPT_CALLS = 60;
 /** The most of one call's text held: a tool's output is already cut by the tool; this bounds a hostile one. */
 const HELD_TEXT = 20_000;
+/** The most parts whose words a combined conclusion tells; the rest are counted. */
+const PARTS_TOLD = 20;
 const MARKER = /^AgentX result: (?:not )?done$/u;
 
 interface Call { command: string; output: string; failed: boolean }
@@ -91,8 +93,11 @@ export class RunFindings {
   }
 
   /**
-   * The block for the run's result: bounded and redacted. With more than one part: the commands of each part in the plan's order, one list (the last ten overall are kept, and `omitted` counts
-   * the rest), and each part's own conclusion, labelled "Part N:" (N is the part's place in the plan), sharing the conclusion's one limit so a long part does not crowd out the others.
+   * The block for the run's result: bounded and redacted. With more than one part:
+   * - commands: one list in the plan's order. Each part's last command is kept first (so a part is never told without a command), then the most recent ones overall, ten in all; `omitted` counts the rest.
+   *   With more than ten parts the floor goes to the ten latest parts that ran a command.
+   * - conclusion: each part's own words under a "Part N:" line (N is the part's place in the plan), sharing the conclusion's one limit so a long part does not crowd out the others. At most
+   *   `PARTS_TOLD` parts are told; "…and N more parts" counts the rest. The label has its own line so a part's first line is still read as a line of its own by the Slack masking.
    */
   build(): NoChangeFindings {
     if (this.parts.size === 0) return this.main.build();
@@ -100,25 +105,46 @@ export class RunFindings {
     const keys = [...known, ...[...this.parts.keys()].filter((id) => !known.includes(id))];
     if (keys.length === 1) return this.parts.get(keys[0]!)!.build();
     const held = keys.map((id) => ({ id, ...this.parts.get(id)!.held() }));
-    const labelled = held.flatMap((part) => {
+    const told = held.flatMap((part) => {
       // Redacted and cut here to the conclusion's limit first, so that cutting it again to the part's share only ever cuts text that is already safe.
       const text = buildNoChangeFindings({ commands: [], conclusion: part.conclusion }).conclusion;
       const place = this.order.indexOf(part.id);
-      return text === undefined ? [] : [{ label: `Part ${String(place >= 0 ? place + 1 : this.order.length + keys.indexOf(part.id) + 1)}: `, text }];
+      return text === undefined ? [] : [{ label: `Part ${String(place >= 0 ? place + 1 : this.order.length + keys.indexOf(part.id) + 1)}:\n`, text }];
     });
+    const shown = told.slice(0, PARTS_TOLD);
+    const tail = told.length > shown.length ? `…and ${String(told.length - shown.length)} more parts` : "";
     const separator = "\n\n";
-    let room = NO_CHANGE_FINDINGS_CONCLUSION_MAX - labelled.reduce((sum, part) => sum + part.label.length, 0) - separator.length * Math.max(0, labelled.length - 1);
+    let room = NO_CHANGE_FINDINGS_CONCLUSION_MAX - shown.reduce((sum, part) => sum + part.label.length, 0) - separator.length * Math.max(0, shown.length - (tail === "" ? 1 : 0)) - tail.length;
     // Each part gets an equal share of the room, and what a short part does not use goes to the longer ones.
-    const shares = new Array<number>(labelled.length).fill(0);
-    const order = labelled.map((part, index) => index).sort((x, y) => Array.from(labelled[x]!.text).length - Array.from(labelled[y]!.text).length);
-    order.forEach((index, rank) => {
-      const share = Math.max(0, Math.floor(room / (order.length - rank)));
-      shares[index] = Math.min(Array.from(labelled[index]!.text).length, share);
+    const shares = new Array<number>(shown.length).fill(0);
+    const bySize = shown.map((part, index) => index).sort((x, y) => Array.from(shown[x]!.text).length - Array.from(shown[y]!.text).length);
+    bySize.forEach((index, rank) => {
+      const share = Math.max(0, Math.floor(room / (bySize.length - rank)));
+      shares[index] = Math.min(Array.from(shown[index]!.text).length, share);
       room -= shares[index];
     });
-    const conclusion = labelled.flatMap((part, index) => { const text = cutText(part.text, shares[index]!); return text === "" ? [] : [`${part.label}${text}`]; }).join(separator);
-    return finish(held.flatMap((part) => part.calls), held.reduce((sum, part) => sum + part.dropped, 0), conclusion);
+    const conclusion = [...shown.map((part, index) => `${part.label}${cutText(part.text, shares[index]!)}`), ...(tail === "" ? [] : [tail])].join(separator);
+    const { kept, skipped } = chooseCalls(held.map((part) => part.calls));
+    return finish(kept, held.reduce((sum, part) => sum + part.dropped, 0) + skipped, conclusion);
   }
+}
+
+/** The calls the block lists, in order: each part's last call first (the latest ten parts' when there are more than ten), then the most recent of the rest, NO_CHANGE_FINDINGS_COMMANDS_MAX in all. */
+function chooseCalls(perPart: ReadonlyArray<readonly Call[]>): { kept: Call[]; skipped: number } {
+  const all = perPart.flatMap((calls) => calls.filter((call) => call.command.trim() !== ""));
+  const chosen = new Set<number>();
+  let end = 0;
+  const lasts: number[] = [];
+  for (const calls of perPart) {
+    const count = calls.filter((call) => call.command.trim() !== "").length;
+    end += count;
+    if (count > 0) lasts.push(end - 1);
+  }
+  
+  for (const index of lasts.slice(-NO_CHANGE_FINDINGS_COMMANDS_MAX)) chosen.add(index);
+  for (let index = all.length - 1; index >= 0 && chosen.size < NO_CHANGE_FINDINGS_COMMANDS_MAX; index -= 1) chosen.add(index);
+  const kept = [...chosen].sort((x, y) => x - y).map((index) => all[index]!);
+  return { kept, skipped: all.length - kept.length };
 }
 
 function cutText(text: string, max: number): string {

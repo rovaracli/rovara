@@ -264,7 +264,7 @@ describe("a v2 task's parts, run by the worker", () => {
     expect(findings?.commands).toEqual([
       { command: "check A", output: "output of A" }, { command: "check B", output: "output of B" }, { command: "check C", output: "output of C" },
     ]);
-    expect(findings?.conclusion).toBe("Part 1: A done\n\nPart 2: B done\n\nPart 3: C done");
+    expect(findings?.conclusion).toBe("Part 1:\nA done\n\nPart 2:\nB done\n\nPart 3:\nC done");
   });
 
   it("an ordered (one at a time) run that changes no code labels each part's words in the same way", async () => {
@@ -278,6 +278,6 @@ describe("a v2 task's parts, run by the worker", () => {
     });
     const findings = (outcome.error as { noChangeFindings?: { commands: unknown[]; conclusion?: string } } | undefined)?.noChangeFindings;
     expect(findings?.commands).toEqual([{ command: "check A", output: "output of A" }, { command: "check B", output: "output of B" }]);
-    expect(findings?.conclusion).toBe("Part 1: A done\n\nPart 2: B done");
+    expect(findings?.conclusion).toBe("Part 1:\nA done\n\nPart 2:\nB done");
   });
 });

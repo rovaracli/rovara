@@ -5,6 +5,7 @@ import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/c
 import { NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CODE_CHANGED_REASON, buildNoChangeFindings } from "../../packages/contracts/src/no-change-findings.js";
 import { noCodeChangedText } from "../../packages/broker/src/developer/no-change-findings-text.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { RunFindings } from "../../packages/worker/src/no-change-findings.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
@@ -23,6 +24,24 @@ const blocked = (findings: unknown) => WorkflowSnapshotSchema.parse({
 
 const page = "https://agentx.example.test/review/11111111-1111-4111-8111-111111111111/task";
 const LAST = "No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.";
+
+describe("the findings of a run split into parts, as Slack words", () => {
+  it("masks a `NAME: value` and a `NAME=value` that begin a part's text: the part's label never shares a line with it", () => {
+    const dsn = `https://${["abc", "123"].join("")}@sentry.example/42`, token = ["tk", "91Xz", "Q7"].join("-"), pass = pw();
+    const run = new RunFindings();
+    run.setOrder(["a", "b"]);
+    run.forPart("a").concludeWith(`SENTRY_DSN: ${dsn}\nAPI_TOKEN=${token}\nThe first part found the settings.`);
+    run.forPart("b").concludeWith(`DB_PASSWORD=${pass}\nTHE_THING: ${pass}\nThe second part agrees.`);
+    const found = run.build();
+    expect(found.conclusion).toContain("Part 1:\nSENTRY_DSN");
+    const text = noCodeChangedText(found, page);
+    for (const value of [dsn, "abc123@sentry", token, pass]) expect(text, value).not.toContain(value);
+    expect(text).toContain("Part 1:");
+    expect(text).toContain("SENTRY_DSN: [hidden]");
+    expect(text).toMatch(/API_TOKEN=\[(?:hidden|REDACTED)\]/u);
+    expect(text).toContain("The first part found the settings.");
+  });
+});
 
 describe("the findings as Slack words", () => {
   it("pins the message: the findings first, the commands with the link to the full output, then what was not done and the two ways on", () => {
