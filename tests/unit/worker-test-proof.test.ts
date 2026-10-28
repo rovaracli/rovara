@@ -3,7 +3,7 @@
 // the workspace files it finds (tests/support/test-proof-fixture.ts), so a run on the original code really sees the original code.
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TestProofSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
 import { CheckNotRunError, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { AgentFilesRestoreError, gitOriginalCode, ORIGINAL_CODE_REF } from "../../packages/worker/src/verification/original-code.js";
@@ -19,6 +19,7 @@ const exists = (path: string) => stat(path).then(() => true, () => false);
 describe("TESTPROOF", () => {
   const cleanup: string[] = [];
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
   });
 
@@ -100,6 +101,10 @@ describe("TESTPROOF", () => {
 
   // 6
   it("says not checked when the run on the original code times out or is stopped, and restores the candidate", async () => {
+    // runChecks cuts a check's timeout to the budget left, and calls a timeout "budget" (not "timed_out") when it did. With a real clock one elapsed millisecond between
+    // the start of the round and the start of the check was enough to make the 60 s command's timeout look cut by the 60 s budget, and a slow runner lost that race. A
+    // clock that stands still makes the full budget available to the check, so only its own timeout can stop it. (Only Date is faked: git and the file system run on.)
+    vi.useFakeTimers({ toFake: ["Date"] });
     const made = await repository({ "src/bug.ts": SOURCE_1 }, { "src/bug.ts": SOURCE_2, "src/bug.test.ts": TEST_EXPECTS(2) });
     const slow = { ...fakeTestRunner(made.directory), runProjectCommand: async () => ({ exitCode: null, timedOut: true, stdout: "", stderr: "" }) };
     const timedOut = await runTestProof(proofOptions(made, { runners: slow }));

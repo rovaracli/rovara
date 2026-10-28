@@ -6,6 +6,7 @@ import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
+import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -29,7 +30,15 @@ export const WORKFLOW_BLOCK_REASONS = {
   regressionFound: "A test that passed before this change fails now. Send it back to coding, or close the task.",
   repositoriesIncomplete: "AgentX couldn't find every repository in the final code. Retry coding, or close the task.",
   /** The coding run finished, but the code is still what the task started from (WORKFLOW_NO_CODE_CHANGE_MESSAGE). */
-  noCodeChanged: "Coding finished, but no code changed, so there is nothing to check or open as a pull request. Retry coding, or close the task.",
+  noCodeChanged: NO_CODE_CHANGED_REASON,
+  /** A review stopped before it started: the base commit's rule files could not be checked against the commit's own ids (WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE). */
+  ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
+  /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
+  stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
+  /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
+  leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
+  /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */
+  setupChangedFiles: "The dev container's setup changed the project's files, so the checks did not run. Look at what its setup commands change, then retry, or close the task.",
   /** An approved PR feedback fix left every repository's code as its open pull request holds it: nothing was pushed. */
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",
@@ -759,6 +768,11 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * and fail now. Kept through a send-back so the coder hears of them; the next block or verification replaces them.
    */
   regressedChecks: z.array(z.string().trim().min(1).max(WORKFLOW_REGRESSED_CHECK_MAX)).min(1).max(WORKFLOW_REGRESSED_CHECKS_MAX).optional(),
+  /**
+   * A coding run that ended with no code change: the commands the agent ran, what they printed and the agent's own conclusion, redacted and bounded (`NoChangeFindingsSchema`), kept while the step is
+   * blocked with `noCodeChanged` and shown with it. Absent from an older worker's result and from every other block.
+   */
+  noChangeFindings: NoChangeFindingsSchema.optional(),
   outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED", "ANSWERED"]).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

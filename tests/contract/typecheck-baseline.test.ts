@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { CLOUD_REPOSITORY, PUBLIC_REPOSITORY, conditionFor } from "../support/workflow-expression.js";
 import type { Program } from "../../scripts/typecheck-programs.js";
 import {
   compareToBaseline,
@@ -473,9 +474,15 @@ describe("wiring", () => {
     const onPullRequest = checks.steps[typecheck + 1]!;
     const otherwise = checks.steps[typecheck + 2]!;
     expect(onPullRequest.run).toBe("npm run typecheck:changed -- --base HEAD^1");
-    expect(onPullRequest.if).toBe("github.event_name == 'pull_request'");
+    // The public repository: changed programs on a pull request, every program otherwise.
+    expect(conditionFor(onPullRequest.if, PUBLIC_REPOSITORY)).toBe("github.event_name == 'pull_request'");
     expect(otherwise.run).toBe("npm run typecheck:all");
-    expect(otherwise.if).toBe("github.event_name != 'pull_request'");
+    expect(conditionFor(otherwise.if, PUBLIC_REPOSITORY)).toBe("github.event_name != 'pull_request'");
+    // Cloud (its copy of the file guards both steps): every run, pull request or not, checks every program, and the changed-only step never runs there.
+    if (onPullRequest.if?.includes("github.repository")) {
+      expect(conditionFor(onPullRequest.if, CLOUD_REPOSITORY)).toBe("false");
+      expect(conditionFor(otherwise.if, CLOUD_REPOSITORY)).toBeUndefined();
+    }
     expect(checks.if).toBe("needs.scope.outputs.docs_only != 'true'");
   });
 

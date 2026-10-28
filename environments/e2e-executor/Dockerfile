@@ -44,11 +44,19 @@ COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 
 # Chromium and the system libraries it needs, as root. `npm ci --ignore-scripts` ran no install script of
-# playwright-core, so the browser comes from this explicit step: npx finds the locked 1.63.0 in node_modules
-# and does not download another copy. The browsers live outside any home directory so the unprivileged
-# user below reads them.
+# playwright-core, so the browser comes from this explicit step. The root package.json also holds playwright-core
+# 1.64.0 as a dev dependency (the web end-to-end tests), which npm hoists to node_modules/playwright-core and
+# `npm prune --omit=dev` then removes; the verifier's own 1.63.0 stays nested in packages/verifier/node_modules,
+# and that is the copy the executor imports. So there is no node_modules/.bin/playwright-core, and
+# `npx playwright-core@1.63.0` died with "playwright-core: not found" (exit 127). This step runs the cli.js of the
+# very copy the executor resolves (Node resolution from packages/verifier) and fails the build if it is not 1.63.0, so the
+# browser build always matches the library. The browsers live outside any home directory so the unprivileged user
+# below reads them.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright-core@1.63.0 install --with-deps chromium \
+RUN PLAYWRIGHT_PACKAGE="$(node -p "require.resolve('playwright-core/package.json', { paths: ['/opt/agentx/packages/verifier'] })")" \
+    && PLAYWRIGHT_DIR="$(dirname "$PLAYWRIGHT_PACKAGE")" \
+    && [ "$(node -p "require('$PLAYWRIGHT_PACKAGE').version")" = "1.63.0" ] \
+    && node "$PLAYWRIGHT_DIR/cli.js" install --with-deps chromium \
     && chmod -R a+rX /ms-playwright \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
@@ -50,6 +50,25 @@ export const TASK_SANDBOX_PIDS_LIMIT = "4096";
 export function sandboxCpuLimit(hostCpus: number): string | undefined {
   return Number.isInteger(hostCpus) && hostCpus > 1 ? String(hostCpus - 1) : undefined;
 }
+const MIB = 1024 * 1024;
+/** What the worker and the Docker daemon keep of the host's memory: the larger of 1.5 GiB and 20% of it. */
+const SANDBOX_MEMORY_RESERVE_MIB = 1536;
+const SANDBOX_MEMORY_RESERVE_SHARE = 0.2;
+/** The least a sandbox is given, on a host too small to keep the full reserve. */
+const SANDBOX_MEMORY_FLOOR_MIB = 1024;
+
+/**
+ * The memory limit of a sandbox on a host with `hostMemoryBytes`: the host's memory less a reserve for the worker and the Docker daemon (the larger of
+ * 1.5 GiB and 20%), and never under 1 GiB. A runaway build then meets its own limit instead of the host's, where the kernel could stop the worker.
+ * The value is whole MiB in Docker's own notation, and is used for the swap limit too. Nothing for a size that is not a positive number.
+ */
+export function sandboxMemoryLimit(hostMemoryBytes: number): string | undefined {
+  if (!Number.isFinite(hostMemoryBytes) || hostMemoryBytes <= 0) return undefined;
+  const hostMib = hostMemoryBytes / MIB;
+  const limit = Math.floor(hostMib - Math.max(SANDBOX_MEMORY_RESERVE_MIB, hostMib * SANDBOX_MEMORY_RESERVE_SHARE));
+  return `${String(Math.max(SANDBOX_MEMORY_FLOOR_MIB, limit))}m`;
+}
+
 /**
  * The worker image's ENV that is the worker's own and not the customer's: the sandbox starts from that image (Bug F). NODE_ENV=production
  * is for the worker process, and in a customer's commands it makes `npm ci` skip the devDependencies, so `npm test` cannot find vitest.
@@ -143,6 +162,16 @@ export interface TaskSandboxRunInput {
   maskedPaths: readonly string[];
   /** The host's CPU count, which sets the sandbox's CPU limit (sandboxCpuLimit). Default: this machine's, which is the host's. */
   hostCpus?: number;
+  /**
+   * The host's memory in bytes, which sets the sandbox's memory limit (sandboxMemoryLimit). Default: this machine's total (os.totalmem), which is the
+   * host's even in the worker's container: it reads the kernel's figure, not the container's limit. A worker started with a limit of its own does not shrink it.
+   */
+  hostMemoryBytes?: number;
+}
+
+function memoryArgs(hostMemoryBytes: number): string[] {
+  const limit = sandboxMemoryLimit(hostMemoryBytes);
+  return limit === undefined ? [] : ["--memory", limit, "--memory-swap", limit];
 }
 
 /** The `docker run` arguments of a sandbox (R56). The workspace is the only mount, at its own path. */
@@ -156,6 +185,8 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
     ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),
+    // Memory too, with swap at the same size so swap does not carry a runaway past the limit.
+    ...memoryArgs(input.hostMemoryBytes ?? totalmem()),
     "--pids-limit", TASK_SANDBOX_PIDS_LIMIT,
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",

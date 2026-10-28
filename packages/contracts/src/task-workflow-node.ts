@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS } from "./workflow-check-input.js";
 import { E2EQualifiedRoundSchema } from "./e2e.js";
+import { isNoCodeChangedReason, type NoChangeFindings } from "./no-change-findings.js";
 
 export interface WorkflowOwnerAuthority { actorId: string; ownerIds: readonly string[] }
 
@@ -26,6 +27,18 @@ function workflowOwnerAuthorized(legacyOwnerId: string, actorId: string, authori
 
 /** The worker's refusal when a coding run leaves every repository as it was when the task started: nothing to check or publish. */
 export const WORKFLOW_NO_CODE_CHANGE_MESSAGE = "the coding run left the code as it was when the task started";
+
+/** The worker's one fixed reason when a base commit was sent but its rule files could not be checked against the commit's own object ids. */
+export const WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE = "couldn't verify the base rule files";
+
+/**
+ * The worker's one fixed reason when a step that only reads the workspace (the reviews, the plan check, Understand, the PR feedback review) could not first stop every program and container the
+ * earlier work left running. The step reads nothing over live programs; the reason carries no detail from the failure.
+ */
+export const WORKFLOW_LEFTOVER_PROCESSES_MESSAGE = "couldn't stop the programs left running from earlier work";
+
+/** The worker's one fixed reason when the checks' fresh dev container ran its setup and that changed the project's files: the checks are not run on code nobody wrote or reviewed. */
+export const WORKFLOW_SETUP_CHANGED_FILES_MESSAGE = "the dev container's setup changed the project's files";
 
 /** Shown to the owner when the code no longer descends from the commit the task started from. */
 export const WORKFLOW_HISTORY_REWRITTEN_MESSAGE = "The change history was rewritten past where this task started, so AgentX can't compare it. Ask for the change again in a new task.";
@@ -2009,11 +2022,12 @@ export function skipPlanRevision(currentInput: unknown, input: { expectedRevisio
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */
-export function blockWorkflow(currentInput: unknown, reason: string, now: string, detail: { regressedChecks?: readonly string[];
+export function blockWorkflow(currentInput: unknown, reason: string, now: string, detail: { regressedChecks?: readonly string[]; noChangeFindings?: NoChangeFindings | undefined;
   failedE2ERound?: { status: "FAILED"; candidateDigest: string; roundId: string; groupRunIds: readonly string[]; admissionSha256: string; evidenceSha256: string } } = {}): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  const { regressedChecks: _prior, ...withoutRegressions } = current;
+  const { regressedChecks: _prior, noChangeFindings: _priorFindings, ...withoutRegressions } = current;
   void _prior;
+  void _priorFindings;
   const failure = detail.failedE2ERound;
   const failedRound = failure !== undefined && current.e2e?.required === true && current.candidate?.digest === failure.candidateDigest
     && current.e2e.currentRoundId === failure.roundId && current.e2e.currentGroupRunIds.length === failure.groupRunIds.length
@@ -2023,6 +2037,8 @@ export function blockWorkflow(currentInput: unknown, reason: string, now: string
   return WorkflowSnapshotSchema.parse({
     ...withoutRegressions, revision: current.revision + 1, state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now,
     ...(detail.regressedChecks === undefined || detail.regressedChecks.length === 0 ? {} : { regressedChecks: detail.regressedChecks }),
+    // Only the no-code-change stop keeps what the run found; any other block drops an earlier run's findings with the block they belonged to.
+    ...(detail.noChangeFindings === undefined || !isNoCodeChangedReason(reason) ? {} : { noChangeFindings: detail.noChangeFindings }),
     ...(current.e2e === undefined ? {} : { e2e: { ...e2eWithoutFailure, ...(failedRound === undefined ? {} : { failedRound }) } }),
   });
 }
@@ -2191,7 +2207,7 @@ export function workflowAutoFixCounts(decisions: readonly WorkflowDecision[]): W
 
 /** Block reasons only a person can resolve: sending the work back to coding never helps, so the broker never does it on its own. */
 function personOnlyBlock(blockReason: string | undefined): boolean {
-  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE
+  return blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses || blockReason === WORKFLOW_BLOCK_REASONS.setupChangedFiles
     || [WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX]
       .some((prefix) => blockReason?.startsWith(prefix) === true);
 }

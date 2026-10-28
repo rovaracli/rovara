@@ -16,7 +16,7 @@ import { assertWorkspaceIsPlain, runIsolatedGit, withIsolatedRepository } from "
 import type { PullRequestUpdateSink } from "./callback-client.js";
 import { runCodeBuildGates, type CodeBuildSink } from "./codebuild.js";
 import type { RepositoryCredentialProvider } from "./repository-credentials.js";
-import { containWorkspace, runReadinessChecks, temporaryIndexTree } from "./publish.js";
+import { containWorkspace, runReadinessChecks, temporaryIndexTree, type OtherOperationWait } from "./publish.js";
 import type { TaskShellSelection } from "./task-sandbox.js";
 import { stopWorkspaceProcesses } from "./workspace-processes.js";
 import { sweepWorkspaceContainers } from "./workspace-containers.js";
@@ -41,6 +41,10 @@ export async function maintainPullRequest(options: {
   stopWorkspaceProcesses?: (rootPath: string) => Promise<{ stopped: number } | void>;
   /** A workflow task's fix removes every container but the worker's own before the push credential is fetched. A seam for tests, as in publication. */
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
+  /** Whether another operation is still running in this worker (server.ts). As in publication, the push waits a bounded time for it to end and then fails closed. Default: none. */
+  otherOperationActive?: () => boolean;
+  /** How long the push waits for it. A seam for tests. */
+  otherOperationWait?: OtherOperationWait;
 }): Promise<PullRequestLifecycleResult> {
   const { invocation } = options;
   // In the devcontainer preparation recorded, as at publication (#183).
@@ -74,6 +78,8 @@ export async function maintainPullRequest(options: {
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
+      ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
+      ...(options.otherOperationWait === undefined ? {} : { otherOperationWait: options.otherOperationWait }),
     });
   }
   const credential = await options.credentialProvider(repository);

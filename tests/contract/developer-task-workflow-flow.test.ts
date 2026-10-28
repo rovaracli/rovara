@@ -5,9 +5,9 @@ import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependenc
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkItemProgressV1 } from "@agentx/contracts";
 import { SlackThreadWorkspaceResultSchema } from "@agentx/contracts";
-import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
 import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
-import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -829,6 +829,17 @@ describe("native developer task workflow", () => {
     expect(taskWorkflow(harness, taskId)).toMatchObject({ state: "RUNNING", feedbackReview: { status: "COLLECTING" } });
   });
 
+  it("blocks a feedback review that could not first stop the programs earlier work left running with the leftover-programs reason, and the page still says it is watching", async () => {
+    const { harness, taskId, workspaceId, task, operationId, now } = await collectingFeedbackTask();
+    await harness.finish(workspaceId, operationId, "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace` });
+    const blocked = taskWorkflow(harness, taskId);
+    expect(blocked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.parse(now) };
+    expect(await getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: task.developerId } as never, taskId)).toMatchObject({ status: "Couldn't review the pull request feedback" });
+    expect(workflowMessage({ taskId, workflow: blocked })!.text).toContain("I'm still watching the pull request");
+  });
+
   it("blocks with the feedback-failed reason when a feedback review fails or reports nothing usable, and the page says it is still watching", async () => {
     for (const ending of ["FAILED", "SUCCEEDED"] as const) {
       const { harness, taskId, workspaceId, task, operationId, now } = await collectingFeedbackTask();
@@ -1112,11 +1123,31 @@ describe("native developer task workflow", () => {
     const changedNoteRetry = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/review`, { requestId: retryRequestId, expectedRevision: retryBlocked.workflow.revision, candidateDigest: candidate.digest, instructions: `${retryNote} changed` });
     expect(changedNoteRetry.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
 
+    // A review that stopped because its base rule files could not be verified says so, in the block reason the owner reads.
+    const unverifiedRetry = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/review`, { requestId: randomUUID(), expectedRevision: retryBlocked.workflow.revision, candidateDigest: candidate.digest, instructions: "Retry once more" });
+    expect(unverifiedRetry.status).toBe(200);
+    const unverifiedOperation = harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").find((item) => item.workflowMode === "REVIEW" && item.id !== reviewOperation?.id && item.id !== reviewRetryOperation?.id) as { id?: string } | undefined;
+    await harness.finish(workspaceId, String(unverifiedOperation?.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}` });
+    const unverifiedBlocked = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { revision: number; stage: string; state: string; blockReason?: string } };
+    expect(unverifiedBlocked.workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.ruleFilesUnverified });
+    expect(plainBlockReason(unverifiedBlocked.workflow.blockReason)).toContain("couldn't verify the base rule files");
+
+    // A review that could not first stop the programs earlier work left running says so, in its own block reason, and is not started again by itself.
+    const leftoverRetry = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/review`, { requestId: randomUUID(), expectedRevision: unverifiedBlocked.workflow.revision, candidateDigest: candidate.digest, instructions: "Retry after the rule files" });
+    expect(leftoverRetry.status).toBe(200);
+    const reviewOperations = () => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").filter((item) => item.workflowMode === "REVIEW");
+    const leftoverOperation = reviewOperations().find((item) => item.id !== reviewOperation?.id && item.id !== reviewRetryOperation?.id && item.id !== unverifiedOperation?.id) as { id?: string } | undefined;
+    await harness.finish(workspaceId, String(leftoverOperation?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace` });
+    const leftoverBlocked = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { revision: number; stage: string; state: string; blockReason?: string } };
+    expect(leftoverBlocked.workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    expect(plainBlockReason(leftoverBlocked.workflow.blockReason)).toContain("couldn't stop the programs left running");
+    expect(reviewOperations()).toHaveLength(4);
+
     const secondRetryNote = "Please verify the timeout edge case.";
     const secondRetryRequestId = randomUUID();
-    const secondRetry = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/review`, { requestId: secondRetryRequestId, expectedRevision: retryBlocked.workflow.revision, candidateDigest: candidate.digest, instructions: secondRetryNote });
+    const secondRetry = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/workflow/review`, { requestId: secondRetryRequestId, expectedRevision: leftoverBlocked.workflow.revision, candidateDigest: candidate.digest, instructions: secondRetryNote });
     expect(secondRetry.status).toBe(200);
-    const secondRetryOperation = harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").find((item) => item.workflowMode === "REVIEW" && item.id !== reviewOperation?.id && item.id !== reviewRetryOperation?.id) as { id?: string; payloadHash?: string } | undefined;
+    const secondRetryOperation = harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").find((item) => item.workflowMode === "REVIEW" && item.id !== reviewOperation?.id && item.id !== reviewRetryOperation?.id && item.id !== unverifiedOperation?.id && item.id !== leftoverOperation?.id) as { id?: string; payloadHash?: string } | undefined;
     expect(secondRetryOperation?.payloadHash).not.toBe(reviewRetryOperation?.payloadHash);
     const secondRetryPayload = (harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === secondRetryOperation?.id)[0]?.invocation as { payload: { workflowReviewNote?: string } }).payload;
     expect(secondRetryPayload.workflowReviewNote).toBe(secondRetryNote);
@@ -1957,6 +1988,19 @@ describe("native developer task workflow", () => {
     expect(retryOperation).toMatchObject({ kind: "task", workflowMode: "CHECKS" });
     const retryInvocation = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === retryOperation?.id)[0]?.invocation as { payload?: { readiness?: unknown[] } };
     expect(retryInvocation.payload?.readiness).toEqual([selectedCheck.command]);
+
+    // The rerun could not first stop the programs earlier work left running: it stops visibly, with the fixed reason, and no check result is recorded.
+    await harness.finish(workspaceId, String(retryOperation?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not run the checks` });
+    const leftover = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    expect(leftover.workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+
+    // A fresh dev container whose setup changed the project's files before the checks ran: its own reason, and a person decides.
+    const again = await harness.dev(MAYA, "POST", retryRoute, { requestId: randomUUID(), instructions: "Run the selected check again.", expectedRevision: (leftover.workflow as { revision?: number }).revision });
+    expect(again.status).toBe(200);
+    const secondChecks = harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").filter((item) => item.workflowMode === "CHECKS").find((item) => item.id !== retryOperation?.id);
+    await harness.finish(workspaceId, String(secondChecks?.id), "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX found that ${WORKFLOW_SETUP_CHANGED_FILES_MESSAGE}, so the checks did not run` });
+    const changed = (await harness.dev(MAYA, "GET", `/v1/dev/tasks/${task.taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    expect(changed.workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.setupChangedFiles });
   });
 
   it("keeps an interrupted plan blocked and requires a new read-only planning run to recover", async () => {

@@ -106,6 +106,10 @@ import {
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
   FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
+  noChangeFindingsFrom,
+  WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
+  WORKFLOW_LEFTOVER_PROCESSES_MESSAGE,
+  WORKFLOW_SETUP_CHANGED_FILES_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   type IntentAssessment,
@@ -16089,11 +16093,17 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_HISTORY_REWRITTEN_MESSAGE) === true ? WORKFLOW_HISTORY_REWRITTEN_MESSAGE
         : terminalError?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.noCodeChanged
+        // The checks' rerun could not first stop the programs earlier work left running, so no check ran: its own reason, and a person decides (nothing sends it back or retries it by itself).
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        // The checks' fresh dev container ran its setup and that changed the project's files: the checks did not run on them, and a person decides.
+        : terminalError?.includes(WORKFLOW_SETUP_CHANGED_FILES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.setupChangedFiles
         // Plan 3, Task 32: the step's budget ran out; a spend request is asked for at the end of this result, and its approval retries the step.
         : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
         // Plan 6 Task 16: Rovara's own decision was refused when the worker started (a commenter lost write access, or the autonomy was lowered): the owner is told which.
         : task.workflow.fixSource === "feedback" && operation.workflowFeedbackApproval?.autonomy !== undefined && terminalError?.includes("feedback-approval failed") === true ? FEEDBACK_NOT_RUN_REASON
-        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
+        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now,
+        // A coding run that left the code as it was reports what it found; it is rebuilt here (redacted and bounded again) and kept only with that stop, whatever else the result held.
+        { noChangeFindings: noChangeFindingsFrom(reported.noChangeFindings) });
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
       if (dependencyBinding?.parallel !== undefined) {
@@ -16340,7 +16350,11 @@ async function completedWorkflowItems(
     }
   } else if (operation.workflowMode === "REVIEW") {
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(task.workflow, workflowRunEndedReason("REVIEW", terminalStatus), now);
+      // A review that stopped because its base rule files could not be verified says so; any other stop keeps the generic reason.
+      next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.ruleFilesUnverified
+        // The programs earlier work left running could not be stopped, so the review never read the code: stopped here with its own reason, for the owner's Retry.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        : workflowRunEndedReason("REVIEW", terminalStatus), now);
     } else {
       const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
       const repositories = Array.isArray(reported.workflowCandidateRepositories) ? reported.workflowCandidateRepositories : [];
@@ -16404,7 +16418,8 @@ async function completedWorkflowItems(
       || current.revision !== binding.workflowRevision || current.taskId !== binding.taskId
       || current.candidate?.digest !== binding.candidateDigest || current.feedbackReview?.status !== "COLLECTING") return [];
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
+      // The programs earlier work left running could not be stopped, so the review read nothing: its own reason, like the other steps that only read.
+      next = blockWorkflow(current, terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses : WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
     } else {
       try {
         const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -16455,7 +16470,12 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       // The step's budget ran out (a spend request is asked for at the end of this result, and its approval retries the step), or its worker could not read its own answer, or the run ended.
       next = blockWorkflow(current, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
-        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
+        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable
+        // The base rule files could not be verified: Understand stopped before it started, and says so. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified
+        // The programs earlier work left running could not be stopped: Understand read nothing. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
     } else {
       // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
       const understood = await readUnderstandingArtifact(dependencies, operation);
@@ -16683,6 +16703,11 @@ async function planCritiqueOutcome(
     if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
       return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now });
     }
+    // The base rule files could not be verified: the check never read the rules it is to apply, so it does not pass the plan on as unchecked (that would run without them). It stops
+    // here, visibly, with its own reason and the owner's Retry plan check. This is not a model failure, so the next-ranked model is not tried, and nothing starts the check again by itself.
+    if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, now);
+    // The programs earlier work left running could not be stopped: the check read nothing, so the plan is not passed on as unchecked. It stops here with its own reason; not a model failure.
+    if (terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.leftoverProcesses, now);
     // Staging 0.4.10: the account could not use the check's model (Bedrock's 403). The check is made again on the next-ranked model, one try for each, up to CRITIC_MODEL_ATTEMPTS_MAX; the
     // next start leaves out the models that failed and, when none is left, closes the check as unavailable.
     if (terminalStatus === "FAILED" && criticModelUnusable(terminalError)) {
@@ -17269,6 +17294,17 @@ async function plainTaskLeftCodeAsItWas(dependencies: AwsBrokerDependencies, ope
   return task !== undefined && task.workflow === undefined;
 }
 
+/**
+ * A result's findings block (a coding run that left the code as it was) is rebuilt before the result is stored: redacted and bounded here as well as in the worker, so what a worker sent (an older, a
+ * newer or a hostile one) never reaches the table as it came. A block that cannot be read is dropped; every other field of the result is left as it is.
+ */
+function withSafeNoChangeFindings(result: unknown): unknown {
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !("noChangeFindings" in result)) return result;
+  const { noChangeFindings, ...rest } = result as Record<string, unknown>;
+  const safe = noChangeFindingsFrom(noChangeFindings);
+  return safe === undefined ? rest : { ...rest, noChangeFindings: safe };
+}
+
 async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -17314,7 +17350,7 @@ async function recordTerminalResult(
     ? PullRequestResultSchema.parse(input.result)
     : operation.kind === "close" && status === "SUCCEEDED"
       ? WorkspaceClosePreflightResultSchema.parse(input.result)
-      : input.result;
+      : withSafeNoChangeFindings(input.result);
   const closePreflight = operation.kind === "close" && terminalStatus === "SUCCEEDED"
     ? WorkspaceClosePreflightResultSchema.parse(result)
     : undefined;

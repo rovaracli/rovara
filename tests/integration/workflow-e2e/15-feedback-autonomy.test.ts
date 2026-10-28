@@ -15,7 +15,7 @@ import { visibleSlackText } from "../../support/strict-slack.js";
 import { OWN_LOGIN } from "../../support/workflow-e2e-github.js";
 import { IMPLEMENT_TEST_RULE } from "../../../packages/broker/src/rovara-code/verification-report.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, PUSHED_FIX, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, PUSHED_FIX_TRACKED, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -145,7 +145,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     // The thread said what Rovara did, as itself; one reply was left on the comment's thread, naming the commit that holds the fix.
     const said_ = said(e2e);
     expect(said_.some((text) => text.includes(feedbackDecidedByText("prepare")) || /on its own/u.test(text))).toBe(true);
-    expect(said_.at(-1)).toBe(PUSHED_FIX(pullRequest.number));
+    expect(said_.at(-1)).toBe(PUSHED_FIX_TRACKED(pullRequest.number));
     const head = e2e.github.pullRequests[0]!.commit;
     // The reply is sent by the next tracking pass (GitHub's event for the push wakes it).
     expect(e2e.github.replies).toEqual([]);
@@ -352,7 +352,7 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { feedbackAuto: 1 } });
     expect(e2e.workflow().fixSource).toBeUndefined();
     expect(dispatchRows(e2e)).toEqual([]);
-    expect(said(e2e).at(-1)).toBe(PUSHED_FIX(pullRequest.number));
+    expect(said(e2e).at(-1)).toBe(PUSHED_FIX_TRACKED(pullRequest.number));
   }, 480_000);
 
   it("15.10 a writer who loses write access before the run starts: the run is refused at the worker's start and nothing is pushed", async () => {

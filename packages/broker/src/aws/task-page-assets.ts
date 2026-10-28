@@ -71,7 +71,8 @@ document.addEventListener("visibilitychange",function(){if(!document.hidden&&Dat
 })();`;
 
 /** Colours are custom properties with a dark set; nothing scrolls the page sideways at 360 px (code blocks and tables scroll inside themselves). */
-export const TASK_PAGE_STYLE = serverPageCss() + String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--muted:#57606a;--line:#d0d7de;--panel:#f6f8fa;--focus:#0969da;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;font-family:system-ui,sans-serif}
+// The page styles its own code blocks below (they scroll sideways; only evidence code and document text wrap), so it leaves out the shared global `pre` rule.
+export const TASK_PAGE_STYLE = serverPageCss({ pre: false }) + String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--muted:#57606a;--line:#d0d7de;--panel:#f6f8fa;--focus:#0969da;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;font-family:system-ui,sans-serif}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9da7b3;--line:#30363d;--panel:#161b22;--focus:#58a6ff;--ok:#3fb950;--warn:#d29922;--bad:#ff7b72}}
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:52rem;padding:clamp(1rem,4vw,2.5rem);line-height:1.55;background:var(--bg);color:var(--fg);overflow-wrap:anywhere}

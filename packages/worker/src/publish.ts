@@ -59,11 +59,33 @@ export interface PublishWorkspaceOptions {
    * workspace-containers.ts). A seam for tests; the default removes them for real in the worker container.
    */
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
+  /**
+   * Whether another operation is still running in this worker (server.ts). The push waits for it to end for a bounded time (`otherOperationWait`, 30 s by default, since a cancel reports
+   * before the cancelled run has left the list) and fails closed if it has not. Default: none.
+   */
+  otherOperationActive?: () => boolean;
+  /** How long the push waits for it. A seam for tests. */
+  otherOperationWait?: OtherOperationWait;
   /** Host-only Git transport seam for an isolated local integration fixture. */
   run?: CredentialedGitRunner;
 }
 
 const CONTAINMENT_ROUNDS = 4;
+
+export interface OtherOperationWait { timeoutMs: number; pollMs: number }
+/** A cancelled run reports its result before it has left the worker's list of running operations, so a step that follows a cancel waits this long for it before it fails closed. */
+export const OTHER_OPERATION_WAIT: OtherOperationWait = { timeoutMs: 30_000, pollMs: 250 };
+
+/** Polls `active` until it is false (true is returned) or the wait is over (false: another operation is still running). */
+export async function waitForOtherOperations(active: () => boolean, wait: OtherOperationWait = OTHER_OPERATION_WAIT): Promise<boolean> {
+  const deadline = Date.now() + wait.timeoutMs;
+  while (active()) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(wait.pollMs, remaining)));
+  }
+  return true;
+}
 
 /**
  * Removes the containers, then stops the processes, until one round finds neither and a last check finds no container
@@ -72,8 +94,21 @@ const CONTAINMENT_ROUNDS = 4;
  */
 export async function containWorkspace(
   rootPath: string,
-  steps: { sweep: (rootPath: string) => Promise<{ removed: number }>; stop: (rootPath: string) => Promise<{ stopped: number } | void> },
+  steps: {
+    sweep: (rootPath: string) => Promise<{ removed: number }>;
+    stop: (rootPath: string) => Promise<{ stopped: number } | void>;
+    /**
+     * Whether another operation is still running in this worker. Stopping its children would not stop its own code, which keeps writing the workspace, so nothing is stopped and the
+     * caller fails closed.
+     */
+    otherOperationActive?: () => boolean;
+    /** How long to wait for it to end before failing closed. Default: OTHER_OPERATION_WAIT. */
+    otherOperationWait?: OtherOperationWait;
+  },
 ): Promise<void> {
+  if (steps.otherOperationActive !== undefined && !(await waitForOtherOperations(steps.otherOperationActive, steps.otherOperationWait))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "AgentX found another operation still running in this workspace, so it did not push");
+  }
   for (let round = 0; round < CONTAINMENT_ROUNDS; round += 1) {
     const { removed } = await steps.sweep(rootPath);
     const stopped = (await steps.stop(rootPath))?.stopped ?? 0;
@@ -133,6 +168,8 @@ export async function publishWorkspace(
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
+      ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
+      ...(options.otherOperationWait === undefined ? {} : { otherOperationWait: options.otherOperationWait }),
     });
     return options.credentialProvider(repository);
   };

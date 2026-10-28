@@ -33,6 +33,7 @@ import type { FileOpsTarget } from "../file-ops-exec.js";
 import type { AgentSkillFile } from "../agent-step.js";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { withIsolatedGit } from "../isolated-git.js";
+import { isRuleFilesUnverified } from "../repository-context.js";
 import { isTestPath } from "./test-paths.js";
 
 export { isTestPath };
@@ -237,7 +238,9 @@ export async function runWorkflowFeedbackReview(input: {
         }
       }
     }
-  } catch {
+  } catch (error) {
+    // A base whose rule files cannot be verified ends the run; it is never reported as a review that could not start.
+    if (isRuleFilesUnverified(error)) throw error;
     status = input.signal?.aborted ? "INTERRUPTED" : "BLOCKED";
     findings = [];
     blockReason = input.signal?.aborted ? "review was cancelled" : "review could not verify the exact candidate";
@@ -799,6 +802,8 @@ export async function runWorkflowReviews(input: {
       if (after.digest !== manifest.digest) throw new Error("candidate changed during review");
       usageOutcome = "SUCCEEDED";
     } catch (error) {
+      // A base whose rule files cannot be verified ends the run; it is never reported as a review that could not start.
+      if (isRuleFilesUnverified(error)) throw error;
       const message = error instanceof Error ? error.message : "";
       const failureReason = interrupted || message.includes("interrupted") ? "INTERRUPTED"
         : message.includes("timed out") ? "TIMEOUT"

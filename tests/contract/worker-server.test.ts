@@ -271,6 +271,25 @@ describe("worker HTTP contract", () => {
     }
   });
 
+  it("sends the findings of a run that left the code as it was, redacted again, and nothing of them for another failure", async () => {
+    const token = ["ghp_", "Ab12".repeat(9)].join("");
+    const findings = { commands: [{ command: "grep -rn retry app", output: `app/a.ts: ${token}` }], conclusion: "We use retry in one file." };
+    const send = async (thrown: Error) => {
+      const journal = new OperationJournal(await mkdtemp(join(tmpdir(), "agentx-terminal-")));
+      const terminal: Array<Record<string, unknown>> = [];
+      const state = createWorkerServerState(journal, { execute: async () => { throw thrown; } }, { onTerminal: async (result) => { terminal.push(result as unknown as Record<string, unknown>); } });
+      await handleWorkerRequest(invocationRequest(taskInvocation()), state);
+      await vi.waitFor(() => expect(terminal).toHaveLength(1));
+      return terminal[0]!;
+    };
+    const sent = await send(Object.assign(new Error("CONFIG_INVALID: the coding run left the code as it was when the task started"), { noChangeFindings: findings }));
+    expect(sent).toMatchObject({ status: "FAILED", result: { noChangeFindings: { commands: [{ command: "grep -rn retry app" }], conclusion: "We use retry in one file." } } });
+    expect(JSON.stringify(sent)).not.toContain(token);
+    expect(JSON.stringify(sent)).toContain("[REDACTED]");
+    expect(await send(new Error("model down"))).not.toHaveProperty("result");
+    expect(await send(Object.assign(new Error("model down"), { noChangeFindings: "not a block" }))).not.toHaveProperty("result");
+  });
+
   it("retries a failed terminal callback three times, waiting 2 s, 8 s and 30 s", async () => {
     const root = await mkdtemp(join(tmpdir(), "agentx-terminal-"));
     const journal = new OperationJournal(root);

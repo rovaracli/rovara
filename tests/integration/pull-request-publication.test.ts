@@ -728,6 +728,58 @@ describe("PR feedback review after publication moved HEAD", () => {
     expect(seen[0]?.fileTools?.container).toMatch(/^agentx-task-/u);
   });
 
+  /** The workspace's preparation records a devcontainer for the project, as one prepared with a devcontainer does. */
+  const withDevcontainer = async (state: Awaited<ReturnType<typeof published>>) => {
+    const path = join(state.fixture.root, ".agentx/preparation-manifest.json");
+    const manifest = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    await writeFile(path, JSON.stringify({ ...manifest, devcontainer: { repository: "demo", configPath: "repo/demo/.devcontainer/devcontainer.json", containerWorkspaceFolder: "/workspaces/demo" } }), "utf8");
+  };
+  const sandboxDocker = (options: { runFails?: boolean } = {}) => {
+    const calls: string[][] = [];
+    const docker: DockerCli = {
+      async run(args) {
+        calls.push([...args]);
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+        if (options.runFails === true && args[0] === "run") return { exitCode: 1, stdout: "", stderr: "cannot start" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      async execBytes() { return { exitCode: 0, stdout: Buffer.from('{"ok":true,"result":{"removed":0}}\n'), stderr: "" }; },
+    };
+    return { docker, calls };
+  };
+  const IMAGE = "registry.example/worker@sha256:" + "b".repeat(64);
+
+  it("reviews a devcontainer project's feedback with file tools in a task sandbox, and starts none of the project's own commands", async () => {
+    const state = await published();
+    await withDevcontainer(state);
+    const { docker, calls } = sandboxDocker();
+    const devcontainerRun = vi.fn();
+    const seen: PiSessionInput[] = [];
+    const result = await review(state, {}, {
+      piAdapter: reviewer(seen), taskShell: { kind: "sandbox", docker, image: IMAGE }, devcontainerCli: { run: devcontainerRun }, docker,
+    });
+    expect(result).toMatchObject({ workflowMode: "FEEDBACK_REVIEW", workflowFeedbackReviewResult: { status: "COMPLETE" } });
+    // The devcontainer, whose creation commands are the repository's, is never started or run in.
+    expect(devcontainerRun).not.toHaveBeenCalled();
+    expect(calls.filter((args) => args[0] === "run")).toHaveLength(1);
+    expect(seen[0]?.fileTools?.container).toMatch(/^agentx-task-/u);
+    expect(seen[0]?.localFileTools).not.toBe(true);
+  });
+
+  it("reports a task sandbox that cannot start as the review's own error", async () => {
+    const state = await published();
+    await withDevcontainer(state);
+    const { docker } = sandboxDocker({ runFails: true });
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const seen: PiSessionInput[] = [];
+    await expect(review(state, {}, {
+      piAdapter: reviewer(seen), taskShell: { kind: "sandbox", docker, image: IMAGE }, docker,
+      eventSink: async (batch) => { events.push(...batch.map((event) => ({ type: event.type, payload: event.payload }))); },
+    })).rejects.toThrow();
+    expect(seen).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toHaveLength(1);
+  });
+
   it("refuses PR feedback review when a file changed after publication", async () => {
     const state = await published();
     await writeFile(join(state.fixture.checkout, "README.md"), "initial\nreviewed change\nlater line\n", "utf8");
@@ -1248,6 +1300,32 @@ describe("the push token never meets code the agent or a project controls (final
       .rejects.toThrow(/could not stop every process/);
     expect(credentialProvider).not.toHaveBeenCalled();
     await expect(git(fixture.bare, ["rev-parse", `refs/heads/${refusedBranch.payload.headBranch}`])).rejects.toThrow();
+  });
+
+  it("fetches no credential and pushes nothing while another operation is still running in the worker", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.checkout, "WORK.md"), "checked work\n", "utf8");
+    const invocation = await checkedInvocation(fixture);
+    const credentialProvider = vi.fn(async () => ({}));
+    const stop = vi.fn(async () => ({ stopped: 0 }));
+    await expect(publishWorkspace({ rootPath: fixture.root, invocation, pullRequestSink: sink, credentialProvider, stopWorkspaceProcesses: stop,
+      sweepWorkspaceContainers: async () => ({ removed: 0 }), otherOperationActive: () => true, otherOperationWait: { timeoutMs: 60, pollMs: 5 } }))
+      .rejects.toThrow(/another operation still running.*did not push/);
+    expect(credentialProvider).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    await expect(git(fixture.bare, ["rev-parse", `refs/heads/${invocation.payload.headBranch}`])).rejects.toThrow();
+  });
+
+  it("waits for an operation that is ending, then pushes: a cancel reports before the cancelled run has left the worker", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.checkout, "WORK.md"), "checked work\n", "utf8");
+    const invocation = await checkedInvocation(fixture);
+    let polls = 0;
+    const credentialProvider = vi.fn(async () => ({}));
+    await publishWorkspace({ rootPath: fixture.root, invocation, pullRequestSink: sink, credentialProvider, stopWorkspaceProcesses: async () => ({ stopped: 0 }),
+      sweepWorkspaceContainers: async () => ({ removed: 0 }), otherOperationActive: () => { polls += 1; return polls <= 3; }, otherOperationWait: { timeoutMs: 2_000, pollMs: 5 } });
+    expect(polls).toBeGreaterThan(3);
+    expect(credentialProvider).toHaveBeenCalled();
   });
 
   it("removes every container but the worker's and stops every process, repeating until neither finds anything, before it asks for the push credential; and pushes nothing when either fails (docker containment)", async () => {

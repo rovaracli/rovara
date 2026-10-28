@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -14,6 +14,7 @@ import { reviewModelLines } from "../rovara-code/review-model-lines.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
 import { PLAN_UNREADABLE_SENTENCES, type PlanUnreadableCategory } from "./plan-check-summary.js";
 import { autoFixCardLines, type AutoFixAsk } from "./autofix-messages.js";
+import { noCodeChangedText } from "./no-change-findings-text.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -133,6 +134,7 @@ const PLAIN_REASONS: ReadonlySet<string> = new Set([
 
 /** Block reasons stored before their wording changed, and what they read as now. */
 const REWORDED_REASONS: ReadonlyMap<string, string> = new Map([
+  ...NO_CODE_CHANGED_LEGACY_REASONS.map((legacy): [string, string] => [legacy, WORKFLOW_BLOCK_REASONS.noCodeChanged]),
   ["No checks ran: this project has no required checks and the task selected no optional checks. Configure or select at least one check, then retry.", WORKFLOW_BLOCK_REASONS.noChecksConfigured],
   ...["failed", "interrupted", "cancelled"].map((status): [string, string] => [`PR feedback review operation ended ${status}`, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed]),
   ["PR feedback review report was invalid, incomplete, or stale", WORKFLOW_BLOCK_REASONS.feedbackReviewFailed],
@@ -140,7 +142,9 @@ const REWORDED_REASONS: ReadonlyMap<string, string> = new Map([
 
 /** Whether a pull request's feedback review failed, by the reason stored now or before its wording changed. */
 export function isFeedbackReviewFailure(blockReason: string | undefined): boolean {
-  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
+  // The feedback review also stops, before it reads anything, when the programs earlier work left running cannot be stopped.
+  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses
+    || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
@@ -922,7 +926,7 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
     // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
-    // Only a model the company chose for the check, and that it may not use, blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
+    // Only a model the company chose for the check, and that it may not use, or a base whose rule files could not be verified (its fixed reason), blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
     case "PLAN_CRITIQUE/BLOCKED": {
       const reason = workflow.blockReason;
       const said = reason !== undefined && MODEL_REFUSAL.test(reason) ? slackText(reason) : plainBlockReason(reason, "Rovara");
@@ -938,9 +942,10 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     // Approving the plan needs someone else to accept its run limit (Task 34): the words say who, and coding starts once they do, so there is nothing to retry.
     case "IMPLEMENT/BLOCKED": if (workflow.blockReason !== undefined && isRunLimitBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason), buttons: [exits.close] };
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
-      return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? WORKFLOW_BLOCK_REASONS.noCodeChanged
+      // The run finished and no change was needed: what the agent found, then the choices (reply and Retry coding to ask for a change, or close). No tests were run and no pull request was opened, and nothing here says otherwise.
+      if (isNoCodeChangedReason(workflow.blockReason)) return { text: noCodeChangedText(workflow.noChangeFindings, context.taskPageUrl), buttons: [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
       // CANCELDUP: a stop the owner asked for already reads "Coding was stopped before it finished. Choose Retry ..."; saying it twice is noise.
-      : stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
+      return { text: stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
       : `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,
       // Rewritten history can't be coded on again: a new task is the way on.
       buttons: workflow.blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE ? [exits.close] : [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };

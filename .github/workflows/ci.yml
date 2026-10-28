@@ -60,7 +60,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones.
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 25 || 15 }}
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -82,7 +82,11 @@ jobs:
       - name: Stricter type check (every program)
         if: github.repository == 'PrepLabsAI/Rovara-cloud' || github.event_name != 'pull_request'
         run: npm run typecheck:all
-      # The full repository (eslint .), on every run on both repositories. Its heap cap is 6 GB; Cloud's private runner has 8 GB.
+      # The full repository, on every run on both repositories, with the same config and rules as `eslint .`. One eslint process over the whole
+      # repository needed about 14 GB (13.8 GB measured) and ran out of memory on the 8 GB runner (C90), so scripts/lint-shards.ts lints one TypeScript
+      # program of tsconfig.lint/ at a time (the programs the stricter type check uses), then the web directories, then everything else, each in its own
+      # process. Each process has a 4 GB heap cap; the largest measured peak is about 3.6 GB. The programs read the packages' declarations that
+      # `npm run typecheck` (tsc -b) just built.
       - run: npm run lint
 
   # Vitest hands each shard an even share of the test files. To change the count, change the list:
@@ -92,7 +96,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 40 || 25 }}
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -101,6 +105,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -160,6 +171,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -274,6 +292,17 @@ jobs:
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
           ROVARA_E2E_ALL_BROWSERS: "1"
+      # A failed run leaves the Playwright traces (retained on failure) and the HTML report to open with `npx playwright show-trace` or `show-report`.
+      - name: Upload Playwright traces and report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-playwright
+          path: |
+            .test-build/web-e2e/results
+            .test-build/web-e2e/report
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:

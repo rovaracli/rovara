@@ -24,7 +24,12 @@ describe("the browser executor image", () => {
     expect(dockerfile).toMatch(
       /^FROM public\.ecr\.aws\/docker\/library\/node:22\.23\.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build$/m,
     );
-    expect(dockerfile).toContain("playwright-core@1.63.0 install --with-deps chromium");
+    // Not `npx playwright-core@1.63.0`: npm prune drops the root dev copy (1.64.0), which leaves no node_modules/.bin/playwright-core, and npx exited 127.
+    // The step runs the cli.js of the copy the executor resolves from packages/verifier, and refuses any version but 1.63.0.
+    expect(dockerfile).not.toMatch(/^\s*(RUN\s+)?npx playwright-core/m);
+    expect(dockerfile).toContain("require.resolve('playwright-core/package.json', { paths: ['/opt/agentx/packages/verifier'] })");
+    expect(dockerfile).toContain('= "1.63.0" ]');
+    expect(dockerfile).toContain('node "$PLAYWRIGHT_DIR/cli.js" install --with-deps chromium');
     expect(dockerfile).not.toMatch(/curl[^\n]*\|\s*(ba)?sh/);
     expect(dockerfile).toMatch(/^USER node$/m);
   });

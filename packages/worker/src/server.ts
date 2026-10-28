@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { AgentXError, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
+import { AgentXError, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, noChangeFindingsFrom, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "./implemented-features.js";
 import type { OperationJournal } from "./journal.js";
 import { WorkerOperationCancelledError } from "./cancel.js";
@@ -76,6 +76,14 @@ export function createWorkerServerState(
     ...(executor.invocationFeatureDiagnostics === undefined ? {} : { invocationFeatureDiagnostics: executor.invocationFeatureDiagnostics }),
     ...(invokeAuthentication === undefined ? {} : { invokeAuthentication }),
   };
+}
+
+/**
+ * Whether the worker is still running an operation other than `operationId`. The worker accepts an invocation without waiting for the earlier ones, so the broker may have written
+ * an operation off as lost while it still runs here.
+ */
+export function anotherOperationActive(state: Pick<WorkerServerState, "activeOperations">, operationId: string): boolean {
+  return [...state.activeOperations].some((active) => active !== operationId);
 }
 
 /** What /ping lists: the features this build implements, less those the executor withholds right now (and why). */
@@ -214,11 +222,13 @@ async function executeInBackground(invocation: WorkerInvocation, state: WorkerSe
  * Spec 051 Ruling Y: a task that ends failed or cancelled with a regression AgentX found carries its report, so the
  * broker keeps the regression standing. No other failure sends a result.
  */
-function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown } } {
+function checksResult(error: unknown): { result?: { checks?: unknown; workflowDependenciesResult?: unknown; noChangeFindings?: unknown } } {
   const checks = typeof error === "object" && error !== null && "checks" in error ? error.checks : undefined;
   const workflowDependenciesResult = typeof error === "object" && error !== null && "workflowDependenciesResult" in error ? error.workflowDependenciesResult : undefined;
-  return checks === undefined && workflowDependenciesResult === undefined ? {} : {
-    result: { ...(checks === undefined ? {} : { checks }), ...(workflowDependenciesResult === undefined ? {} : { workflowDependenciesResult }) },
+  // A coding run that left the code as it was carries what it found (already redacted and bounded by the run; redacted again here, as every failure's text is).
+  const noChangeFindings = typeof error === "object" && error !== null && "noChangeFindings" in error ? noChangeFindingsFrom(error.noChangeFindings) : undefined;
+  return checks === undefined && workflowDependenciesResult === undefined && noChangeFindings === undefined ? {} : {
+    result: { ...(checks === undefined ? {} : { checks }), ...(workflowDependenciesResult === undefined ? {} : { workflowDependenciesResult }), ...(noChangeFindings === undefined ? {} : { noChangeFindings }) },
   };
 }
 
