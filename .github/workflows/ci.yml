@@ -105,6 +105,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -164,6 +171,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version

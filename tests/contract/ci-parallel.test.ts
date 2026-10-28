@@ -34,6 +34,21 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     for (const name of ["checks", "test", "release", "linux-runtime"]) expect(jobs[name]!.needs, name).toBe("scope");
   });
 
+  it("frees runner disk before the test shards and the Linux runtime check install anything, and shows the free space before and after", async () => {
+    const { jobs } = await workflow();
+    for (const name of ["test", "linux-runtime"]) {
+      const steps = jobs[name]!.steps;
+      const free = steps.findIndex((step) => step.name === "Free runner disk space");
+      expect(free, name).toBeGreaterThan(0);
+      expect(steps.findIndex((step) => step.run === "npm ci"), name).toBeGreaterThan(free);
+      const run = steps[free]!.run!;
+      expect(run).toContain("sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL");
+      const lines = run.split("\n").map((line) => line.trim());
+      expect(lines.indexOf("df -h /")).toBeLessThan(lines.findIndex((line) => line.startsWith("sudo rm -rf")));
+      expect(lines.lastIndexOf("df -h /")).toBeGreaterThan(lines.findIndex((line) => line.startsWith("sudo rm -rf")));
+    }
+  });
+
   it("runs the Linux runtime check on an ARM64 runner, behind the same Markdown-only skip as the other heavy jobs", async () => {
     const job = (await workflow()).jobs["linux-runtime"] as Job & { "runs-on"?: string };
     expect(job["runs-on"]).toBe("ubuntu-24.04-arm");
