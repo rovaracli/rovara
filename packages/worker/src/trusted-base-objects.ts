@@ -1,7 +1,7 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
+import { access, link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -66,6 +66,8 @@ export const EMPTY_GIT_DIRECTORY_ROOT = "/usr/share/agentx";
 export const EMPTY_GIT_DIRECTORY_ROOT_VARIABLE = "AGENTX_EMPTY_GIT_DIRECTORY_ROOT";
 const SCRATCH_PREFIX = "agentx-base-rules-";
 const STALE_SCRATCH_MS = 60 * 60 * 1000;
+/** The name of a test link (and of the empty file one is made from): a worker killed between making it and removing it leaves it behind. */
+const LINK_PROBE_PREFIX = "agentx-link-probe-";
 
 type Algorithm = "sha1" | "sha256";
 
@@ -198,6 +200,7 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
   const packs = join(objects, "pack");
   let source: string | undefined;
   let made: string | undefined;
+  await removeStaleLinkProbes(objects);
   try {
     if (await plainDirectory(packs)) {
       for (const name of (await readdir(packs)).filter((entry) => PACK_FILE.test(entry)).sort()) {
@@ -205,7 +208,7 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
       }
     }
     if (source === undefined) {
-      const path = join(objects, `agentx-link-probe-${String(process.pid)}-${randomBytes(6).toString("hex")}`);
+      const path = join(objects, `${LINK_PROBE_PREFIX}${String(process.pid)}-${randomBytes(6).toString("hex")}`);
       try {
         await (await open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)).close();
         made = path;
@@ -214,7 +217,8 @@ async function scratchRootFor(objects: string, workspaceRoot: string | undefined
     }
     const canLink = async (root: string): Promise<boolean> => {
       if (source === undefined) return false;
-      const target = join(root, `agentx-link-probe-${String(process.pid)}-${randomBytes(6).toString("hex")}`);
+      await removeStaleLinkProbes(root);
+      const target = join(root, `${LINK_PROBE_PREFIX}${String(process.pid)}-${randomBytes(6).toString("hex")}`);
       try {
         const before = await lstat(source);
         await link(source, target);
@@ -241,6 +245,35 @@ async function removeStaleScratch(root: string): Promise<void> {
       if (stat?.isDirectory() === true && Date.now() - stat.mtimeMs > STALE_SCRATCH_MS) await rm(join(root, name), { recursive: true, force: true });
     }
   } catch { /* nothing to clean */ }
+  await removeStaleLinkProbes(root);
+}
+
+/**
+ * Removes the test links an earlier read left behind in `directory` (a killed worker): entries named like one that are older than the scratch age limit.
+ * Only a regular file goes: it is opened without following a link (and without blocking, so a pipe is passed over), checked to be a regular file, and the
+ * name is unlinked only while it still leads to that file. Links, pipes, directories and every other name are left alone. Best effort.
+ * (A test link to a pack shares the pack's modification time, so one is judged by that; a read that is making one at that moment finds it gone, and its
+ * candidate then answers no, which only costs a copy.)
+ */
+async function removeStaleLinkProbes(directory: string): Promise<void> {
+  let names: string[];
+  try {
+    names = (await readdir(directory)).filter((name) => name.startsWith(LINK_PROBE_PREFIX));
+  } catch { return; }
+  for (const name of names) {
+    const path = join(directory, name);
+    try {
+      const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || Date.now() - opened.mtimeMs <= STALE_SCRATCH_MS) continue;
+        const named = await lstat(path);
+        if (named.isFile() && named.ino === opened.ino && named.dev === opened.dev) await unlink(path);
+      } finally {
+        await handle.close();
+      }
+    } catch { /* gone, a link, or not readable: not ours to remove */ }
+  }
 }
 
 interface Placement {
