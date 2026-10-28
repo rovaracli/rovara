@@ -6,6 +6,7 @@ import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
+import { SERVER_PAGE_ICON } from "@agentx/design-tokens";
 import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
@@ -66,17 +67,20 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
  const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
  }
- if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title></head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
- if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title></head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
+ if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title>'+SERVER_PAGE_ICON+'</head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
+ if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title>'+SERVER_PAGE_ICON+'</head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
  if (url.pathname === "/v1/auth/browser/authorize") {
  if (refusedSignIn) { response.writeHead(303, { location: "/app/signed-out?reason=removed" });response.end();return; }
  const path = url.searchParams.get("return_to") ?? "/app";const target = BROWSER_RETURN_TO.test(path) ? path : "/app";
- response.writeHead(200, { ...CONFIRM_PAGE_HEADERS });response.end(`<!doctype html><html lang="en"><head><title>Mock sign in</title></head><body><main><h1>Sign in to the mock cell</h1><form method="post" action="/v1/auth/browser/callback"><input type="hidden" name="return_to" value="${target.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"><button>Sign in</button></form></main></body></html>`);return;
+ response.writeHead(200, { ...CONFIRM_PAGE_HEADERS });response.end(`<!doctype html><html lang="en"><head><title>Mock sign in</title>${SERVER_PAGE_ICON}</head><body><main><h1>Sign in to the mock cell</h1><form method="post" action="/v1/auth/browser/callback"><input type="hidden" name="return_to" value="${target.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"><button>Sign in</button></form></main></body></html>`);return;
  }
  if (url.pathname === "/v1/auth/browser/callback" && method === "POST") {
  let body = "";for await (const chunk of request) body += String(chunk);const path = new URLSearchParams(body).get("return_to") ?? "/app";revoked = false;expired = false;
  response.writeHead(303, { location: path === "/app/welcome?joined=1" ? "/__mock/join-done" : BROWSER_RETURN_TO.test(path) ? path : "/app", "set-cookie": `__Host-agentx_review_session=${FIXTURE_SESSION}; Path=/; Secure; HttpOnly; SameSite=Strict` });response.end();return;
  }
+ // Stands in for GitHub's install page. Playwright's WebKit refuses to fulfil a stubbed request with a 3xx status, so the test serves this
+ // 200 page (through route.fetch, from this cell) and the page itself moves on to the cell's 303 below.
+ if (url.pathname === "/__mock/github-landing") { response.writeHead(200,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});response.end('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GitHub install</title><meta http-equiv="refresh" content="0;url='+origin+'/__mock/github-install"></head><body></body></html>');return; }
  if (url.pathname === "/__mock/github-install") { onboardingConnected=true;response.writeHead(303,{location:"/app/onboard?github=connected"});response.end();return; }
  if (url.pathname.startsWith("/v1/app/approve/")) {
  try { requireDecideNavigation({ method, path: url.pathname, headers }); } catch { response.writeHead(403, CONFIRM_PAGE_HEADERS);response.end("Open this approval from its link.");return; }

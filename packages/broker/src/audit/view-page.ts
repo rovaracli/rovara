@@ -14,6 +14,7 @@
 // `no-referrer` a browser sends `Origin: null` on the form POST and the check would refuse the person's own export).
 // Reads are recorded like the API's (`recordAuditRead`, best effort, after the read), with `via: "page"`.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { SERVER_PAGE_ICON } from "@agentx/design-tokens";
 import { AUDIT_ERROR_MESSAGES, AUDIT_LIMITS_COPY, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { CSRF_COOKIE, SESSION_COOKIE, csrfCookie, escapeHtml, isCsrfToken, parseCookie, safeResponse, safeText, signInLocation, type WebResponse } from "../aws/web-session.js";
@@ -92,7 +93,7 @@ function htmlResponse(statusCode: number, body: string, nonce: string): WebRespo
 }
 
 function document(title: string, content: string, nonce: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>${SERVER_PAGE_ICON}`
     + `<style nonce="${nonce}">${STYLE}</style></head><body><main>${content}</main></body></html>`;
 }
 

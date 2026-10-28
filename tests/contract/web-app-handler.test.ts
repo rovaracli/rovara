@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,9 +26,9 @@ describe("the cell app shell and its immutable files", () => {
    const response = await app()(event(path));expect(response.statusCode).toBe(200);expect(response.isBase64Encoded ?? false).toBe(false);
    const nonce = /<meta name="csp-nonce" content="([A-Za-z0-9_-]+)">/.exec(response.body)?.[1];expect(nonce).toBeTruthy();
    expect(response.headers).toEqual({ ...appHeaders({ assetOrigin: CDN, realtimeHttpHost: HTTP, realtimeWsHost: WS }, nonce!), "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-   expect(response.headers["content-security-policy"]).toBe(`default-src 'none'; script-src 'self' ${CDN}; style-src 'self' ${CDN} 'nonce-${nonce}'; img-src 'self' data: ${CDN}; font-src ${CDN}; connect-src 'self' https://${HTTP} wss://${WS}; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`);
+   expect(response.headers["content-security-policy"]).toBe(`default-src 'none'; script-src 'self' ${CDN}; style-src 'self' ${CDN} 'nonce-${nonce}'; style-src-attr 'unsafe-hashes' 'sha256-3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw='; img-src 'self' data: ${CDN}; font-src ${CDN}; connect-src 'self' https://${HTTP} wss://${WS}; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`);
    expect(response.headers["x-frame-options"]).toBe("DENY");expect(response.headers["x-content-type-options"]).toBe("nosniff");expect(response.headers["referrer-policy"]).toBe("same-origin");expect(response.headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
-   expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");expect(response.body).not.toContain("./assets/");
+   expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin-allow-popups");expect(response.body).not.toContain("./assets/");
    for (const name of ["main-fixture.js", "main-fixture.css", "icon-fixture.svg"]) expect(response.body).toContain(`${CDN}/app/assets/${name}`);
   }
  });
@@ -70,5 +71,18 @@ describe("the cell app shell and its immutable files", () => {
  });
  it("omits unavailable realtime hosts instead of opening a wildcard connection policy", () => {
   const headers = appHeaders({ assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" }, "fixture");expect(headers["content-security-policy"]).toContain("connect-src 'self';");expect(headers["content-security-policy"]).not.toContain("*");
+ });
+});
+
+describe("the app's style policy", () => {
+ it("allows exactly one style attribute, WebKit's own select style, and never unsafe-inline", () => {
+  const policy = appHeaders({ assetOrigin: CDN, realtimeHttpHost: HTTP, realtimeWsHost: WS }, "nonceFixture")["content-security-policy"]!;
+  const directive = (name: string) => policy.split("; ").find(part => part === name || part.startsWith(name + " "));
+  expect(directive("style-src-attr")).toBe("style-src-attr 'unsafe-hashes' 'sha256-3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw='");
+  // That hash is the base64 SHA-256 of the one string WebKit writes on a native <select>.
+  expect(createHash("sha256").update("text-overflow:inherit").digest("base64")).toBe("3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw=");
+  expect(policy).not.toContain("unsafe-inline");
+  expect(policy.match(/style-src-attr/g)).toHaveLength(1);
+  expect(directive("style-src")).toBe("style-src 'self' " + CDN + " 'nonce-nonceFixture'");
  });
 });

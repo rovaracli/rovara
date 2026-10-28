@@ -8,6 +8,12 @@ export function tokensCss(): string {
  return `:root{${common}${declarations("light")}}@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){${declarations("dark")}}}:root[data-theme="dark"]{${declarations("dark")}}`;
 }
 /**
+ * Firefox asks for /favicon.ico on any page that names no icon and checks that request against the page's `img-src`. Our server pages
+ * send `default-src 'none'`, so each one logged a CSP violation for a favicon nobody serves. Every server page names this empty data: icon
+ * instead, and its policy allows `img-src data:` and nothing wider: the page still cannot load an image from any network address.
+ */
+export const SERVER_PAGE_ICON = '<link rel="icon" href="data:,">';
+/**
  * The shared base style of the pages the broker serves. `pre: false` leaves out the global `pre` rule (wrapped, padded, bordered), for a page that styles its own
  * code blocks: the task page scrolls a code block sideways and wraps only evidence code and document text, so a global wrap rule would reflow every block.
  */

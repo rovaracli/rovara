@@ -1,4 +1,4 @@
-import { serverPageCss } from "@agentx/design-tokens";
+import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // Plan 3, Task 21a-presence (R66, R67): the words and shape of the confirmation page, `GET /v1/app/approve/{id}`. Like Plan 2's join page it
 // is built here once, escaped once, and nothing on it is a secret except its own CSRF token (derived from the session cookie, shown only to
 // the browser that holds it). Plan 7 restyles it.
@@ -15,7 +15,7 @@ export const CONFIRM_PAGE_HEADERS: Record<string, string> = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
   pragma: "no-cache",
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
@@ -36,7 +36,7 @@ const text = (value: string) => escape(visible(value));
 const STYLE = serverPageCss() + ".rv-wordmark{font-weight:650;letter-spacing:-.025em;margin:0 0 1.5rem}.rv-server-card{background:var(--rv-bg-raised);padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg)}h1{line-height:1.2;margin:0 0 1rem}h2{font-size:var(--rv-font-lg);margin-top:1.5rem}p{margin:1rem 0}button{margin:.5rem .5rem .5rem 0}pre{border-radius:var(--rv-radius-sm)}a.method{display:inline-flex;min-height:44px;align-items:center}main{max-width:44rem}";
 
 function shell(statusCode: number, title: string, main: string): PageResponse {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${text(title)}</title>`
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${text(title)}</title>${SERVER_PAGE_ICON}`
     + `<style>${STYLE}</style></head><body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${text(title)}</h1>${main}</section></main></body></html>`;
   return { statusCode, headers: { ...CONFIRM_PAGE_HEADERS }, body };
 }

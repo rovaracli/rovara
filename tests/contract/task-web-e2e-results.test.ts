@@ -36,7 +36,7 @@ describe("the results section of the task page", () => {
     const page = await pageOf({ ...base, e2eResults: results() });
     expect(page.body).toContain(`href="/review/${taskId}/task/api/e2e/artifacts/${SHOT_SHA}"`);
     expect(page.body).not.toContain("<img");
-    expect(page.headers["content-security-policy"]).toContain("img-src 'none'");
+    expect(page.headers["content-security-policy"]).toContain("img-src data:");
   });
 
   it("has no section when the task has no rows, and escapes what a row holds", async () => {
