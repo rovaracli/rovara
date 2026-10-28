@@ -41,6 +41,8 @@ export async function maintainPullRequest(options: {
   stopWorkspaceProcesses?: (rootPath: string) => Promise<{ stopped: number } | void>;
   /** A workflow task's fix removes every container but the worker's own before the push credential is fetched. A seam for tests, as in publication. */
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
+  /** Whether another operation is still running in this worker (server.ts); the push waits for it to end. Default: none. */
+  otherOperationActive?: () => boolean;
 }): Promise<PullRequestLifecycleResult> {
   const { invocation } = options;
   // In the devcontainer preparation recorded, as at publication (#183).
@@ -74,6 +76,7 @@ export async function maintainPullRequest(options: {
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
+      ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
     });
   }
   const credential = await options.credentialProvider(repository);

@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DevcontainerCli } from "../../packages/worker/src/devcontainer.js";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
+import { OperationJournal } from "../../packages/worker/src/journal.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
+import { anotherOperationActive, createWorkerServerState, handleWorkerRequest, type WorkerServerState } from "../../packages/worker/src/server.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { sweepWorkspaceContainers, type DockerContainer } from "../../packages/worker/src/workspace-containers.js";
 import { stopWorkspaceProcesses, type ProcessEntry } from "../../packages/worker/src/workspace-processes.js";
@@ -26,13 +28,13 @@ const SENTINEL = "the session was about to open";
 type Mode = "REVIEW" | "FEEDBACK_REVIEW" | "PLAN_CRITIQUE" | "UNDERSTAND";
 const MODES: readonly Mode[] = ["REVIEW", "FEEDBACK_REVIEW", "PLAN_CRITIQUE", "UNDERSTAND"];
 
-async function workspace(): Promise<string> {
+async function workspace(options: { manifest?: boolean } = {}): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "stop-before-reading-")));
   roots.push(root);
   await mkdir(join(root, ".agentx"));
   await mkdir(join(root, "app/.devcontainer"), { recursive: true });
   await writeFile(join(root, "app/.devcontainer/devcontainer.json"), "{\"image\":\"node:22\"}\n");
-  await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({
+  if (options.manifest !== false) await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({
     schemaVersion: 2, projectName: "x", projectRevision: 1, creationIdentity: "fixture", complete: true, updatedAt: new Date().toISOString(), completedSetupSteps: [], readinessResults: [],
     repositories: [{ name: "app", path: "app", url: "http://127.0.0.1/app.git", defaultBranch: "main" }],
     devcontainer: { repository: "app", configPath: "app/.devcontainer/devcontainer.json" },
@@ -123,12 +125,12 @@ function invocation(mode: Mode | "IMPLEMENT"): WorkerInvocation {
   };
 }
 
-async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT") {
+async function run(root: string, world: ReturnType<typeof fakeWorld>, mode: Mode | "IMPLEMENT", extra: { otherOperationActive?: () => boolean } = {}) {
   const events: WorkerEvent[] = [];
   const outcome = await runTaskInvocation(invocation(mode), {
     rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: world.piAdapter, docker: world.docker, devcontainerCli: world.devcontainerCli,
     taskShell: { kind: "sandbox", docker: world.docker, image: "sandbox-image" },
-    stopBeforeReading: world.options,
+    stopBeforeReading: { ...world.options, ...extra },
     // The feedback review reads its bundles right after the programs are stopped; reading them is where this test ends that run.
     feedbackBundleReader: async () => { world.timeline.push(`session:open(processes=${world.processes.size},containers=${world.containers.map((entry) => entry.id).join("+")})`); throw new Error(SENTINEL); },
     eventSink: async (batch) => { events.push(...batch); }, artifactSink: async () => undefined, log: () => undefined,
@@ -200,6 +202,92 @@ describe.each(MODES)("%s stops what the coding session started before it begins"
     expect(outcome?.message).not.toContain("agentx-secret-customer-container");
     expect(world.sessionsOpened).toBe(0);
     expect(world.timeline.filter((entry) => entry.startsWith("docker:run"))).toEqual([]);
+  });
+});
+
+describe.each(MODES)("%s and another operation still running in the worker", (mode) => {
+  const FIXED = `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace`;
+
+  it("stops with the fixed reason and reads nothing: its children being killed would not stop code still writing the workspace", async () => {
+    const root = await workspace();
+    const world = fakeWorld(root);
+    world.leave();
+    const { outcome } = await run(root, world, mode, { otherOperationActive: () => true });
+    expect(outcome?.message).toBe(FIXED);
+    expect(world.timeline).toEqual([]);
+    expect(world.sessionsOpened).toBe(0);
+    expect(world.upCalls).toBe(0);
+  });
+
+  it("control: with no other operation running it stops what was left and reads", async () => {
+    const root = await workspace();
+    const world = fakeWorld(root);
+    const { outcome } = await run(root, world, mode, { otherOperationActive: () => false });
+    expect(outcome?.message).toBe(SENTINEL);
+  });
+
+  // The stop comes before the step reads anything in the workspace, the manifest the coding session could write included.
+  it("stops first, before the workspace's manifest is read", async () => {
+    const root = await workspace({ manifest: false });
+    const world = fakeWorld(root);
+    const background = world.leave();
+    const { outcome } = await run(root, world, mode);
+    expect(outcome?.message).not.toBe(SENTINEL);
+    expect(outcome?.message).toMatch(/ENOENT|no such file/iu);
+    expect(world.timeline).toEqual(expect.arrayContaining([`kill:${background}`, "remove:devcontainer-1"]));
+
+    const refusing = fakeWorld(root);
+    refusing.leave();
+    refusing.killsDoNothing = true;
+    const refused = await run(root, refusing, mode);
+    expect(refused.outcome?.message).toBe(FIXED);
+  });
+});
+
+describe("the worker's own record of running operations", () => {
+  it("an IMPLEMENT still running and a REVIEW that arrives give the fixed stop, and no read", async () => {
+    const root = await workspace();
+    const world = fakeWorld(root);
+    world.leave();
+    const journalRoot = await mkdtemp(join(tmpdir(), "stop-before-reading-journal-"));
+    roots.push(journalRoot);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const finished = new Map<string, { status: string; error?: string }>();
+    const state: WorkerServerState = createWorkerServerState(new OperationJournal(journalRoot), {
+      async execute(invocation: WorkerInvocation) {
+        if (invocation.kind === "task" && invocation.payload.workflowMode === "IMPLEMENT") { await gate; return undefined; }
+        await runTaskInvocation(invocation, {
+          rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: world.piAdapter, docker: world.docker, devcontainerCli: world.devcontainerCli,
+          taskShell: { kind: "sandbox", docker: world.docker, image: "sandbox-image" },
+          stopBeforeReading: { ...world.options, otherOperationActive: () => anotherOperationActive(state, invocation.operationId) },
+          eventSink: async () => undefined, artifactSink: async () => undefined, log: () => undefined,
+        });
+        return undefined;
+      },
+    }, { onTerminal: async (result) => { finished.set(result.operationId, { status: result.status, ...(result.error === undefined ? {} : { error: result.error }) }); } });
+    const post = (invocation: WorkerInvocation) => handleWorkerRequest(new Request("http://worker/invocations", { method: "POST", body: JSON.stringify(invocation) }), state);
+    const implement = invocation("IMPLEMENT");
+    const review = invocation("REVIEW");
+    expect((await post(implement)).status).toBe(200);
+    expect((await post(review)).status).toBe(200);
+    for (let attempt = 0; attempt < 200 && !finished.has(review.operationId); attempt += 1) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+
+    expect(finished.get(review.operationId)).toMatchObject({ status: "FAILED", error: expect.stringContaining(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) as unknown });
+    expect(world.timeline).toEqual([]);
+    expect(world.sessionsOpened).toBe(0);
+    // Once the IMPLEMENT has ended, the same kind of step goes on.
+    release();
+    for (let attempt = 0; attempt < 200 && !finished.has(implement.operationId); attempt += 1) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    expect(state.activeOperations.has(implement.operationId)).toBe(false);
+    expect(anotherOperationActive(state, randomUUID())).toBe(false);
+  });
+
+  it("counts every operation but the asking one", () => {
+    const state = { activeOperations: new Set(["a", "b"]) } as unknown as WorkerServerState;
+    expect(anotherOperationActive(state, "a")).toBe(true);
+    expect(anotherOperationActive({ activeOperations: new Set(["a"]) }, "a")).toBe(false);
+    expect(anotherOperationActive({ activeOperations: new Set() } as unknown as WorkerServerState, "a")).toBe(false);
   });
 });
 

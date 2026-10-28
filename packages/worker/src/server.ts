@@ -78,6 +78,14 @@ export function createWorkerServerState(
   };
 }
 
+/**
+ * Whether the worker is still running an operation other than `operationId`. The worker accepts an invocation without waiting for the earlier ones, so the broker may have written
+ * an operation off as lost while it still runs here.
+ */
+export function anotherOperationActive(state: Pick<WorkerServerState, "activeOperations">, operationId: string): boolean {
+  return [...state.activeOperations].some((active) => active !== operationId);
+}
+
 /** What /ping lists: the features this build implements, less those the executor withholds right now (and why). */
 export function advertisedInvocationFeatures(state: WorkerServerState): { features: string[]; withheld: Readonly<Record<string, unknown>> } {
   let withheld: Readonly<Record<string, unknown>> = {};

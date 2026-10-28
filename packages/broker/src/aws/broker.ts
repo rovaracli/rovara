@@ -16398,7 +16398,8 @@ async function completedWorkflowItems(
       || current.revision !== binding.workflowRevision || current.taskId !== binding.taskId
       || current.candidate?.digest !== binding.candidateDigest || current.feedbackReview?.status !== "COLLECTING") return [];
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
+      // The programs earlier work left running could not be stopped, so the review read nothing: its own reason, like the other steps that only read.
+      next = blockWorkflow(current, terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses : WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
     } else {
       try {
         const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};

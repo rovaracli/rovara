@@ -35,7 +35,7 @@ export const WORKFLOW_BLOCK_REASONS = {
   /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
   stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
-  leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run. Retry it, or close the task.",
+  leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
   /** An approved PR feedback fix left every repository's code as its open pull request holds it: nothing was pushed. */
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",

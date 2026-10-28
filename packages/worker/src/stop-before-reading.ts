@@ -15,6 +15,8 @@ export interface StopBeforeReadingOptions {
   /** Test seams: the same two steps publication takes. */
   stopWorkspaceProcesses?: (rootPath: string) => Promise<{ stopped: number } | void>;
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
+  /** Whether another operation is still running in this worker (server.ts). */
+  otherOperationActive?: () => boolean;
   log?: (event: Record<string, unknown>) => void;
 }
 
@@ -22,6 +24,8 @@ export interface StopBeforeReadingOptions {
  * Before one of those steps reads anything, stops every program the coding session started the way publication does before it
  * takes a push token (publish.ts): the worker's own leftover processes (workspace-processes.ts), then every container but the
  * worker's own (workspace-containers.ts), the task sandbox and the dev container included, repeated until a round finds neither.
+ * If another operation is still running in this worker (an earlier coding run the broker wrote off as lost), nothing is stopped and the step fails the same way: killing its
+ * children would not stop its own code, which keeps writing the workspace.
  * Nothing is started in their place here: the step opens its own task sandbox afterwards, and does not start the dev container
  * (its lifecycle commands are the repository's), so no program of the project runs before the read.
  *
@@ -35,6 +39,7 @@ export async function stopProgramsBeforeReading(rootPath: string, options: StopB
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
+      ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
     });
   } catch (error) {
     log({ event: "read-step.stop-programs.failed", reason: redactText(error instanceof Error ? error.message : String(error)).slice(0, 300) });

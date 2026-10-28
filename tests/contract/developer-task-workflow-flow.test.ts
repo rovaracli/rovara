@@ -829,6 +829,17 @@ describe("native developer task workflow", () => {
     expect(taskWorkflow(harness, taskId)).toMatchObject({ state: "RUNNING", feedbackReview: { status: "COLLECTING" } });
   });
 
+  it("blocks a feedback review that could not first stop the programs earlier work left running with the leftover-programs reason, and the page still says it is watching", async () => {
+    const { harness, taskId, workspaceId, task, operationId, now } = await collectingFeedbackTask();
+    await harness.finish(workspaceId, operationId, "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace` });
+    const blocked = taskWorkflow(harness, taskId);
+    expect(blocked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.parse(now) };
+    expect(await getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: task.developerId } as never, taskId)).toMatchObject({ status: "Couldn't review the pull request feedback" });
+    expect(workflowMessage({ taskId, workflow: blocked })!.text).toContain("I'm still watching the pull request");
+  });
+
   it("blocks with the feedback-failed reason when a feedback review fails or reports nothing usable, and the page says it is still watching", async () => {
     for (const ending of ["FAILED", "SUCCEEDED"] as const) {
       const { harness, taskId, workspaceId, task, operationId, now } = await collectingFeedbackTask();

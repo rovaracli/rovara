@@ -1302,6 +1302,20 @@ describe("the push token never meets code the agent or a project controls (final
     await expect(git(fixture.bare, ["rev-parse", `refs/heads/${refusedBranch.payload.headBranch}`])).rejects.toThrow();
   });
 
+  it("fetches no credential and pushes nothing while another operation is still running in the worker", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.checkout, "WORK.md"), "checked work\n", "utf8");
+    const invocation = await checkedInvocation(fixture);
+    const credentialProvider = vi.fn(async () => ({}));
+    const stop = vi.fn(async () => ({ stopped: 0 }));
+    await expect(publishWorkspace({ rootPath: fixture.root, invocation, pullRequestSink: sink, credentialProvider, stopWorkspaceProcesses: stop,
+      sweepWorkspaceContainers: async () => ({ removed: 0 }), otherOperationActive: () => true }))
+      .rejects.toThrow(/another operation still running.*did not push/);
+    expect(credentialProvider).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    await expect(git(fixture.bare, ["rev-parse", `refs/heads/${invocation.payload.headBranch}`])).rejects.toThrow();
+  });
+
   it("removes every container but the worker's and stops every process, repeating until neither finds anything, before it asks for the push credential; and pushes nothing when either fails (docker containment)", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.checkout, "WORK.md"), "checked work\n", "utf8");

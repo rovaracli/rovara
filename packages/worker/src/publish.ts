@@ -59,6 +59,8 @@ export interface PublishWorkspaceOptions {
    * workspace-containers.ts). A seam for tests; the default removes them for real in the worker container.
    */
   sweepWorkspaceContainers?: (rootPath: string) => Promise<{ removed: number }>;
+  /** Whether another operation is still running in this worker (server.ts); the push waits for it to end. Default: none. */
+  otherOperationActive?: () => boolean;
   /** Host-only Git transport seam for an isolated local integration fixture. */
   run?: CredentialedGitRunner;
 }
@@ -72,8 +74,19 @@ const CONTAINMENT_ROUNDS = 4;
  */
 export async function containWorkspace(
   rootPath: string,
-  steps: { sweep: (rootPath: string) => Promise<{ removed: number }>; stop: (rootPath: string) => Promise<{ stopped: number } | void> },
+  steps: {
+    sweep: (rootPath: string) => Promise<{ removed: number }>;
+    stop: (rootPath: string) => Promise<{ stopped: number } | void>;
+    /**
+     * Whether another operation is still running in this worker. Stopping its children would not stop its own code, which keeps writing the workspace, so nothing is stopped and the
+     * caller fails closed.
+     */
+    otherOperationActive?: () => boolean;
+  },
 ): Promise<void> {
+  if (steps.otherOperationActive?.() === true) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "AgentX found another operation still running in this workspace, so it did not push");
+  }
   for (let round = 0; round < CONTAINMENT_ROUNDS; round += 1) {
     const { removed } = await steps.sweep(rootPath);
     const stopped = (await steps.stop(rootPath))?.stopped ?? 0;
@@ -133,6 +146,7 @@ export async function publishWorkspace(
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
+      ...(options.otherOperationActive === undefined ? {} : { otherOperationActive: options.otherOperationActive }),
     });
     return options.credentialProvider(repository);
   };

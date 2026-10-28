@@ -183,6 +183,24 @@ async function runTask(
 ): Promise<TaskInvocationResult> {
   const invocation = WorkerInvocationSchema.parse(untrustedInvocation);
   if (invocation.kind !== "task") throw agentXError("CONFIG_INVALID", "runTaskInvocation requires a task");
+  // The reviews, the plan check, Understand and the feedback review read a workspace the coding session wrote. Before any of them starts, and before anything is read from the workspace
+  // (its manifest, a pull request's head), every program and container that session left running is stopped, as publication does before a push (a background job, a process in the task
+  // sandbox, a process in the dev container, which persists between operations). Nothing is read over a live program: if they cannot all be stopped, or another operation is still
+  // running in this worker, the step stops here with one fixed reason. These steps then do not start the dev container (its lifecycle commands are the repository's, and would run before
+  // the read): their file tools run in the task sandbox, as the feedback review's do.
+  const feedbackReview = invocation.payload.workflowMode === "FEEDBACK_REVIEW";
+  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
+    // The review's own error handling starts after this; a start that fails still reports as the review does.
+    if (feedbackReview) {
+      const events = new EventBatcher(dependencies.eventSink);
+      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
+      await events.flush().catch(() => undefined);
+    }
+    throw error;
+  };
+  const readsOnly = invocation.payload.workflowMode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(invocation.payload.workflowMode);
+  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
+  if (readsOnly) await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading).catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   const step = invocation.payload.agentStep;
   // What a coding step adds to this task's sessions; an agent step is a run of its own, which takes none of the coding paths below.
   const agentStep = step?.kind === "coding" ? step : undefined;
@@ -233,26 +251,9 @@ async function runTask(
   }
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
-  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // The reading steps (below) run no project command, and no agent step starts the project's devcontainer (its lifecycle commands
+  // The reading steps (above) run no project command, and no agent step starts the project's devcontainer (its lifecycle commands
   // are the repository's, and a read step's checkout may be a contributor's pull request head): they run in the task sandbox,
   // whose file tools keep R56's containment.
-  const feedbackReview = invocation.payload.workflowMode === "FEEDBACK_REVIEW";
-  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
-    // The review's own error handling starts after this; a start that fails still reports as the review does.
-    if (feedbackReview) {
-      const events = new EventBatcher(dependencies.eventSink);
-      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
-      await events.flush().catch(() => undefined);
-    }
-    throw error;
-  };
-  // The reviews, the plan check, Understand and the feedback review read a workspace the coding session wrote. Before any of them starts, every program and container that session left
-  // running is stopped, as publication does before a push (a background job, a process in the task sandbox, a process in the dev container, which persists between operations). Nothing is
-  // read over a live program: if they cannot all be stopped, the step stops here with one fixed reason. These steps then do not start the dev container (its lifecycle commands are the
-  // repository's, and would run before the read): their file tools run in the task sandbox, as the feedback review's do.
-  const readsOnly = invocation.payload.workflowMode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(invocation.payload.workflowMode);
-  if (readsOnly) await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading).catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   const devcontainer = step?.kind === "agent" || readsOnly ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
