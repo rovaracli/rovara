@@ -1,12 +1,11 @@
 // Own-grant project AI writes bind the native caller profile in their existing atomic commit.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError } from "@agentx/contracts";
+import { DeveloperSignInMethodSchema, agentXError } from "@agentx/contracts";
 import { methodSessionsEndedAttribute } from "../developer/store.js";
 import { Aliases, type TransactItem } from "../agents/table-writes.js";
 
 type Deps = { documentClient: { send(command: unknown): Promise<unknown> }; projectAiSignInTableName?: string };
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The caller's current sign-in identity could not be checked. Reload or ask an installation administrator to check it.");
-const methods = ["cloud", "github", "oidc", "slack"] as const;
 
 /** No survivor routing or State-table fallback. Native unlink changes method-ending marks. */
 export async function projectAiCallerCheck(deps: Deps, by: string): Promise<TransactItem> {
@@ -19,7 +18,7 @@ export async function projectAiCallerCheck(deps: Deps, by: string): Promise<Tran
     row = response.Item;
   } catch { throw unavailable(); }
   if (row === undefined || row === null || typeof row !== "object" || Array.isArray(row) || row.pk !== key.pk || row.sk !== key.sk || row.developerId !== by || Object.hasOwn(row, "mergedInto") || (Object.hasOwn(row, "revoked") && row.revoked !== false)) throw unavailable();
-  const marks = ["sessionsEndedAt", ...methods.map(methodSessionsEndedAttribute)];
+  const marks = ["sessionsEndedAt", ...DeveloperSignInMethodSchema.options.map(methodSessionsEndedAttribute)];
   for (const field of marks) {
     if (Object.hasOwn(row, field) && (typeof row[field] !== "string" || !Number.isFinite(Date.parse(row[field])))) throw unavailable();
   }
