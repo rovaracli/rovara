@@ -287,7 +287,8 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
     const fixture = await createFixture({ conflict: true });
     // A merge made in the workspace by hand leaves unmerged entries in its index.
     await git(fixture.checkout, ["-c", "protocol.file.allow=always", "fetch", "origin", "main"]);
-    await expect(git(fixture.checkout, ["merge", fixture.conflictBase!])).rejects.toThrow();
+    // git refuses to start a merge without a committer identity (a CI runner has none configured, and its host name gives no usable address), so the hand merge names one, as `commit` does.
+    await expect(git(fixture.checkout, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "merge", fixture.conflictBase!])).rejects.toThrow();
     expect((await git(fixture.checkout, ["diff", "--name-only", "--diff-filter=U"])).trim()).toBe("README.md");
     await writeFile(join(fixture.checkout, "README.md"), "both versions\n", "utf8");
     const tree = await temporaryIndexTree({ directory: fixture.checkout });

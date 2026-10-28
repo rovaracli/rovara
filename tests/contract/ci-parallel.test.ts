@@ -3,12 +3,13 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { gateVerdict, needsVerdict } from "../../scripts/ci-gate.js";
+import { CLOUD_REPOSITORY, PUBLIC_REPOSITORY, conditionFor, timeoutFor } from "../support/workflow-expression.js";
 
 interface Job {
   name?: string;
   needs?: string | string[];
   if?: string;
-  "timeout-minutes"?: number;
+  "timeout-minutes"?: number | string;
   strategy?: { "fail-fast"?: boolean; matrix?: { shard?: number[] } };
   steps: Array<{ name?: string; run?: string; uses?: string; env?: Record<string, string> }>;
 }
@@ -125,20 +126,45 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     expect(run.indexOf("apparmor_restrict_unprivileged_userns")).toBeLessThan(run.indexOf("docker build -f"));
   });
 
-  it("gives every job but the manual live-AWS one a time limit, so a hung runner fails in minutes and not after six hours", async () => {
+  it("gives every job but the manual live-AWS one a time limit, on either repository, so a hung runner fails in minutes and not after six hours", async () => {
     const { jobs } = await workflow();
     for (const [name, job] of Object.entries(jobs)) {
-      if (name !== "live-aws") expect(job["timeout-minutes"], name).toBeGreaterThan(0);
+      if (name === "live-aws") continue;
+      // Cloud's slower runners may get a longer limit than the public ones (an expression on github.repository), but each repository sees a real limit.
+      for (const repository of [PUBLIC_REPOSITORY, CLOUD_REPOSITORY]) {
+        expect(timeoutFor(job["timeout-minutes"], repository), `${name} on ${repository}`).toBeGreaterThan(0);
+      }
     }
   });
 
-  it("runs on pull requests and by hand only, never on a push to mainline, and skips a draft until it is ready", async () => {
+  it("gives the slower Cloud runners at least as long as the public ones, and the Cloud test shards an hour", async () => {
+    const { jobs } = await workflow();
+    for (const [name, job] of Object.entries(jobs)) {
+      if (name === "live-aws") continue;
+      expect(timeoutFor(job["timeout-minutes"], CLOUD_REPOSITORY), name).toBeGreaterThanOrEqual(timeoutFor(job["timeout-minutes"], PUBLIC_REPOSITORY));
+    }
+    // Shard 1 of 4 needs 46 to 50 minutes on a 2 vCPU Cloud runner (CI run 40594341894); the 40 minutes it had cancelled it.
+    expect(timeoutFor(jobs.test!["timeout-minutes"], CLOUD_REPOSITORY)).toBeGreaterThanOrEqual(60);
+  });
+
+  // The public copy of this file runs on pull requests and by hand. The Cloud copy is manual-only (owner decision 2026-10-27, to protect the Actions budget), and
+  // narrows what a stray event can start inside `scope` and `local`, because a trigger cannot carry an `if`.
+  it("runs on pull requests and by hand only, never on a push to mainline, and skips a draft until it is ready; the Cloud copy runs by hand only", async () => {
     const parsed = await workflow();
-    expect(parsed.on).toEqual({
-      workflow_dispatch: null,
-      pull_request: { types: ["opened", "synchronize", "reopened", "ready_for_review"] },
-    });
-    expect(parsed.jobs.scope!.if).toBe("github.event.pull_request.draft != true");
+    const pullRequest = { types: ["opened", "synchronize", "reopened", "ready_for_review"] };
+    const manualOnly = !(parsed.on !== null && typeof parsed.on === "object" && "pull_request" in parsed.on);
+    if (manualOnly) {
+      // Cloud: no push, no pull_request trigger at all, so an event other than a manual run starts nothing...
+      expect(parsed.on).toEqual({ workflow_dispatch: null });
+      // ...and should a trigger come back, the public repository still skips a push, and Cloud takes only a pull request into cloud/integration or a release branch.
+      expect(conditionFor(parsed.jobs.scope!.if, PUBLIC_REPOSITORY)).toBe("github.event.pull_request.draft != true && github.event_name != 'push'");
+      expect(conditionFor(parsed.jobs.scope!.if, CLOUD_REPOSITORY)).toBe(
+        "github.event.pull_request.draft != true && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))",
+      );
+    } else {
+      expect(parsed.on).toEqual({ workflow_dispatch: null, pull_request: pullRequest });
+      expect(conditionFor(parsed.jobs.scope!.if, PUBLIC_REPOSITORY)).toBe("github.event.pull_request.draft != true");
+    }
   });
 
   it("supersedes a pull request's run in progress when it is pushed again, and never cancels a manual run", async () => {
@@ -151,7 +177,17 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     const { jobs } = await workflow();
     const gate = jobs.local!;
     expect(gate.name).toBeUndefined();
-    expect(gate.if).toBe("always() && github.event.pull_request.draft != true");
+    // The public repository never starts the gate for a push; Cloud only for a manual run or a pull request into cloud/integration or a release branch (the Cloud copy
+    // of this file; the public copy has no repository guard).
+    const publicGate = conditionFor(gate.if, PUBLIC_REPOSITORY);
+    if (gate.if!.includes("github.repository")) {
+      expect(publicGate).toBe("always() && github.event.pull_request.draft != true && github.event_name != 'push'");
+      expect(conditionFor(gate.if, CLOUD_REPOSITORY)).toBe(
+        "always() && github.event.pull_request.draft != true && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))",
+      );
+    } else {
+      expect(publicGate).toBe("always() && github.event.pull_request.draft != true");
+    }
     const others = Object.keys(jobs).filter((name) => name !== "local" && name !== "live-aws").sort();
     expect([...(gate.needs as string[])].sort()).toEqual(others);
     const run = gate.steps.map((step) => step.run ?? "").join("\n");

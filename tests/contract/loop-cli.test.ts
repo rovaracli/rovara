@@ -1,5 +1,5 @@
 // rovara loop (#355): the commands that set a repository up and show where its loops stand.
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,7 +11,8 @@ const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
 async function setUp() {
-  const root = await mkdtemp(join(tmpdir(), "rovara-loop-cli-"));
+  // The real path: the CLI records the checkout it resolves, and on macOS the temp directory is behind a symlink (/var is /private/var).
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rovara-loop-cli-")));
   dirs.push(root);
   const home = join(root, "home");
   const checkout = join(root, "checkout");

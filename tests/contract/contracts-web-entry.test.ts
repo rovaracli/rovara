@@ -33,8 +33,19 @@ describe("browser contracts entry", () => {
     expect([...(await graph("packages/contracts/src/web.ts"))].sort()).toEqual(manifest);
   });
   it("refuses a Node import added to a listed file", async () => {
-    const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
-    expect(results.flatMap(result => result.messages).some(message => message.ruleId === "no-restricted-imports")).toBe(true);
+    // Run bare, ESLint types the file with tsconfig.lint.json, the program over the whole repository (about 2,900 files; one eslint process over all of it needed
+    // about 14 GB), and a worker on an 8 GB CI runner, whose heap defaults to about 2 GB, ran out of memory. npm run lint types each file with the program that owns it
+    // instead (scripts/lint-shards.ts, through ROVARA_LINT_PROJECT, which eslint.config.js reads when it loads). The file is in the contracts package's program, so
+    // the same config and the same rule run over a few hundred files.
+    const before = process.env.ROVARA_LINT_PROJECT;
+    process.env.ROVARA_LINT_PROJECT = "./tsconfig.lint/pkg-contracts.json";
+    try {
+      const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
+      expect(results.flatMap(result => result.messages).some(message => message.ruleId === "no-restricted-imports")).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.ROVARA_LINT_PROJECT;
+      else process.env.ROVARA_LINT_PROJECT = before;
+    }
   });
   it("keeps schema fingerprints byte-compatible with stored Node hashes", () => {
     for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {

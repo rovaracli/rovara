@@ -2,7 +2,8 @@
 // broker's start-workflow event, the notifier posts to a strict Slack double, buttons and modals go through the
 // real interactivity handler, and a worker stub runs the real run-task on the scripted faux model against a real
 // git repository. GitHub is a fake that only accepts a push made with a push-scoped token.
-import { createHmac, generateKeyPairSync, randomUUID, sign as cryptoSign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomUUID, sign as cryptoSign } from "node:crypto";
+import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -346,6 +347,11 @@ export async function createWorkflowE2E(options: {
     developers?: readonly Developer[];
   };
   /** Plan 6 Task 14: the GitHub reads and writes merge tracking uses (a pull request's status, a person's permission, marking ready, asking for reviewers); absent, the broker has none. */
+  /**
+   * Plan 5 Task 23 (I2): turns on the agent-session machinery and the confirmation pages, as a deployment with agents has them. A Code task's ownership take-over is then a pending change the person
+   * confirms in a browser (`e2e.confirm`), not a People commit; without this the take-over answers "isn't available right now".
+   */
+  agentSessions?: boolean;
   trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
@@ -390,6 +396,7 @@ export async function createWorkflowE2E(options: {
     } }),
     ...(options.consistency === undefined ? {} : { consistency: options.consistency }),
     brokerExtra: {
+      ...(options.agentSessions === true ? { agents: {}, decide: {} } : {}),
       ...(options.environmentName === undefined ? {} : { environmentName: options.environmentName }),
       githubPullRequests,
       startPlanEvidenceJob: async (event: PlanEvidenceEvent) => { planEvidenceJobs.push(event); },
@@ -1417,6 +1424,22 @@ export async function createWorkflowE2E(options: {
         requestContext: { requestId: randomUUID(), http: { method: "POST" } },
       });
       return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+    },
+
+    /** The person opens a confirmation link in a browser they just signed in on, and presses the button (needs `agentSessions`). */
+    async confirm(confirmUrl: string, who: { developerId: string }, decision: "approve" | "decline" = "approve"): Promise<{ status: number; body: string }> {
+      const approvalId = new URL(confirmUrl).pathname.split("/").pop()!;
+      const cookie = `cookie-${randomUUID()}-${"x".repeat(30)}`;
+      const signedInAt = Math.floor(Date.now() / 1000) - 20;
+      await new DecideStore({ documentClient: db, tableName: "signin", now: Date.now }).putSession(cookie, { orgId: TEST_ORG, developerId: who.developerId, approvalId, signedInAt, method: "email_code",
+        csrfHash: createHash("sha256").update(csrfTokenFor(cookie)).digest("hex"), expiresAt: signedInAt + 3600 });
+      const response = await harness.handler({
+        version: "2.0", rawPath: new URL(confirmUrl).pathname, rawQueryString: "",
+        headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: new URL(confirmUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString(),
+        requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      });
+      return { status: response.statusCode, body: response.body };
     },
 
     /** Runs the broker's scheduled GitHub webhook recovery sweep, as its EventBridge schedule does; answers its status and reply. */
