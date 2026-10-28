@@ -300,7 +300,7 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
  * cap. `confirm_move` is Rovara's own move (a member merged, removed or no longer a project maintainer), which already applied: approving it only records that an admin saw it.
  */
 export type OwnerCapChange =
-  | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
+  | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }; /** Server-captured per-run value; null is confirmed absence. */ expectedMaxPerRunUsd?: number | null }
   | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }

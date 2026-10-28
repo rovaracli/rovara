@@ -1326,7 +1326,7 @@ async function requireSameOwner(deps: SpendRequestDependencies, record: SpendReq
 }
 
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
-async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[]): Promise<void> {
+async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], actor: AgentCaller): Promise<void> {
   const agentId = record.agentId as never;
   const options = { overrideCap: { spendRequestId: record.spendRequestId, items, closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
@@ -1345,7 +1345,12 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
     }
   }
   switch (change.op) {
-    case "set_budget": await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, options); return;
+    case "set_budget": {
+      if (change.budget.maxPerRunUsd !== undefined && change.expectedMaxPerRunUsd === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This budget request has no per-run snapshot. Ask for a new review before applying it.");
+      await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, { ...options,
+        ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: { developerId: by, role: actor.orgRole } });
+      return;
+    }
     case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, options); return;
     case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, options); return;
     case "unarchive": await deps.store.unarchive(record.orgId, agentId, by, undefined, options); return;
@@ -1416,7 +1421,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     const change = await recheckedChange(deps, caller, record);
     await requireSameOwner(deps, record, change);
     try {
-      await applyOwnerCap(deps, record, change, decidedBy, ending);
+      await applyOwnerCap(deps, record, change, decidedBy, ending, caller);
     } catch (error) {
       if (error instanceof AgentXError) throw error;
       await refused(error);

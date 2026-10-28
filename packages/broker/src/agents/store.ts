@@ -4,6 +4,7 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -191,6 +192,12 @@ function checkProfile(name: string, description: string): void {
 
 /** What a write that changes whose total a budget is in can ask of the store (Task 28). */
 export interface BudgetWriteOptions {
+  /** Required on request-bearing/approval budget writes; never supplied by an HTTP body. */
+  actor?: BudgetActor;
+  /** The per-run value the request reviewed, null for confirmed absence. */
+  expectedMaxPerRunUsd?: number | null;
+  /** Resource fields on which the route granted manage access; never from a client. */
+  manageSnapshot?: BudgetSubject;
   /** Why Rovara itself moved this (Task 11): a member removed or merged. The agent's `owner_changed` event names it. */
   cause?: MoveCause;
   /**
@@ -301,6 +308,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   /** The version the org's own use of a built-in runs: its pin, or the default pin while it has no settings yet. */
   async pinnedBuiltinVersion(orgId: OrgId, agentId: AgentId): Promise<number> {
     return (await this.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? this.builtins.defaultPin(agentId);
+  }
+
+  /** Budget review reads the existing settings or a virtual default, without initializing a row. */
+  async builtinBudgetSnapshot(orgId: OrgId, agentId: AgentId, by = "system"): Promise<BuiltinSettings> {
+    this.requireBuiltin(agentId);
+    return await this.getBuiltinSettings(orgId, agentId) ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt: this.iso() };
   }
 
   /** Creates the org's settings for a built-in, pinned to its default pin (the newest release, except Rovara Code's), if it has none; returns them either way. */
@@ -659,6 +672,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (budget.maxPerRunUsd !== undefined && budget.maxPerRunUsd !== null && usdToWholeMicrodollars(budget.maxPerRunUsd) === undefined) {
       throw coded("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
+    if ((request !== undefined || options.overrideCap !== undefined) && options.actor === undefined) throw budgetActorRefused();
+    if (options.actor !== undefined && (options.actor.developerId !== by || (request !== undefined && request.developerId !== options.actor.developerId))) throw budgetActorRefused();
+    const actorChecks = options.actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, options.actor);
     const updatedAt = this.iso();
     const set: Item = {
       ...(typeof budget.monthlyUsd === "number" ? { monthlyBudgetUsd: budget.monthlyUsd } : {}),
@@ -669,14 +685,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const detail = { monthlyUsd: budget.monthlyUsd ?? undefined, maxPerRunUsd: budget.maxPerRunUsd ?? undefined, cleared: remove };
     let key: OrgKey;
     let current: AgentRecord | BuiltinSettings;
+    let createBuiltin = false;
     if (isBuiltinAgentId(agentId)) {
-      current = await this.ensureBuiltinSettings(orgId, agentId, by);
+      const existing = await this.getBuiltinSettings(orgId, agentId);
+      createBuiltin = existing === undefined;
+      current = existing ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt };
       key = builtinSettingsKey(orgId, agentId);
       set["updatedBy"] = by;
     } else {
       current = await this.require(orgId, agentId);
       key = agentKey(orgId, agentId, "META");
     }
+    if (options.expectedMaxPerRunUsd !== undefined && options.expectedMaxPerRunUsd !== (current.maxPerRunUsd ?? null)) throw budgetConflict();
     const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
     const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
@@ -687,12 +707,21 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId,
       before: { monthlyBudgetUsd: current.monthlyBudgetUsd, maxPerRunUsd: current.maxPerRunUsd }, after: { monthlyBudgetUsd, maxPerRunUsd },
     }));
-    await this.commit(...withOverride([
-      this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
+    const items = [
+      createBuiltin ? this.put(key, "BUILTIN_AGENT_SETTINGS", written) : this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: (aliases) => {
+        const field = aliases.name("maxPerRunUsd");
+        const perRun = current.maxPerRunUsd === undefined ? `attribute_not_exists(${field})` : `${field} = ${aliases.value(current.maxPerRunUsd)}`;
+        const manage = options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(aliases)}`;
+        return `${budgetGuard(current)(aliases)} AND ${perRun}${manage}`;
+      } }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, written);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }

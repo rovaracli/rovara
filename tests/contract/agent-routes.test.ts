@@ -1353,7 +1353,7 @@ async function budgetDecisionFixture() {
   const f = await setup(), id = await f.create(MAYA);
   f.db.set({ ...f.db.get(agentGuardrailsKey(TEST_ORG)), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 1000 } });
   const capture = capturingAuditDeps({ db: f.db });
-  const deps = { ...f.deps, audit: capture.audit, store: new AgentStore({ documentClient: f.db, tableName: "state", now: Date.now, audit: capture.audit }) };
+  const deps = { projectMembers: f.members, documentClient: f.db, tableName: "state", now: Date.now, confirmOrigin: f.deps.confirmOrigin, signInStore: f.deps.signInStore, audit: capture.audit, store: new AgentStore({ documentClient: f.db, tableName: "state", now: Date.now, audit: capture.audit }) };
   const decide = (request: SpendRequestRecord) => decideSpendRequest(deps, { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" }, request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
   const pending = () => f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap" && row.status === "PENDING")[0] as unknown as SpendRequestRecord;
   const ask = async (monthlyUsd: number, maxPerRunUsd: number) => {

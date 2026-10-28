@@ -904,10 +904,11 @@ async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller,
   if (input.monthlyUsd === undefined && input.maxPerRunUsd === undefined) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyUsd and maxPerRunUsd");
   // Task 8 stored the guardrails' ceilings; this is where they hold (and again when an admin approves it over the owner cap).
   await requireAgentBudgetAllowed(deps, caller.orgId, input);
-  const current: AgentRecord | BuiltinSettings = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
+  const current: AgentRecord | BuiltinSettings = "owner" in agent ? agent : await deps.store.builtinBudgetSnapshot(caller.orgId, agentId, caller.developerId);
   const monthlyBudgetUsd = typeof input.monthlyUsd === "number" ? input.monthlyUsd : input.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
   const change = { ...(input.monthlyUsd === undefined ? {} : { monthlyUsd: input.monthlyUsd }), ...(input.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.maxPerRunUsd }) };
-  const written = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { monthlyBudgetUsd }), { op: "set_budget", budget: change }, mark, (options) => deps.store.setBudget(caller.orgId, agentId, change, caller.developerId, mark, options));
+  const snapshot = input.maxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: current.maxPerRunUsd ?? null };
+  const written = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { monthlyBudgetUsd }), { op: "set_budget", budget: change, ...snapshot }, mark, (options) => deps.store.setBudget(caller.orgId, agentId, change, caller.developerId, mark, { ...options, ...snapshot, manageSnapshot: current, actor: { developerId: caller.developerId, role: caller.orgRole } }));
   if (written instanceof StatusReply) return written;
   return withDisabled({ agent: await shown(written) }, await recheck(deps, caller.orgId, agentId));
 }

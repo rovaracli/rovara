@@ -446,11 +446,16 @@ describe("the one monthly total of a person's agent budgets", () => {
     const { ownerAgents, store, db, totalOf } = ownerSetup();
     const [first] = await ownerAgents(10);
     const request = { orgId: TEST_ORG, developerId: ALICE, requestId: randomUUID(), fingerprint: "budget" };
-    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, ALICE, request);
+    seedMembership(db, ALICE);
+    const options = { actor: { developerId: ALICE, role: "member" as const } };
+    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, ALICE, request)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(totalOf(ALICE)).toBe(10);
+    expect(db.get(agentRequestKey(TEST_ORG, ALICE, request.requestId))).toBeUndefined();
+    await store.setBudget(TEST_ORG, first!, { monthlyUsd: 20 }, ALICE, request, options);
     expect(db.get(agentRequestKey(TEST_ORG, ALICE, request.requestId))).toMatchObject({ fingerprint: "budget" });
     expect(totalOf(ALICE)).toBe(20);
     // The same request id again is refused whole: nothing about the budget or the total changes.
-    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 30 }, ALICE, { ...request, fingerprint: "other" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(store.setBudget(TEST_ORG, first!, { monthlyUsd: 30 }, ALICE, { ...request, fingerprint: "other" }, options)).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     expect(totalOf(ALICE)).toBe(20);
   });
 });
