@@ -128,6 +128,8 @@ import {
   WorkflowFeedbackReviewRetryRequestSchema,
   WORKFLOW_PLAN_MAX_BYTES,
   WORKFLOW_BLOCK_REASONS,
+  isNoCodeChangedReason,
+  noChangeFindingsFrom,
   WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX,
   WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
   WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
@@ -1687,9 +1689,11 @@ export async function taskView(
   // supported client knows them (the task page and Slack read them from the stored task).
   let workflow: DeveloperTaskView["workflow"] = undefined;
   if (task.workflow !== undefined) {
-    const { workflowDependenciesOperationId: _internalOperationId, ...publicWorkflow } = task.workflow;
+    const { workflowDependenciesOperationId: _internalOperationId, noChangeFindings: storedFindings, ...publicWorkflow } = task.workflow;
     void _internalOperationId;
-    workflow = { ...publicWorkflow, decisions: task.workflow.decisions.map((stored) => publicWorkflowDecision(stored)) };
+    // What a run found when it changed nothing belongs to that stop only: it is rebuilt (redacted and bounded again) and shown while the step is blocked with it, never after a retry or another block.
+    const findings = task.workflow.state === "BLOCKED" && isNoCodeChangedReason(task.workflow.blockReason) ? noChangeFindingsFrom(storedFindings) : undefined;
+    workflow = { ...publicWorkflow, ...(findings === undefined ? {} : { noChangeFindings: findings }), decisions: task.workflow.decisions.map((stored) => publicWorkflowDecision(stored)) };
   }
   // PLANINC-2: planning that shows RUNNING although its run ended and the workspace is free (a stop recorded before the cancel fix)
   // reads as blocked, so the owner is offered Retry; the stored row is blocked by that retry, never by a read.
@@ -5401,8 +5405,10 @@ export function taskPageStage(
       return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
       ? { status: "The approved fix didn't change any code", nextStep: workflowKeepPullRequestsOffered(workflow)
         ? `Retry coding, keep the pull request as it is, or close the task ${inSlack}.` : `Retry coding or close the task ${inSlack}.` }
-      : { status: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? "Coding finished, but no code changed" : "Coding stopped before it finished",
-        nextStep: `Retry coding or close the task ${inSlack}.` };
+      : isNoCodeChangedReason(workflow.blockReason)
+        // No change was needed: what the agent found is on the page and in the thread; nothing was checked or opened as a pull request.
+        ? { status: "No code changes were needed", nextStep: `Close the task, or ask for a change by replying ${inSlack} and choosing Retry coding.` }
+        : { status: "Coding stopped before it finished", nextStep: `Retry coding or close the task ${inSlack}.` };
     case "VERIFY/WAITING": return workflow.e2e?.required === true && workflow.e2e.currentRoundId === undefined
       ? { status: "Preparing the checks", nextStep: "The checks start when workspace compute is ready." }
       : { status: "Preparing the checks", nextStep: "The approved checks start shortly." };
@@ -5995,6 +6001,10 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   // AUTOFIX: what Rovara did by itself and, while the step is blocked, why it asks (the stored ask, read as data).
   const autofixAsk = AutoFixAskSchema.safeParse(task.autofixAsk);
   const autofixLines = workflow === undefined ? [] : autoFixCardLines(workflow, workflow.state === "BLOCKED" && autofixAsk.success ? autofixAsk.data : undefined, { plain: true });
+  // A coding run that needed no code change: the page says so and shows what the agent found (rebuilt, redacted and bounded again). Only while the step is blocked with that stop.
+  const noChangeFound = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason) ? noChangeFindingsFrom(workflow.noChangeFindings) : undefined;
+  const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
+    ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   return {
     taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task)),
     ...(e2eResults === undefined ? {} : { e2eResults }),
@@ -6005,6 +6015,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     pullRequests: (workflow?.pullRequests ?? []).map((pullRequest) => ({ url: pullRequest.url, number: pullRequest.number, state: pullRequest.state })),
     ...(workflow !== undefined && task.closedAt === undefined && workflowApplicationRetryOffered(workflow) ? { applicationRetry: { canRetry: can(access.role, "retry") } } : {}),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
+    ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
     history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
     ...await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds }),

@@ -126,3 +126,22 @@ it("keeps a multiline paragraph together when attaching its actual id", async ()
  const f = setup(fixture({ body: { kind: "task", task }, anchors: [{ target: "plan_block", targetId: "p2", revision: "v1" }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
  const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });expect(source.closest(".rv-annotated-block")?.textContent).toContain("Then inspect the retry.");f.close();
 });
+const noCodeWorkflow = (extra: Record<string, unknown> = {}) => ({ ...workflow(), stage: "IMPLEMENT", state: "BLOCKED", blockReason: "No code changes were needed, so there is nothing to check or open as a pull request. Close the task, or ask for a change.", ...extra });
+it("shows what the agent found when a coding run needed no code change, as plain text, with the choices and no claim of checks or a pull request", () => {
+ const noChangeFindings = { commands: [{ command: "grep -rn retry src", output: "src/a.ts:4: <img src=x onerror=alert(1)>" }, { command: "npm test", output: "12 passed", failed: true }], omitted: 2, conclusion: "We use retry in one file. <script>window.__pwned=1</script>" };
+ const f = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ expect(screen.getByRole("heading", { name: "No code changes were needed. Here's what I found:" })).toBeTruthy();
+ expect(screen.getByText("We use retry in one file. <script>window.__pwned=1</script>")).toBeTruthy();
+ expect(screen.getByText("grep -rn retry src")).toBeTruthy();expect(screen.getByText("src/a.ts:4: <img src=x onerror=alert(1)>")).toBeTruthy();
+ expect(screen.getByText("2 earlier commands are not listed.")).toBeTruthy();expect(screen.getByText(/\(it failed\)/u)).toBeTruthy();
+ expect(screen.getByText(/Close the task, or ask for a change by replying/u)).toBeTruthy();
+ expect(f.container.querySelector("script,img,iframe")).toBeNull();expect(f.container.textContent).not.toMatch(/checks passed|verified/iu);f.close();
+});
+it("says the agent wrote no conclusion when the findings have none, and only that no change was needed when an older worker sent none, and nothing on another stop", () => {
+ const none = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ noChangeFindings: { commands: [{ command: "ls src" }] } }) }) } }));
+ expect(screen.getByText("The agent did not write a conclusion.")).toBeTruthy();none.close();
+ const older = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow() }) } }));
+ expect(screen.getByText("No code changes were needed.")).toBeTruthy();expect(screen.queryByText("The agent did not write a conclusion.")).toBeNull();older.close();
+ const other = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ blockReason: "Coding stopped before it finished.", noChangeFindings: { commands: [], conclusion: "left over" } }) }) } }));
+ expect(screen.queryByText("left over")).toBeNull();expect(screen.queryByText("No code changes were needed.")).toBeNull();other.close();
+});
