@@ -1,0 +1,55 @@
+// M31: one existing maintainer accept-only settings flow, using real table grants.
+import { randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { expect, it } from "vitest";
+import { projectAiKey, projectMemberKey } from "@agentx/contracts";
+import { writeProjectAi } from "../../packages/broker/src/spend/settings.js";
+import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { BEN, DEB, setup } from "../support/spend-world.js";
+import { TEST_ORG } from "../support/orgs.js";
+for (const existing of [false, true]) for (const loss of ["delete", "demote", "replace"] as const) it(`refuses ${loss} of the selected grant at ${existing ? "existing" : "first"} project settings commit`, async () => {
+  const capture = capturingAuditDeps(), t = await setup({ extra: { audit: capture.audit } }); capture.attach(t.db);
+  const key = projectAiKey(TEST_ORG, "payments"), grantKey = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), grant = t.db.get(grantKey)!;
+  if (existing) t.db.set({ ...key, entityType: "PROJECT_AI", projectPays: false, memberAcceptRunLimitUpToUsd: 1, revision: 1 });
+  const before = t.db.get(key), send = t.db.send.bind(t.db); let raced = false;
+  t.db.send = async command => {
+    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } } }> }).TransactItems;
+    if (!raced && items?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk)) {
+      raced = true;
+      await send(new TransactWriteCommand({ TransactItems: loss === "delete" ? [{ Delete: { TableName: "state", Key: grantKey } }] : [{ Put: { TableName: "state", Item: { ...grant, ...(loss === "demote" ? { projectRole: "contributor" } : { grantId: randomUUID() }) } } }] }));
+    }
+    return send(command);
+  };
+  expect((await t.api(BEN, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 2 })).status).toBe(403);
+  expect(raced).toBe(true); expect(t.db.get(key)).toEqual(before); expect(capture.recorded()).toHaveLength(0); expect(capture.pending()).toHaveLength(0);
+  t.db.set(grant);
+  expect((await t.api(BEN, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 2 })).status).toBe(200);
+  expect(t.db.get(key)?.revision).toBe(existing ? 2 : 1);
+});
+it("an org admin needs no project grant", async () => {
+  const t = await setup(); t.db.delete(projectMemberKey(TEST_ORG, DEB.developerId, "payments"));
+  expect((await t.api(DEB, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 2 })).status).toBe(200);
+});
+it("an internal member writer cannot bypass the project grant or change broader settings", async () => {
+  const t = await setup(), actor = { developerId: BEN.developerId, role: "member" as const }, key = projectAiKey(TEST_ORG, "payments");
+  const grantKey = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), grant = t.db.get(grantKey)!; t.db.delete(grantKey);
+  await expect(writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 2 }, BEN.developerId, { actor })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  t.db.set(grant);
+  await expect(writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: true }, BEN.developerId, { actor })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  expect(t.db.get(key)).toBeUndefined();
+  await writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 2 }, BEN.developerId, { actor });
+});
+it("the real resolver exposes its existing survivor-first maintainer grant selection (synthetic retained-member source control)", async () => {
+  const t = await setup(), survivor = "a".repeat(64), grant = t.db.get(projectMemberKey(TEST_ORG, BEN.developerId, "payments"))!;
+  t.db.set({ ...grant, ...projectMemberKey(TEST_ORG, survivor, "payments"), ownerKey: survivor, grantId: randomUUID() });
+  const members = createProjectMembers({ documentClient: t.db, tableName: "state", developerRecord: id => Promise.resolve(id === BEN.developerId ? { mergedInto: survivor } : {}) });
+  expect(await members.roleOf(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBe("maintainer");
+  const source = (members as typeof members & { maintainerGrantOf?: (org: typeof TEST_ORG, project: string, caller: { developerId: string; orgRole: "member" }) => Promise<string | undefined> }).maintainerGrantOf;
+  expect(source).toBeTypeOf("function");
+  if (source === undefined) return;
+  expect(await source(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBe(survivor);
+  t.db.set({ ...t.db.get(projectMemberKey(TEST_ORG, survivor, "payments"))!, projectRole: "contributor" });
+  // First valid grant still wins, even with a stronger own grant; no authority is invented.
+  expect(await source(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBeUndefined();
+});
