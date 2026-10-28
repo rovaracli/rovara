@@ -173,8 +173,10 @@ below is refused, with a message naming the setting, before any container starts
 | `privileged: true`, `securityOpt`, or any `capAdd` other than `SYS_PTRACE` | They grant powers over the host. |
 | `runArgs` with `--privileged`, `--pid`, `--ipc=host` or `container:…`, `--network=host` (or `--net`) or `container:…`, `--userns=host`, `--uts=host`, `--cgroupns=host`, `--cap-add` (other than `SYS_PTRACE`), `--security-opt`, `--device`, `--device-cgroup-rule`, `--gpus` or `--volumes-from` | They share the host's (or the worker's) processes, network, devices or files. |
 | A bind mount (`mounts`, `workspaceMount`, or `-v`/`--volume`/`--mount` in `runArgs`) whose source is not inside the repository folder (so not `/`, `/var/run/docker.sock`, the workspace root, the worker's own folders in it (`.docker`, `.agentx`, `agent-sessions`, `.agentx-runtime`; AgentX hides them inside the container too), another folder of the workspace, or anything outside it), including through a link (whether or not its target exists), or a source AgentX cannot check | They expose host files or the Docker socket. |
-| A mount written in any form but the plain one: settings in quotes, a setting given twice or under two spellings (`source` and `src`, `target` and `dst`), a setting AgentX does not list, or a comma or quote in a field of a mount object | AgentX reads a mount only in the one form every tool reads the same way. |
+| A mount written in any form but the plain one (the `type` is read without regard to case, as Docker does): settings in quotes, a setting given twice or under two spellings (`source` and `src`, `target` and `dst`), a setting AgentX does not list, or a comma or quote in a field of a mount object | AgentX reads a mount only in the one form every tool reads the same way. |
 | `${localEnv:…}` (or `${env:…}`) anywhere in the configuration | It would copy the worker's environment variables into the container. |
+| `runArgs` with `-e NAME` or `--env NAME` (an environment flag whose value has no `=`, in any spelling, including a short cluster such as `-ite NAME`), or `--env-file` in any form; `--build-arg NAME` with no value in `build.options` | Each copies a variable of the worker's environment, or reads a file of the worker, into the container or the build, the same as `${localEnv:…}`. Write the value: `-e NAME=value`. |
+| A named volume (`mounts`, `workspaceMount`, or `-v`/`--volume`/`--mount` in `runArgs`) whose name starts with `agentx` (any case), or whose name has neither `${devcontainerId}` nor `${localWorkspaceFolderBasename}` in it | A named volume attaches any volume of that name that already exists on the worker host: AgentX's own, or an earlier task's. The two variables are filled in by the devcontainer CLI per container and per project folder (for example `cache-${devcontainerId}`). A volume with no source is anonymous and allowed. |
 | A feature AgentX cannot pin to the content it checked (one fetched from a GitHub release) | Its content could change before the container is built. |
 | A local feature whose folder is outside the dev container config's own folder, including through a link | It would read files of the workspace that are not the project's. |
 | A volume with `volume-opt` or `volume-driver` options | Such a volume can be a bind mount of any host path. |
@@ -184,7 +186,8 @@ below is refused, with a message naming the setting, before any container starts
 Everything else is allowed: `image` or `build` (with options such as `--build-arg`, `--target`,
 `--pull` or `--add-host`), `features`, `containerEnv`, `remoteUser`, lifecycle commands such as
 `postCreateCommand`, `capAdd: ["SYS_PTRACE"]` or `--cap-add=SYS_PTRACE` (debuggers need it to trace
-the container's own processes), `runArgs` such as `--env` or `--cpus`, named volumes, `tmpfs`
+the container's own processes), `runArgs` such as `--env NAME=value` or `--cpus`, volumes named per project or container (for example
+`${localWorkspaceFolderBasename}-node_modules`), `tmpfs`
 mounts, and bind mounts of folders inside the workspace (for example
 `source=${localWorkspaceFolder}/.cache,target=/cache,type=bind`).
 
