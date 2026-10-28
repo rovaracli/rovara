@@ -26,3 +26,15 @@ export function wholeAgentLayers(recipe: ResolvedRecipe, step: ResolvedStep | un
   const written = new Set(recipe.chain.filter((entry) => entry.process === true && !entry.builtin).map((entry) => entry.name));
   return written.size === 0 ? recipe.instructions : recipe.instructions.filter((layer) => !written.has(layer.agentName));
 }
+
+/**
+ * The instruction layers written on `step` itself that the operation `mode` is given. The pull request feedback review (`FEEDBACK_REVIEW`) of a run with a process layer in its chain is given none
+ * of the ones that process layer wrote (PB18): a stage rule there would shape what the review reports with no second person having approved it, exactly as project-wide rules are kept from every
+ * reviewing stage. The same step writing the pull request description (any other operation) keeps them, and so do Rovara's built-in layers and any ordinary agent's.
+ */
+export function stepInstructionLayers(recipe: ResolvedRecipe, step: ResolvedStep | undefined, mode: string | undefined): InstructionLayer[] {
+  const layers: InstructionLayer[] = step?.settings?.instructions ?? [];
+  if (mode !== "FEEDBACK_REVIEW") return layers;
+  const written = new Set(recipe.chain.filter((entry) => entry.process === true && !entry.builtin).map((entry) => entry.name));
+  return written.size === 0 ? layers : layers.filter((layer) => !written.has(layer.agentName));
+}

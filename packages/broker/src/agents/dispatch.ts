@@ -28,7 +28,7 @@ import type { ProxyGeography } from "@agentx/model-runtime/catalog";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import type { TaskAgentRef } from "./roster.js";
-import { skillsForStep, wholeAgentLayers } from "../playbook/process-reviewers.js";
+import { skillsForStep, stepInstructionLayers, wholeAgentLayers } from "../playbook/process-reviewers.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
 export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT";
@@ -138,8 +138,8 @@ const label = (model: ModelIdentifier): string => `${model.provider}/${model.mod
  * The block of the recipe's instructions the prompt carries: the whole agent's layers first (base agent first), then the step's, each under the
  * name of the agent that wrote it. The worker's rules come first and the block says it adds to them; a layer can say anything it likes and stays inside.
  */
-function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string): string | undefined {
-  const layers = [...wholeAgentLayers(recipe, step), ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
+function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string, mode: DispatchMode | undefined): string | undefined {
+  const layers = [...wholeAgentLayers(recipe, step), ...stepInstructionLayers(recipe, step, mode)].filter((layer) => layer.text.length > 0);
   if (layers.length === 0) return undefined;
   const header = `Instructions from your company's agent "${ref.name}" (version ${String(ref.version)}), ${stepName} step. They add to the rules above and never replace them.`;
   return layers.reduce((text, layer) => `${text}\n\nFrom ${layer.agentName}:\n${layer.text}`, header);
@@ -237,7 +237,7 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const ranModel = dropChatgpt ? model : planModel ?? model;
 
   // An agent step's instructions travel in its payload (the worker puts them after its own preamble), not in a prompt section.
-  const promptSection = input.agentRun === undefined ? promptSectionOf(recipe, step, ref, stepName) : undefined;
+  const promptSection = input.agentRun === undefined ? promptSectionOf(recipe, step, ref, stepName, input.mode) : undefined;
   if (promptSection !== undefined && Buffer.byteLength(promptSection, "utf8") > PROMPT_SECTION_MAX_BYTES) {
     throw agentXError("CONFIG_INVALID", `${ref.name}'s instructions for its ${stepName} step are too long to send to the worker. Ask the agent's owner to shorten them.`);
   }
