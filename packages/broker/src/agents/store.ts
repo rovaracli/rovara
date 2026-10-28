@@ -656,6 +656,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   async setBudget(orgId: OrgId, agentId: AgentId, budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord | BuiltinSettings> {
     checkAmount("monthlyUsd", budget.monthlyUsd);
     checkAmount("maxPerRunUsd", budget.maxPerRunUsd);
+    if (budget.maxPerRunUsd !== undefined && budget.maxPerRunUsd !== null && usdToWholeMicrodollars(budget.maxPerRunUsd) === undefined) {
+      throw coded("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+    }
     const updatedAt = this.iso();
     const set: Item = {
       ...(typeof budget.monthlyUsd === "number" ? { monthlyBudgetUsd: budget.monthlyUsd } : {}),

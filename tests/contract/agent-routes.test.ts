@@ -1314,7 +1314,7 @@ for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001]) it("refuses sub-micro
   expect(answer.status).toBe(400);
   expect((answer.body.error as { message: string }).message).toContain("maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
   expect(f.db.transactions().length).toBe(before);
-  expect(f.approvals()).toHaveLength(0);
+  expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(0);
   expect((await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd: .000001 })).status).toBe(202);
-  expect(f.approvals()).toHaveLength(1);
+  expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(1);
 });

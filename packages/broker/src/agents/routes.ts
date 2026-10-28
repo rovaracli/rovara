@@ -895,6 +895,9 @@ async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller,
   const input = parseBody(BudgetBodySchema, body);
   // `manage` on a built-in is held by org owners and admins only.
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  if (input.maxPerRunUsd !== undefined && input.maxPerRunUsd !== null && usdToWholeMicrodollars(input.maxPerRunUsd) === undefined) {
+    throw agentXError("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+  }
   const { mark, replay } = await markRequest(deps, caller, "budget", agentId, input);
   const shown = (written: AgentRecord | BuiltinSettings): Promise<Shown> | Shown => ("owner" in written ? customView(written, access) : view(deps, caller, { agentId: agentId as BuiltinAgentId }, access, undefined, written));
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: await shown(replay.result as AgentRecord | BuiltinSettings) };
