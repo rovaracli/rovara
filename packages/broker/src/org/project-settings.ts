@@ -351,3 +351,4 @@ async function writeDescription(deps: Pick<ProjectSettingsDependencies, "documen
 // Lane B: internal read-only working-branch review; no route/save integration yet.
 export { readProjectWorkingBranchPreview, type WorkingBranchReviewDependencies } from "./project-working-branch.js";
 export { createWorkingBranchProvider, createWorkingBranchLister } from "./project-working-branch-provider.js";
+export { readProjectWorkingBranchPage, type WorkingBranchListDependencies } from "./project-working-branch-list.js";
