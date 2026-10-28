@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   NO_CHANGE_FINDINGS_COMMANDS_MAX, NO_CHANGE_FINDINGS_COMMAND_MAX, NO_CHANGE_FINDINGS_CONCLUSION_MAX, NO_CHANGE_FINDINGS_OUTPUT_MAX, NO_CHANGE_FINDINGS_TOTAL_MAX,
   NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_REASON, NoChangeFindingsSchema, buildNoChangeFindings, isNoCodeChangedReason, noChangeFindingsFrom, noChangeFindingsSize,
-  NO_CHANGE_FINDINGS_OMITTED_MAX, NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_VALUE_HIDDEN, commandReadsSecrets, maskSecretValues,
+  NO_CHANGE_FINDINGS_OMITTED_MAX, NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_VALUE_HIDDEN, commandReadsSecrets, maskSecretValues, isSecretName, noChangeHasThread,
 } from "../../packages/contracts/src/no-change-findings.js";
 import { FindingsRecorder } from "../../packages/worker/src/no-change-findings.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
@@ -218,5 +218,47 @@ describe("the worker's recorder", () => {
     recorder.observe({ type: "tool_execution_start", toolCallId: "b", toolName: "read", args: { path: "src/a.ts" } });
     recorder.observe({ type: "tool_execution_end", toolCallId: "b", toolName: "read", result: { content: [{ type: "text", text: "FILE TEXT" }] } });
     expect(recorder.build().commands).toEqual([{ command: "ls src", output: "a.ts\nb.ts" }, { command: "read src/a.ts" }]);
+  });
+});
+
+describe("secret names are matched as whole name parts", () => {
+  it("splits a name at `_`, `-`, `.` and camelCase: API_KEY, apiKey and db.password are secret names; author, monkey and bypass are not", () => {
+    for (const name of ["API_KEY", "apiKey", "db.password", "SIGNING_SALT", "HMAC", "session-token", "GITHUB_TOKEN", "AuthToken", "user_credentials", "COOKIE"]) expect(isSecretName(name), name).toBe(true);
+    for (const name of ["author", "AUTHOR", "monkey", "bypass", "keyboard", "tokenizer", "PORT", "NODE_ENV", "passed"]) expect(isSecretName(name), name).toBe(false);
+  });
+
+  it("masks the value of the first kind and leaves the second kind alone, in an output and in the conclusion", () => {
+    const text = `apiKey=${hmac()}\ndb.password: ${salt()}\nauthor=Ada\nmonkey=1\nbypass: yes\nAPI_KEY=${stripe()}`;
+    const masked = maskSecretValues(text);
+    expect(masked).toBe(`apiKey=${NO_CHANGE_VALUE_HIDDEN}\ndb.password: ${NO_CHANGE_VALUE_HIDDEN}\nauthor=Ada\nmonkey=1\nbypass: yes\nAPI_KEY=${NO_CHANGE_VALUE_HIDDEN}`);
+    const found = buildNoChangeFindings({ commands: [{ command: "node dump.js", output: "author=Ada\nDB_PASS=x1" }], conclusion: "monkey=1 and apiKey=abc" });
+    expect(found.commands[0]!.output).toBe(`author=Ada\nDB_PASS=${NO_CHANGE_VALUE_HIDDEN}`);
+    expect(found.conclusion).toBe(`monkey=1 and apiKey=${NO_CHANGE_VALUE_HIDDEN}`);
+  });
+
+  it("reads inside a value that is not hidden", () => {
+    expect(maskSecretValues(`URL=http://x.test/?a=1 API_TOKEN=${hmac()}`)).toBe(`URL=http://x.test/?a=1 API_TOKEN=${NO_CHANGE_VALUE_HIDDEN}`);
+  });
+});
+
+describe("a command that refers to a secret variable shows no output", () => {
+  it("is recognised for $NAME and ${NAME} whose name holds a secret word, and not for an ordinary variable", () => {
+    for (const command of ["echo $GITHUB_TOKEN", 'echo "$DB_PASSWORD"', "echo ${API_KEY}", "printenv X", "curl -H \"x: $AUTH_HEADER\" https://x.test", "node -e 'console.log(process.env.X)' $SESSION_ID"]) expect(commandReadsSecrets(command), command).toBe(true);
+    for (const command of ["echo $HOME", "echo $PWD", "echo $AUTHOR", 'echo "${NODE_ENV}"', "ls $TMPDIR"]) expect(commandReadsSecrets(command), command).toBe(false);
+  });
+
+  it("keeps no output of such a command in the block", () => {
+    const found = buildNoChangeFindings({ commands: [{ command: "echo $GITHUB_TOKEN", output: hmac() }, { command: 'echo "$DB_PASSWORD"', output: salt() }, { command: "echo $HOME", output: "/home/x" }] });
+    expect(found.commands.map((item) => item.output)).toEqual([NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_OUTPUT_HIDDEN, "/home/x"]);
+    expect(JSON.stringify(found)).not.toContain(hmac());
+  });
+});
+
+describe("whether a task has a Slack thread", () => {
+  it("reads the view's `threadUrl` and the record's `threadTs` alike, so the page and the app choose the same last line", () => {
+    expect(noChangeHasThread(undefined)).toBe(false);
+    expect(noChangeHasThread({})).toBe(false);
+    expect(noChangeHasThread({ threadUrl: "https://x.slack.com/archives/C1/p1" })).toBe(true);
+    expect(noChangeHasThread({ threadTs: "1760000000.000100" })).toBe(true);
   });
 });

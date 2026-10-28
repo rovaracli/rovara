@@ -175,8 +175,8 @@ describe("a coding run that left the code as it was: what it found reaches the p
     // Positive controls: the commands, the key names and the harmless lines are shown, so the values' absence is the filters' work.
     expect(message.text).toContain("`cat .env`, `env`, `node dump.js`");
     expect(message.text).toContain("SIGNING_SALT=[hidden]");
-    // The key name carries no secret word, but the value is a live key the pattern redaction knows.
-    expect(message.text).toContain("STRIPE_LIVE: [REDACTED]");
+    // In Slack every value of a `NAME: value` line is hidden, whatever the name.
+    expect(message.text).toContain("STRIPE_LIVE: [hidden]");
     expect(message.text).toContain("so retries are on.");
     expect(view).toContain(NO_CHANGE_OUTPUT_HIDDEN);
     expect(view).toContain("SESSION_COOKIE: [hidden]");
@@ -309,6 +309,19 @@ describe("the task page", () => {
     expect(html).not.toContain("<img src=x>");
     expect(html).not.toContain(token);
     expect(html).not.toMatch(/checks passed|was verified/iu);
+    fixture.close();
+  });
+
+  it("chooses the last line by whether the share holds a thread, as the app does: a share with no thread yet reads as no thread", async () => {
+    const fixture = pageTask();
+    fixture.addVersion("plan", planDocument());
+    fixture.setWorkflow(WorkflowSnapshotSchema.parse({ ...fixture.workflow(), stage: "IMPLEMENT", state: "BLOCKED", blockReason: NO_CODE_CHANGED_REASON, noChangeFindings: { commands: [], conclusion: "All good." } }));
+    expect((await getTaskDocumentView(fixture.deps, PRIYA, fixture.taskId)).nextStep).toBe(NO_CHANGE_CHOICES_PAGE);
+    const row = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as { share: Record<string, unknown> };
+    const { threadTs: _thread, ...shareWithoutThread } = row.share;
+    void _thread;
+    fixture.db.set({ ...row, share: shareWithoutThread });
+    expect((await getTaskDocumentView(fixture.deps, PRIYA, fixture.taskId)).nextStep).toBe(NO_CHANGE_CHOICES_NO_THREAD);
     fixture.close();
   });
 

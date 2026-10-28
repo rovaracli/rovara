@@ -130,6 +130,7 @@ import {
   WORKFLOW_BLOCK_REASONS,
   isNoCodeChangedReason,
   noChangeFindingsFrom,
+  noChangeHasThread,
   NO_CHANGE_CHOICES_NO_THREAD,
   NO_CHANGE_CHOICES_PAGE,
   WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX,
@@ -6010,7 +6011,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   return {
-    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), task.share?.threadTs !== undefined),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share)),
     ...(e2eResults === undefined ? {} : { e2eResults }),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,

@@ -10,6 +10,10 @@ import { StrictSlackWeb } from "../support/strict-slack.js";
 const taskId = "11111111-1111-4111-8111-111111111111";
 const now = "2026-10-26T12:00:00.000Z";
 const secret = (): string => ["ghp_", "Ab12".repeat(9)].join("");
+// Values that no pattern redaction knows; built at run time.
+const hex40 = (): string => ["a3f9".repeat(10)].join("");
+const opaque = (): string => ["Zk9", "Qw3x", "Lm82", "Vb7n", "Pd41", "Rt6y", "Jh5c"].join("");
+const pw = (): string => ["hunt", "er2-", "pw77"].join("");
 
 const blocked = (findings: unknown) => WorkflowSnapshotSchema.parse({
   ...createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now }), revision: 7, stage: "IMPLEMENT", state: "BLOCKED", blockReason: NO_CODE_CHANGED_REASON,
@@ -43,6 +47,37 @@ describe("the findings as Slack words", () => {
     const text = noCodeChangedText({ commands: [{ command: "npm test", output: "OUTPUT-LINE-ONE\nOUTPUT-LINE-TWO" }], conclusion: "Done." }, page);
     expect(text).toContain("`npm test`");
     expect(text).not.toContain("OUTPUT-LINE");
+  });
+
+  it("hides what no pattern knows, in the conclusion and in the commands: a bare hex token, an opaque token, `password is X`, `export X=…`, `MY_PW=… ./run`, and the lines of a quoted .env", () => {
+    const found = { commands: [{ command: `export DEPLOY_X=${opaque()}` }, { command: `MY_PW=${pw()} ./run` }, { command: "ls src" }], conclusion: [
+      `The token ${hex40()} is in the config, and ${opaque()} too.`, `The password is ${pw()} and the key is "${opaque()}".`, `export SOME_X=${opaque()}`, `MY_PW=${pw()} ./run`,
+      `The .env holds:`, `> "STRIPE_SK=${opaque()}"`, `WEBHOOK=https://hooks.example.test/${opaque()}`, "Summary: nothing to change.",
+    ].join("\n") };
+    const text = noCodeChangedText(found, page);
+    for (const value of [hex40(), opaque(), pw()]) expect(text).not.toContain(value);
+    // Positive controls: the sentences, the names and the ordinary prose are there.
+    expect(text).toContain("The token [hidden] is in the config");
+    expect(text).toContain("The password is [hidden] and the key is \"[hidden]\".");
+    expect(text).toContain("export SOME_X=[hidden]");
+    expect(text).toContain("MY_PW=[hidden] ./run");
+    expect(text).toContain("STRIPE_SK=[hidden]");
+    expect(text).toContain("WEBHOOK=[hidden]");
+    expect(text).toContain("Summary: nothing to change.");
+    expect(text).toContain("`export DEPLOY_X=[hidden]`, `MY_PW=[hidden] ./run`, `ls src`");
+    // The page's own view of the same block is not masked this far (it checks who may read it): the values are still in the stored block.
+    expect(JSON.stringify(found)).toContain(hex40());
+  });
+
+  it("leaves ordinary text alone: a short identifier, a path, a flag and a sentence", () => {
+    const text = noCodeChangedText({ commands: [{ command: "grep -rn --include=*.ts retry src/payments/retry.ts" }], conclusion: "We use retryPolicy in src/payments/retry.ts: see line 12." }, page);
+    expect(text).toContain("We use retryPolicy in src/payments/retry.ts: see line 12.");
+    expect(text).toContain("`grep -rn --include=*.ts retry src/payments/retry.ts`");
+  });
+
+  it("gives the task page link even when there are no commands to list", () => {
+    expect(noCodeChangedText({ commands: [], conclusion: "All good." }, page)).toBe(`No code changes were needed. Here's what I found: All good.\nDetails on the task page: <${page}|task page>\n${LAST}`);
+    expect(noCodeChangedText({ commands: [], conclusion: "All good." }, undefined)).toBe(`No code changes were needed. Here's what I found: All good.\n${LAST}`);
   });
 
   it("makes every untrusted line inert: no mention, no link, no tag, no quote, no cross-reference", () => {

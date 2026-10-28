@@ -137,8 +137,11 @@ it("shows what the agent found when a coding run needed no code change: the find
  // A task with no Slack thread starts a new request for a change.
  expect(screen.getByText("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.")).toBeTruthy();
  expect(f.container.querySelector("script,img,iframe")).toBeNull();expect(f.container.textContent).not.toMatch(/checks passed|verified|nothing was checked/iu);f.close();
- const threaded = setup(fixture({ body: { kind: "task", task: taskFixture({ share: { mode: "view", channelId: "C0123456789", sharedReason: "requested" }, workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ const threaded = setup(fixture({ body: { kind: "task", task: taskFixture({ share: { mode: "view", channelId: "C0123456789", sharedReason: "requested", threadUrl: "https://acme.slack.com/archives/C0123456789/p1760000000000100" }, workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
  expect(screen.getByText("No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.")).toBeTruthy();threaded.close();
+ // A share with no thread yet (the start message is not posted) reads as no thread, as the task page does.
+ const unposted = setup(fixture({ body: { kind: "task", task: taskFixture({ share: { mode: "view", channelId: "C0123456789", sharedReason: "requested" }, workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ expect(screen.getByText("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.")).toBeTruthy();unposted.close();
 });
 it("says the agent wrote no conclusion when the findings have none, and only that no change was needed when an older worker sent none, and nothing on another stop", () => {
  const none = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ noChangeFindings: { commands: [{ command: "ls src" }] } }) }) } }));

@@ -45,6 +45,12 @@ export const NO_CHANGE_CHOICES_PAGE = NO_CHANGE_CHOICES_LINE;
 export const NO_CHANGE_CHOICES_NO_THREAD = "No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.";
 /** Said in place of the output of a command that reads environment or secret material. */
 export const NO_CHANGE_OUTPUT_HIDDEN = "(output not shown)";
+/** Said before the link to the task page when a Slack message has no list of commands. */
+export const NO_CHANGE_DETAILS_LABEL = "Details on the task page:";
+/** Whether a task has a Slack thread, from the share the task view and the task page both carry (`threadUrl` in the view, `threadTs` on the record): the app and the page choose the last line by this. */
+export function noChangeHasThread(share: { threadUrl?: string | undefined; threadTs?: string | undefined } | undefined): boolean {
+  return share !== undefined && (share.threadUrl !== undefined || share.threadTs !== undefined);
+}
 /** The word that takes the place of a secret-looking value. */
 export const NO_CHANGE_VALUE_HIDDEN = "[hidden]";
 /** The most commands an `omitted` count can name: the schema's own maximum. */
@@ -70,16 +76,43 @@ export function noChangeFindingsSize(findings: { commands: ReadonlyArray<{ comma
   return findings.commands.reduce((sum, item) => sum + item.command.length + (item.output?.length ?? 0), 0) + (findings.conclusion?.length ?? 0);
 }
 
-const SECRET_WORD = "(?:TOKEN|SECRET|KEY|PASSWORD|PASS|SALT|HMAC|PRIVATE|CREDENTIAL|AUTH|SESSION|COOKIE)";
-// A name is cut at its start (a lookbehind), so each name is read once; every repetition is bounded.
-const SECRET_NAME = `[A-Za-z0-9_.\\-]{0,64}?${SECRET_WORD}[A-Za-z0-9_.\\-]{0,64}`;
-const ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_.\\-])(${SECRET_NAME})([ \\t]{0,3}=[ \\t]{0,3})("[^"\\n]{0,2000}"|'[^'\\n]{0,2000}'|[^\\s"']{1,2000})`, "giu");
-const LINE_VALUE = new RegExp(`^([ \\t]*(?:[-*][ \\t]+)?["']?${SECRET_NAME}["']?[ \\t]*:[ \\t]*)(.{1,2000})$`, "gimu");
+const SECRET_PARTS: ReadonlySet<string> = new Set(["token", "secret", "key", "password", "passwd", "passphrase", "pass", "salt", "hmac", "private", "credential", "auth", "session", "cookie"]);
 
-/** The value of every `KEY=value` and `KEY: value` line whose key looks like a secret's name (it holds TOKEN, SECRET, KEY, PASSWORD, PASS, SALT, HMAC, PRIVATE, CREDENTIAL, AUTH, SESSION or COOKIE, in any case) is hidden; the key stays. */
-export function maskSecretValues(text: string): string {
-  return text.replace(ASSIGNMENT, (_whole, name: string, equals: string) => `${name}${equals}${NO_CHANGE_VALUE_HIDDEN}`)
-    .replace(LINE_VALUE, (_whole, head: string) => `${head}${NO_CHANGE_VALUE_HIDDEN}`);
+/**
+ * Whether a name looks like a secret's: one of its parts is TOKEN, SECRET, KEY, PASSWORD, PASS, SALT, HMAC, PRIVATE, CREDENTIAL, AUTH, SESSION or COOKIE (or its plural). The name is split into parts at `_`, `-`, `.`
+ * and camelCase, and a part must be the whole word, so `API_KEY`, `apiKey` and `db.password` are, and `author`, `monkey` and `bypass` are not.
+ */
+export function isSecretName(name: string): boolean {
+  const parts = name.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/gu, "$1 $2").split(/[\s_.-]+/u);
+  return parts.some((part) => {
+    const word = part.toLowerCase();
+    return SECRET_PARTS.has(word) || (word.endsWith("s") && SECRET_PARTS.has(word.slice(0, -1)));
+  });
+}
+
+// A name is cut at its start (a lookbehind), so each name is read once; every repetition is bounded.
+const ASSIGNMENT_SOURCE = String.raw`(?<![A-Za-z0-9_.\-])([A-Za-z_][A-Za-z0-9_.\-]{0,127})([ \t]{0,3}=[ \t]{0,3})("[^"\n]{0,2000}"|'[^'\n]{0,2000}'|[^\s"']{1,2000})`;
+const LINE_VALUE_SOURCE = String.raw`^([ \t]*(?:[-*>][ \t]+)?["']?)([A-Za-z_][A-Za-z0-9_.\-]{0,127})(["']?[ \t]*:[ \t]*)(.{1,2000})$`;
+/** A name that reads as a variable (it holds `_`, `.` or a digit, is in capitals, or is camelCase) and not as a plain word: "Note:" and "Summary:" in prose are not names. */
+const looksLikeVariable = (name: string): boolean => /[_.0-9]/u.test(name) || /^[A-Z][A-Z]+$/u.test(name) || /[a-z][A-Z]/u.test(name);
+
+/**
+ * The value of every `NAME=value` and `NAME: value` line whose name looks like a secret's (`isSecretName`) is hidden and the name stays. With `"any-name"` (for Slack) every `NAME=value`
+ * is hidden whatever the name (this includes `export X=…` and an inline `X=… cmd`), and so is every `NAME: value` whose name reads as a variable. Text inside a value that is not hidden is read as well.
+ */
+export function maskSecretValues(text: string, mode: "secret-names" | "any-name" = "secret-names"): string {
+  const hide = (name: string, colon: boolean): boolean => (mode === "any-name" ? !colon || looksLikeVariable(name) || isSecretName(name) : isSecretName(name));
+  const assignment = new RegExp(ASSIGNMENT_SOURCE, "gu");
+  let masked = "";
+  let from = 0;
+  for (let found = assignment.exec(text); found !== null; found = assignment.exec(text)) {
+    const [whole, name = "", equals = ""] = found;
+    if (!hide(name, false)) { assignment.lastIndex = found.index + name.length + equals.length; continue; }
+    masked += `${text.slice(from, found.index)}${name}${equals}${NO_CHANGE_VALUE_HIDDEN}`;
+    from = found.index + whole.length;
+  }
+  masked += text.slice(from);
+  return masked.replace(new RegExp(LINE_VALUE_SOURCE, "gmu"), (whole: string, head: string, name: string, colon: string) => (hide(name, true) ? `${head}${name}${colon}${NO_CHANGE_VALUE_HIDDEN}` : whole));
 }
 
 /** A path or file name that holds environment or secret material. */
@@ -104,6 +137,8 @@ export function commandReadsSecrets(command: string): boolean {
     if (head === "env" && rest.every((word) => word.startsWith("-") && !word.includes("="))) return true;
     if (head === "export" && (rest.length === 0 || rest.includes("-p"))) return true;
   }
+  // A reference to a variable with a secret's name (`echo $GITHUB_TOKEN`, `echo "${DB_PASSWORD}"`) prints the secret.
+  for (const reference of command.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/gu)) if (isSecretName(reference[1] ?? "")) return true;
   for (const word of command.split(/[\s|;&`()<>$]+/u)) {
     for (const piece of [word, word.slice(word.indexOf("=") + 1)]) {
       const path = piece.replace(/^["']+|["']+$/gu, "").toLowerCase();
