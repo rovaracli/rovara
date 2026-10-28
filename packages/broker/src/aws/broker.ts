@@ -3233,6 +3233,18 @@ export async function registerProjectFor(
     throw agentXError("FORBIDDEN", `only an administrator of project ${definition.name} can register a new revision of it. An instance administrator who is not one can take the project over by asking explicitly: send takeOwnership: true with a takeOwnershipReason (agentx admin project register --take-ownership --reason "...")`);
   };
   const readCatalogSnapshot = () => readProjectCatalogSnapshot(dependencies, orgId, definition.name);
+  // Legacy registration cannot carry or revalidate reviewed branch selections. Refuse rather than
+  // silently discard them; even malformed/present metadata needs its own reviewed migration.
+  const selectionFence = async (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>): Promise<TransactItems> => {
+    if (snapshot.newestRevision === 0) return [];
+    const latestKey = projectRevisionKey(orgId, definition.name, snapshot.newestRevision);
+    const latest = await getItem<Record<string, unknown>>(dependencies, latestKey);
+    if (latest === undefined || Object.hasOwn(latest, "workingBranchSelections")) {
+      throw agentXError("PROJECT_REVISION_MISMATCH", "Working branch selections must be preserved or revalidated before registering another project revision.");
+    }
+    return [{ ConditionCheck: { TableName: dependencies.tableName, Key: latestKey,
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(workingBranchSelections)" } }];
+  };
   const repairCatalogPointerFromHistory = () => repairProjectCatalogPointerFromHistory(dependencies, orgId, definition.name);
   const existing = await getItem<RegisteredProjectRecord>(dependencies, key);
   if (existing) {
@@ -3249,7 +3261,9 @@ export async function registerProjectFor(
     return respond(withoutKeys(existing), true, preflight);
   }
   // Refused before any vendor is contacted for a registrant who may not store this revision; the commit judges it again.
-  await judgeAuthority((await readCatalogSnapshot()).newestRevision);
+  const initialSnapshot = await readCatalogSnapshot();
+  await judgeAuthority(initialSnapshot.newestRevision);
+  await selectionFence(initialSnapshot);
   const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight, options.credentialsChecked);
   const now = new Date().toISOString();
   const record: RegisteredProjectRecord = {
@@ -3316,6 +3330,7 @@ export async function registerProjectFor(
     // An existing project changes (its test accounts included) only at the hand of one of its administrators, or of an instance administrator who takes it over explicitly.
     // Judged against the project as it is on this attempt: an administrator who raced a first registration and lost finds the project there on the next one.
     const authority = await judgeAuthority(snapshot.newestRevision);
+    const selectionsAbsent = await selectionFence(snapshot);
     const accounts = await planAccounts();
     // One transaction holds at most 100 items; the project revision, its membership, the catalog and the setup admission take the rest.
     if (accounts.items.length > 60) throw agentXError("CONFIG_INVALID", "the setup declares more synthetic test accounts than one registration can store");
@@ -3354,6 +3369,12 @@ export async function registerProjectFor(
         ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now,
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
+      // A late older revision does not update the catalog, but must still observe its same pointer.
+      ...(!updateCatalog && snapshot.catalog?.latestRevision !== undefined ? [{ ConditionCheck: {
+        TableName: dependencies.tableName, Key: orgProjectCatalogKey(orgId, definition.name),
+        ConditionExpression: "latestRevision = :observed", ExpressionAttributeValues: { ":observed": snapshot.catalog.latestRevision },
+      } }] : []),
+      ...selectionsAbsent,
       ...(setupAdmissionRows?.transactionItems ?? []),
       ...accounts.items,
       ...repositoryIndex,
