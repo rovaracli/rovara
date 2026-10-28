@@ -107,6 +107,7 @@ import {
   FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
+  WORKFLOW_LEFTOVER_PROCESSES_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   type IntentAssessment,
@@ -16331,6 +16332,8 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       // A review that stopped because its base rule files could not be verified says so; any other stop keeps the generic reason.
       next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.ruleFilesUnverified
+        // The programs earlier work left running could not be stopped, so the review never read the code: stopped here with its own reason, for the owner's Retry.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
         : workflowRunEndedReason("REVIEW", terminalStatus), now);
     } else {
       const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -16449,6 +16452,8 @@ async function completedWorkflowItems(
         : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable
         // The base rule files could not be verified: Understand stopped before it started, and says so. A person chooses Retry; nothing starts it again by itself.
         : terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified
+        // The programs earlier work left running could not be stopped: Understand read nothing. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
         : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
     } else {
       // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
@@ -16680,6 +16685,8 @@ async function planCritiqueOutcome(
     // The base rule files could not be verified: the check never read the rules it is to apply, so it does not pass the plan on as unchecked (that would run without them). It stops
     // here, visibly, with its own reason and the owner's Retry plan check. This is not a model failure, so the next-ranked model is not tried, and nothing starts the check again by itself.
     if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, now);
+    // The programs earlier work left running could not be stopped: the check read nothing, so the plan is not passed on as unchecked. It stops here with its own reason; not a model failure.
+    if (terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.leftoverProcesses, now);
     // Staging 0.4.10: the account could not use the check's model (Bedrock's 403). The check is made again on the next-ranked model, one try for each, up to CRITIC_MODEL_ATTEMPTS_MAX; the
     // next start leaves out the models that failed and, when none is left, closes the check as unavailable.
     if (terminalStatus === "FAILED" && criticModelUnusable(terminalError)) {

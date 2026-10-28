@@ -183,6 +183,10 @@ describe("AUTOFIX policy: reviews", () => {
     expect(decide(blocked("REVIEW", WORKFLOW_BLOCK_REASONS.ruleFilesUnverified))).toEqual({ action: "ASK", reason: "needs-a-person", codes: ["rule-files-unverified"] });
   });
 
+  it("asks, and never retries by itself, when a review stopped because the programs earlier work left running could not be stopped", () => {
+    expect(decide(blocked("REVIEW", WORKFLOW_BLOCK_REASONS.leftoverProcesses))).toEqual({ action: "ASK", reason: "needs-a-person", codes: ["leftover-processes"] });
+  });
+
   it("sends back when findings and a stopped run come together", () => {
     expect(decide(blocked("REVIEW", undefined, { reviews: [review("CRITIC", "FINDINGS", [finding("bug")]), review("SECURITY", "INTERRUPTED", [], { failureReason: "INTERRUPTED" })] })))
       .toEqual({ action: "SEND_BACK", codes: ["review-findings", "review-run-failed"] });

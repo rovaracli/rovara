@@ -29,7 +29,7 @@ import {
   type IntentAssessment, type IntentQuestion,
 } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/task-workflow-node.js";
 import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
@@ -404,6 +404,18 @@ describe("a version 2 task starts by understanding", () => {
     const message = workflowMessage({ taskId: run.taskId, workflow: workflow as never, project: "payments" })!;
     expect(message.text).toContain("couldn't verify the base rule files");
     expect(JSON.stringify(message)).toContain("agentx_workflow_retry_plan");
+  });
+
+  // Programs earlier work left running could not be stopped before Understand read anything: it stops visibly, with its own fixed reason, and never starts again by itself.
+  it("blocks with the fixed leftover-programs reason, plans nothing, and starts no second Understand", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finish(run.workspaceId, run.operationId, "FAILED", { error: `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace` });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
+    await t.sweep();
+    expect(t.operations(run.workspaceId).filter((item) => item.workflowMode === "UNDERSTAND")).toHaveLength(1);
+    expect(t.rows()).toEqual([]);
   });
 });
 
