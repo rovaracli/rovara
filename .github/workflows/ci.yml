@@ -278,6 +278,17 @@ jobs:
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
           ROVARA_E2E_ALL_BROWSERS: "1"
+      # A failed run leaves the Playwright traces (retained on failure) and the HTML report to open with `npx playwright show-trace` or `show-report`.
+      - name: Upload Playwright traces and report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-playwright
+          path: |
+            .test-build/web-e2e/results
+            .test-build/web-e2e/report
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:

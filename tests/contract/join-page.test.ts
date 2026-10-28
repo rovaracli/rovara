@@ -94,7 +94,7 @@ describe("GET /v1/auth/join", () => {
     ]);
     expect(page.labels).toEqual(["Join Acme"]);
     expect(page.hrefs).toEqual([`${ISSUER}/join/start?invite=${token}`]);
-    expect(response.headers["content-security-policy"]).toBe("default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'");
+    expect(response.headers["content-security-policy"]).toBe("default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
   });
