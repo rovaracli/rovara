@@ -605,3 +605,37 @@ describe("AgentStore request marks and the publish baseline (review fix round 1)
     expect(await store.getRequest(ORG_A, ALICE, "r1")).toMatchObject({ fingerprint: "e".repeat(64), result: { revision: 3 } });
   });
 });
+
+
+describe("G1 legacy agent per-run precision compatibility", () => {
+  for (const maxPerRunUsd of [0.0000001, 0.1 + 0.2, 1.0000001, 1_000_000.000001, NaN, Infinity, -1, "1"] as const) {
+    it("refuses invalid incoming per-run precision before builtin initialization or events", async () => {
+      const { db, store } = setup();
+      const before = db.transactions().length;
+      const result = await code(store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: maxPerRunUsd as number }, ALICE));
+      expect(result).toMatchObject({ code: "CONFIG_INVALID" });
+      expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toBeUndefined();
+      expect(db.transactions().length).toBe(before);
+    });
+  }
+  it("retains exact representable numbers, explicit zero, null and omitted legacy semantics", async () => {
+    const { db, store, make } = setup(); const agent = await make("Exact money", scratch("a"));
+    for (const value of [0, .000001, 17.000001, 1_000_000]) {
+      await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: value }, ALICE);
+      expect(db.get(agentKey(ORG_A, agent.agentId, "META"))?.maxPerRunUsd).toBe(value);
+    }
+    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 12 }, ALICE);
+    expect(db.get(agentKey(ORG_A, agent.agentId, "META"))?.maxPerRunUsd).toBe(1_000_000);
+    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: null }, ALICE);
+    expect(Object.hasOwn(db.get(agentKey(ORG_A, agent.agentId, "META"))!, "maxPerRunUsd")).toBe(false);
+  });
+  it("leaves historical sub-micro intent unchanged on an omitted patch and allows explicit correction", async () => {
+    const { db, store, make } = setup(); const agent = await make("Historical money", scratch("a")); const key = agentKey(ORG_A, agent.agentId, "META");
+    db.set({ ...db.get(key), maxPerRunUsd: .0000001 });
+    expect((await store.get(ORG_A, agent.agentId))?.maxPerRunUsd).toBe(.0000001);
+    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 12 }, ALICE);
+    expect(db.get(key)?.maxPerRunUsd).toBe(.0000001);
+    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: .000001 }, ALICE);
+    expect(db.get(key)?.maxPerRunUsd).toBe(.000001);
+  });
+});

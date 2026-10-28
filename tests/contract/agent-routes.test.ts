@@ -1305,3 +1305,16 @@ it("returns the exact resolved recipes alongside their authorized diff",async()=
  const answer=await f.call(MAYA,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`);expect(answer.status).toBe(200);expect(answer.body.comparison).toMatchObject({before:{instructions:[expect.objectContaining({text:SAFE.instructions})]},after:{instructions:[expect.objectContaining({text:"Check duplicate webhooks before implementation."})]}});
  expect((await f.call(EVE,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`)).status).toBe(404);
 });
+
+
+for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001]) it("refuses sub-micro per-run input before any request or owner-cap approval write", async () => {
+  const f = await setup(), id = await f.create(MAYA), before = f.db.transactions().length;
+  f.db.set({ ...f.db.get(agentGuardrailsKey(TEST_ORG)), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 1000 } });
+  const answer = await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd });
+  expect(answer.status).toBe(400);
+  expect((answer.body.error as { message: string }).message).toContain("maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+  expect(f.db.transactions().length).toBe(before);
+  expect(f.approvals()).toHaveLength(0);
+  expect((await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd: .000001 })).status).toBe(202);
+  expect(f.approvals()).toHaveLength(1);
+});
