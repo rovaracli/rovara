@@ -13,7 +13,8 @@ export class TableAwareDynamoDb {
     return { ...key, pk: this.pk(table, key.pk) };
   }
   private decode(item: Item): Item {
-    const pair = JSON.parse(String(item.pk)) as [string, string];
+    if (typeof item.pk !== "string") throw new Error("Native fake key required");
+    const pair = JSON.parse(item.pk) as [string, string];
     return { ...structuredClone(item), pk: pair[1] };
   }
   set(table: string, item: Item): void { this.backing.set(this.key(table, item)); }

@@ -2,7 +2,6 @@
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
 // `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }` and changes nothing until a person confirms it on the page (changes.ts).
-import { budgetActorRefused } from "./budget-authority.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -101,6 +100,8 @@ import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, 
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
 export interface AgentRouteDependencies extends ApprovalDependencies {
+  /** Existing native sign-in table, supplied only at server wiring. */
+  projectAiSignInTableName?: string;
   /** Read-only model source routing used by the member picker. */
   modelRouting?: RoutingDependencies;
   /** Plan 4 Task 4: the chain store, built on this agent store (so a person's agent and chain budgets are one total). Absent where chains are not set up: their routes then answer 404. */
@@ -871,9 +872,6 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
   if (!admin && !acceptOnly) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
   const role = await roleOnProject(deps, caller, project);
   if (!admin && role !== "maintainer") throw agentXError("FORBIDDEN", "Only a project maintainer, or an org owner or admin, can change what a member may accept as a run limit.");
-  // Resolve the same survivor-first grant as roleOf; this is server context, never a request-body field.
-  const projectGrantDeveloperId = admin ? undefined : deps.projectMembers.maintainerGrantOf === undefined ? caller.developerId : await deps.projectMembers.maintainerGrantOf(caller.orgId, project, caller);
-  if (!admin && projectGrantDeveloperId === undefined) throw budgetActorRefused();
   const { mark, replay } = await markRequest(deps, caller, "project-ai", project, input);
   if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
   const current = await readProjectAiWithRevision(deps, caller.orgId, project);
@@ -891,7 +889,7 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
     const unknown = next.sourceOrder.find((source) => !allowed.has(source));
     if (unknown !== undefined) throw agentXError("CONFIG_INVALID", `sourceOrder: ${unknown} is not one of your company's model sources`);
   }
-  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { ...(projectGrantDeveloperId === undefined ? {} : { projectGrantDeveloperId }), actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.settings });
+  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.settings });
   return projectAiView(deps, caller.orgId, written);
 }
 

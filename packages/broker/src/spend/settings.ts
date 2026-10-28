@@ -2,8 +2,9 @@
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
 // reads the limits, Task 32's requests raise them and Task 33's top-ups add to them.
+import { projectAiCallerCheck } from "./project-ai-identity.js";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { projectAiLifecycleChecks, selectedProjectSourceChecks } from "./project-ai-authority.js";
+import { projectAiLifecycleChecks } from "./project-ai-authority.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PLANNING_LIMIT_USD,
@@ -43,6 +44,8 @@ import { cleanUsd, readTopUp, withTopUp } from "./top-ups.js";
 
 /** What reading and writing the settings needs: the State table, and whether the install is a cloud one (it sets the placeholder budgets). */
 export interface SpendSettingsDependencies {
+  /** Native sign-in table selected by server wiring, never by the request. */
+  projectAiSignInTableName?: string;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   /** Where the org's plan is read: a trial org that never wrote a spend policy has R49's owner cap (Task 28's ruling). Without it no org is a trial. */
@@ -144,7 +147,7 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { actor: BudgetActor; /** Selected grant identity from the server resolver; direct internal calls default to own grant. */ projectGrantDeveloperId?: string; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
+  options: { actor: BudgetActor; /** Legacy internal source option; this flow permits only the caller’s own identity. */ projectGrantDeveloperId?: string; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
 ): Promise<StoredProjectAi> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
@@ -154,10 +157,9 @@ export async function writeProjectAi(
       const copy = { ...value }; delete copy.memberAcceptRunLimitUpToUsd; delete copy.taskStopPolicy; return copy;
     };
     if (!sameJsonContent(unchangedFields(settings), unchangedFields(current.settings))) throw budgetActorRefused();
-    const source = options.projectGrantDeveloperId ?? by;
-    if (!/^[a-f0-9]{64}$/.test(source)) throw budgetActorRefused();
-    if (source !== by) checks.push(...await selectedProjectSourceChecks(deps, orgId, source));
-    const key = projectMemberKey(orgId, source, project), grant = await getItem(deps, key);
+    if (options.projectGrantDeveloperId !== undefined && options.projectGrantDeveloperId !== by) throw budgetActorRefused();
+    checks.push(await projectAiCallerCheck(deps, by));
+    const key = projectMemberKey(orgId, by, project), grant = await getItem(deps, key);
     if (grantRoleOf(grant) !== "maintainer") throw budgetActorRefused();
     const aliases = new Aliases();
     const condition = ["attribute_exists(pk)", ...["entityType", "ownerKey", "projectName", "grantId", "role", "projectRole", "grantedAt", "grantedBy"].map(field => grant?.[field] === undefined ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(grant[field])}`)].join(" AND ");

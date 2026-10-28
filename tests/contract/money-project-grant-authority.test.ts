@@ -47,13 +47,8 @@ it("the real resolver exposes its existing survivor-first maintainer grant selec
   t.db.set({ ...grant, ...projectMemberKey(TEST_ORG, survivor, "payments"), ownerKey: survivor, grantId: randomUUID() });
   const members = createProjectMembers({ documentClient: t.db, tableName: "state", developerRecord: id => Promise.resolve(id === BEN.developerId ? { mergedInto: survivor } : {}) });
   expect(await members.roleOf(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBe("maintainer");
-  const source = members.maintainerGrantOf?.bind(members);
-  expect(source).toBeTypeOf("function");
-  if (source === undefined) return;
-  expect(await source(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBe(survivor);
   t.db.set({ ...t.db.get(projectMemberKey(TEST_ORG, survivor, "payments"))!, projectRole: "contributor" });
-  // First valid grant still wins, even with a stronger own grant; no authority is invented.
-  expect(await source(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBeUndefined();
+  expect(await members.roleOf(TEST_ORG, "payments", { developerId: BEN.developerId, orgRole: "member" })).toBe("contributor");
 });
 for (const role of ["viewer", "contributor"] as const) it(`a ${role} and an unrelated project's grant cannot authorize the settings writer`, async () => {
   const t = await setup(), key = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), original = t.db.get(key)!;
@@ -69,29 +64,23 @@ it("a grant in a different company cannot authorize this company", async () => {
   t.db.set({ ...grant, ...projectMemberKey(foreign, BEN.developerId, "payments") });
   await expect(writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 2 }, BEN.developerId, { actor: { developerId: BEN.developerId, role: "member" } })).rejects.toMatchObject({ code: "FORBIDDEN" });
 });
-it("the writer conditions the server-selected survivor grant rather than demanding the absent own grant (synthetic source control)", async () => {
-  const t = await setup(), source = "a".repeat(64), own = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), selected = projectMemberKey(TEST_ORG, source, "payments"), grant = t.db.get(own)!;
-  t.db.delete(own); t.db.set({ ...grant, ...selected, ownerKey: source });
+it("the writer refuses a supplied survivor grant even with live source membership", async () => {
+  const t = await setup(), source = "a".repeat(64), own = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), grant = t.db.get(own)!;
+  t.db.delete(own); t.db.set({ ...grant, ...projectMemberKey(TEST_ORG, source, "payments"), ownerKey: source });
   seedMembership(t.db, source, { orgId: TEST_ORG, role: "owner" });
-  const options = { actor: { developerId: BEN.developerId, role: "member" as const }, projectGrantDeveloperId: source };
-  await writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 1 }, BEN.developerId, options);
-  const before = t.db.get(projectAiKey(TEST_ORG, "payments")), send = t.db.send.bind(t.db); let raced = false;
-  t.db.send = async command => {
-    if (!raced && command.constructor.name === "TransactWriteCommand") { raced = true; await send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: "state", Key: selected } }] })); }
-    return send(command);
-  };
-  await expect(writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 2 }, BEN.developerId, options)).rejects.toMatchObject({ code: "FORBIDDEN" });
-  expect(raced).toBe(true); expect(t.db.get(projectAiKey(TEST_ORG, "payments"))).toEqual(before);
+  await expect(writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false, memberAcceptRunLimitUpToUsd: 2 }, BEN.developerId, { actor: { developerId: BEN.developerId, role: "member" }, projectGrantDeveloperId: source })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  expect(t.db.get(projectAiKey(TEST_ORG, "payments"))).toBeUndefined();
 });
-
-it("the route forwards the real resolver's selected survivor grant (synthetic retained-member source control)", async () => {
+it("the route cannot borrow a survivor grant when the own grant is absent (synthetic source control)", async () => {
   const t = await setup(), survivor = "a".repeat(64), own = projectMemberKey(TEST_ORG, BEN.developerId, "payments"), grant = t.db.get(own)!;
   t.db.delete(own); t.db.set({ ...grant, ...projectMemberKey(TEST_ORG, survivor, "payments"), ownerKey: survivor });
   seedMembership(t.db, survivor, { orgId: TEST_ORG, role: "owner" });
   const members = createProjectMembers({ documentClient: t.db, tableName: "state", developerRecord: id => Promise.resolve(id === BEN.developerId ? { mergedInto: survivor } : {}) });
   const path = "/v1/app/projects/payments/ai", request = { method: "PUT", path, headers: {}, requestId: randomUUID(), body: JSON.stringify({ requestId: randomUUID(), memberAcceptRunLimitUpToUsd: 2 }) };
-  await expect(routeAgentRequest({ ...t.deps(), projectMembers: members }, t.caller(BEN), request, new URL(path, "https://cell.example.test"))).resolves.toMatchObject({ settings: { memberAcceptRunLimitUpToUsd: 2 } });
+  await expect(routeAgentRequest({ ...t.deps(), projectMembers: members }, t.caller(BEN), request, new URL(path, "https://cell.example.test"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  expect(t.db.get(projectAiKey(TEST_ORG, "payments"))).toBeUndefined();
 });
+
 it("the HTTP body cannot select its own authority grant", async () => {
   const t = await setup();
   expect((await t.api(BEN, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 2, projectGrantDeveloperId: DEB.developerId })).status).toBe(400);

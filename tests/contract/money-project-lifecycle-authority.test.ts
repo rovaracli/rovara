@@ -28,15 +28,12 @@ for(const loss of ["revision_deleted","catalog_advanced"] as const)it(`refuses $
  if(!raced&&items?.some(i=>i.Put?.Item?.pk===key.pk)){raced=true;await send(new TransactWriteCommand({TransactItems:loss==="revision_deleted"?[{Delete:{TableName:"state",Key:projectRevisionKey(TEST_ORG,"payments",1)}}]:[{Put:{TableName:"state",Item:{...t.db.get(orgProjectCatalogKey(TEST_ORG,"payments"))!,latestRevision:2}}}]}));}return send(command);};
  expect((await t.api(DEB,"PUT","/v1/app/projects/payments/ai",{memberAcceptRunLimitUpToUsd:2})).status).toBe(409);expect(raced).toBe(true);expect(t.db.get(key)).toBeUndefined();
 });
-for(const loss of ["member_role","removed","pointer"] as const)it(`binds selected survivor ${loss} under its own role`,async()=>{
- const t=await setup(),source="a".repeat(64),key=projectAiKey(TEST_ORG,"payments"),own=projectMemberKey(TEST_ORG,BEN.developerId,"payments"),grant=t.db.get(own)!;
+for(const loss of ["member_role","removed","pointer"] as const)it(`a supplied survivor cannot lend authority after ${loss}`,async()=>{
+ const t=await setup(),source="a".repeat(64),key=projectAiKey(TEST_ORG,"payments"),grant=t.db.get(projectMemberKey(TEST_ORG,BEN.developerId,"payments"))!;
  t.db.set({...grant,...projectMemberKey(TEST_ORG,source,"payments"),ownerKey:source,grantId:randomUUID()});seedMembership(t.db,source,{orgId:TEST_ORG,role:"owner"});
- const send=t.db.send.bind(t.db);let raced=false;
- t.db.send=async command=>{const items=(command.input as {TransactItems?:Array<{Put?:{Item?:{pk?:string}}}>}).TransactItems;
- if(!raced&&items?.some(i=>i.Put?.Item?.pk===key.pk)){raced=true;await send(new TransactWriteCommand({TransactItems:loss==="member_role"?[{Put:{TableName:"state",Item:{...t.db.get(orgMemberKey(TEST_ORG,source))!,role:"member"}}}]:[{Delete:{TableName:"state",Key:loss==="removed"?orgMemberKey(TEST_ORG,source):developerOrgKey(source)}}]}));}return send(command);};
- const write=()=>writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false,memberAcceptRunLimitUpToUsd:2},BEN.developerId,{actor:{developerId:BEN.developerId,role:"member"},projectGrantDeveloperId:source});
- await expect(write()).rejects.toMatchObject({code:"FORBIDDEN"});expect(raced).toBe(true);expect(t.db.get(key)).toBeUndefined();
- seedMembership(t.db,source,{orgId:TEST_ORG,role:"owner"});await expect(write()).resolves.toMatchObject({revision:1});
+ if(loss==="member_role")t.db.set({...t.db.get(orgMemberKey(TEST_ORG,source))!,role:"member"});else t.db.delete(loss==="removed"?orgMemberKey(TEST_ORG,source):developerOrgKey(source));
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false,memberAcceptRunLimitUpToUsd:2},BEN.developerId,{actor:{developerId:BEN.developerId,role:"member"},projectGrantDeveloperId:source})).rejects.toMatchObject({code:"FORBIDDEN"});expect(t.db.get(key)).toBeUndefined();
+ await expect(writeProjectAi(t.deps(),TEST_ORG,"payments",{projectPays:false,memberAcceptRunLimitUpToUsd:2},BEN.developerId,{actor:{developerId:BEN.developerId,role:"member"}})).resolves.toMatchObject({revision:1});
 });
 it("missing native registration is not an active project for an internal writer",async()=>{
  const t=await setup();t.db.delete(projectRevisionKey(TEST_ORG,"payments",1));

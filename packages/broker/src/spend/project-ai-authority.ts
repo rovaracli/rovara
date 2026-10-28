@@ -1,8 +1,7 @@
 // Native read snapshots for the existing project AI settings commit; no lifecycle/catalog writes.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, StoredProjectDefinitionSchema, PROJECT_REVISION_SK_PREFIX, agentXError, projectArchivedMessage, projectPk, projectRevisionKey, projectMetaKey, orgProjectCatalogKey, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { StoredProjectDefinitionSchema, PROJECT_REVISION_SK_PREFIX, agentXError, projectArchivedMessage, projectPk, projectRevisionKey, projectMetaKey, orgProjectCatalogKey, type OrgId } from "@agentx/contracts";
 import { Aliases, type TransactItem } from "../agents/table-writes.js";
-import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
 type Deps = { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string };
 type Item = Record<string, unknown>;
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The project's current registration or status could not be checked. Reload or ask an installation administrator to check it.");
@@ -30,10 +29,4 @@ export async function projectAiLifecycleChecks(deps: Deps, orgId: OrgId, project
   if(meta!==undefined&&(meta.entityType!=="PROJECT_META"||meta.name!==project||(meta.status!==undefined&&meta.status!=="active"&&meta.status!=="archived")))throw unavailable();
   if(meta?.status==="archived")throw agentXError("PROJECT_ARCHIVED",projectArchivedMessage(project));
   return [snapshot(deps,key,row,["definition"]),snapshot(deps,catalogKey,catalog,["entityType","name","orgId","latestRevision"]),snapshot(deps,metaKey,meta,["entityType","name","status","revision","archivedAt","archivedBy","updatedAt"])];
-}
-/** Each selected source keeps its own live role. The caller already supplies the one shared open-org condition. */
-export async function selectedProjectSourceChecks(deps: Deps, orgId: OrgId, source: string): Promise<TransactItem[]> {
-  const member=await read(deps,orgMemberKey(orgId,source)),role=OrgRoleSchema.safeParse(member?.role);
-  if(member?.orgId!==orgId||member.developerId!==source||!role.success)throw budgetActorRefused();
-  return budgetActorChecks(deps.tableName,orgId,{developerId:source,role:role.data}).slice(0,2);
 }

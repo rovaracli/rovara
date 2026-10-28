@@ -34,8 +34,6 @@ import type { AgentRecord, AgentShareLevel, AgentStore, RequestMark } from "./st
 
 /** The A3 interface Plan 2 Task 21 builds (`createProjectMembers`); until it lands, tests use `tests/support/fake-project-members.ts`. */
 export interface ProjectMembers {
-  /** Server-selected grant source for the existing maintainer settings write; absent on legacy test adapters. */
-  maintainerGrantOf?(orgId: OrgId, project: string, caller: { developerId: string; orgRole: OrgRole }): Promise<string | undefined>;
   roleOf(orgId: OrgId, project: string, caller: { developerId: string; orgRole: OrgRole }): Promise<ProjectRole | undefined>;
   list(orgId: OrgId, project: string): Promise<Array<{ developerId: string; role: ProjectRole; source: "grant" | "org_role" }>>;
   projectsOf(orgId: OrgId, caller: { developerId: string; orgRole: OrgRole }): Promise<Array<{ project: string; role: ProjectRole }>>;

@@ -1165,6 +1165,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
     signInStore,
+    projectAiSignInTableName: developer.signInTableName,
     now: () => Date.now(),
     // The project AI settings and the spend policy are written by the routes themselves (Audit Task 19).
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),

@@ -22,8 +22,6 @@ import { effectiveProjectRole, grantRoleOf, grantedByOf, type GrantedBy } from "
 
 /** A person in a project, as Plan 3 reads one: `grant` for a person holding a grant, `org_role` for an org owner or admin. */
 export interface ProjectMembers {
-  /** Server-selected grant source for the existing maintainer settings write; absent on legacy test adapters. */
-  maintainerGrantOf?(orgId: OrgId, project: string, caller: { developerId: string; orgRole: OrgRole }): Promise<string | undefined>;
   roleOf(orgId: OrgId, project: string, caller: { developerId: string; orgRole: OrgRole }): Promise<ProjectRole | undefined>;
   list(orgId: OrgId, project: string): Promise<Array<{ developerId: string; role: ProjectRole; source: "grant" | "org_role" }>>;
   projectsOf(orgId: OrgId, caller: { developerId: string; orgRole: OrgRole }): Promise<Array<{ project: string; role: ProjectRole }>>;
@@ -155,14 +153,6 @@ export async function listProjectMembers(deps: ProjectMembersDependencies, orgId
 /** What Plan 3 (and the routes) read people through. See the interface. */
 export function createProjectMembers(deps: ProjectMembersDependencies): ProjectMembers {
   return {
-    async maintainerGrantOf(orgId, project, caller) {
-      if (!await projectExists(deps, orgId, project) || caller.orgRole === "owner" || caller.orgRole === "admin") return undefined;
-      for (const id of await idsFor(deps, caller.developerId)) {
-        const role = grantRoleOf(await readGrant(deps, orgId, id, project));
-        if (role !== undefined) return role === "maintainer" ? id : undefined;
-      }
-      return undefined;
-    },
     async roleOf(orgId, project, caller) {
       if (!await projectExists(deps, orgId, project)) return undefined;
       if (caller.orgRole === "owner" || caller.orgRole === "admin") return effectiveProjectRole(caller, undefined, false);
