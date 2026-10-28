@@ -27,6 +27,7 @@ import {
   type ProjectAiSettings,
   type SpendPolicy,
 } from "@agentx/contracts";
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { OwnerShare } from "./owner-total.js";
 import type { AgentRecord, BuiltinSettings, OwnerCap } from "../agents/store.js";
@@ -50,6 +51,15 @@ export interface SpendSettingsDependencies {
 }
 
 type Document = Record<string, unknown>;
+
+/** Request-bearing writes need server-bound identity; no-request internal setup/system calls retain the legacy boundary. */
+function settingsActorChecks(deps: SpendSettingsDependencies, orgId: OrgId, by: string, options: { actor?: BudgetActor; request?: RequestMark }): TransactItem[] {
+  if ((options.request !== undefined && options.actor === undefined) ||
+    (options.actor !== undefined && options.actor.developerId !== by) ||
+    (options.request !== undefined && (options.request.orgId !== orgId || options.request.developerId !== by))) throw budgetActorRefused();
+  return options.actor === undefined ? [] : budgetActorChecks(deps.tableName, orgId, options.actor);
+}
+
 
 async function getItem(deps: SpendSettingsDependencies, key: { pk: string; sk: string }): Promise<Document | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Document };
@@ -131,8 +141,9 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings } = {},
+  options: { actor?: BudgetActor; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings } = {},
 ): Promise<StoredProjectAi> {
+  const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
   const current = await readProjectAiWithRevision(deps, orgId, project);
   const expected = options.expectedRevision ?? current.revision;
@@ -156,7 +167,9 @@ export async function writeProjectAi(
     before: options.before ?? current.settings,
   }));
   const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
-  await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
+  const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
+  const actorStart = items.length;
+  await commit(deps, [...items, ...checks], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
   await flushAuditEvents(deps, events);
   return { settings: preserved, revision: expected + 1 };
 }
@@ -240,8 +253,9 @@ export async function writeSpendPolicy(
   orgId: OrgId,
   policy: SpendPolicy,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy } = {},
+  options: { actor?: BudgetActor; expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy } = {},
 ): Promise<StoredSpendPolicy> {
+  const checks = settingsActorChecks(deps, orgId, by, options);
   const now = deps.now ?? Date.now;
   const expected = options.expectedRevision ?? (await readSpendPolicyWithRevision(deps, orgId)).revision;
   const updatedAt = new Date(now()).toISOString();
@@ -251,7 +265,9 @@ export async function writeSpendPolicy(
     before: options.before ?? await settingsAt(expected, () => readSpendPolicyWithRevision(deps, orgId), (stored) => stored.policy),
   }));
   const item = putRevised({ ...deps, now }, orgSettingsKey(orgId, "SPEND_POLICY"), "ORG_SPEND_POLICY", { ...policy, updatedBy: by, updatedAt }, expected);
-  await commit({ ...deps, now }, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
+  const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
+  const actorStart = items.length;
+  await commit({ ...deps, now }, [...items, ...checks], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
   await flushAuditEvents(deps, events);
   return { policy, revision: expected + 1 };
 }

@@ -887,7 +887,7 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
     const unknown = next.sourceOrder.find((source) => !allowed.has(source));
     if (unknown !== undefined) throw agentXError("CONFIG_INVALID", `sourceOrder: ${unknown} is not one of your company's model sources`);
   }
-  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { expectedRevision: current.revision, request: mark, before: current.settings });
+  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.settings });
   return projectAiView(deps, caller.orgId, written);
 }
 
@@ -933,7 +933,7 @@ async function putSpendPolicy(deps: AgentRouteDependencies, caller: AgentCaller,
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "is not valid"}`);
   }
   await requireWithinTrial(deps, caller.orgId, "ownerAgentBudgetCapUsd", change.ownerAgentBudgetCapUsd, TRIAL_LIMITS_R49.ownerAgentBudgetCapUsd, "cap on one person's agent budgets");
-  return { ...await writeSpendPolicy(deps, caller.orgId, merged.data, caller.developerId, { expectedRevision: current.revision, request: mark, before: current.policy }) };
+  return { ...await writeSpendPolicy(deps, caller.orgId, merged.data, caller.developerId, { actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, request: mark, before: current.policy }) };
 }
 
 // ---- routing

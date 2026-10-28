@@ -4,6 +4,7 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { orgMemberKey, developerOrgKey, spendRequestKey, agentKey, topUpKey, type BudgetScope, type SpendRequestRecord } from "@agentx/contracts";
 import { createSpendRequest, decideSpendRequest, type SpendRequestHost } from "../../packages/broker/src/spend/requests.js";
+import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
@@ -81,7 +82,7 @@ for (const kind of ["run", "month", "owner_cap"] as const) {
   it(`refuses stale merged ${kind} session after real retirement and accepts survivor's own session`, async () => {
     const f = await fixture(kind), deps = f.t.deps();
     const duplicate = { ...f.t.db.get(`DEVELOPER#${DEB.developerId}`, "META")! }; delete duplicate.mergedInto; duplicate.issuer = "https://identity.example.test"; duplicate.subject = "merged-admin"; f.t.db.set(duplicate);
-    await mergeDuplicateMember({ documentClient: f.t.db, tableName: "state", signInStore: deps.signInStore!, now: Date.now }, {
+    await mergeDuplicateMember({ documentClient: f.t.db, tableName: "state", signInStore: new DeveloperSignInStore({ documentClient: f.t.db, tableName: "state", now: Date.now }), now: Date.now }, {
       orgId: TEST_ORG, survivorId: BEN.developerId, duplicateId: DEB.developerId, duplicateIdentityKey: ownerKeyForSubject("https://identity.example.test", "merged-admin"),
     });
     expect(f.t.db.get(orgMemberKey(TEST_ORG, DEB.developerId))).toBeUndefined();
