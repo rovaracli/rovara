@@ -1530,9 +1530,13 @@ export class GitHubAppCredentialProvider {
         try {
           if (locked === undefined) return;
           const current = await scoped.lookedUp(locked, true), check = scoped.options.requireInstallationBound;
-          if (current.id !== locked.installationId || check === undefined) throw workingBranchUnavailable();
+          if (current.id !== locked.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before reviewing its working branch.");
+          if (check === undefined) throw workingBranchUnavailable();
           await check(locked.orgId, current.id, { owner: locked.owner, name: locked.name });
-        } catch { throw workingBranchUnavailable(); }
+        } catch (error) {
+          if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before reviewing its working branch.");
+          throw workingBranchUnavailable();
+        }
         finally { scoped.tokenCache?.clear(); scoped.installations.clear(); locked = undefined; initial = undefined; }
       },
     };
