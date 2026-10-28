@@ -1,3 +1,4 @@
+import { capturingAuditDeps } from "../support/audit-capture.js";
 // Plan 3 Task 6a: the agent store (records, name uniqueness, drafts, versions, pinned bases, events).
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
@@ -638,4 +639,24 @@ describe("G1 legacy agent per-run precision compatibility", () => {
     await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: .000001 }, ALICE);
     expect(db.get(key)?.maxPerRunUsd).toBe(.000001);
   });
+});
+
+
+for (const builtin of [false, true]) it(`fences a real concurrent per-run write and its audit on ${builtin ? "builtin" : "custom"} settings`, async () => {
+  const f = setup(); const agentId = builtin ? "code-reviewer" : (await f.make("Racing money", scratch("a"))).agentId;
+  const capture = capturingAuditDeps({ db: f.db });
+  const store = new AgentStore({ documentClient: f.db, tableName: "state", now: () => START, audit: capture.audit });
+  await store.setBudget(ORG_A, agentId, { maxPerRunUsd: 1 }, ALICE);
+  const before = capture.recorded().length, key = builtin ? builtinSettingsKey(ORG_A, "code-reviewer") : agentKey(ORG_A, agentId, "META");
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> };
+    if (!raced && input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+      raced = true; await store.setBudget(ORG_A, agentId, { maxPerRunUsd: 3 }, ALICE);
+    }
+    return send(command);
+  };
+  expect(await code(store.setBudget(ORG_A, agentId, { maxPerRunUsd: 2 }, ALICE))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+  expect(raced).toBe(true); expect(f.db.get(key)?.maxPerRunUsd).toBe(3);
+  expect(capture.recorded().length).toBe(before + 1); expect(capture.pending()).toHaveLength(0);
 });

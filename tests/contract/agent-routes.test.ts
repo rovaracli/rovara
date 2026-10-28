@@ -1,3 +1,4 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 3 Task 7: the app's agent routes (`/v1/app/agents*`), through the broker's handler with two orgs. Less-safe changes answer
 // 202 with a confirmation link and change nothing; deciding them is Task 21a's page (its tests cover the decide side).
 import { randomUUID } from "node:crypto";
@@ -16,7 +17,7 @@ import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../pac
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
-import { agentXError } from "@agentx/contracts";
+import { agentXError, orgMemberKey, developerOrgKey, builtinSettingsKey } from "@agentx/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1307,7 +1308,7 @@ it("returns the exact resolved recipes alongside their authorized diff",async()=
 });
 
 
-for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001]) it("refuses sub-micro per-run input before any request or owner-cap approval write", async () => {
+for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001, -1, 1_000_000.000001]) it("refuses sub-micro per-run input before any request or owner-cap approval write", async () => {
   const f = await setup(), id = await f.create(MAYA), before = f.db.transactions().length;
   f.db.set({ ...f.db.get(agentGuardrailsKey(TEST_ORG)), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 1000 } });
   const answer = await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd });
@@ -1317,4 +1318,25 @@ for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001]) it("refuses sub-micro
   expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(0);
   expect((await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd: .000001 })).status).toBe(202);
   expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(1);
+});
+
+
+it("refuses an admin demoted in a real transaction just before the budget commit", async () => {
+  const f = await setup(), key = builtinSettingsKey(TEST_ORG, "rovara-code");
+  await f.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 1 }, DANA.developerId);
+  const count = f.db.find(row => row.kind === "budget_changed").length;
+  const send = f.db.send.bind(f.db); let demoted = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> };
+    if (!demoted && input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+      demoted = true;
+      await send(new TransactWriteCommand({ TransactItems: [orgMemberKey(TEST_ORG, DANA.developerId), developerOrgKey(DANA.developerId)].map(Key => ({ Update: { TableName: "state", Key, UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } })) }));
+    }
+    return send(command);
+  };
+  const answer = await f.call(DANA, "PUT", "/v1/app/agents/rovara-code/budget", { maxPerRunUsd: 2 });
+  expect(demoted).toBe(true); expect(answer.status).toBe(403);
+  expect(f.db.get(key)?.maxPerRunUsd).toBe(1); expect(f.db.find(row => row.kind === "budget_changed").length).toBe(count);
+  seedMembership(f.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
+  expect((await f.call(DANA, "PUT", "/v1/app/agents/rovara-code/budget", { maxPerRunUsd: 2 })).status).toBe(200);
 });
