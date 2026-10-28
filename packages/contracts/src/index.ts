@@ -16,6 +16,7 @@ export * from "./credentials.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
+export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./rovara-code-node.js";

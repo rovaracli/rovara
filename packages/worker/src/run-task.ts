@@ -53,6 +53,7 @@ import { exportBaselineSource, type BaselineSourceExport } from "./baseline-sour
 import { proposedChecksOfPlan, runPlanDryRun } from "./plan-dry-run.js";
 import { runWorkflowFeedbackReview, runWorkflowReviews } from "./verification/review.js";
 import { CHECK_ROUND_BUDGET_MS, createCheckRunners, planChecks, runChecks, type CheckPlan, type CheckRunners } from "./verification/checks.js";
+import { FindingsRecorder } from "./no-change-findings.js";
 import { assistantText, checksArtifactContent, compactCheckReport, finalCheckReport, notVerifiedReport, verificationExtension } from "./verification/extension.js";
 import { AgentFilesRestoreError, gitOriginalCode, recoverAgentFiles, type OriginalCode } from "./verification/original-code.js";
 import { runTestProof, serializeTestProof } from "./verification/test-proof.js";
@@ -542,6 +543,8 @@ async function runTask(
     clearTimeout(timer);
   };
   const toolEvidence: unknown[] = [];
+  // What the run did, kept to answer for a run that ends with no code change (the commands, their output, the final answer).
+  const findings = new FindingsRecorder();
   const contextDiagnostics: string[] = [];
   const onDiagnostic = (message: string): void => {
     contextDiagnostics.push(redactText(message));
@@ -789,6 +792,7 @@ async function runTask(
     monitor.observe(event);
     if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
     fileChanges.observe(event);
+    findings.observe(event);
     // A failed or stopped model call and Pi's retries reach the task as one sanitized note each. The raw events (the provider's message, the model's thinking, the final error
     // text) are not forwarded, so a failure shows once and no provider text is stored in the task's events.
     const modelNote = sanitizeModelCallEvent(event, monitor.attempt);
@@ -808,6 +812,7 @@ async function runTask(
       lastAssistant = outcome;
       lastModelNote = modelNote?.modelCall;
       finalText = assistantText((event as { message?: unknown }).message);
+      findings.concludeWith(finalText);
     }
     if (loopStop !== undefined) return;
     const action = loopGuard.observe(event);
@@ -1046,6 +1051,7 @@ async function runTask(
             unsubscribe = open.subscribe((event) => {
               if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
               fileChanges.observe(event);
+              findings.observe(event);
               const note = sanitizeModelCallEvent(event, 0);
               if (note !== undefined) {
                 logModelCallNote(log, invocation.operationId, note.modelCall);
@@ -1058,6 +1064,7 @@ async function runTask(
                 lastOutcome = outcome;
                 lastNote = note?.modelCall;
                 lastText = assistantText((event as { message?: unknown }).message);
+                findings.concludeWith(lastText);
               }
               if (stoppedBy !== undefined) return;
               const action = guard.observe(event);
@@ -1400,7 +1407,9 @@ async function runTask(
       }
       // A coding run that left the code as the task started has nothing to check or publish: the owner is told so.
       if (workflowCandidateRepositories !== undefined && await candidateUnchangedSinceBase(workflowRepositories, workflowCandidateRepositories)) {
-        throw agentXError("CONFIG_INVALID", WORKFLOW_NO_CODE_CHANGE_MESSAGE);
+        // The run's findings go with the refusal (redacted and bounded here, before they leave the worker): the commands the agent ran, what they printed and its own conclusion, so a request that
+        // needed no change (a question, a check) is answered. The broker shows them; nothing else about the refusal changes.
+        throw Object.assign(agentXError("CONFIG_INVALID", WORKFLOW_NO_CODE_CHANGE_MESSAGE), { noChangeFindings: findings.build() });
       }
       // The application build source is computed from the exact committed export, through the safe git path, and only for a run that changed the code
       // (one that left it as it was is refused above). It never decides the export: a candidate the build source cannot hold still exports, and the
