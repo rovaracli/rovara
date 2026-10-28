@@ -6,8 +6,10 @@ import {
   PLAYBOOK_STALE_MESSAGE,
   PROCESS_UNAVAILABLE_MESSAGE,
   ProjectPlaybookSchema,
+  agentKey,
   agentXError,
   projectPlaybookKey,
+  type AgentId,
   type DefaultProcess,
   type OrgId,
   type ProjectPlaybook,
@@ -78,14 +80,16 @@ export async function readProjectPlaybookWrittenAt(deps: ProjectPlaybookReader, 
 }
 
 const conditionFailed = (error: unknown): boolean => error instanceof Error && (error.name === "ConditionalCheckFailedException"
-  || (error.name === "TransactionCanceledException" && (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed"));
+  || (error.name === "TransactionCanceledException" && ((error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons ?? []).some((reason) => reason.Code === "ConditionalCheckFailed")));
 
 /**
  * Sets the project's default process under the revision the caller read (`PLAYBOOK_STALE` for another), bumps the revision, and records `playbook.default_process_changed` in the same
  * transaction. The caller has already checked that a `project_process` is usable (`requireProcessLayer`).
+ * `ifLayer` ties the write to a decision made about a process layer: it applies only while that layer is still at the version that was compared (a switch to the built-in compared the
+ * layer's published version; one published since makes the write `PLAYBOOK_STALE`, F2). The check is in the same transaction.
  */
 export async function writeProjectPlaybook(
-  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess },
+  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; ifLayer?: { agentId: AgentId; version: number } },
 ): Promise<ProjectPlaybook> {
   const { orgId, project } = input;
   const item = await readItem(deps, orgId, project);
@@ -108,6 +112,12 @@ export async function writeProjectPlaybook(
           ...(item === undefined ? {} : { ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": current.revision } }),
         },
       },
+      ...(input.ifLayer === undefined ? [] : [{
+        ConditionCheck: {
+          TableName: deps.tableName, Key: agentKey(orgId, input.ifLayer.agentId, "META"), ConditionExpression: "#currentVersion = :layerVersion",
+          ExpressionAttributeNames: { "#currentVersion": "currentVersion" }, ExpressionAttributeValues: { ":layerVersion": input.ifLayer.version },
+        },
+      }]),
       ...events.flatMap((event) => auditPending(auditDeps, event)),
     ] }));
   } catch (error) {

@@ -21,6 +21,6 @@ export function registerPlaybookApprovals(): void {
     const unchanged = current.revision === subject.expectedRevision && (unreadable || (current.defaultProcess.kind === "project_process" && current.defaultProcess.agentId === subject.agentId))
       && layer !== undefined && layer.currentVersion === subject.layerVersion;
     if (!unchanged) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
-    await writeProjectPlaybook(deps, { orgId: record.orgId, project: subject.project, developerId: record.decidedBy, expectedRevision: subject.expectedRevision, defaultProcess: { kind: "builtin" } });
+    await writeProjectPlaybook(deps, { orgId: record.orgId, project: subject.project, developerId: record.decidedBy, expectedRevision: subject.expectedRevision, defaultProcess: { kind: "builtin" }, ifLayer: { agentId: subject.agentId, version: subject.layerVersion } });
   });
 }

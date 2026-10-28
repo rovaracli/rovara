@@ -4,6 +4,7 @@ import {
   ProjectPlaybookBodySchema,
   agentXError,
   projectAllows,
+  type AgentId,
   type HowWeWorkView,
   type ProjectPlaybookResponse,
   type ProjectRole,
@@ -67,13 +68,15 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
     throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
   }
   const { expectedRevision, defaultProcess } = parsed.data;
+  let ifLayer: { agentId: AgentId; version: number } | undefined;
   if (defaultProcess.kind === "project_process") await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
   else {
     // A switch back to the built-in that drops something stricter waits for a second person (follow-up M2).
-    const held = await holdBuiltinSwitch(deps, caller, found.name, expectedRevision);
-    if (held !== undefined) return held;
+    const decision = await holdBuiltinSwitch(deps, caller, found.name, expectedRevision);
+    if (decision.held !== undefined) return decision.held;
+    ifLayer = decision.ifLayer;
   }
-  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess });
+  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(ifLayer === undefined ? {} : { ifLayer }) });
   return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
 }
 
