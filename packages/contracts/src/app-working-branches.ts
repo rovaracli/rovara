@@ -20,3 +20,6 @@ export const ProjectWorkingBranchPageSchema = z.object({ orgId: OrgIdSchema, pro
 });
 export type ProjectWorkingBranchPage = z.infer<typeof ProjectWorkingBranchPageSchema>;
 export type ProjectWorkingBranchPageBody = z.infer<typeof ProjectWorkingBranchPageBodySchema>;
+
+// Transport envelope fields are discarded before browser caching; page checks remain strict.
+export const ProjectWorkingBranchPageReaderSchema = ProjectWorkingBranchPageSchema.strip();

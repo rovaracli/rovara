@@ -21,3 +21,8 @@ export function createWorkingBranchProvider(provider: Reader): Required<Pick<Wor
 export function createWorkingBranchLister(provider: Pick<GitHubAppCredentialProvider, "listWorkingBranches">): { listBranches: (orgId: string, repository: Repository, page?: number) => ReturnType<GitHubAppCredentialProvider["listWorkingBranches"]> } {
   return { listBranches: async (orgId, repository, page = 1) => provider.listWorkingBranches(repository.url, registered(repository), { orgId }, page) };
 }
+
+/** Provider pair used by the read-only HTTP listing boundary. */
+export function createWorkingBranchPageProvider(provider: Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "listWorkingBranches">) {
+  return { checkRepository: async (orgId: string, repository: Repository) => provider.readWorkingBranchRepository(repository.url, registered(repository), { orgId }), ...createWorkingBranchLister(provider) };
+}
