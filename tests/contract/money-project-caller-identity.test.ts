@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { agentRequestKey, orgMetaKey, orgMemberKey, developerOrgKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
+import { DeveloperSignInMethodSchema, agentRequestKey, orgMetaKey, orgMemberKey, developerOrgKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
 import { writeProjectAi } from "../../packages/broker/src/spend/settings.js";
 import { DeveloperSignInStore, developerIdentityKey, signInIdentityKey, endedByUnlink } from "../../packages/broker/src/developer/store.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -51,3 +51,21 @@ it("an already signed-in pre-merge session refuses through real HTTP auth",async
  expect(t.db.get(projectAiKey(TEST_ORG,"payments"))).toMatchObject({revision:1,memberAcceptRunLimitUpToUsd:1});
 });
 for(const profile of [{developerId:BY},{developerId:BY,revoked:false,sessionsEndedAt:"2026-10-27T00:00:00.000Z","sessionsEndedByMethod#github":"2026-10-27T00:00:00.000Z"}])it("fresh legitimate own writer preserves exact legacy profile marks",async()=>{const f=setup(profile);await expect(f.write()).resolves.toMatchObject({revision:1});expect(f.db.get(signin,key)).toEqual({...key,...profile});});
+
+for(const method of DeveloperSignInMethodSchema.options)for(const existing of [false,true])it(`pins schema method ${method} from ${existing?"present":"absent"} snapshot`,async()=>{
+ const field=`sessionsEndedByMethod#${method}`,f=setup({developerId:BY,revoked:false,...(existing?{[field]:"2026-10-27T00:00:00.000Z"}:{})});let raced=false;
+ f.db.beforeTransaction=async input=>{const items=input.TransactItems as Array<{Put?:{TableName?:string}}>;
+ if(!raced&&items.some(i=>i.Put?.TableName===state)){raced=true;f.db.set(signin,{...f.db.get(signin,key)!,[field]:new Date(now).toISOString()});}};
+ await expect(f.write()).rejects.toMatchObject({code:"FORBIDDEN"});expect(raced).toBe(true);expect(f.db.get(state,projectAiKey(TEST_ORG,"web"))).toBeUndefined();
+});
+for(const existing of [false,true])it(`a future schema option is fenced from ${existing?"present":"absent"} without a second method list`,async()=>{
+ const original=DeveloperSignInMethodSchema.options,method="fixture-future-method",field=`sessionsEndedByMethod#${method}`;
+ // Test-only option injection checks dependency growth, not parser/provider registration.
+ try{
+  Reflect.set(DeveloperSignInMethodSchema,"options",[...original,method]);
+  const f=setup({developerId:BY,revoked:false,...(existing?{[field]:"2026-10-27T00:00:00.000Z"}:{})});let raced=false;
+  f.db.beforeTransaction=async input=>{const items=input.TransactItems as Array<{Put?:{TableName?:string}}>;
+   if(!raced&&items.some(i=>i.Put?.TableName===state)){raced=true;f.db.set(signin,{...f.db.get(signin,key)!,[field]:new Date(now).toISOString()});}};
+  await expect(f.write()).rejects.toMatchObject({code:"FORBIDDEN"});expect(raced).toBe(true);expect(f.db.get(state,projectAiKey(TEST_ORG,"web"))).toBeUndefined();
+ }finally{Reflect.set(DeveloperSignInMethodSchema,"options",original);}
+});
