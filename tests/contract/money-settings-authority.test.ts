@@ -6,12 +6,13 @@ import { defaultSpendPolicy, orgMemberKey, developerOrgKey, orgMetaKey, orgSetti
 import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { seedMembership } from "../support/developer-task-broker.js";
-import { DEB, setup } from "../support/spend-world.js";
+import { BEN, DEB, setup } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
-for (const kind of ["project", "policy"] as const) for (const mode of ["route", "store"] as const) for (const loss of ["member_role", "removed", "pointer", "closed"] as const) {
-  it(`refuses ${kind} ${mode} settings commit after ${loss} and permits restored writer`, async () => {
+for (const kind of ["project", "policy"] as const) for (const mode of ["route", "store"] as const) for (const existing of [false, true]) for (const loss of ["member_role", "removed", "pointer", "closed"] as const) {
+  it(`refuses ${kind} ${mode} ${existing ? "existing" : "first"} settings commit after ${loss} and permits restored writer`, async () => {
     const t = await setup(), capture = capturingAuditDeps({ db: t.db }), deps = { ...t.deps(), audit: capture.audit };
     const key = kind === "project" ? projectAiKey(TEST_ORG, "payments") : orgSettingsKey(TEST_ORG, "SPEND_POLICY");
+    if (existing) t.db.set({ ...key, entityType: kind === "project" ? "PROJECT_AI" : "ORG_SPEND_POLICY", ...(kind === "project" ? { projectPays: false, monthlyBudgetUsd: 100 } : defaultSpendPolicy()), revision: 1 });
     const before = t.db.get(key), originalOrg = t.db.get(orgMetaKey(TEST_ORG))!;
     const request = { orgId: TEST_ORG, developerId: DEB.developerId, requestId: randomUUID(), fingerprint: "settings-authority" };
     const options = { request, actor: { developerId: DEB.developerId, role: "admin" as const } };
@@ -35,7 +36,7 @@ for (const kind of ["project", "policy"] as const) for (const mode of ["route", 
     expect(changed).toBe(true); expect(t.db.get(key)).toEqual(before); expect(capture.recorded()).toHaveLength(0); expect(capture.pending()).toHaveLength(0);
     seedMembership(t.db, DEB.developerId, { orgId: TEST_ORG, role: "admin" }); t.db.set(originalOrg);
     if (mode === "route") expect((await call()).status).toBe(200); else await write();
-    expect(t.db.get(key)?.revision).toBe(1);
+    expect(t.db.get(key)?.revision).toBe(existing ? 2 : 1);
   });
 }
 for (const kind of ["project", "policy"] as const) for (const mismatch of ["missing", "actor", "request"] as const) {
@@ -46,3 +47,22 @@ for (const kind of ["project", "policy"] as const) for (const mismatch of ["miss
     expect((await write.then(() => undefined, (error: { code?: string }) => error))?.code).toBe("FORBIDDEN");
   });
 }
+
+it("fences the existing maintainer accept-only path when company membership is removed at commit", async () => {
+  const t = await setup(), key = projectAiKey(TEST_ORG, "payments"), send = t.db.send.bind(t.db); let changed = false;
+  t.db.send = async command => {
+    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string } } }> }).TransactItems;
+    if (!changed && items?.some(item => item.Put?.Item?.pk === key.pk)) { changed = true; await send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: "state", Key: orgMemberKey(TEST_ORG, BEN.developerId) } }] })); }
+    return send(command);
+  };
+  expect((await t.api(BEN, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 1 })).status).toBe(403);
+  expect(changed).toBe(true); expect(t.db.get(key)).toBeUndefined();
+  seedMembership(t.db, BEN.developerId, { orgId: TEST_ORG, role: "member" });
+  expect((await t.api(BEN, "PUT", "/v1/app/projects/payments/ai", { memberAcceptRunLimitUpToUsd: 1 })).status).toBe(200);
+});
+for (const kind of ["project", "policy"] as const) it(`refuses ${kind} settings with neither request nor actor`, async () => {
+  const t = await setup();
+  const options = {} as unknown as Parameters<typeof writeProjectAi>[5];
+  const job = kind === "project" ? writeProjectAi(t.deps(), TEST_ORG, "payments", { projectPays: false }, DEB.developerId, options) : writeSpendPolicy(t.deps(), TEST_ORG, defaultSpendPolicy(), DEB.developerId, options);
+  expect((await job.then(() => undefined, (e: { code?: string }) => e))?.code).toBe("FORBIDDEN");
+});
