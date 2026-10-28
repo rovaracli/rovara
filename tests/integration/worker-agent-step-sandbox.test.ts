@@ -123,7 +123,7 @@ describe("a coding step's tool limits in the task sandbox", () => {
     const ops = new Set(fake.execs.map(({ request }) => request.op));
     expect(ops).toContain("readFile");
     for (const op of ["writeFile", "mkdir", "grep", "glob", "readdir"]) expect(ops).not.toContain(op);
-    for (const exec of fake.execs) expect(exec.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "1000:1000", sandbox.name, NODE, ...FILE_OPS_NODE_FLAGS, HELPER]);
+    for (const exec of fake.execs) expect(exec.args.slice(0, 12)).toEqual(["exec", "-i", "--user", "1000:1000", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", sandbox.name, NODE, ...FILE_OPS_NODE_FLAGS, HELPER]);
   });
 
   it("never gives a REVIEW step bash or write tools, whatever the step lists", async () => {

@@ -200,11 +200,6 @@ async function runTask(
   };
   const mode = invocation.payload.workflowMode;
   const readsOnly = mode !== undefined && READ_ONLY_STEP_MODES.has(mode);
-  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // AgentX's rerun of the project's checks (CHECKS) stops first too, and then starts the project's dev container fresh, through the same checked start as ever.
-  if (mode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(mode)) {
-    await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading, mode === "CHECKS" ? "run the checks" : "read the workspace").catch((error: unknown) => reportFeedbackReviewStartFailure(error));
-  }
   const step = invocation.payload.agentStep;
   // What a coding step adds to this task's sessions; an agent step is a run of its own, which takes none of the coding paths below.
   const agentStep = step?.kind === "coding" ? step : undefined;
@@ -220,6 +215,12 @@ async function runTask(
   if (approval !== undefined) {
     if (dependencies.authorizeFeedbackApproval === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot verify its PR feedback approval");
     await dependencies.authorizeFeedbackApproval(approval);
+  }
+  // The checks above read nothing in the workspace, so a stale PR feedback approval stops the run before anything is read or any program is stopped.
+  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
+  // AgentX's rerun of the project's checks (CHECKS) stops first too, and then starts the project's dev container fresh, through the same checked start as ever.
+  if (mode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(mode)) {
+    await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading, mode === "CHECKS" ? "run the checks" : "read the workspace").catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   }
   const manifest = JSON.parse(
     await readFile(resolve(dependencies.rootPath, ".agentx/preparation-manifest.json"), "utf8"),
