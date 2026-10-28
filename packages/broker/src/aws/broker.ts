@@ -724,7 +724,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "readWorkingBranch" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "readWorkingBranch" | "createWorkingBranchPreviewSession" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -1371,8 +1371,11 @@ function workingBranchPagesRoute(dependencies: AwsBrokerDependencies): Pick<Deve
 /** Lane B: exact previews require both pinned SDK methods; no legacy fallback. */
 function workingBranchPreviewRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "projectWorkingBranchPreview"> {
   const app = dependencies.githubPullRequests;
-  if (app.readWorkingBranchRepository === undefined || app.readWorkingBranch === undefined) return {};
-  return { projectWorkingBranchPreview: createWorkingBranchProvider({ readWorkingBranchRepository: app.readWorkingBranchRepository.bind(app), readWorkingBranch: app.readWorkingBranch.bind(app) }) };
+  if (app.createWorkingBranchPreviewSession === undefined) return {};
+  return { projectWorkingBranchPreview: () => {
+    const session = app.createWorkingBranchPreviewSession!();
+    return { ...createWorkingBranchProvider(session), finish: () => session.finish() };
+  } };
 }
 
 /** `requireRepositoriesConnected` for the task routes, absent where there is no gate. */

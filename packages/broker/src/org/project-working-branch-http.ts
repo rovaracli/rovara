@@ -5,9 +5,9 @@ import { takeRateAt } from "../developer/page-comments.js";
 import { readProjectLifecycleAuthority as authority } from "./reviewed-project-archive.js";
 import { readProjectWorkingBranchPreview } from "./project-working-branch.js";
 import { readProjectWorkingBranchPage } from "./project-working-branch-list.js";
-const invalid = () => agentXError("CONFIG_INVALID", "Review valid company, project and branch page values.");
-const forbidden = () => agentXError("FORBIDDEN", "Only a current project maintainer can list working branches.");
-const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Working branches could not be checked. Try again.");
+const invalid = (preview: boolean) => agentXError("CONFIG_INVALID", preview ? "Review valid company, project and branch preview values." : "Review valid company, project and branch page values.");
+const forbidden = (preview: boolean) => agentXError("FORBIDDEN", preview ? "Only a current project maintainer can preview a working branch." : "Only a current project maintainer can list working branches.");
+const unavailable = (preview: boolean) => agentXError("RUNTIME_UNAVAILABLE", preview ? "The working branch preview could not be checked. Try again." : "Working branches could not be checked. Try again.");
 export async function readProjectWorkingBranchHttp(deps: DeveloperRouteDependencies, caller: DeveloperCaller, encodedProject: string, encodedRepository: string, url: URL, headers: Record<string, string | undefined>, preview = false) {
   let project: string, repository: string;
   try { project = decodeURIComponent(encodedProject); repository = decodeURIComponent(encodedRepository); } catch { throw agentXError("NOT_FOUND", "That project repository is unavailable."); }
@@ -15,31 +15,35 @@ export async function readProjectWorkingBranchHttp(deps: DeveloperRouteDependenc
   if (headers.origin !== undefined && headers.origin !== new URL(deps.developer.issuer).origin) throw agentXError("FORBIDDEN", "This request didn't come from Rovara's app.");
   const values: Record<string, unknown> = {}, allowedKeys = new Set(["expectedOrgId", "expectedRevision", "expectedProjectRevision", preview ? "branch" : "cursor"]);
   for (const [key, value] of url.searchParams) {
-    if (!allowedKeys.has(key) || Object.hasOwn(values, key)) throw invalid();
+    if (!allowedKeys.has(key) || Object.hasOwn(values, key)) throw invalid(preview);
     if (key === "expectedRevision" || key === "expectedProjectRevision") {
-      if (!/^(0|[1-9][0-9]{0,15})$/.test(value)) throw invalid();
+      if (!/^(0|[1-9][0-9]{0,15})$/.test(value)) throw invalid(preview);
       values[key] = Number(value);
     } else values[key] = value;
   }
   const parsed = (preview ? ProjectWorkingBranchPreviewBodySchema : ProjectWorkingBranchPageBodySchema).safeParse({ ...values, repository });
-  if (!parsed.success) throw invalid();
+  if (!parsed.success) throw invalid(preview);
   const scope = Object.freeze({ ...caller });
-  if (parsed.data.expectedOrgId !== scope.orgId) throw agentXError("CHANGE_STALE", "The company changed. Refresh and review the branch list again.");
+  if (parsed.data.expectedOrgId !== scope.orgId) throw agentXError("CHANGE_STALE", preview ? "The company changed. Refresh and review the branch preview again." : "The company changed. Refresh and review the branch list again.");
   // Required before any project existence read, rate write or provider work.
   try { await authority(deps, scope, project); } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "FORBIDDEN") throw forbidden();
-    throw unavailable();
+    if (error instanceof Error && "code" in error && error.code === "FORBIDDEN") throw forbidden(preview);
+    throw unavailable(preview);
   }
   let admitted: boolean;
-  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_PAGES"), sk: scope.developerId }, 10, 60_000); } catch { throw unavailable(); }
-  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many branch pages. Try again shortly.");
+  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_PAGES"), sk: scope.developerId }, 10, 60_000); } catch { throw unavailable(preview); }
+  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", preview ? "Too many working branch previews. Try again shortly." : "Too many branch pages. Try again shortly.");
   // Sequential conservative admission: later refusal does not refund earlier debits.
-  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_PAGES"), sk: "ALL" }, 30, 60_000); } catch { throw unavailable(); }
-  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many company branch pages. Try again shortly.");
-  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_HOURLY_PAGES"), sk: "ALL" }, 1_200, 3_600_000); } catch { throw unavailable(); }
-  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", "Too many company branch pages this hour. Try again later.");
+  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_PAGES"), sk: "ALL" }, 30, 60_000); } catch { throw unavailable(preview); }
+  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", preview ? "Too many company working branch previews. Try again shortly." : "Too many company branch pages. Try again shortly.");
+  try { admitted = await takeRateAt(deps, { pk: orgScoped(scope.orgId, "WORKING_BRANCH_ORG_HOURLY_PAGES"), sk: "ALL" }, 1_200, 3_600_000, undefined, preview ? 2 : 1); } catch { throw unavailable(preview); }
+  if (!admitted) throw agentXError("TOO_MANY_REQUESTS", preview ? "Too many working branch previews this hour. Try again later." : "Too many company branch pages this hour. Try again later.");
   if (preview) {
-    const result = await readProjectWorkingBranchPreview({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...deps.projectWorkingBranchPreview }, scope, project, parsed.data);
+    const session = deps.projectWorkingBranchPreview?.();
+    if (session === undefined) throw unavailable(preview);
+    let result;
+    try { result = await readProjectWorkingBranchPreview({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...session }, scope, project, parsed.data); }
+    finally { await session.finish(); }
     const { orgId, project: name, repository: registered, repositoryFullName, branch, commit, expectedRevision, expectedProjectRevision, checkedAt } = result;
     return ProjectWorkingBranchPreviewSchema.parse({ orgId, project: name, repository: registered, repositoryFullName, branch, commit, expectedRevision, expectedProjectRevision, checkedAt });
   }

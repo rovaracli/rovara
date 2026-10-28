@@ -1497,18 +1497,59 @@ export class GitHubAppCredentialProvider {
     return { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
   }
 
-  private async workingBranchRead(input: WorkingBranchInput, branch?: string): Promise<{ installationId: number; repositoryId: number; commit?: string }> {
+  /** Isolated exact-preview read session: no cross-request/org cache; finish rechecks fresh installation identity. */
+  createWorkingBranchPreviewSession() {
+    const scoped = new GitHubAppCredentialProvider(this.options);
+    scoped.tokenCache = new Map();
+    let locked: WorkingBranchInput | undefined, initial: Promise<{ id: number; login: string }> | undefined, closed = false;
+    const prepare = (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+      if (closed) throw workingBranchUnavailable();
+      const input = workingBranchInput(url, expected, scope);
+      if (locked !== undefined && JSON.stringify(locked) !== JSON.stringify(input)) throw workingBranchInvalid();
+      locked ??= input;
+      return input;
+    };
+    const lookup = () => {
+      if (closed || locked === undefined) throw workingBranchUnavailable();
+      return initial ??= scoped.lookedUp(locked, true);
+    };
+    return {
+      readWorkingBranchRepository: async (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+        const input = prepare(url, expected, scope);
+        const result = await scoped.workingBranchRead(input, undefined, lookup);
+        return { installationId: result.installationId, repositoryId: result.repositoryId };
+      },
+      readWorkingBranch: async (url: string, branch: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+        if (!GitBranchNameSchema.safeParse(branch).success || branch === "HEAD" || branch.startsWith("refs/")) throw workingBranchInvalid();
+        const input = prepare(url, expected, scope), result = await scoped.workingBranchRead(input, branch, lookup);
+        return result.commit === undefined ? undefined : { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
+      },
+      finish: async () => {
+        if (closed) throw workingBranchUnavailable();
+        closed = true;
+        try {
+          if (locked === undefined) return;
+          const current = await scoped.lookedUp(locked, true), check = scoped.options.requireInstallationBound;
+          if (current.id !== locked.installationId || check === undefined) throw workingBranchUnavailable();
+          await check(locked.orgId, current.id, { owner: locked.owner, name: locked.name });
+        } catch { throw workingBranchUnavailable(); }
+        finally { scoped.tokenCache?.clear(); scoped.installations.clear(); locked = undefined; initial = undefined; }
+      },
+    };
+  }
+
+  private async workingBranchRead(input: WorkingBranchInput, branch?: string, lookup?: () => Promise<{ id: number; login: string }>): Promise<{ installationId: number; repositoryId: number; commit?: string }> {
     try {
       // Unlike older private-install APIs, this optional reader requires an explicit org policy.
       const check = this.options.requireInstallationBound;
       if (check === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection unavailable.");
       const connected = async () => {
-        const current = await this.lookedUp(input, true);
+        const current = await (lookup === undefined ? this.lookedUp(input, true) : lookup());
         if (current.id !== input.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection changed.");
         await check(input.orgId, current.id, { owner: input.owner, name: input.name });
       };
       await connected();
-      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, false, { installationId: input.installationId });
+      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, lookup !== undefined, { installationId: input.installationId });
       const read = (path: string) => this.fetchImplementation(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" });
       const repository = await read("");
       if (repository.status !== 200) throw workingBranchUnavailable();
