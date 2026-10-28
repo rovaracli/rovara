@@ -6,6 +6,7 @@ import { PageHeader } from "../../../design/PageHeader.js";
 import { DataTable } from "../../../design/DataTable.js";
 import { useAppHost } from "../../../host.js";
 import { isConfirmUrl } from "../../../text/links.js";
+import { useAdminContext } from "../AdminLayout.js";
 import { checkedTime, ReadSection, useAdminRead } from "../models/read.js";
 const text = z.string().max(200);
 function readers(origin: string) {
@@ -17,6 +18,10 @@ function readers(origin: string) {
 }
 interface WaitingRow { id: string; kind: string; createdAt: string; confirmUrl: string | undefined; amount?: number }
 export function WaitingScreen() {
+ const { orgId, developerId, role } = useAdminContext();
+ return <ScopedWaiting key={`${orgId}:${developerId}:${role}`} />;
+}
+function ScopedWaiting() {
  const host = useAppHost(), schemas = useMemo(() => readers(host.origin), [host.origin]), [kind, setKind] = useState("all");
  const approvals = useAdminRead("approvals", "/v1/app/approvals?status=PENDING", schemas.approvals), spend = useAdminRead("spend-requests", "/v1/app/spend-requests", schemas.spend);
  function table(rows: WaitingRow[]) { const visible = rows.filter(row => kind === "all" || kind === row.kind);return <><p>{visible.length} of {rows.length} shown in this list.</p>{visible.length === 0 ? <p>No pending items visible to you in this list and filter.</p> : <DataTable caption="Pending items visible to you" rows={visible} rowKey={r => r.id} columns={[
