@@ -569,11 +569,11 @@ async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agent
 async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
   const input = parseBody(RequestOnlySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
-  if (archive && "owner" in agent) await requireNotCurrentProcess(deps, agent);
+  const guard = archive && "owner" in agent ? await requireNotCurrentProcess(deps, agent) : undefined;
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {
-    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark);
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, guard === undefined ? undefined : { checks: guard });
     // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
     await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
     return { agent: customView(archived, access) };

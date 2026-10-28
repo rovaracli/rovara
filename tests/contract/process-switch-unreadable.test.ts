@@ -85,15 +85,15 @@ describe("a playbook document that exists but can't be read (PB16)", () => {
     const w = world();
     const { agentId } = await postProjectProcess(playbookDeps(w), w.caller(MAX), "web");
     const layer = (await w.store.get(ORG_A, agentId))!;
-    // No document: the layer is not in use.
-    await expect(requireNotCurrentProcess(playbookDeps(w), layer)).resolves.toBeUndefined();
+    // No document: the layer is not in use (the archive gets the guard to carry into its transaction).
+    await expect(requireNotCurrentProcess(playbookDeps(w), layer)).resolves.toMatchObject({ items: [expect.anything()] });
     corruptPlaybook(w);
     expect(await failure(requireNotCurrentProcess(playbookDeps(w), layer))).toMatchObject({ code: "PROCESS_IN_USE", status: 409 });
     const ordinary = await w.store.create({ orgId: ORG_A, name: "helper", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, createdBy: MAX });
     await expect(requireNotCurrentProcess(playbookDeps(w), ordinary)).resolves.toBeUndefined();
     // A layer of another project is not this project's to hold.
     const elsewhere = await w.store.create({ orgId: ORG_A, name: "other process", owner: { kind: "project", project: "mobile" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX });
-    await expect(requireNotCurrentProcess(playbookDeps(w), elsewhere)).resolves.toBeUndefined();
+    await expect(requireNotCurrentProcess(playbookDeps(w), elsewhere)).resolves.toMatchObject({ items: [expect.anything()] });
   });
 });
 

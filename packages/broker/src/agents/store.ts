@@ -212,6 +212,8 @@ export interface BudgetWriteOptions {
    * one of them is refused (the request was decided meanwhile).
    */
   overrideCap?: OverrideCap;
+  /** Condition checks that must hold when the write commits, and the refusal when one fails (a process layer's archive: the playbook still does not point at it). */
+  checks?: { items: TransactItem[]; refused: () => Error };
 }
 
 const policyMoved = () => coded("AGENT_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
@@ -667,11 +669,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const changed: AgentRecord = { ...agent, status, updatedAt };
     // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
-    await this.commit(...withOverride([
+    const [items, refuse] = withOverride([
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options), request, changed);
+    ], totals.refuse, options);
+    const checks = options.checks;
+    // The caller's checks come last, so their indexes start after the write's own items.
+    await this.commit(
+      [...items, ...(checks?.items ?? [])],
+      (failed) => (checks !== undefined && [...failed].some((index) => index >= items.length) ? checks.refused() : refuse(failed)),
+      request, changed,
+    );
     return changed;
   }
 
