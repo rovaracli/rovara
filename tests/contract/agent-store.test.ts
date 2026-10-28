@@ -642,11 +642,11 @@ describe("G1 legacy agent per-run precision compatibility", () => {
 });
 
 
-for (const builtin of [false, true]) it(`fences a real concurrent per-run write and its audit on ${builtin ? "builtin" : "custom"} settings`, async () => {
+for (const builtin of [false, true]) for (const initial of [undefined, 0, 1]) it(`fences a real concurrent per-run write and its audit on ${builtin ? "builtin" : "custom"} settings from ${String(initial)}`, async () => {
   const f = setup(); const agentId = builtin ? "code-reviewer" : (await f.make("Racing money", scratch("a"))).agentId;
   const capture = capturingAuditDeps({ db: f.db });
   const store = new AgentStore({ documentClient: f.db, tableName: "state", now: () => START, audit: capture.audit });
-  await store.setBudget(ORG_A, agentId, { maxPerRunUsd: 1 }, ALICE);
+  await store.setBudget(ORG_A, agentId, { maxPerRunUsd: initial ?? null }, ALICE);
   const before = capture.recorded().length, key = builtin ? builtinSettingsKey(ORG_A, "code-reviewer") : agentKey(ORG_A, agentId, "META");
   const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
