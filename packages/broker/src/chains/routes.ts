@@ -447,7 +447,7 @@ async function putBudget(deps: ChainRouteDependencies, caller: AgentCaller, chai
   await requireChainBudgetAllowed(deps, caller.orgId, input.monthlyUsd);
   const monthlyUsd = input.monthlyUsd === null ? undefined : input.monthlyUsd;
   const written = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { monthlyBudgetUsd: monthlyUsd }), { op: "set_budget", budget: { monthlyUsd: input.monthlyUsd } }, mark,
-    (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, options));
+    (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, { ...options, manageSnapshot: chain, actor: { developerId: caller.developerId, role: caller.orgRole } }));
   if (written instanceof StatusReply) return written;
   // A chain whose budget is gone can't be started by an event or a schedule: the triggers that no longer qualify are turned off, and the answer says which.
   return { chain: chainView(written, access), disabledTriggers: await recheck(deps, chain) };

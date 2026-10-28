@@ -7,6 +7,7 @@ import { orgSettingsKey, ownerBudgetKey, type OrgId } from "@agentx/contracts";
 import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "./owner-total.js";
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 import { cleanUsd } from "./top-ups.js";
 
 /**
@@ -35,18 +36,25 @@ export const totalsMoved = (budgets: BudgetWords = "agent") => coded(budgets ===
 
 /** What an approved `owner_cap` request adds to a budget write (Plan 3 Task 32): the request's own end rides in the write's transaction, so the approval is the override. */
 export interface OverrideCap {
+  /** The actual deciding actor; supplied only by the approval handler. */
+  actor: BudgetActor;
   spendRequestId: string;
   items: TransactItem[];
   /** The error when one of `items` is refused (the request was decided meanwhile). */
   closed: () => Error;
 }
 
-/** The write's items with an approved request's own appended, and the refusal that names a refused one of those; the rest are `refuse`'s. Agents and chains share it. */
-export function withOverride(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, options: { overrideCap?: OverrideCap }): [TransactItem[], (failed: Set<number>) => Error | undefined] {
+/** Adds one actual-decider fence and the approved request ending to the store transaction, classifying actor loss separately from a closed request. */
+export function withOverride(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, options: { overrideCap?: OverrideCap }, scope: { tableName: string; orgId: OrgId; by: string }): [TransactItem[], (failed: Set<number>) => Error | undefined] {
   const override = options.overrideCap;
   if (override === undefined) return [items, refuse];
-  const start = items.length;
-  return [[...items, ...override.items], (failed) => ([...failed].some((index) => index >= start && index < start + override.items.length) ? override.closed() : refuse(failed))];
+  if (override.actor === undefined || override.actor.developerId !== scope.by) throw budgetActorRefused();
+  const checks = budgetActorChecks(scope.tableName, scope.orgId, override.actor);
+  const actorStart = items.length, start = actorStart + checks.length;
+  return [[...items, ...checks, ...override.items], (failed) => (
+    [...failed].some(index => index >= actorStart && index < start) ? budgetActorRefused()
+      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : refuse(failed)
+  )];
 }
 
 /** What an approved request adds to a change's event: the request that overrode the cap. */

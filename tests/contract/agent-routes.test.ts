@@ -1373,8 +1373,9 @@ for (const withSnapshot of [false, true]) it(`keeps an invalid historical owner-
   const change = request.change as Extract<NonNullable<SpendRequestRecord["change"]>, { op: "set_budget" }>;
   t.f.db.set({ ...original, change: { op: "set_budget", budget: { monthlyUsd: 600, maxPerRunUsd: .0000001 }, ...(withSnapshot ? { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd } : {}) } });
   const before = t.f.db.get(agentKey(TEST_ORG, t.id, "META")), audited = t.capture.recorded().length;
-  const error = await t.decide(request).then(() => undefined, (failure: { code?: string }) => failure);
+  const error = await t.decide(request).then(() => undefined, (failure: { code?: string; message?: string }) => failure);
   expect(error?.code).toBe(withSnapshot ? "CONFIG_INVALID" : "AGENT_REVISION_CONFLICT");
+  if (!withSnapshot) expect(error?.message).toContain("Deny this request, then submit a new budget change for review.");
   expect(t.f.db.get(key)?.status).toBe("PENDING");
   expect(t.f.db.get(agentKey(TEST_ORG, t.id, "META"))).toEqual(before);
   expect(t.capture.recorded().length).toBe(audited); expect(t.capture.pending()).toHaveLength(0);

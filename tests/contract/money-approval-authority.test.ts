@@ -115,3 +115,17 @@ it("fences the deciding actor when an owner-cap request is denied", async () => 
   await f.decide("DENY"); expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("DENIED");
   expect(f.t.db.get(f.s.key)).toEqual(before); expect(f.capture.recorded().length).toBeGreaterThan(0);
 });
+
+it("refuses direct chain money after ownership moves between manage access and the store read", async () => {
+  const t = await setup(), s = await subject(t, "chain"), send = t.db.send.bind(t.db); let moved = false;
+  t.db.send = async command => {
+    const result = await send(command), key = (command.input as { Key?: { pk?: string; sk?: string } }).Key;
+    if (!moved && command.constructor.name === "GetCommand" && key?.pk === s.key.pk && key.sk === s.key.sk) {
+      moved = true; await t.deps().chains!.setOwner(TEST_ORG, s.id, { kind: "member", developerId: OMAR.developerId }, ADA.developerId);
+    }
+    return result;
+  };
+  expect((await t.api(MAYA, "PUT", s.path + "/budget", { monthlyUsd: 20 })).status).toBe(409);
+  expect(moved).toBe(true); expect(t.db.get(s.key)?.monthlyBudgetUsd).toBeUndefined();
+  expect(t.db.get(s.key)?.owner).toEqual({ kind: "member", developerId: OMAR.developerId });
+});

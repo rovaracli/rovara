@@ -4,6 +4,7 @@
 // `OwnerBudgets` ledger, so a person's agent budgets and chain budgets are one monthly total. Every multi-item write is one transaction, so a
 // refused write leaves nothing behind. A published version pins every agent step to a number; publishing checks again, inside its transaction,
 // that each pinned agent version and built-in pin is still what validation saw.
+import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
 import {
   AGENT_DESCRIPTION_MAX,
@@ -518,7 +519,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       this.update(chainKey(orgId, chainId, "META"), { set: { status, updatedAt }, when: budgetGuard(chain) }),
       ...totals.items,
       this.event(orgId, chainId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options), request, changed);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
     return changed;
   }
 
@@ -536,6 +537,11 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
    */
   async setBudget(orgId: OrgId, chainId: ChainId, monthlyUsd: number | undefined, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
     checkAmount("monthlyUsd", monthlyUsd);
+    const actor = options.actor ?? options.overrideCap?.actor;
+    if ((request !== undefined || options.overrideCap !== undefined) && actor === undefined) throw budgetActorRefused();
+    if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
+    if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
+    const actorChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const chain = await this.require(orgId, chainId);
     const updatedAt = this.iso();
     const written = withBudgetFields({ ...chain, updatedAt }, { monthlyBudgetUsd: monthlyUsd });
@@ -544,16 +550,20 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     const audit = await this.audited(() => chainBudgetEvents({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, chainId, before: chain.monthlyBudgetUsd, after: monthlyUsd,
     }));
-    await this.commit(...withOverride([
+    const items = [
       this.update(chainKey(orgId, chainId, "META"), {
         set: { monthlyBudgetUsd: monthlyUsd, updatedAt },
         ...(monthlyUsd === undefined ? { remove: ["monthlyBudgetUsd"] } : {}),
-        when: budgetGuard(chain),
+        when: aliases => `${budgetGuard(chain)(aliases)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(aliases)}`}`,
       }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, written);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], failed => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }
@@ -585,7 +595,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, moved);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }
@@ -608,7 +618,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, changed);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
     await flushAuditEvents(this.input, audit.events);
     return changed;
   }

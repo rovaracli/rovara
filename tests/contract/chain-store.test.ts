@@ -1,4 +1,5 @@
 // Plan 4 Task 3: the chain store (records, drafts, immutable versions, names, events, owner totals), who can do what with a chain, and its shares.
+import { seedMembership } from "../support/developer-task-broker.js";
 import { describe, expect, it } from "vitest";
 import { agentAccess, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import { ownerEffectiveTotal } from "../../packages/broker/src/spend/requests.js";
@@ -981,7 +982,10 @@ describe("merged with Plan 3: one owner total with a version, an effective cap a
     const ctx = setup();
     const chain = await ctx.create("Investigate");
     const marker = { pk: "TEST#marker", sk: "1" };
-    const overrideCap = { spendRequestId: "spr_0123456789abcdefghij", items: [{ Put: { TableName: "T", Item: { ...marker, entityType: "MARKER" } } }], closed: () => new Error("the request was decided") };
+    seedMembership(ctx.db, ALICE, { orgId: ORG_A, role: "member" });
+    const overrideCap = { actor: { developerId: ALICE, role: "member" as const }, spendRequestId: "spr_0123456789abcdefghij", items: [{ Put: { TableName: "T", Item: { ...marker, entityType: "MARKER" } } }], closed: () => new Error("the request was decided") };
+    await expect(ctx.chains.archive(ORG_A, chain.chainId, BOB, undefined, { overrideCap })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await ctx.chains.get(ORG_A, chain.chainId))?.status).toBe("active");
     await ctx.chains.setBudget(ORG_A, chain.chainId, 500, ALICE, undefined, { overrideCap });
     expect(ctx.total(ALICE)).toBe(500);
     expect(ctx.db.get(marker)).toBeDefined();

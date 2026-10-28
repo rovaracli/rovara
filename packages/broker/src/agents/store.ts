@@ -649,7 +649,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options), request, changed);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
     return changed;
   }
 
@@ -672,9 +672,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (budget.maxPerRunUsd !== undefined && budget.maxPerRunUsd !== null && usdToWholeMicrodollars(budget.maxPerRunUsd) === undefined) {
       throw coded("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
     }
-    if ((request !== undefined || options.overrideCap !== undefined) && options.actor === undefined) throw budgetActorRefused();
-    if (options.actor !== undefined && (options.actor.developerId !== by || (request !== undefined && request.developerId !== options.actor.developerId))) throw budgetActorRefused();
-    const actorChecks = options.actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, options.actor);
+    const actor = options.actor ?? options.overrideCap?.actor;
+    if ((request !== undefined || options.overrideCap !== undefined) && actor === undefined) throw budgetActorRefused();
+    if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
+    if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
+    // Approval actor checks are generated once by withOverride, on this store's actual scope.
+    const actorChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const updatedAt = this.iso();
     const set: Item = {
       ...(typeof budget.monthlyUsd === "number" ? { monthlyBudgetUsd: budget.monthlyUsd } : {}),
@@ -721,7 +724,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const actorStart = items.length;
     await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
       [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
-    ), options), request, written);
+    ), options, { tableName: this.input.tableName, orgId, by }), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }
@@ -755,7 +758,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, moved);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }
@@ -779,7 +782,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         ...totals.items,
         event.item,
         ...audit.items,
-      ], totals.refuse, options), request, { accountable });
+      ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
       await flushAuditEvents(this.input, audit.events);
       return;
     }
@@ -797,7 +800,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, { accountable });
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
     await flushAuditEvents(this.input, audit.events);
   }
 
