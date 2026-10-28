@@ -23,6 +23,7 @@
   "packages/contracts/src/home.ts",
   "packages/contracts/src/models.ts",
   "packages/contracts/src/names.ts",
+  "packages/contracts/src/no-change-findings.ts",
   "packages/contracts/src/onboarding.ts",
   "packages/contracts/src/org-budget.ts",
   "packages/contracts/src/org.ts",
