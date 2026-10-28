@@ -4,6 +4,8 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { orgMemberKey, developerOrgKey, spendRequestKey, agentKey, topUpKey, type BudgetScope, type SpendRequestRecord } from "@agentx/contracts";
 import { createSpendRequest, decideSpendRequest, type SpendRequestHost } from "../../packages/broker/src/spend/requests.js";
+import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
+import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, seedMembership } from "../support/developer-task-broker.js";
@@ -35,7 +37,7 @@ async function fixture(kind: Kind, survivorRole: "admin" | "owner" = "admin") {
   const decide = (decision: "APPROVE" | "DENY") => decideSpendRequest(deps, t.caller(DEB, "admin"), record.spendRequestId, { requestId: randomUUID(), decision });
   return { t, record, taskId, agentId, scope, capture, resumes, decide };
 }
-for (const kind of ["run", "month", "owner_cap"] as const) for (const decision of ["APPROVE", "DENY"] as const) for (const loss of ["demoted", "removed", "pointer", "survivor"] as const) {
+for (const kind of ["run", "month", "owner_cap"] as const) for (const decision of ["APPROVE", "DENY"] as const) for (const loss of ["demoted", "member_only", "removed", "pointer", "survivor"] as const) {
   it(`refuses merged ${kind} ${decision} when ${loss} wins before commit`, async () => {
     const f = await fixture(kind), requestKey = spendRequestKey(TEST_ORG, f.record.spendRequestId);
     const beforeBudget = f.taskId === undefined ? undefined : f.t.meta(f.taskId).budgetUsd;
@@ -46,7 +48,7 @@ for (const kind of ["run", "month", "owner_cap"] as const) for (const decision o
       const items = (command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> }).TransactItems;
       if (!changed && items?.some(item => item.Update?.Key?.pk === requestKey.pk && item.Update.Key.sk === requestKey.sk)) {
         changed = true; const who = loss === "survivor" ? BEN : DEB;
-        const TransactItems = loss === "demoted" || loss === "survivor" ? [orgMemberKey(TEST_ORG, who.developerId), developerOrgKey(who.developerId)].map(Key => ({ Update: { TableName: "state", Key, UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } }))
+        const TransactItems = loss === "demoted" || loss === "member_only" || loss === "survivor" ? [orgMemberKey(TEST_ORG, who.developerId), ...(loss === "member_only" ? [] : [developerOrgKey(who.developerId)])].map(Key => ({ Update: { TableName: "state", Key, UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } }))
           : [{ Delete: { TableName: "state", Key: loss === "removed" ? orgMemberKey(TEST_ORG, who.developerId) : developerOrgKey(who.developerId) } }];
         await send(new TransactWriteCommand({ TransactItems }));
       }
@@ -71,6 +73,22 @@ for (const kind of ["run", "month", "owner_cap"] as const) for (const role of ["
       return send(command);
     };
     await f.decide("APPROVE"); expect(checked).toBe(true);
+    expect(f.t.db.get(spendRequestKey(TEST_ORG, f.record.spendRequestId))?.status).toBe("APPROVED");
+  });
+}
+
+for (const kind of ["run", "month", "owner_cap"] as const) {
+  it(`refuses stale merged ${kind} session after real retirement and accepts survivor's own session`, async () => {
+    const f = await fixture(kind), deps = f.t.deps();
+    const duplicate = { ...f.t.db.get(`DEVELOPER#${DEB.developerId}`, "META")! }; delete duplicate.mergedInto; duplicate.issuer = "https://identity.example.test"; duplicate.subject = "merged-admin"; f.t.db.set(duplicate);
+    await mergeDuplicateMember({ documentClient: f.t.db, tableName: "state", signInStore: deps.signInStore!, now: Date.now }, {
+      orgId: TEST_ORG, survivorId: BEN.developerId, duplicateId: DEB.developerId, duplicateIdentityKey: ownerKeyForSubject("https://identity.example.test", "merged-admin"),
+    });
+    expect(f.t.db.get(orgMemberKey(TEST_ORG, DEB.developerId))).toBeUndefined();
+    expect(f.t.db.get(developerOrgKey(DEB.developerId))).toBeUndefined();
+    const error = await f.decide("APPROVE").then(() => undefined, (failure: { code?: string }) => failure);
+    expect(error?.code).toBe("FORBIDDEN"); expect(f.t.db.get(spendRequestKey(TEST_ORG, f.record.spendRequestId))?.status).toBe("PENDING");
+    await decideSpendRequest(deps, f.t.caller(BEN, "admin"), f.record.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
     expect(f.t.db.get(spendRequestKey(TEST_ORG, f.record.spendRequestId))?.status).toBe("APPROVED");
   });
 }
