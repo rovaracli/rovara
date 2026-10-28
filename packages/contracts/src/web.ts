@@ -11,7 +11,7 @@ export { scopeKey, pauseKey, spendOriginKind, suggestedTopUpUsd, suggestedMonthT
 // PLAN6: export its reader schemas when the owning plan lands; Part A does not invent their shapes. The plan card reads the time estimate and the plan check's words (staging 0.4.10).
 export { formatMinutes, CRITIC_NOT_CHECKED_LINE, MergeDoneReaderSchema } from "./rovara-code.js";
 // A coding run that needed no code change: the task page shows what the agent found (the words, and the stop they belong to).
-export { NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_CHOICES_PAGE, isNoCodeChangedReason } from "./no-change-findings.js";
+export { NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_CHOICES_NO_THREAD, isNoCodeChangedReason } from "./no-change-findings.js";
 
 export { DeveloperSignInMethodSchema, AppMeResponseSchema, AppMeResponseReaderSchema, type AppMeResponse, LinkedIdentitySchema } from "./developer-web.js";
 export { OrgRoleSchema, type OrgRole } from "./org.js";

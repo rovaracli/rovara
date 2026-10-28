@@ -254,6 +254,22 @@ describe("a coding run that leaves the code as it was keeps what it found", () =
     expect(JSON.stringify(found)).toContain("[REDACTED]");
   });
 
+  it("keeps no output of a command that reads the environment or a secret file, and hides secret-looking values in the other outputs and in the conclusion, before the block leaves the worker", async () => {
+    const salt = ["s4lt", "Zq81".repeat(4)].join("-"), hmac = ["h", "9f3a".repeat(8)].join("");
+    const dotenv = `SIGNING_SALT=${salt}\nHMAC=${hmac}\nPORT=3000\n`;
+    const shell = scriptedShell({ "cat .env": { exitCode: 0, output: dotenv }, env: { exitCode: 0, output: dotenv }, "node report.js": { exitCode: 0, output: `AUTH_TOKEN=${hmac}\nrows: 3\n` } });
+    const run = await runTask({
+      steps: [bash("cat .env", "b1"), bash("env", "b2"), bash("node report.js", "b3"), fauxAssistantMessage(`The salt SIGNING_SALT=${salt} is set.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], shell, rootPath: await gitWorkspaceRoot(),
+    });
+    const found = findingsOf(run.failure)!;
+    // Positive control: the shell ran all three and printed the values.
+    expect(shell.commands).toEqual(["cat .env", "env", "node report.js"]);
+    expect(found.commands.map((item) => item.output)).toEqual(["(output not shown)", "(output not shown)", "AUTH_TOKEN=[hidden]\nrows: 3"]);
+    expect(found.conclusion).toBe("The salt SIGNING_SALT=[hidden] is set.");
+    for (const value of [salt, hmac]) expect(JSON.stringify(found)).not.toContain(value);
+  });
+
   it("says nothing of a conclusion when the agent wrote none, and still lists what it ran", async () => {
     const run = await runTask({ steps: [bash("ls app", "b1"), fauxAssistantMessage("")], workflowMode: "IMPLEMENT", readiness: [], rootPath: await gitWorkspaceRoot() });
     const found = findingsOf(run.failure)!;

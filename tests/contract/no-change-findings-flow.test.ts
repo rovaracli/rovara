@@ -10,7 +10,7 @@ import { createTaskWeb } from "../../packages/broker/src/aws/task-web.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
-  NO_CHANGE_CHOICES_LINE, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION, NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_STEP, NO_CODE_CHANGED_REASON,
+  NO_CHANGE_CHOICES_LINE, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, NO_CHANGE_OUTPUT_HIDDEN, NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_STEP, NO_CODE_CHANGED_REASON,
   noChangeFindingsSize,
 } from "../../packages/contracts/src/no-change-findings.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
@@ -81,6 +81,8 @@ async function world() {
   return { ...h, meta, operations, operationOf, noChangeEnding, refreshSummary, sessionRecord, everything };
 }
 
+const pageUrl = (taskId: string): string => `https://agentx.example.test/review/${taskId}/task`;
+
 const findings = () => ({
   commands: [
     { command: "grep -rn retry src", output: "src/retry.ts:9: export const retry = true;" },
@@ -101,17 +103,22 @@ describe("a coding run that left the code as it was: what it found reaches the p
     expect(stored.candidate).toBeUndefined();
     expect(stored.verification).toBeUndefined();
     expect(stored.noChangeFindings).toEqual(findings());
-    const message = workflowMessage({ taskId: run.taskId, workflow: WorkflowSnapshotSchema.parse(stored) })!;
-    const lines = message.text.split("\n");
-    expect(lines[0]).toBe(NO_CHANGE_FOUND_HEADER);
-    expect(message.text).toContain("We do use retry, in src/retry.ts only.");
-    expect(message.text).toContain("grep -rn retry src");
-    expect(message.text).toContain("src/retry.ts:9: export const retry = true;");
-    expect(message.text).toContain("12 passed, 0 failed");
-    expect(lines.at(-1)).toBe(NO_CHANGE_CHOICES_LINE);
+    const url = pageUrl(run.taskId);
+    const message = workflowMessage({ taskId: run.taskId, workflow: WorkflowSnapshotSchema.parse(stored), taskPageUrl: url })!;
+    // The exact words the owner set: the findings first, the commands with the link to the full output, then what was not done and the two ways on.
+    expect(message.text).toBe([
+      "No code changes were needed. Here's what I found: We do use retry, in src/retry.ts only. It is already on by default.",
+      `Commands I ran: \`grep -rn retry src\`, \`npm test -- retry\` · Full output on the task page: <${url}|task page>`,
+      "No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.",
+    ].join("\n"));
+    expect(message.text.split("\n").at(-1)).toBe(NO_CHANGE_CHOICES_LINE);
+    // Slack has no command output at all (positive control: the stored block holds it, and the task view shows it).
+    expect(JSON.stringify(stored.noChangeFindings)).toContain("src/retry.ts:9: export const retry = true;");
+    expect(message.text).not.toContain("export const retry");
+    expect(message.text).not.toContain("12 passed");
+    expect(JSON.stringify(message.blocks)).not.toContain("12 passed");
     // Nothing is claimed that did not happen.
-    expect(message.text).not.toMatch(/verified|checks passed|opened a (draft )?pull request|pull request is open/iu);
-    expect(message.text).toContain("no pull request was opened");
+    expect(message.text).not.toMatch(/verified|checks passed|opened a (draft )?pull request|pull request is open|nothing was checked/iu);
     // The ways out are the existing buttons: Retry coding (with a reply, the way to ask for a change) and Close task.
     const buttons = message.blocks.filter((block) => block.type === "actions").flatMap((block) => block.elements as Array<{ action_id: string; text: { text: string } }>);
     expect(buttons.map((button) => [button.action_id, button.text.text])).toEqual([["agentx_workflow_retry_implementation", "Retry coding"], ["agentx_workflow_close", "Close task"]]);
@@ -130,8 +137,8 @@ describe("a coding run that left the code as it was: what it found reaches the p
     expect(t.sessionRecord(run.sessionId).summary).toMatchObject({ status: "needs_person", step: NO_CODE_CHANGED_STEP });
     const stage = taskPageStage(WorkflowSnapshotSchema.parse(t.meta(run.taskId).workflow), false, true);
     expect(stage.status).toBe("No code changes were needed");
-    expect(stage.nextStep).toContain("Close the task");
-    expect(stage.nextStep).toContain("Retry coding");
+    expect(stage.nextStep).toBe(NO_CHANGE_CHOICES_PAGE);
+    expect(taskPageStage(WorkflowSnapshotSchema.parse(t.meta(run.taskId).workflow), false, true, undefined, undefined, undefined, false).nextStep).toBe(NO_CHANGE_CHOICES_NO_THREAD);
     expect(JSON.stringify(stage)).not.toMatch(/verified|passed/iu);
   });
 
@@ -153,6 +160,62 @@ describe("a coding run that left the code as it was: what it found reaches the p
     for (const where of [message.text, JSON.stringify(message.blocks), view, t.everything()]) expect(where).not.toContain(token);
   });
 
+  it("never lets what a command read from the environment or a secret file reach Slack, the page or the view: `cat .env` and `env` show no output, and secret-looking values are hidden", async () => {
+    const salt = ["s4lt", "Zq81".repeat(4)].join("-"), hmac = ["h", "9f3a".repeat(8)].join(""), stripe = ["rk_", "live_", "Q7w2".repeat(6)].join(""), cookie = ["c00k", "Ie77".repeat(5)].join("-");
+    const dotenv = `NODE_ENV=production\nSIGNING_SALT=${salt}\nHMAC=${hmac}\nSTRIPE_LIVE=${stripe}\nPORT=3000\n`;
+    const t = await world();
+    // A worker that filtered nothing: the broker applies the same filters again.
+    const run = await t.noChangeEnding({ noChangeFindings: {
+      commands: [{ command: "cat .env", output: dotenv }, { command: "env", output: dotenv }, { command: "node dump.js", output: `SESSION_COOKIE: ${cookie}\nHMAC=${hmac}\nrows: 12` }],
+      conclusion: `The config sets SIGNING_SALT=${salt} and\nSTRIPE_LIVE: ${stripe}\nso retries are on.`,
+    } });
+    const workflow = WorkflowSnapshotSchema.parse(t.meta(run.taskId).workflow);
+    const message = workflowMessage({ taskId: run.taskId, workflow, taskPageUrl: pageUrl(run.taskId) })!;
+    const view = JSON.stringify((await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body);
+    // Positive controls: the commands, the key names and the harmless lines are shown, so the values' absence is the filters' work.
+    expect(message.text).toContain("`cat .env`, `env`, `node dump.js`");
+    expect(message.text).toContain("SIGNING_SALT=[hidden]");
+    // The key name carries no secret word, but the value is a live key the pattern redaction knows.
+    expect(message.text).toContain("STRIPE_LIVE: [REDACTED]");
+    expect(message.text).toContain("so retries are on.");
+    expect(view).toContain(NO_CHANGE_OUTPUT_HIDDEN);
+    expect(view).toContain("SESSION_COOKIE: [hidden]");
+    expect(view).toContain("rows: 12");
+    expect(view).not.toContain("NODE_ENV=production");
+    expect(message.text).not.toContain("NODE_ENV");
+    expect(message.text).not.toContain("rows: 12");
+    for (const value of [salt, hmac, stripe, cookie]) {
+      for (const where of [message.text, JSON.stringify(message.blocks), view, t.everything()]) expect(where).not.toContain(value);
+    }
+    const stored = t.meta(run.taskId).workflow.noChangeFindings as { commands: Array<{ output?: string }> };
+    expect(stored.commands.map((item) => item.output)).toEqual([NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_OUTPUT_HIDDEN, "SESSION_COOKIE: [hidden]\nHMAC=[hidden]\nrows: 12"]);
+  });
+
+  it("Retry coding and Close behave as before after this stop: Retry coding starts the approved coding again with the thread's replies, and Close closes the task", async () => {
+    const t = await world();
+    const run = await t.noChangeEnding({ noChangeFindings: findings() });
+    const blocked = t.meta(run.taskId).workflow;
+    const route = `/v1/dev/tasks/${run.taskId}/workflow/retry`;
+    // A retry made on a stale view is refused, as for any blocked coding step.
+    expect((await t.dev(MAYA, "POST", route, { requestId: randomUUID(), expectedRevision: blocked.revision - 1, instructions: "Make the change." })).body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    const requestId = randomUUID();
+    const retried = await t.dev(MAYA, "POST", route, { requestId, expectedRevision: blocked.revision, instructions: "Make the retry flag read the config file." });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING", revision: blocked.revision + 1 });
+    expect(t.meta(run.taskId).workflow.blockReason).toBeUndefined();
+    const coding = t.operations(run.workspaceId).find((item) => item.requestId === requestId)!;
+    expect(coding).toMatchObject({ workflowMode: "IMPLEMENT" });
+    // The findings are no longer shown once the step runs again.
+    const running = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { workflow: Record<string, unknown> };
+    expect(running.workflow).not.toHaveProperty("noChangeFindings");
+    // The same stop, closed instead.
+    const other = await t.noChangeEnding({ noChangeFindings: findings() });
+    const closed = await t.dev(MAYA, "POST", `/v1/dev/tasks/${other.taskId}/close`, { requestId: randomUUID() });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(t.operations(other.workspaceId).some((item) => item.kind === "close")).toBe(true);
+    expect(t.meta(other.taskId).workflow.pullRequests ?? []).toEqual([]);
+  });
+
   it("bounds a worker that sent far too much: the stored block stays under the fixed limit", async () => {
     const t = await world();
     const huge = { commands: Array.from({ length: 300 }, (_, index) => ({ command: `run-${String(index)} ${"c".repeat(2_000)}`, output: "o".repeat(100_000) })), conclusion: "k".repeat(200_000), omitted: 5 };
@@ -165,14 +228,14 @@ describe("a coding run that left the code as it was: what it found reaches the p
     expect(JSON.stringify(operation.result).length).toBeLessThan(20_000);
   });
 
-  it("says the agent did not write a conclusion when the block has none", async () => {
+  it("says the agent wrote no conclusion, and points to the task page, when the block has none", async () => {
     const t = await world();
     const run = await t.noChangeEnding({ noChangeFindings: { commands: [{ command: "ls src" }] } });
-    const message = workflowMessage({ taskId: run.taskId, workflow: WorkflowSnapshotSchema.parse(t.meta(run.taskId).workflow) })!;
-    expect(message.text).toContain(NO_CHANGE_NO_CONCLUSION);
-    expect(message.text).toContain("ls src");
+    const url = pageUrl(run.taskId);
+    const message = workflowMessage({ taskId: run.taskId, workflow: WorkflowSnapshotSchema.parse(t.meta(run.taskId).workflow), taskPageUrl: url })!;
+    expect(message.text).toBe([`No code changes were needed. The agent didn't write a conclusion; see what it ran on the task page: <${url}|task page>`, NO_CHANGE_CHOICES_LINE].join("\n"));
     const empty = await t.noChangeEnding({ noChangeFindings: { commands: [] } });
-    expect(workflowMessage({ taskId: empty.taskId, workflow: WorkflowSnapshotSchema.parse(t.meta(empty.taskId).workflow) })!.text).toContain(NO_CHANGE_NO_CONCLUSION);
+    expect(workflowMessage({ taskId: empty.taskId, workflow: WorkflowSnapshotSchema.parse(t.meta(empty.taskId).workflow), taskPageUrl: pageUrl(empty.taskId) })!.text).toContain(NO_CHANGE_NO_CONCLUSION_LEAD);
   });
 
   it("an older worker that sends no findings block still gets the new wording, with no summary and the same ways out", async () => {
@@ -183,10 +246,7 @@ describe("a coding run that left the code as it was: what it found reaches the p
       expect(stored).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: NO_CODE_CHANGED_REASON });
       expect(stored.noChangeFindings).toBeUndefined();
       const message = workflowMessage({ taskId: run.taskId, workflow: WorkflowSnapshotSchema.parse(stored) })!;
-      expect(message.text.split("\n")[0]).toBe(NO_CHANGE_NEEDED_LINE);
-      expect(message.text).not.toContain(NO_CHANGE_FOUND_HEADER);
-      expect(message.text).not.toContain(NO_CHANGE_NO_CONCLUSION);
-      expect(message.text).toContain(NO_CHANGE_CHOICES_LINE);
+      expect(message.text).toBe(`${NO_CHANGE_NEEDED_LINE}\n${NO_CHANGE_CHOICES_LINE}`);
       const buttons = message.blocks.filter((block) => block.type === "actions").flatMap((block) => block.elements as Array<{ action_id: string }>);
       expect(buttons.map((button) => button.action_id)).toEqual(["agentx_workflow_retry_implementation", "agentx_workflow_close"]);
     }
@@ -205,7 +265,7 @@ describe("a coding run that left the code as it was: what it found reaches the p
     const t = await world();
     const run = await t.noChangeEnding({ noChangeFindings: findings() });
     const row = t.db.get(`DEVTASK#${run.taskId}`, "META") as { workflow: Record<string, unknown> };
-    t.db.set({ ...row, workflow: { ...row.workflow, blockReason: WORKFLOW_BLOCK_REASONS.planNotSaved } } as never);
+    t.db.set({ ...row, workflow: { ...row.workflow, blockReason: WORKFLOW_BLOCK_REASONS.planNotSaved } });
     const task = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { workflow: Record<string, unknown> };
     expect(task.workflow.blockReason).toBe(WORKFLOW_BLOCK_REASONS.planNotSaved);
     expect(task.workflow).not.toHaveProperty("noChangeFindings");
@@ -216,8 +276,7 @@ describe("a coding run that left the code as it was: what it found reaches the p
     const run = await t.noChangeEnding({ noChangeFindings: findings() });
     const legacy = WorkflowSnapshotSchema.parse({ ...t.meta(run.taskId).workflow, blockReason: NO_CODE_CHANGED_LEGACY_REASONS[0], noChangeFindings: undefined });
     const message = workflowMessage({ taskId: run.taskId, workflow: legacy })!;
-    expect(message.text.split("\n")[0]).toBe(NO_CHANGE_NEEDED_LINE);
-    expect(message.text).not.toContain("Coding stopped before it finished");
+    expect(message.text).toBe(`${NO_CHANGE_NEEDED_LINE}\n${NO_CHANGE_CHOICES_LINE}`);
     expect(taskPageStage(legacy, false, true).status).toBe("No code changes were needed");
   });
 });
@@ -244,10 +303,25 @@ describe("the task page", () => {
     expect(html).toContain(NO_CHANGE_FOUND_HEADER);
     expect(html).toContain("Found &lt;img src=x&gt; and [REDACTED]");
     expect(html).toContain("cat &lt;script&gt;x&lt;/script&gt;");
-    expect(html).toContain(NO_CHANGE_CHOICES_PAGE);
+    // The choices are said once, as the page's next step, not again in the section.
+    expect(html.split(NO_CHANGE_CHOICES_PAGE)).toHaveLength(2);
+    expect(html).toContain(`Next: ${NO_CHANGE_CHOICES_PAGE}`);
     expect(html).not.toContain("<img src=x>");
     expect(html).not.toContain(token);
     expect(html).not.toMatch(/checks passed|was verified/iu);
+    fixture.close();
+  });
+
+  it("tells a task with no Slack thread to start a new request instead of replying", async () => {
+    const fixture = pageTask({ shared: false });
+    fixture.addVersion("plan", planDocument());
+    fixture.setWorkflow(WorkflowSnapshotSchema.parse({ ...fixture.workflow(), stage: "IMPLEMENT", state: "BLOCKED", blockReason: NO_CODE_CHANGED_REASON, noChangeFindings: { commands: [], conclusion: "All good." } }));
+    const view = await getTaskDocumentView(fixture.deps, PRIYA, fixture.taskId);
+    expect(view.nextStep).toBe(NO_CHANGE_CHOICES_NO_THREAD);
+    expect(NO_CHANGE_CHOICES_NO_THREAD).toBe("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.");
+    const html = await page(view);
+    expect(html).toContain(`Next: ${NO_CHANGE_CHOICES_NO_THREAD}`);
+    expect(html).toContain("No code changes were needed. Here&#39;s what I found: All good.");
     fixture.close();
   });
 
@@ -257,7 +331,7 @@ describe("the task page", () => {
     const html = await page(view);
     expect(html).toContain(NO_CHANGE_NEEDED_LINE);
     expect(html).not.toContain(NO_CHANGE_FOUND_HEADER);
-    expect(html).not.toContain(NO_CHANGE_NO_CONCLUSION);
+    expect(html).not.toContain(NO_CHANGE_NO_CONCLUSION_LEAD);
     fixture.close();
   });
 

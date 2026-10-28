@@ -4,7 +4,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { NO_CHANGE_CHOICES_PAGE, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
@@ -392,17 +392,17 @@ function autofixSection(view: TaskDocumentView): string {
     + view.autofix.lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("") + "</ul></section>";
 }
 
-/** A coding run that needed no code change: what the agent found, then the choices. Every string is escaped, and was redacted and bounded again before it got here. */
+/** A coding run that needed no code change: what the agent found (the choices are said once, as the page's next step). Every string is escaped, and was redacted and bounded again before it got here. */
 function noChangeSection(view: TaskDocumentView): string {
   if (view.noChange === undefined) return "";
   const findings = noChangeFindingsFrom(view.noChange.findings);
-  if (findings === undefined) return `<section id="no-change" aria-label="What the agent found"><p>${escapeHtml(NO_CHANGE_NEEDED_LINE)}</p><p>${escapeHtml(NO_CHANGE_CHOICES_PAGE)}</p></section>`;
+  if (findings === undefined) return `<section id="no-change" aria-label="What the agent found"><p>${escapeHtml(NO_CHANGE_NEEDED_LINE)}</p></section>`;
   const commands = findings.commands.length === 0 ? "" : `<h3>${escapeHtml(NO_CHANGE_COMMANDS_HEADER)}</h3>`
     + (findings.omitted === undefined ? "" : `<p class="muted">${escapeHtml(String(findings.omitted))} earlier ${findings.omitted === 1 ? "command is" : "commands are"} not listed.</p>`)
     + "<ul>" + findings.commands.map((item) => `<li><code>${escapeHtml(item.command)}</code>${item.failed === true ? " (it failed)" : ""}`
       + (item.output === undefined ? "" : `<pre>${escapeHtml(item.output)}</pre>`) + "</li>").join("") + "</ul>";
-  return `<section id="no-change" aria-label="What the agent found"><h2>${escapeHtml(NO_CHANGE_FOUND_HEADER)}</h2>`
-    + `<p style="white-space:pre-wrap">${escapeHtml(findings.conclusion ?? NO_CHANGE_NO_CONCLUSION)}</p>${commands}<p>${escapeHtml(NO_CHANGE_CHOICES_PAGE)}</p></section>`;
+  const lead = findings.conclusion === undefined ? `${NO_CHANGE_NO_CONCLUSION_LEAD} see what it ran below.` : `${NO_CHANGE_FOUND_HEADER} ${findings.conclusion}`;
+  return `<section id="no-change" aria-label="What the agent found"><p style="white-space:pre-wrap">${escapeHtml(lead)}</p>${commands}</section>`;
 }
 
 /** The retry of a blocked browser and API round: the owner's button (on with the script, as the decide buttons are) or who may press it. */

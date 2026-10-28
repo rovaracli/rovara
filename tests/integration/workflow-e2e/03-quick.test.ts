@@ -104,9 +104,9 @@ describe("Suite 3: Quick path", () => {
     expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
     const stopped = e2e.slack.lastPostWithAction("agentx_workflow_retry_implementation");
     // The real worker's run: its findings reach the thread with the new plain words and the choices, and nothing is claimed that did not happen.
-    expect(stopped.text.split("\n")[0]).toBe("No code changes were needed. Here's what I found:");
+    expect(stopped.text.split("\n")[0]).toContain("No code changes were needed. Here's what I found:");
     expect(stopped.text.split("\n").at(-1)).toBe(NO_CHANGE_CHOICES_LINE);
-    expect(stopped.text).not.toMatch(/verified|checks passed|opened a (draft )?pull request/iu);
+    expect(stopped.text).not.toMatch(/verified|checks passed|opened a (draft )?pull request|nothing was checked/iu);
     expect(actionIds(stopped)).toEqual(["agentx_workflow_retry_implementation", "agentx_workflow_close"]);
     // (The coding run ran the project check on its own workspace, as every coding run does; nothing went on to review.)
     expect(runs(e2e)).not.toContain("REVIEW");

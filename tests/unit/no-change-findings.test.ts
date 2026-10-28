@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   NO_CHANGE_FINDINGS_COMMANDS_MAX, NO_CHANGE_FINDINGS_COMMAND_MAX, NO_CHANGE_FINDINGS_CONCLUSION_MAX, NO_CHANGE_FINDINGS_OUTPUT_MAX, NO_CHANGE_FINDINGS_TOTAL_MAX,
   NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_REASON, NoChangeFindingsSchema, buildNoChangeFindings, isNoCodeChangedReason, noChangeFindingsFrom, noChangeFindingsSize,
+  NO_CHANGE_FINDINGS_OMITTED_MAX, NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_VALUE_HIDDEN, commandReadsSecrets, maskSecretValues,
 } from "../../packages/contracts/src/no-change-findings.js";
+import { FindingsRecorder } from "../../packages/worker/src/no-change-findings.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WorkflowSnapshotSchema, blockWorkflow, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 
@@ -127,5 +129,94 @@ describe("blocking a coding step keeps findings only for the no-code-change stop
 
   it("never attaches them to another reason, whatever the caller passed", () => {
     expect(blockWorkflow(coding(), "implementation operation ended failed", now, { noChangeFindings: found }).noChangeFindings).toBeUndefined();
+  });
+});
+
+// Values built at run time: no key-shaped literal is in this file.
+const salt = (): string => ["s4lt", "Zq81".repeat(4)].join("-");
+const hmac = (): string => ["h", "9f3a".repeat(8)].join("");
+const stripe = (): string => ["rk_", "live_", "Q7w2".repeat(6)].join("");
+const dotenv = (): string => `NODE_ENV=production\nSIGNING_SALT=${salt()}\nHMAC=${hmac()}\nSTRIPE_LIVE=${stripe()}\nPORT=3000\n`;
+
+describe("commands that read environment or secret material", () => {
+  it("are recognised, however they are written", () => {
+    for (const command of [
+      "cat .env", "cat .env.production", "cat ./app/.env.local", "env", "env | sort", "FOO=1 env", "printenv", "printenv API_TOKEN", "set", "export -p", "export", "head -n5 server.pem", "tail ~/.ssh/id_rsa",
+      "grep -n x credentials.json", "less config/secrets.yml", "cat .npmrc", "cat ~/.netrc", "cat .pypirc", "cat .git-credentials", "cat ~/.kube/kubeconfig", "cat ~/.aws/credentials",
+      "cat ~/.docker/config.json", "cd app && cat '.env'", 'cat "$(pwd)/.env"', "cat < .env", "grep KEY --file=.env", "cat /proc/self/environ", "read app/.env", "grep -rn x *.key",
+    ]) expect(commandReadsSecrets(command), command).toBe(true);
+    for (const command of ["grep -rn retry src", "npm test", "ls src", "env NODE_ENV=test npm test", "export FOO=1", "cat package.json", "read app/a.ts", "git log --oneline"]) expect(commandReadsSecrets(command), command).toBe(false);
+  });
+
+  it("keep no output at all: `cat .env` and `env` show only that the output was not shown, in the worker's block and again when the broker rebuilds it", () => {
+    const raw = { commands: [{ command: "cat .env", output: dotenv() }, { command: "env", output: dotenv() }, { command: "grep -rn retry src", output: "src/a.ts:4: retry" }] };
+    for (const findings of [buildNoChangeFindings(raw), noChangeFindingsFrom(raw)!, noChangeFindingsFrom(buildNoChangeFindings(raw))!]) {
+      expect(findings.commands.map((item) => item.output)).toEqual([NO_CHANGE_OUTPUT_HIDDEN, NO_CHANGE_OUTPUT_HIDDEN, "src/a.ts:4: retry"]);
+      const text = JSON.stringify(findings);
+      for (const value of [salt(), hmac(), stripe()]) expect(text).not.toContain(value);
+    }
+    // Positive control: the raw block did hold them.
+    expect(JSON.stringify(raw)).toContain(salt());
+  });
+
+  it("keep no output of a file read: the output of `read` is left out", () => {
+    const findings = buildNoChangeFindings({ commands: [{ command: "read app/a.ts", output: "export const x = 1;" }] });
+    expect(findings.commands).toEqual([{ command: "read app/a.ts" }]);
+  });
+});
+
+describe("secret-looking values are hidden", () => {
+  it("masks KEY=value and KEY: value where the key looks like a secret's name, keeping the key, in an output and in the conclusion", () => {
+    const output = `API_TOKEN=abc123\nmy_password = "two words"\nsession_cookie: deadbeef\n  - private_key: xyz\n"client_secret": "v",\nUSER_AUTH=${stripe()}\nPORT=3000\nNAME: plain`;
+    const masked = maskSecretValues(output);
+    expect(masked).toBe(`API_TOKEN=${NO_CHANGE_VALUE_HIDDEN}\nmy_password = ${NO_CHANGE_VALUE_HIDDEN}\nsession_cookie: ${NO_CHANGE_VALUE_HIDDEN}\n  - private_key: ${NO_CHANGE_VALUE_HIDDEN}\n"client_secret": ${NO_CHANGE_VALUE_HIDDEN}\nUSER_AUTH=${NO_CHANGE_VALUE_HIDDEN}\nPORT=3000\nNAME: plain`);
+    const findings = buildNoChangeFindings({ commands: [{ command: "node dump.js", output: `SIGNING_SALT=${salt()}\nHMAC: ${hmac()}\nOK=1` }], conclusion: `The service reads PASS=${hmac()} and\nAuth: Bearer-ish ${salt()}\nfrom its config.` });
+    const text = JSON.stringify(findings);
+    for (const value of [salt(), hmac()]) expect(text).not.toContain(value);
+    expect(findings.commands[0]!.output).toBe(`SIGNING_SALT=${NO_CHANGE_VALUE_HIDDEN}\nHMAC: ${NO_CHANGE_VALUE_HIDDEN}\nOK=1`);
+    expect(findings.conclusion).toContain(`PASS=${NO_CHANGE_VALUE_HIDDEN}`);
+    expect(findings.conclusion).toContain(`\nAuth: ${NO_CHANGE_VALUE_HIDDEN}\nfrom its config.`);
+  });
+
+  it("also hides a value written in a command, and leaves ordinary text alone", () => {
+    const command = buildNoChangeFindings({ commands: [{ command: `API_KEY=${hmac()} npm run build` }] }).commands[0]!.command;
+    expect(command).toContain(`API_KEY=${NO_CHANGE_VALUE_HIDDEN}`);
+    expect(command).not.toContain(hmac());
+    expect(maskSecretValues("12 passed, 0 failed\nsrc/retry.ts:9: export const retry = true;")).toBe("12 passed, 0 failed\nsrc/retry.ts:9: export const retry = true;");
+  });
+
+  it("is linear in the size of a hostile output", () => {
+    const started = performance.now();
+    maskSecretValues(`${"a_".repeat(50_000)}\n${"KEY".repeat(30_000)}`);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe("`omitted` never passes the schema's maximum", () => {
+  it("is clamped where the block is built, in the contracts and in the worker, and where it is rebuilt", () => {
+    const many = Array.from({ length: NO_CHANGE_FINDINGS_OMITTED_MAX + 200 }, (_, index) => ({ command: `c${String(index)}` }));
+    const built = buildNoChangeFindings({ commands: many });
+    expect(built.omitted).toBe(NO_CHANGE_FINDINGS_OMITTED_MAX);
+    expect(NoChangeFindingsSchema.safeParse(built).success).toBe(true);
+    const rebuilt = noChangeFindingsFrom({ commands: many.slice(0, 50), omitted: NO_CHANGE_FINDINGS_OMITTED_MAX + 5 })!;
+    expect(rebuilt.omitted).toBe(NO_CHANGE_FINDINGS_OMITTED_MAX);
+    expect(NoChangeFindingsSchema.safeParse(rebuilt).success).toBe(true);
+    const recorder = new FindingsRecorder();
+    for (let index = 0; index < NO_CHANGE_FINDINGS_OMITTED_MAX + 200; index += 1) recorder.observe({ type: "tool_execution_start", toolCallId: `t${String(index)}`, toolName: "bash", args: { command: `c${String(index)}` } });
+    const found = recorder.build();
+    expect(found.omitted).toBe(NO_CHANGE_FINDINGS_OMITTED_MAX);
+    expect(found.commands).toHaveLength(10);
+    expect(NoChangeFindingsSchema.safeParse(found).success).toBe(true);
+  });
+});
+
+describe("the worker's recorder", () => {
+  it("keeps the output of a shell command and not of a file read", () => {
+    const recorder = new FindingsRecorder();
+    recorder.observe({ type: "tool_execution_start", toolCallId: "a", toolName: "bash", args: { command: "ls src" } });
+    recorder.observe({ type: "tool_execution_end", toolCallId: "a", toolName: "bash", result: { content: [{ type: "text", text: "a.ts\nb.ts" }] } });
+    recorder.observe({ type: "tool_execution_start", toolCallId: "b", toolName: "read", args: { path: "src/a.ts" } });
+    recorder.observe({ type: "tool_execution_end", toolCallId: "b", toolName: "read", result: { content: [{ type: "text", text: "FILE TEXT" }] } });
+    expect(recorder.build().commands).toEqual([{ command: "ls src", output: "a.ts\nb.ts" }, { command: "read src/a.ts" }]);
   });
 });

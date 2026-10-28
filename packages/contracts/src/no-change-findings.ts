@@ -16,7 +16,7 @@ export const NO_CHANGE_FINDINGS_CONCLUSION_MAX = 1500;
 export const NO_CHANGE_FINDINGS_TOTAL_MAX = 5000;
 
 /** The block reason of a coding run that finished with the code as it was (the worker's WORKFLOW_NO_CODE_CHANGE_MESSAGE). */
-export const NO_CODE_CHANGED_REASON = "No code changes were needed, so there is nothing to check or open as a pull request. Close the task, or ask for a change.";
+export const NO_CODE_CHANGED_REASON = "No code changes were needed, so no tests were run and no pull request was opened. Close the task, or ask for a change.";
 /** What that block reason said before its wording changed; a task stored blocked with it still reads as this stop. */
 export const NO_CODE_CHANGED_LEGACY_REASONS: readonly string[] = ["Coding finished, but no code changed, so there is nothing to check or open as a pull request. Retry coding, or close the task."];
 
@@ -31,14 +31,24 @@ export const NO_CODE_CHANGED_STEP = "No code changes were needed";
 export const NO_CHANGE_NEEDED_LINE = "No code changes were needed.";
 /** The first line of the message and of the task page's section. */
 export const NO_CHANGE_FOUND_HEADER = "No code changes were needed. Here's what I found:";
-/** Said in place of a conclusion when the agent ended its run without writing one. */
-export const NO_CHANGE_NO_CONCLUSION = "The agent did not write a conclusion.";
-/** Said above the commands. */
-export const NO_CHANGE_COMMANDS_HEADER = "Commands the agent ran:";
-/** The choices, said once: nothing was checked or opened, the task can be closed, and a change is asked for by replying and retrying coding. */
-export const NO_CHANGE_CHOICES_LINE = "Nothing was checked and no pull request was opened. To ask for a change, reply here with what you want, then choose Retry coding. Or close the task.";
-/** The same choices for a page that has no thread to reply in. */
-export const NO_CHANGE_CHOICES_PAGE = "Nothing was checked and no pull request was opened. Close the task, or ask for a change by replying in the task's thread, then choosing Retry coding.";
+/** Said before the list of commands. */
+export const NO_CHANGE_COMMANDS_HEADER = "Commands I ran:";
+/** Said between the commands and the link to the full output, in Slack. */
+export const NO_CHANGE_FULL_OUTPUT_LABEL = "Full output on the task page:";
+/** The start of the line said when the agent wrote no conclusion; Slack goes on "see what it ran on the task page: <link>", a page "see what it ran below.". */
+export const NO_CHANGE_NO_CONCLUSION_LEAD = "No code changes were needed. The agent didn't write a conclusion;";
+/** The last line, in the Slack thread and on the task page of a task that has a thread: what was not done, and the two ways on. */
+export const NO_CHANGE_CHOICES_LINE = "No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.";
+/** The same last line on the task page and in the app. */
+export const NO_CHANGE_CHOICES_PAGE = NO_CHANGE_CHOICES_LINE;
+/** The last line for a task with no Slack thread: a change is asked for in a new request. */
+export const NO_CHANGE_CHOICES_NO_THREAD = "No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.";
+/** Said in place of the output of a command that reads environment or secret material. */
+export const NO_CHANGE_OUTPUT_HIDDEN = "(output not shown)";
+/** The word that takes the place of a secret-looking value. */
+export const NO_CHANGE_VALUE_HIDDEN = "[hidden]";
+/** The most commands an `omitted` count can name: the schema's own maximum. */
+export const NO_CHANGE_FINDINGS_OMITTED_MAX = 100_000;
 
 const CommandSchema = z.object({
   command: z.string().min(1).max(NO_CHANGE_FINDINGS_COMMAND_MAX),
@@ -49,7 +59,7 @@ const CommandSchema = z.object({
 export const NoChangeFindingsSchema = z.object({
   commands: z.array(CommandSchema).max(NO_CHANGE_FINDINGS_COMMANDS_MAX),
   /** How many earlier commands are not listed. */
-  omitted: z.number().int().min(1).max(100_000).optional(),
+  omitted: z.number().int().min(1).max(NO_CHANGE_FINDINGS_OMITTED_MAX).optional(),
   conclusion: z.string().min(1).max(NO_CHANGE_FINDINGS_CONCLUSION_MAX).optional(),
 }).refine((findings) => noChangeFindingsSize(findings) <= NO_CHANGE_FINDINGS_TOTAL_MAX, { message: "the findings are larger than they may be" });
 
@@ -60,6 +70,49 @@ export function noChangeFindingsSize(findings: { commands: ReadonlyArray<{ comma
   return findings.commands.reduce((sum, item) => sum + item.command.length + (item.output?.length ?? 0), 0) + (findings.conclusion?.length ?? 0);
 }
 
+const SECRET_WORD = "(?:TOKEN|SECRET|KEY|PASSWORD|PASS|SALT|HMAC|PRIVATE|CREDENTIAL|AUTH|SESSION|COOKIE)";
+// A name is cut at its start (a lookbehind), so each name is read once; every repetition is bounded.
+const SECRET_NAME = `[A-Za-z0-9_.\\-]{0,64}?${SECRET_WORD}[A-Za-z0-9_.\\-]{0,64}`;
+const ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_.\\-])(${SECRET_NAME})([ \\t]{0,3}=[ \\t]{0,3})("[^"\\n]{0,2000}"|'[^'\\n]{0,2000}'|[^\\s"']{1,2000})`, "giu");
+const LINE_VALUE = new RegExp(`^([ \\t]*(?:[-*][ \\t]+)?["']?${SECRET_NAME}["']?[ \\t]*:[ \\t]*)(.{1,2000})$`, "gimu");
+
+/** The value of every `KEY=value` and `KEY: value` line whose key looks like a secret's name (it holds TOKEN, SECRET, KEY, PASSWORD, PASS, SALT, HMAC, PRIVATE, CREDENTIAL, AUTH, SESSION or COOKIE, in any case) is hidden; the key stays. */
+export function maskSecretValues(text: string): string {
+  return text.replace(ASSIGNMENT, (_whole, name: string, equals: string) => `${name}${equals}${NO_CHANGE_VALUE_HIDDEN}`)
+    .replace(LINE_VALUE, (_whole, head: string) => `${head}${NO_CHANGE_VALUE_HIDDEN}`);
+}
+
+/** A path or file name that holds environment or secret material. */
+const SECRET_PATHS: readonly RegExp[] = [
+  /(^|\/)\.env[^/]*$/u, /\.env$/u, /\.(pem|key|p12|pfx)$/u, /(^|\/)id_[^/]*$/u, /credentials/u, /secret/u, /(^|\/)\.(npmrc|netrc|pypirc|git-credentials)$/u,
+  /kubeconfig/u, /(^|\/)\.aws(\/|$)/u, /(^|\/)\.ssh(\/|$)/u, /\.docker\/config\.json$/u, /(^|\/)environ$/u,
+];
+const SKIPPED_HEADS: ReadonlySet<string> = new Set(["sudo", "command", "builtin", "time", "nohup", "exec"]);
+
+/**
+ * Whether a command reads environment or secret material, so that none of its output is kept: `env`, `printenv`, `set`, `export -p` and the like, and any command that names a secret file
+ * (`.env*`, `*.pem`, `*.key`, `id_*`, `*credentials*`, `*secret*`, `.npmrc`, `.netrc`, `.pypirc`, `.git-credentials`, `kubeconfig`, `.aws/*`, `.docker/config.json`). It judges the command's words only, so it errs on the side of hiding.
+ */
+export function commandReadsSecrets(command: string): boolean {
+  for (const segment of command.split(/[|;&\n`()]+/u)) {
+    const words = segment.trim().split(/\s+/u).filter((word) => word !== "");
+    let at = 0;
+    while (at < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[at]!) || SKIPPED_HEADS.has(words[at]!))) at += 1;
+    const head = (words[at] ?? "").split("/").at(-1)!.toLowerCase();
+    const rest = words.slice(at + 1);
+    if (head === "printenv" || head === "set" || head === "declare" || head === "typeset" || head === "compgen") return true;
+    if (head === "env" && rest.every((word) => word.startsWith("-") && !word.includes("="))) return true;
+    if (head === "export" && (rest.length === 0 || rest.includes("-p"))) return true;
+  }
+  for (const word of command.split(/[\s|;&`()<>$]+/u)) {
+    for (const piece of [word, word.slice(word.indexOf("=") + 1)]) {
+      const path = piece.replace(/^["']+|["']+$/gu, "").toLowerCase();
+      if (path !== "" && SECRET_PATHS.some((pattern) => pattern.test(path))) return true;
+    }
+  }
+  return false;
+}
+
 /** The most raw text read from one string before it is redacted: a tool's own output is already cut by its tool; this keeps a hostile value from costing more than it should. */
 const RAW_MAX = 100_000;
 
@@ -67,7 +120,7 @@ const RAW_MAX = 100_000;
 function cleaned(value: unknown, max: number, keep: "start" | "both"): string {
   if (typeof value !== "string" || max <= 0) return "";
   const bounded = value.length <= RAW_MAX ? value : `${value.slice(0, RAW_MAX / 2)}\n${value.slice(-RAW_MAX / 2)}`;
-  const text = redactText(bounded).replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? "\n" : " ")).replace(/[ \t]+\n/gu, "\n").replace(/\n{3,}/gu, "\n\n").trim();
+  const text = maskSecretValues(redactText(bounded)).replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? "\n" : " ")).replace(/[ \t]+\n/gu, "\n").replace(/\n{3,}/gu, "\n\n").trim();
   const points = Array.from(text);
   if (points.length <= max) return text;
   if (keep === "start" || max < 8) return `${points.slice(0, max - 1).join("")}…`;
@@ -98,7 +151,10 @@ export function buildNoChangeFindings(input: NoChangeFindingsInput): NoChangeFin
     if (item === null || typeof item !== "object") return [];
     const entry = item as { command?: unknown; output?: unknown; failed?: unknown };
     const command = oneLine(entry.command, NO_CHANGE_FINDINGS_COMMAND_MAX);
-    return command === "" ? [] : [{ command, raw: entry.output, failed: entry.failed === true }];
+    // The output of a command that reads environment or secret material is never kept, and a file read's text is not a finding.
+    const hidden = commandReadsSecrets(command);
+    const raw = hidden ? NO_CHANGE_OUTPUT_HIDDEN : /^read(\s|$)/u.test(command) ? undefined : entry.output;
+    return command === "" ? [] : [{ command, raw, failed: entry.failed === true }];
   });
   const kept = listed.slice(-NO_CHANGE_FINDINGS_COMMANDS_MAX);
   const conclusion = cleaned(input.conclusion, NO_CHANGE_FINDINGS_CONCLUSION_MAX, "start");
@@ -110,7 +166,7 @@ export function buildNoChangeFindings(input: NoChangeFindingsInput): NoChangeFin
     outputs[index] = output;
     room -= output.length;
   }
-  const omitted = listed.length - kept.length;
+  const omitted = Math.min(listed.length - kept.length, NO_CHANGE_FINDINGS_OMITTED_MAX);
   return {
     commands: kept.map((item, index) => ({ command: item.command, ...(outputs[index] === "" ? {} : { output: outputs[index]! }), ...(item.failed ? { failed: true } : {}) })),
     ...(omitted > 0 ? { omitted } : {}),
@@ -127,7 +183,7 @@ export function noChangeFindingsFrom(raw: unknown): NoChangeFindings | undefined
   const value = raw as { commands?: unknown; omitted?: unknown; conclusion?: unknown };
   const commands = Array.isArray(value.commands) ? value.commands.slice(-NO_CHANGE_FINDINGS_COMMANDS_MAX) : [];
   const built = buildNoChangeFindings({ commands: commands as NoChangeFindingsInput["commands"], conclusion: value.conclusion });
-  const earlier = typeof value.omitted === "number" && Number.isInteger(value.omitted) && value.omitted > 0 ? Math.min(value.omitted, 100_000) : 0;
-  const omitted = earlier + (Array.isArray(value.commands) ? Math.max(0, value.commands.length - commands.length) : 0);
+  const earlier = typeof value.omitted === "number" && Number.isInteger(value.omitted) && value.omitted > 0 ? Math.min(value.omitted, NO_CHANGE_FINDINGS_OMITTED_MAX) : 0;
+  const omitted = Math.min(earlier + (Array.isArray(value.commands) ? Math.max(0, value.commands.length - commands.length) : 0) + (built.omitted ?? 0), NO_CHANGE_FINDINGS_OMITTED_MAX);
   return { ...built, ...(omitted > 0 ? { omitted } : {}) };
 }

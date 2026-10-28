@@ -130,6 +130,8 @@ import {
   WORKFLOW_BLOCK_REASONS,
   isNoCodeChangedReason,
   noChangeFindingsFrom,
+  NO_CHANGE_CHOICES_NO_THREAD,
+  NO_CHANGE_CHOICES_PAGE,
   WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX,
   WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
   WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
@@ -5369,6 +5371,8 @@ export function taskPageStage(
   workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined,
   /** Rovara Code version 2 (staging 0.4.11, Bug G): whether Merge may be pressed now, from merge tracking; absent for a task that is not tracked, which merges on GitHub. */
   merge: MergeView | undefined = undefined,
+  /** Whether the task has a Slack thread to reply in; a task without one is told to start a new request for a change. */
+  hasThread = true,
 ): { status: string; nextStep: string } {
   // A custom sequence with no pull request step ran every step; its changes wait, unpublished, until the owner closes the task.
   if (!closed && workflow?.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
@@ -5407,7 +5411,7 @@ export function taskPageStage(
         ? `Retry coding, keep the pull request as it is, or close the task ${inSlack}.` : `Retry coding or close the task ${inSlack}.` }
       : isNoCodeChangedReason(workflow.blockReason)
         // No change was needed: what the agent found is on the page and in the thread; nothing was checked or opened as a pull request.
-        ? { status: "No code changes were needed", nextStep: `Close the task, or ask for a change by replying ${inSlack} and choosing Retry coding.` }
+        ? { status: "No code changes were needed", nextStep: hasThread ? NO_CHANGE_CHOICES_PAGE : NO_CHANGE_CHOICES_NO_THREAD }
         : { status: "Coding stopped before it finished", nextStep: `Retry coding or close the task ${inSlack}.` };
     case "VERIFY/WAITING": return workflow.e2e?.required === true && workflow.e2e.currentRoundId === undefined
       ? { status: "Preparing the checks", nextStep: "The checks start when workspace compute is ready." }
@@ -6006,7 +6010,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   const noChangeView = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason)
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   return {
-    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task)),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), task.share?.threadTs !== undefined),
     ...(e2eResults === undefined ? {} : { e2eResults }),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,

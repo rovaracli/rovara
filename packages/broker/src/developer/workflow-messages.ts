@@ -942,8 +942,8 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     // Approving the plan needs someone else to accept its run limit (Task 34): the words say who, and coding starts once they do, so there is nothing to retry.
     case "IMPLEMENT/BLOCKED": if (workflow.blockReason !== undefined && isRunLimitBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason), buttons: [exits.close] };
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
-      // The run finished and no change was needed: what the agent found, then the choices (reply and Retry coding to ask for a change, or close). Nothing was checked or opened, and nothing here says it was.
-      if (isNoCodeChangedReason(workflow.blockReason)) return { text: noCodeChangedText(workflow.noChangeFindings), buttons: [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
+      // The run finished and no change was needed: what the agent found, then the choices (reply and Retry coding to ask for a change, or close). No tests were run and no pull request was opened, and nothing here says otherwise.
+      if (isNoCodeChangedReason(workflow.blockReason)) return { text: noCodeChangedText(workflow.noChangeFindings, context.taskPageUrl), buttons: [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
       // CANCELDUP: a stop the owner asked for already reads "Coding was stopped before it finished. Choose Retry ..."; saying it twice is noise.
       return { text: stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
       : `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,
