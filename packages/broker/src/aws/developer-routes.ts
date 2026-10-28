@@ -1,3 +1,4 @@
+import { readProjectWorkingBranchContextHttp } from "../org/project-working-branch-context.js";
 import { readProjectWorkingBranchHttp } from "../org/project-working-branch-http.js";
 import type { WorkingBranchReviewDependencies } from "../org/project-working-branch.js";
 import type { WorkingBranchListDependencies } from "../org/project-working-branch-list.js";
@@ -1929,6 +1930,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
   }
+  const workingBranchContextRoute = /^\/v1\/app\/projects\/([^/]+)\/working-branches$/.exec(url.pathname);
+  if (request.method === "GET" && workingBranchContextRoute !== null) return readProjectWorkingBranchContextHttp(deps, caller, workingBranchContextRoute[1]!, url, request.headers);
   // Lane B: read-only branch pages; all other method/path pairs fall through.
   const workingBranchesRoute = /^\/v1\/app\/projects\/([^/]+)\/repositories\/([^/]+)\/branches$/.exec(url.pathname);
   if (request.method === "GET" && workingBranchesRoute !== null) return readProjectWorkingBranchHttp(deps, caller, workingBranchesRoute[1]!, workingBranchesRoute[2]!, url, request.headers);

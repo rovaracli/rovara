@@ -1533,17 +1533,17 @@ export class GitHubAppCredentialProvider {
         const input = prepare(url, expected, scope);
         return scoped.workingBranchList(input, page, lookup);
       },
-      finish: async () => {
+      finish: async (operation: "list" | "preview" = "preview") => {
         if (closed) throw workingBranchUnavailable();
         closed = true;
         try {
           if (locked === undefined) return;
           const current = await scoped.lookedUp(locked, true), check = scoped.options.requireInstallationBound;
-          if (current.id !== locked.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before reviewing its working branch.");
+          if (current.id !== locked.installationId) throw agentXError("GITHUB_NOT_CONNECTED", operation === "list" ? "Reconnect this project's repository before listing working branches." : "Reconnect this project's repository before reviewing its working branch.");
           if (check === undefined) throw workingBranchUnavailable();
           await check(locked.orgId, current.id, { owner: locked.owner, name: locked.name });
         } catch (error) {
-          if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before reviewing its working branch.");
+          if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", operation === "list" ? "Reconnect this project's repository before listing working branches." : "Reconnect this project's repository before reviewing its working branch.");
           throw workingBranchUnavailable();
         }
         finally { scoped.tokenCache?.clear(); scoped.installations.clear(); locked = undefined; initial = undefined; }

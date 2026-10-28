@@ -30,3 +30,11 @@ export const ProjectWorkingBranchPreviewSchema = z.object({ orgId: OrgIdSchema, 
 export const ProjectWorkingBranchPreviewReaderSchema = ProjectWorkingBranchPreviewSchema.strip();
 export type ProjectWorkingBranchPreview = z.infer<typeof ProjectWorkingBranchPreviewSchema>;
 export type ProjectWorkingBranchPreviewBody = z.infer<typeof ProjectWorkingBranchPreviewBodySchema>;
+
+// Stored project context only: no assertion of current GitHub connectivity or task readiness.
+export const ProjectWorkingBranchContextQuerySchema = z.object({ expectedOrgId: OrgIdSchema }).strict();
+export const ProjectWorkingBranchContextSchema = z.object({ orgId: OrgIdSchema, project: AgentXNameSchema, status: z.literal("active"), expectedRevision: lifecycle, expectedProjectRevision: config, checkedAt: z.string().datetime(), repositories: z.array(z.object({ name: AgentXNameSchema, fullName: z.string().max(140).regex(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/) }).strict()).max(32), omittedUnsupported: z.boolean() }).strict().superRefine((value, context) => {
+  if (new Set(value.repositories.map(repo => repo.name)).size !== value.repositories.length) context.addIssue({ code: "custom", message: "Repeated registered repository." });
+});
+export const ProjectWorkingBranchContextReaderSchema = ProjectWorkingBranchContextSchema.strip();
+export type ProjectWorkingBranchContext = z.infer<typeof ProjectWorkingBranchContextSchema>;

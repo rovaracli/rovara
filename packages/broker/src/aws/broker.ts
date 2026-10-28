@@ -1367,7 +1367,7 @@ function workingBranchPagesRoute(dependencies: AwsBrokerDependencies): Pick<Deve
   if (app.createWorkingBranchPreviewSession === undefined) return {};
   return { projectWorkingBranches: () => {
     const session = app.createWorkingBranchPreviewSession!();
-    return { ...createWorkingBranchPageProvider(session), finish: () => session.finish() };
+    return { ...createWorkingBranchPageProvider(session), finish: () => session.finish("list") };
   } };
 }
 
@@ -1377,7 +1377,7 @@ function workingBranchPreviewRoute(dependencies: AwsBrokerDependencies): Pick<De
   if (app.createWorkingBranchPreviewSession === undefined) return {};
   return { projectWorkingBranchPreview: () => {
     const session = app.createWorkingBranchPreviewSession!();
-    return { ...createWorkingBranchProvider(session), finish: () => session.finish() };
+    return { ...createWorkingBranchProvider(session), finish: () => session.finish("preview") };
   } };
 }
 
