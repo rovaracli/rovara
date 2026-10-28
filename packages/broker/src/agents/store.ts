@@ -59,6 +59,7 @@ import { inertProcessOverlay } from "../playbook/inert-rule-text.js";
 import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireBaseIsNotProcess, requireNoOwnerMoveOnProcess, requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
+import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
 import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
@@ -410,6 +411,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const parsed = parseOverlay(input.overlay ?? {});
     requireNoSequenceForProcess({ purpose: input.purpose }, parsed);
+    requireNoSkillsForProcess({ purpose: input.purpose }, parsed);
     requireRovaraCodeBaseForProcess({ purpose: input.purpose }, input.extends);
     const overlay = inertProcessOverlay({ purpose: input.purpose }, parsed);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
@@ -453,6 +455,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const parsed = parseOverlay(input.overlay);
     const agent = await this.require(input.orgId, input.agentId);
     requireNoSequenceForProcess(agent, parsed);
+    requireNoSkillsForProcess(agent, parsed);
     const overlay = inertProcessOverlay(agent, parsed);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
@@ -545,6 +548,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const n = agent.latestVersion;
     const version = n + 1;
     const publishedAt = this.iso();
+    // A process layer's stored draft with skills is not published, whatever stored it.
+    requireNoSkillsForProcess(agent, draft.overlay);
     const added = draft.overlay.skills?.add;
     const pinned = added === undefined ? undefined : await this.skills.pin(input.orgId, added, input.skillDigests);
     const overlay: RecipeOverlay = pinned === undefined ? draft.overlay : { ...draft.overlay, skills: { ...draft.overlay.skills, add: pinned.refs } };
@@ -593,7 +598,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const { agentId, ...rest } = input;
     // A process layer is never rolled back to a version that does not build on Rovara Code, whatever stored it.
     const agent = await this.require(input.orgId, agentId);
-    if (agent.purpose === "process") requireRovaraCodeBaseForProcess(agent, (await this.getVersion(input.orgId, agentId, input.version))?.extends);
+    if (agent.purpose === "process") {
+      const target = await this.getVersion(input.orgId, agentId, input.version);
+      requireRovaraCodeBaseForProcess(agent, target?.extends);
+      if (target !== undefined) requireNoSkillsForProcess(agent, target.overlay);
+    }
     return this.rollbackItem({ ...rest, id: agentId });
   }
 
@@ -807,6 +816,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
     requireRovaraCodeBaseForProcess(agent, draft.extends);
+    requireNoSkillsForProcess(agent, draft.overlay);
     if (draft.extends === undefined) throw coded("CONFIG_INVALID", `${agent.name} is built from scratch, so it has no base to update`);
     const target = await this.pinTarget(input.orgId, draft.extends.agentId, agent.name);
     if (target.version === draft.extends.version) return draft;

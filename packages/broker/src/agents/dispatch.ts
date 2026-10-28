@@ -28,7 +28,7 @@ import type { ProxyGeography } from "@agentx/model-runtime/catalog";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import type { TaskAgentRef } from "./roster.js";
-import { wholeAgentLayers } from "../playbook/process-reviewers.js";
+import { skillsForStep, wholeAgentLayers } from "../playbook/process-reviewers.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
 export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT";
@@ -261,7 +261,7 @@ function agentStepOf(recipe: ResolvedRecipe, step: ResolvedStep, ref: { agentId:
   // A step takes at most the tools its kind allows, whatever the snapshot says: a review never has the shell. Check and pull request steps take none.
   const allowed: readonly string[] = step.kind in STEP_TOOLS ? STEP_TOOLS[step.kind as keyof typeof STEP_TOOLS] : [];
   const tools = (settings.tools ?? []).filter((tool): tool is PiToolName => allowed.includes(tool));
-  const skills = step.kind === "check" ? [] : recipe.skills.map((skill) => ({ skillId: skill.skillId, digest: skill.digest }));
+  const skills = step.kind === "check" ? [] : skillsForStep(recipe, step).map((skill) => ({ skillId: skill.skillId, digest: skill.digest }));
   const timeoutMinutes = settings.timeoutMinutes ?? undefined;
   return {
     kind: "coding",

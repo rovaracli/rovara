@@ -10,6 +10,14 @@ import type { InstructionLayer, ResolvedRecipe, ResolvedStep } from "@agentx/con
 export const isReviewingStage = (step: ResolvedStep | undefined): boolean => step !== undefined && (step.kind === "plan_critic" || step.kind === "review" || step.kind === "pull_request");
 
 /**
+ * The skills `step` is given. A reviewing stage of a recipe with a process layer in its chain is given none (F2): a project's process layer can't add skills, and one stored with skills
+ * anyway must not reach the stages that check the work. Rovara Code, the only base a process layer has, carries none. Any other recipe, and any other step, gets every skill as before.
+ */
+export function skillsForStep(recipe: ResolvedRecipe, step: ResolvedStep | undefined): ResolvedRecipe["skills"] {
+  return isReviewingStage(step) && recipe.chain.some((entry) => entry.process === true && !entry.builtin) ? [] : recipe.skills;
+}
+
+/**
  * The whole-agent instruction layers `step` is given, base agent first. For a reviewing stage of a recipe with a process layer in its chain, the layers that process layer wrote are left
  * out (a layer is tied to its writer by the agent's name, which is unique in the company, and the chain entry the resolver marked `process`).
  */

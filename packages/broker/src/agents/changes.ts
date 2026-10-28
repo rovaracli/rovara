@@ -41,6 +41,7 @@ import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
 import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
+import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -177,6 +178,8 @@ export async function publishDraft(
   }
   // A process layer's draft cannot reorder the stages, whatever got it stored.
   requireNoSequenceForProcess(agent, draft.overlay);
+  // Nor can it add skills.
+  requireNoSkillsForProcess(agent, draft.overlay);
   // And it builds on Rovara Code.
   requireRovaraCodeBaseForProcess(agent, draft.extends);
   const next = await resolveRecipe(deps, agent.orgId, agent.agentId, "draft");
@@ -219,6 +222,7 @@ export async function rollbackAgent(
   if (stored === undefined) throw agentXError("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
   // Refused now, not when it is confirmed: a process layer only runs versions that build on Rovara Code.
   requireRovaraCodeBaseForProcess(agent, stored.extends);
+  requireNoSkillsForProcess(agent, stored.overlay);
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
@@ -322,6 +326,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   const draft = await deps.store.getDraft(record.orgId, subject.agentId);
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
   requireRovaraCodeBaseForProcess(agent, draft.extends);
+  requireNoSkillsForProcess(agent, draft.overlay);
   if (agent.currentVersion !== subject.expectedCurrentVersion) {
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
