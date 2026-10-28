@@ -10,7 +10,7 @@ describe("the test runner's configuration", () => {
     expect(config.test?.testTimeout).toBe(60_000);
   });
 
-  it("gives each test file its own temporary directory and removes the CDK assemblies it leaves, so a shard never fills the disk", () => {
+  it("removes the CDK assemblies each test file leaves when it ends, so a shard never fills the disk", () => {
     expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts"]);
   });
 
