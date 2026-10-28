@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
+import { useState } from "react";
 import { screen, waitFor, act, fireEvent, within } from "@testing-library/react";
-import { createMemoryRouter, RouterProvider } from "react-router";
+import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
 import { focusManager, QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
@@ -11,6 +12,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import { SlackWorkspaceEvidence } from "../../packages/ui/src/screens/admin/connections/SlackWorkspaceEvidence.js";
 
 
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
@@ -216,4 +218,20 @@ it("cancels late Slack cache publication on navigation and does not read on guid
 });
 it("keeps the Slack refresh focusable and deduplicates activation while pending",async()=>{
  const f=slackView();try{await screen.findByText("3 stored associations observed in this read.",{exact:true});const original=f.request.getMockImplementation()!;let resolve!:(value:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(async r=>r.path===slackPath?pending:original(r));const refresh=screen.getByRole("button",{name:"Refresh Slack workspace details"}),before=f.request.mock.calls.filter(([r])=>r.path===slackPath).length;refresh.focus();fireEvent.click(refresh);await waitFor(()=>expect(f.query.getQueryState([...slackKey,f.liveMe.org.orgId,f.liveMe.developer.id,"owner"])?.fetchStatus).toBe("fetching"));expect(refresh.getAttribute("aria-disabled")).toBe("true");expect(refresh.hasAttribute("disabled")).toBe(false);fireEvent.click(refresh);expect(f.request.mock.calls.filter(([r])=>r.path===slackPath)).toHaveLength(before+1);await act(async()=>{resolve({status:404,body:{}});});await screen.findByText("Slack workspace details aren't available here yet.",{exact:true});expect(document.activeElement).toBe(refresh);}finally{f.close();}
+});
+
+// Deliberately excludes AdminLayout: pin the reusable component's own render boundary.
+function directSlack(role:string){
+ const f=fakeHost(async()=>({status:200,body:slackEvidence})),query=createQueryClient();let changeRole!:(next:string)=>void;
+ function Boundary(){const [context,setContext]=useState({orgId:slackEvidence.orgId,developerId:"a".repeat(64),role});changeRole=next=>setContext(current=>({...current,role:next}));return h(Outlet,{context});}
+ const router=createMemoryRouter([{path:"/",element:h(Boundary),children:[{index:true,element:h(SlackWorkspaceEvidence)}]}]);const view=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(RouterProvider,{router})})}));return {...f,...view,query,changeRole:(next:string)=>changeRole(next),close:()=>{view.unmount();router.dispose();query.clear();}};
+}
+for(const role of ["owner","admin"])it(`direct Slack component allows ${role} without relying on AdminLayout`,async()=>{
+ const f=directSlack(role);try{await screen.findByText("3 stored associations observed in this read.",{exact:true});expect(f.request).toHaveBeenCalledExactlyOnceWith({method:"GET",path:slackPath});expect(screen.getByRole("button",{name:"Refresh Slack workspace details"})).toBeTruthy();}finally{f.close();}
+});
+for(const role of ["member","maintainer","viewer","unknown"])it(`direct Slack component refuses ${role} without a query or bypassing Refresh`,async()=>{
+ const f=directSlack(role);try{await waitFor(()=>expect(f.container.textContent).toContain("Slack workspace details aren't available here yet."));expect(screen.queryByRole("button",{name:"Refresh Slack workspace details"})).toBeNull();expect(screen.queryByRole("progressbar")).toBeNull();expect(f.request).not.toHaveBeenCalled();expect(f.query.getQueriesData({queryKey:slackKey})).toEqual([]);}finally{f.close();}
+});
+it("direct Slack component removes Refresh and late cache publication when its own role is withdrawn",async()=>{
+ const f=directSlack("owner");try{await screen.findByText("3 stored associations observed in this read.",{exact:true});let resolve!:(v:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(async()=>pending);const refresh=screen.getByRole("button",{name:"Refresh Slack workspace details"});fireEvent.click(refresh);await act(async()=>{f.changeRole("member");});await waitFor(()=>expect(f.container.textContent).toContain("Slack workspace details aren't available here yet."));expect(screen.queryByRole("button",{name:"Refresh Slack workspace details"})).toBeNull();expect(screen.queryByRole("progressbar")).toBeNull();const calls=f.request.mock.calls.length;fireEvent.click(refresh);await act(async()=>{resolve({status:200,body:slackEvidence});await new Promise(done=>setTimeout(done,20));});expect(f.request).toHaveBeenCalledTimes(calls);expect(screen.queryByText(/3 stored associations/)).toBeNull();expect(f.query.getQueriesData({queryKey:slackKey})).toEqual([]);}finally{f.close();}
 });
