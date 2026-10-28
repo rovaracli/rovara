@@ -1,4 +1,4 @@
-import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 // Plan 3 Task 32: requests for more spend. A run that reached one of its own limits (its run limit, the agent's max per run, the planning limit) asks the person
 // who may raise it; an agent budget change that would take one person past the owner cap asks an org admin. A request is one record (`spendRequestKey`) with
 // the org's open index item, a global due item for the settlement run, and a slot per subject and kind, so a second pause asks for nothing new. Who may decide
@@ -1424,7 +1424,8 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     await expireOne(deps, record, "task_closed");
     throw closed({ status: "EXPIRED", endedBecause: "task_closed" });
   };
-  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused });
+  const decisionActor = { developerId: decidedBy, role: caller.orgRole };
+  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused, actor: decisionActor });
   if (record.kind === "owner_cap") {
     const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
@@ -1475,10 +1476,15 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   const pauseOf = (current: DeveloperTaskRecord) => `${current.budgetPause?.scope.kind ?? ""}|${current.budgetPause?.firstDispatch?.operationId ?? ""}`;
   let planned = await plan(task);
   for (let attempt = 0; ; attempt += 1) {
+    const items = [...ending, ...(planned.change?.items ?? []), ...planned.extra];
+    const actorStart = items.length;
+    items.push(...budgetActorChecks(deps.tableName, record.orgId, decisionActor));
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...ending, ...(planned.change?.items ?? []), ...planned.extra] }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
       break;
     } catch (error) {
+      const failed = failedIndexes(error);
+      if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
       // Only the pause moved since it was read (the owner went on, another limit paused it): the approval is made again on the task as it is now, once (I-3).
       const now = attempt === 0 && task !== undefined && failedIndexes(error) !== undefined ? await readTask(deps, record.orgId, task.taskId) : undefined;
       if (task !== undefined && now !== undefined && now.closedAt === undefined && now.budgetUsd === task.budgetUsd && now.maxPerRunUsd === task.maxPerRunUsd && pauseOf(now) !== pauseOf(task)) {
@@ -1527,7 +1533,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
  * whose new limit the guardrail would clamp is refused: it could not take effect (I-4). Then every task the budget stopped goes on.
  */
 async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestRecord, approvers: SpendApprovers, decision: {
-  status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; mark: RequestMark; refused: (error: unknown) => Promise<never>;
+  actor: BudgetActor; status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; mark: RequestMark; refused: (error: unknown) => Promise<never>;
 }): Promise<{ spendRequest: Record<string, unknown>; rerouted?: boolean }> {
   const scope = record.scope;
   if (!isBudgetScope(scope)) throw notFound();
@@ -1589,10 +1595,13 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
       }
     }
   }
+  const actorStart = items.length;
+  items.push(...budgetActorChecks(deps.tableName, record.orgId, decision.actor));
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
   } catch (error) {
     const failed = failedIndexes(error);
+    if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
     if (failed !== undefined && held.some((index) => failed.has(index)) && !failed.has(0)) {
       return (await reroute(deps, record, decision.mark)).answer;
     }
