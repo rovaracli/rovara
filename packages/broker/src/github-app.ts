@@ -1440,6 +1440,48 @@ export class GitHubAppCredentialProvider {
     return treeSha;
   }
 
+  /** One page of chooser suggestions, never authority for a save/start or a complete snapshot. */
+  async listWorkingBranches(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope, page = 1): Promise<WorkingBranchPage> {
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1_000) throw workingBranchInvalid();
+    const input = workingBranchInput(repositoryUrl, expected, scope);
+    try {
+      const check = this.options.requireInstallationBound;
+      if (check === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection unavailable.");
+      const connected = async () => {
+        const current = await this.lookedUp(input, true);
+        if (current.id !== input.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection changed.");
+        await check(input.orgId, current.id, { owner: input.owner, name: input.name });
+      };
+      await connected();
+      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, false, { installationId: input.installationId });
+      const read = (path: string) => this.fetchImplementation(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" });
+      const repository = await read("");
+      if (repository.status !== 200) throw workingBranchUnavailable();
+      const identity = feedbackRecord(await workingBranchPageJson(repository));
+      if (identity.id !== input.repositoryId || typeof identity.full_name !== "string" || identity.full_name.toLowerCase() !== `${input.owner}/${input.name}`.toLowerCase()) throw workingBranchUnavailable();
+      // Never follow Link URLs or paginate automatically. Only this local integer selects the page.
+      const response = await read(`/branches?per_page=100&page=${String(page)}`);
+      if (response.status !== 200) throw workingBranchUnavailable();
+      const rows = await workingBranchPageJson(response);
+      if (!Array.isArray(rows) || rows.length > 100) throw workingBranchUnavailable();
+      const branches: string[] = [], seen = new Set<string>();
+      let omittedUnsupported = false;
+      for (const raw of rows) {
+        const row = feedbackRecord(raw), commit = feedbackRecord(row.commit);
+        if (typeof row.name !== "string" || row.name.length === 0 || seen.has(row.name) || typeof commit.sha !== "string" || !/^[a-f0-9]{40}$/.test(commit.sha)) throw workingBranchUnavailable();
+        seen.add(row.name);
+        if (!GitBranchNameSchema.safeParse(row.name).success || row.name === "HEAD" || row.name.startsWith("refs/")) { omittedUnsupported = true; continue; }
+        branches.push(row.name);
+      }
+      // Empty and filtered pages must also survive a fresh connection/binding check.
+      await connected();
+      return { branches, page, mayHaveMore: rows.length === 100, omittedUnsupported };
+    } catch (error) {
+      if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before listing its working branches.");
+      throw workingBranchUnavailable();
+    }
+  }
+
   /** Unexposed working-branch reader: org-only, immutable pins required, no default fallback. */
   async readWorkingBranchRepository(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope): Promise<{ installationId: number; repositoryId: number }> {
     const input = workingBranchInput(repositoryUrl, expected, scope);
@@ -2180,4 +2222,24 @@ function workingBranchInput(repositoryUrl: string, expected: { installationId: n
   let repository: { owner: string; name: string };
   try { repository = parseGitHubRepository(repositoryUrl); } catch { throw workingBranchInvalid(); }
   return { ...repository, orgId: scope.orgId, installationId: expected.installationId, repositoryId: expected.repositoryId };
+}
+
+export interface WorkingBranchPage { branches: string[]; page: number; mayHaveMore: boolean; omittedUnsupported: boolean }
+/** Bound both metadata and list bodies independently of content-length or unknown provider fields. */
+async function workingBranchPageJson(response: Response): Promise<unknown> {
+  if (response.body === null) throw workingBranchUnavailable();
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      const chunk: unknown = next.value;
+      if (!(chunk instanceof Uint8Array)) throw workingBranchUnavailable();
+      bytes += chunk.byteLength;
+      if (bytes > 524_288) { await reader.cancel(); throw workingBranchUnavailable(); }
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } finally { reader.releaseLock(); }
 }
