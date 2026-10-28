@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { useState } from "react";
 import { screen, waitFor, act, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
@@ -267,4 +267,17 @@ it("preserves local connection filter and focus while an explicit refresh is sta
 });
 it("recomputes connection matches on fresh returned rows without clearing the local filter",async()=>{
  const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"TRACK"}});const original=f.request.getMockImplementation()!;f.request.mockImplementation(async r=>r.path==="/v1/app/connections"?{status:200,body:{connections:[filterRows[1]]}}:original(r));await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","lane-c","connections"]});});await screen.findByText("0 of 1 registered connections shown in this returned list.",{exact:true});expect((input as HTMLInputElement).value).toBe("TRACK");expect(screen.getByText("0 of 1 registered connections shown in this returned list.",{exact:true})).toBeTruthy();expect(screen.getByText("No registered connections match this filter in the returned list.",{exact:true})).toBeTruthy();}finally{f.close();}
+});
+
+for(const sample of [{name:"fullwidth input",query:"ＴＲＡＣＫ",label:"Team tracker",type:"linear"},{name:"compatibility ligature label",query:"OFFICE FILES",label:"Office \uFB01les",type:"linear"},{name:"canonical accent label",query:"CAFÉ",label:"Cafe\u0301 tracker",type:"linear"},{name:"fullwidth type",query:"METRICS",label:"Team tracker",type:"Ｍｅｔｒｉｃｓ"}])it(`matches Unicode-equivalent connection text: ${sample.name} without rewriting returned fields`,async()=>{
+ const rows=[{...filterRows[0],label:sample.label,type:sample.type},filterRows[1]],f=guidedConnections("owner",rows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});await waitFor(()=>expect(screen.queryAllByRole("progressbar")).toHaveLength(0));const before=f.request.mock.calls.length;fireEvent.change(input,{target:{value:sample.query}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("1 of 2 registered connections shown in this returned list.");expect(region.textContent).toContain(sample.label);expect(f.query.getQueryData(["admin","lane-c","connections",f.liveMe.org.orgId,f.liveMe.developer.id,"owner"])).toEqual({connections:rows});expect(f.request.mock.calls).toHaveLength(before);}finally{f.close();}
+});
+it("keeps accent distinctions instead of silently adding fuzzy connection matching",async()=>{
+ const f=guidedConnections("owner",[{...filterRows[0],label:"Café tracker"},filterRows[1]]);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"cafe"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("0 of 2 registered connections shown in this returned list.");expect(region.textContent).toContain("No registered connections match this filter in the returned list.");}finally{f.close();}
+});
+it("keeps normalized connection matching restricted to names/types rather than association metadata",async()=>{
+ const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"ＳＥＲＶＩＣＥ"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("0 of 2 registered connections shown in this returned list.");}finally{f.close();}
+});
+it("keeps ASCII connection type matching stable under a Turkish default casing locale",async()=>{
+ const nativeLower=String.prototype.toLocaleLowerCase;const lower=vi.spyOn(String.prototype,"toLocaleLowerCase").mockImplementation(function(this:string,locales?:string|string[]){return nativeLower.call(this,locales??"tr");});const f=guidedConnections("owner",filterRows);try{const input=await screen.findByRole("searchbox",{name:connectionFilter});fireEvent.change(input,{target:{value:"LINEAR"}});const region=screen.getByRole("region",{name:"Registered connections"});expect(within(region).getByRole("status").textContent).toBe("1 of 2 registered connections shown in this returned list.");expect(region.textContent).toContain("Team tracker");}finally{f.close();lower.mockRestore();}
 });
