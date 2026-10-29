@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { SessionIdSchema, answerSourceLine, plainAnswerText } from "@agentx/contracts/web";
+import { ANSWER_SOURCES_MAX, SessionIdSchema, answerSourceLine, plainAnswerText } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
 import { ApiError } from "../../api/errors.js";
@@ -58,7 +58,7 @@ export function AnsweredSection({ session, task }: { session: ReadSession; task:
  return <section aria-label="Rovara's answer" className="rv-answered">
   <h3>{ANSWERED_HEADING}</h3>
   <p className="rv-evidence-text"><VisibleText text={plainAnswerText(answer.answer)} /></p>
-  {answer.sources.length > 0 && <><h4>Where it was read</h4><ul className="rv-answered-sources">{answer.sources.slice(0, 10).map((source, index) => <li key={String(index)}><code><VisibleText text={answerSourceLine(source)} /></code></li>)}</ul></>}
+  {answer.sources.length > 0 && <><h4>Where it was read</h4><ul className="rv-answered-sources">{answer.sources.slice(0, ANSWER_SOURCES_MAX).map((source, index) => <li key={String(index)}><code><VisibleText text={answerSourceLine(source)} /></code></li>)}</ul></>}
   {mayAsk && <>
    <p className="rv-muted">{MORE_WORDS}</p>
    {error && <p role="alert"><VisibleText text={error} /></p>}

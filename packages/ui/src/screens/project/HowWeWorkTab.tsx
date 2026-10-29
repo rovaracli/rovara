@@ -23,7 +23,7 @@ const LESS_SAFE_HINT = "Changing these instructions needs someone else who can a
 export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: boolean }) {
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
- const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState(false);
+ const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState<"draft" | "removed" | false>(false);
  const [choosing, setChoosing] = useState(false), [chooseError, setChooseError] = useState<string>(), [reviewRequest, setReviewRequest] = useState(0);
  const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured ?? data.process.draftLayer?.agentId;
  const draftKey = [...howWeWorkKey(project), "draft", layerId] as const;
@@ -51,7 +51,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   setSaving(true);setSaveError(undefined);setSaved(false);
   try {
    await write(patch);
-   setEdits({ stages: {} });setSaved(true);
+   setEdits({ stages: {} });setSaved("draft");
   } catch (failure) {
    setSaveError(failureText(failure, "Couldn't save the draft. Your edits are still here."));
    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
@@ -61,7 +61,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  async function removeUnusedStage() {
   if (saving) return;
   setSaving(true);setSaveError(undefined);setSaved(false);
-  try { await write({ stages: { [UNUSED_STAGE_ID]: "" } });setSaved(true); }
+  try { await write({ stages: { [UNUSED_STAGE_ID]: "" } });setSaved("removed"); }
   catch (failure) {
    setSaveError(failureText(failure, "Couldn't remove the rules. Try again."));
    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
@@ -95,12 +95,13 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   {canEdit ? <section className="rv-hww-rules" aria-label="Project rules">
    <RuleField label="Project rules" hint="These apply to every stage that plans or builds. Reviewing stages only follow rules written for them." value={rulesValue} onChange={text => { setSaved(false);setEdits(current => ({ ...current, rules: text })); }} disabled={saving} />
   </section> : data.rules.length > 0 && <section className="rv-hww-rules" aria-label="Project rules"><h2>Project rules</h2><ul>{data.rules.map((rule, index) => <li key={index}><VisibleText text={rule.value} /></li>)}</ul></section>}
-  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
+  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} aria-label="Remove rules from the pull request stage" onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
   {canEdit && <div className="rv-hww-actions">
    <Button variant="primary" busy={saving} disabled={!dirty || tooLong} onClick={() => { void save(); }}>Save draft</Button>
    <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} notInUse={savedVersion !== undefined} openRequest={reviewRequest} onPublished={refresh} />
    {dirty && <p className="rv-muted">You have edits that aren't saved. Save the draft to review them.</p>}
-   {saved && <p role="status">Draft saved. Review changes to publish it.</p>}
+   {saved === "draft" && <p role="status">Draft saved. Review changes to publish it.</p>}
+   {saved === "removed" && <p role="status">Removed the pull request stage rules from the draft. Review changes to publish it.</p>}
    {saveError !== undefined && <p role="alert"><VisibleText text={saveError} /></p>}
    {tooLong && <p role="alert">One of the texts is too long. Shorten it to save.</p>}
   </div>}

@@ -52,6 +52,23 @@ it("shows the heading, the answer as plain text and where it was read, for an An
   f.close();
 });
 
+it("shows a hostile source line as plain text: no markup, no angle brackets, no control characters", async () => {
+  const f = setup(answeredSession());
+  const section = await region();
+  const items = Array.from(section.querySelectorAll(".rv-answered-sources li"));
+  expect(items).toHaveLength(3);
+  const hostile = items[2]!;
+  // The list items hold only text inside <code>: nothing in the source was turned into an element.
+  expect(hostile.querySelectorAll("*")).toHaveLength(1);
+  expect(hostile.querySelector("code")?.children).toHaveLength(0);
+  expect(hostile.textContent).toBe("pay img src=x onerror=window.__pwned=2/src/a b c.ts:9");
+  expect(hostile.textContent).not.toMatch(/[<>\p{Cc}\p{Cf}]/u);
+  expect("__pwned" in window).toBe(false);
+  // The plain sources before it are unchanged.
+  expect(items[0]!.textContent).toBe("payments/src/retry.ts:4");
+  f.close();
+});
+
 it("starts the change once however many times it is pressed, through change-anyway, and opens the new session", async () => {
   const f = setup(answeredSession());
   await region();

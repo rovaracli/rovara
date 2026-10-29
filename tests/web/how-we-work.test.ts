@@ -418,33 +418,39 @@ describe("the pull request stage", () => {
  });
 
  describe("an old draft with rules on this stage", () => {
+ const REMOVE = "Remove rules from the pull request stage", REMOVED = "Removed the pull request stage rules from the draft. Review changes to publish it.";
  const stuck = { instructions: "Keep changes small.", steps: { build: { instructions: "Run the linter.", timeoutMinutes: 30 }, pull_request: { instructions: "Mention the ticket." } } };
  it("offers Remove to a maintainer, which saves the draft without that stage's instructions and keeps the rest", async () => {
   const f = await open({ overlay: stuck });
   await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Keep changes small."));
-  fireEvent.click(await within(card("Pull request")).findByRole("button", { name: "Remove" }));
-  await screen.findByText("Draft saved. Review changes to publish it.");
+  const remove = await within(card("Pull request")).findByRole("button", { name: REMOVE });
+  // The visible word stays "Remove"; the screen-reader name says what is removed.
+  expect(remove.textContent).toBe("Remove");
+  fireEvent.click(remove);
+  expect((await screen.findByRole("status")).textContent).toBe(REMOVED);
+  expect(screen.queryByText("Draft saved. Review changes to publish it.")).toBeNull();
   const put = f.sent().filter(request => request.method === "PUT").at(-1)!;
   expect(put.path).toBe(`/v1/app/agents/${LAYER}/draft`);
   expect(put.body).toMatchObject({ overlay: { instructions: "Keep changes small.", steps: { build: { instructions: "Run the linter.", timeoutMinutes: 30 } } }, expectedRevision: 3 });
   expect(put.body as { overlay: { steps: object } }).not.toHaveProperty("overlay.steps.pull_request");
-  await waitFor(() => expect(within(card("Pull request")).queryByRole("button", { name: "Remove" })).toBeNull());
+  await waitFor(() => expect(within(card("Pull request")).queryByRole("button", { name: REMOVE })).toBeNull());
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
  });
  it("keeps other unsaved edits in their boxes and out of the saved draft", async () => {
   const f = await open({ overlay: stuck });
   await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Keep changes small."));
   type(/Project rules/u, "Something new");
-  fireEvent.click(await within(card("Pull request")).findByRole("button", { name: "Remove" }));
-  await screen.findByText("Draft saved. Review changes to publish it.");
+  fireEvent.click(await within(card("Pull request")).findByRole("button", { name: REMOVE }));
+  expect((await screen.findByRole("status")).textContent).toBe(REMOVED);
+  expect(screen.queryByText("Draft saved. Review changes to publish it.")).toBeNull();
   expect((f.sent().filter(request => request.method === "PUT").at(-1)!.body as { overlay: { instructions: string } }).overlay.instructions).toBe("Keep changes small.");
   expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Something new");
  });
  it("shows the server's refusal and keeps the button", async () => {
   await open({ overlay: stuck, handle: (request, url) => request.method === "PUT" && url.pathname.endsWith("/draft") ? { status: 409, body: { error: { code: "AGENT_REVISION_CONFLICT", message: "The draft changed." } } } : undefined });
-  fireEvent.click(await within(card("Pull request")).findByRole("button", { name: "Remove" }));
+  fireEvent.click(await within(card("Pull request")).findByRole("button", { name: REMOVE }));
   expect((await screen.findByRole("alert")).textContent).toContain("The draft changed.");
-  expect(within(card("Pull request")).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(card("Pull request")).getByRole("button", { name: REMOVE })).toBeTruthy();
  });
  it("shows no button to a viewer, who still sees the rules read-only", async () => {
   const view = howWeWorkView();
@@ -453,14 +459,14 @@ describe("the pull request stage", () => {
   expect(within(card("Pull request")).getByText("Mention the ticket.")).toBeTruthy();
   // A viewer never reads the draft, so there is nothing for a button to act on.
   expect(f.calls().some(call => call.endsWith("/draft"))).toBe(false);
-  expect(within(card("Pull request")).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(card("Pull request")).queryByRole("button", { name: REMOVE })).toBeNull();
  });
  it("shows no button when the draft has no rules on this stage", async () => {
   const view = howWeWorkView();
   (view.stages[5]!.knows.instructions as unknown[]).push({ value: "Mention the ticket.", source: "project", locked: false });
   await open({ view });
   await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" }).value).toBe("Keep changes small."));
-  expect(within(card("Pull request")).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(card("Pull request")).queryByRole("button", { name: REMOVE })).toBeNull();
  });
  });
 
