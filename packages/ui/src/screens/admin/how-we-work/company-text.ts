@@ -4,6 +4,7 @@ import { isRefusalCode } from "../../../api/stage-models.js";
 export const PAGE_TITLE = "How we work (company)";
 export const PAGE_NOTE = "Set the default model and effort for each stage, and lock a stage so projects can't change it. A project's own choice applies only inside these limits.";
 export const MODEL_NOTE = "Pick models after the model list is available.";
+export const NO_VERIFIED = "No verified models are listed for this stage yet.";
 export const SAVED = "Saved. New tasks use these defaults; running tasks keep theirs.";
 export const MODEL_DEFAULT_OPTION = "Rovara's default";
 export const OTHER_ADMIN = "Another company admin must confirm this less-safe change.";

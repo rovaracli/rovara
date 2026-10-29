@@ -63,6 +63,14 @@ describe("browser host and shared API client", () => {
   }
   const f = fakeHost(async () => ({ status: 202, body: { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", message: "An owner must approve this." } }));expect(await createApiClient(f.host).send("PATCH", "/v1/app/agents/fixture", {}, HomeResponseReaderSchema)).toEqual({ kind: "needs_admin_approval", spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", message: "An owner must approve this." });
  });
+ it("hands back the sole-owner field of a confirmation only when the answer carries it", async () => {
+  const url = ORIGIN + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", soleOwner = { available: true, availableAt: "2026-10-30T12:00:00.000Z" };
+  const withField = fakeHost(async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: url, changes: ["A lock is removed"], soleOwner } }));
+  expect(await createApiClient(withField.host).send("PUT", "/v1/app/org/model-selection-policy", {}, HomeResponseReaderSchema)).toEqual({ kind: "needs_confirmation", confirmUrl: url, changes: ["A lock is removed"], soleOwner });
+  const without = fakeHost(async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", confirmUrl: url, changes: [] } }));
+  const result = await createApiClient(without.host).send("PUT", "/v1/app/org/model-selection-policy", {}, HomeResponseReaderSchema);
+  expect("soleOwner" in result).toBe(false);
+ });
  it("retries a throttled read at one, two and four seconds with one retry owner", async () => {
   vi.useFakeTimers();let calls = 0;const f = fakeHost(async () => ++calls < 4 ? { status: 429, body: { error: { code: "TOO_MANY_REQUESTS", message: "Try again later." } } } : { status: 200, body: empty });
   const pending = createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema);await vi.advanceTimersByTimeAsync(0);expect(calls).toBe(1);

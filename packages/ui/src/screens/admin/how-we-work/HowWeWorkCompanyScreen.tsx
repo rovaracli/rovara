@@ -7,18 +7,19 @@ import { PageHeader } from "../../../design/PageHeader.js";
 import { Select, type SelectOption } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { COMPANY_EFFORT_LEVELS, COMPANY_ROWS, CompanyPolicyReader, isRefusalCode, modelKey, type CompanyOverride, type CompanyOverrides, type CompanyPolicy, type CompanyPreview, type SoleOwner, type StageCandidate } from "../../../api/stage-models.js";
+import { CompanyPolicyReader, isRefusalCode, modelKey, type CompanyOverride, type CompanyOverrides, type CompanyPolicy, type CompanyPreview, type StageCandidate } from "../../../api/stage-models.js";
+import { COMPANY_ROWS } from "../../../api/stage-cards.js";
+import type { SoleOwnerConfirmation } from "../../../api/client.js";
 import { previewCompanyPolicy, saveCompanyPolicy, COMPANY_POLICY_PATH } from "../../../api/company-model-policy.js";
-import { EFFORT_LABELS, REFUSAL_TEXT, candidateBlock, effortLabel } from "../../project/stage-model-text.js";
+import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, effortLabel } from "../../project/stage-model-text.js";
 import { ReadSection, checkedTime, useAdminRead } from "../models/read.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, type CompanyRow, type EffortChoice } from "./company-edit.js";
 import * as T from "./company-text.js";
 import "./how-we-work.css";
 
-const EFFORT_OPTIONS: readonly SelectOption[] = [{ value: "inherit", label: "Rovara's default" }, { value: "null", label: "Model default" }, ...COMPANY_EFFORT_LEVELS.map(level => ({ value: level, label: EFFORT_LABELS[level] }))];
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
-type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwner | undefined };
+type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwnerConfirmation | undefined };
 type Review = { state: "loading" } | { state: "failed"; text: string } | { state: "ready"; projects: CompanyPreview["projects"]; next: string | undefined };
 
 export function HowWeWorkCompanyScreen() {
@@ -34,10 +35,10 @@ export function HowWeWorkCompanyScreen() {
  </section>;
 }
 
-/** The models a row can offer: the first stage's list, kept to the models every stage of the row lists; undefined when any stage has no list (the row then shows its model read only). */
+/** The models a row can offer: the first stage's list, kept to the models every stage of the row lists. Undefined when the read gives no list for any stage of the row (the list is unavailable: the row shows its model read only). An empty list is an answer: no candidates. */
 function rowCandidates(policy: CompanyPolicy, row: CompanyRow): StageCandidate[] | undefined {
- const lists = row.stages.map(id => policy.candidates[id]);
- if (lists.some(list => list === undefined || list.length === 0)) return undefined;
+ const lists = row.stages.map(id => policy.candidates?.[id]);
+ if (lists.some(list => list === undefined)) return undefined;
  const [first, ...others] = lists as StageCandidate[][];
  return first!.filter(candidate => others.every(list => list.some(other => modelKey(other.model) === modelKey(candidate.model))));
 }
@@ -45,7 +46,7 @@ function ModelPicker({ entry, candidates, disabled, onPick }: { entry: CompanyOv
  const current = entry?.model === undefined ? "" : modelKey(entry.model);
  const options: SelectOption[] = [{ value: "", label: T.MODEL_DEFAULT_OPTION }, ...candidates.map(candidate => { const block = candidateBlock(candidate);return { value: modelKey(candidate.model), label: block === undefined ? candidate.label : candidate.label + ": " + block, disabled: block !== undefined }; })];
  if (!options.some(option => option.value === current)) options.push({ value: current, label: current, disabled: true });
- return <Select label="Model" value={current} options={options} disabled={disabled} onValueChange={onPick} />;
+ return <><Select label="Model" value={current} options={options} disabled={disabled} onValueChange={onPick} />{candidates.every(candidate => candidateBlock(candidate) !== undefined) && <p className="rv-muted">{T.NO_VERIFIED}</p>}</>;
 }
 function RowCard({ row, overrides, candidates, disabled, onChange }: { row: CompanyRow; overrides: CompanyOverrides; candidates: StageCandidate[] | undefined; disabled: boolean; onChange: (next: CompanyOverrides) => void }) {
  const entry = rowEntry(overrides, row), locked = entry?.locked === true, incomplete = lockIncomplete(entry, row), split = rowSplit(overrides, row);
@@ -103,7 +104,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
   finally { if (alive.current) setSaving(false); }
  }
  return <div aria-busy={busy}>
-  {COMPANY_ROWS.every(row => rowCandidates(policy, row) === undefined) && <p className="rv-muted">{T.MODEL_NOTE}</p>}
+  {COMPANY_ROWS.some(row => rowCandidates(policy, row) === undefined) && <p className="rv-muted">{T.MODEL_NOTE}</p>}
   <div className="rv-hww-company-cards">{COMPANY_ROWS.map(row => <RowCard key={row.id} row={row} overrides={draft} candidates={rowCandidates(policy, row)} disabled={!allowed || busy} onChange={edit} />)}</div>
   <div className="rv-hww-company-actions"><Button variant="primary" disabled={!allowed || busy || !dirty || outOfDate} onClick={() => { void openReview(); }}>Review changes</Button></div>
   {blocked !== undefined && <p role="alert">{blocked}</p>}

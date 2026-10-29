@@ -1,5 +1,6 @@
 // "How we work": the fixed words of the model rows. The sentences come from lane C's refusal table (C53, relay 2) and the design's reason table (§9b); the page never writes its own reasons.
-import { isReason, isRefusalCode, type Reason, type RefusalCode, type StageCandidate, type StageId, type ThinkingLevel } from "../../api/stage-models.js";
+import { STAGE_MODEL_THINKING_LEVELS, isReason, isRefusalCode, type Reason, type RefusalCode, type StageCandidate, type StageId, type ThinkingLevel } from "../../api/stage-models.js";
+import type { SelectOption } from "../../design/Select.js";
 export const REFUSAL_TEXT: Readonly<Record<RefusalCode, string>> = {
  MODEL_NOT_VERIFIED: "This account has no fresh verified access to this model.",
  MODEL_STALE: "Verification for this model has expired. Check it again.",
@@ -33,6 +34,8 @@ export const EDITS_REMOVED_TEXT = "Some changes were removed because the company
 export const COST_TEXT = "Cost unavailable";
 export const COMPANY_PAGE = "/app/admin/how-we-work";
 export const EFFORT_LABELS: Readonly<Record<ThinkingLevel, string>> = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" };
+/** The effort choices of a stage: Rovara's default, Model default (null) and lane C's stage scale (STAGE_MODEL_THINKING_LEVELS) - nothing else. */
+export const EFFORT_OPTIONS: readonly SelectOption[] = [{ value: "inherit", label: "Rovara's default" }, { value: "null", label: "Model default" }, ...STAGE_MODEL_THINKING_LEVELS.map(level => ({ value: level, label: EFFORT_LABELS[level] }))];
 export const effortLabel = (level: string): string => Object.hasOwn(EFFORT_LABELS, level) ? EFFORT_LABELS[level as ThinkingLevel] : "Model default";
 export const REVIEWER_NAMES: Readonly<Partial<Record<StageId, string>>> = { code_review: "Code review", security_review: "Security review" };
 /** Why a candidate cannot be chosen, in the fixed words; undefined when it is verified and not blocked (the only kind that can be chosen). */

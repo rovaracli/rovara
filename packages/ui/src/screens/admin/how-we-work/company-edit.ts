@@ -1,6 +1,7 @@
 // The company How we work page: its edit state. Pure; it holds no model logic (no ranking, no safety, no independence): it only shapes the overrides the person set and checks that a lock is complete, as the contract requires.
-import { COMPANY_ROWS, modelOf, type CompanyOverride, type CompanyOverrides, type StageId } from "../../../api/stage-models.js";
-export type CompanyRow = (typeof COMPANY_ROWS)[number];
+import { modelOf, type CompanyOverride, type CompanyOverrides, type StageId } from "../../../api/stage-models.js";
+import { COMPANY_ROWS, type CompanyRow } from "../../../api/stage-cards.js";
+export type { CompanyRow };
 export type EffortChoice = "inherit" | "null" | NonNullable<CompanyOverride["thinkingLevel"]>;
 
 const isEmpty = (entry: CompanyOverride) => !entry.locked && entry.model === undefined && entry.thinkingLevel === undefined && entry.fallbackModel === undefined && entry.differentFrom === undefined;

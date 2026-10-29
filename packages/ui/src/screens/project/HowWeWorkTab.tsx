@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
-import { CARD_STAGES, REFERENCE_KIND, useStageModels } from "../../api/stage-models.js";
+import { useStageModels } from "../../api/stage-models.js";
+import { cardStages, referenceKind } from "../../api/stage-cards.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -45,7 +46,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (Object.keys(modelEdits).length > 0) {
   if (editRevision !== draftRevision || staleRead) { setModelEdits({});setDiscarded(true); }
   else {
-   const kept = pruneEdits(modelEdits, id => { const ids = CARD_STAGES[data.stages.find(stage => stage.id === id)?.kind ?? ""];return models.data === undefined || ids === undefined ? undefined : models.data.stages.filter(entry => ids.includes(entry.stage)); });
+   const kept = pruneEdits(modelEdits, id => { const ids = cardStages(data.stages.find(stage => stage.id === id)?.kind ?? "");return models.data === undefined || ids.length === 0 ? undefined : models.data.stages.filter(entry => ids.includes(entry.stage)); });
    if (kept !== modelEdits) { setModelEdits(kept);setRemoved(true); }
   }
  }
@@ -58,10 +59,10 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (changedStages.length > 0) patch.stages = Object.fromEntries(changedStages.map(([id, text]) => [id, cleanRuleText(text)]));
  const dirty = patch.rules !== undefined || patch.stages !== undefined || Object.keys(modelEdits).length > 0, tooLong = [rulesValue, ...editableStages.map(stage => stageValue(stage.id))].some(ruleTooLong);
  /** The earlier step a checking card's "different vendor" toggle names: the Plan step for the plan check, the Build step for a review. */
- const referenceStage = (kind: string) => { const wanted = REFERENCE_KIND[kind];return wanted === undefined ? undefined : data.stages.find(other => other.kind === wanted); };
+ const referenceStage = (kind: string) => { const wanted = referenceKind(kind);return wanted === undefined ? undefined : data.stages.find(other => other.kind === wanted); };
  const references = Object.fromEntries(data.stages.map(stage => [stage.id, referenceStage(stage.kind)?.id]));
  const stageModelRows = (stage: (typeof data.stages)[number]) => {
-  const ids = CARD_STAGES[stage.kind], found = models.data === undefined || ids === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
+  const ids = cardStages(stage.kind), found = models.data === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
   if (found.length === 0) return undefined;
   const reference = referenceStage(stage.kind);
   return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found[0]!)); }} />;

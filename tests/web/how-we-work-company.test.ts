@@ -3,12 +3,11 @@ import { describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider, focusManager } from "@tanstack/react-query";
-import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyPutSchema, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
+import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ModelSelectionPolicyPutSchema, ModelSelectionPolicyResponseSchema, STAGE_MODEL_THINKING_LEVELS, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { COMPANY_EFFORT_LEVELS } from "../../packages/ui/src/api/stage-models.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
@@ -82,8 +81,8 @@ describe("the company cards", () => {
   expect(within(card("Build")).queryByRole("combobox", { name: "Model" })).toBeNull();
  });
  it("offers nothing the step settings would refuse: every option fits them and lane C's policy PUT, and xhigh (which only lane C's scale holds) is not offered", () => {
-  expect([...COMPANY_EFFORT_LEVELS]).toEqual([...StepThinkingLevelSchema.options]);
-  for (const level of [...COMPANY_EFFORT_LEVELS, null]) {
+  expect([...STAGE_MODEL_THINKING_LEVELS]).toEqual([...StepThinkingLevelSchema.options]);
+  for (const level of [...STAGE_MODEL_THINKING_LEVELS, null]) {
    expect(StepSettingsSchema.safeParse({ thinkingLevel: level }).success).toBe(true);
    expect(ModelSelectionPolicyPutSchema.safeParse({ version: 1, requestId: REQUEST_ID, expectedRevision: 4, stepOverrides: { build: { model: mid(COMPANY_BUILD), thinkingLevel: level, locked: false } } }).success).toBe(true);
   }
@@ -351,6 +350,22 @@ describe("after a save that did not go through, or a page that is out of date", 
  });
 });
 
+describe("the company answers are lane C's contract shapes", () => {
+ it("parses the fixtures with lane C's strict schemas, so the page is tested against what the server sends", () => {
+  expect(ModelSelectionPolicyResponseSchema.safeParse({ ...companyPolicyRaw(), candidates: companyCandidates() }).success).toBe(true);
+  expect(ModelSelectionPolicyAppliedSchema.safeParse(applied(5)).success).toBe(true);
+  expect(ModelSelectionPolicyPendingSchema.safeParse(needsConfirmation("https://cell.example", REQUEST_ID, "2026-10-30T12:00:00.000Z")).success).toBe(true);
+  expect(ModelSelectionPolicyPendingSchema.safeParse(needsConfirmation("https://cell.example", REQUEST_ID, { available: false, availableAt: null, reasonCode: "OTHER_ADMIN_EXISTS" })).success).toBe(true);
+ });
+ it("reads a 200 that lane C's applied answer has no extra fields for, and refuses a 200 for another request", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 200, body: { ...applied(5, "22222222-2222-4222-8222-222222222222"), futureField: 1 } } : undefined });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  expect((await screen.findByRole("alert")).textContent).toBe("Couldn't save the company defaults. Try again.");
+  expect(screen.queryByText(/Saved\./)).toBeNull();
+ });
+});
+
 describe("the company 202 and the model list", () => {
  it("lists what needs confirming from the answer's changes", async () => {
   await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 202, body: needsConfirmation("https://cell.example", (request.body as { requestId: string }).requestId) } : undefined });
@@ -383,6 +398,26 @@ describe("the company 202 and the model list", () => {
   await review();
   await screen.findByText("This list may be incomplete.");
   expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan).toEqual({ model: mid(COMPANY_BUILD), locked: false });
+ });
+});
+
+describe("a missing model list is unavailable, an empty one is an answer", () => {
+ it("shows a stage the read gives no list for read only, with the note, while stages with a list keep their picker", async () => {
+  const { plan: _plan, ...rest } = companyCandidates();void _plan;
+  await open({ policy: { ...companyPolicyRaw(), candidates: rest } });
+  expect(screen.getByText("Pick models after the model list is available.")).toBeTruthy();
+  expect(within(card("Plan")).queryByRole("combobox", { name: "Model" })).toBeNull();
+  expect(card("Plan").textContent).toContain("Model: Rovara's default");
+  expect(within(card("Build")).getByRole("combobox", { name: "Model" })).toBeTruthy();
+ });
+ it("shows a stage with an empty list as having no verified models (a picker with Rovara's default only), never as unavailable", async () => {
+  await open({ policy: { ...companyPolicyRaw(), candidates: { ...companyCandidates(), plan: [] } } });
+  expect(screen.queryByText("Pick models after the model list is available.")).toBeNull();
+  const model = within(card("Plan")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
+  expect(Array.from(model.options).filter(option => option.value !== "")).toEqual([]);
+  expect(model.value).toBe("");
+  expect(within(card("Plan")).getByText("No verified models are listed for this stage yet.")).toBeTruthy();
+  expect(within(card("Build")).queryByText("No verified models are listed for this stage yet.")).toBeNull();
  });
 });
 

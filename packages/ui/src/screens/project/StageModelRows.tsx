@@ -2,13 +2,10 @@ import { Link } from "react-router";
 import { Select, type SelectOption } from "../../design/Select.js";
 import { Switch } from "../../design/Switch.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { COMPANY_EFFORT_LEVELS, modelKey, stageResult, type StageModelsStage, type ThinkingLevel } from "../../api/stage-models.js";
+import { modelKey, stageResult, type StageModelsStage, type ThinkingLevel } from "../../api/stage-models.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
-import { COMPANY_PAGE, COST_TEXT, EFFORT_LABELS, REVIEWER_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
+import { COMPANY_PAGE, COST_TEXT, EFFORT_OPTIONS, REVIEWER_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
 import { DEFAULT_MODEL, baselineEffort, baselineModel, baselineVendor, stagesEditable, type EffortValue, type StageEdit } from "./how-we-work-models.js";
-/** Only the levels the step settings accept today (the same list the company page offers); lane C's scale also holds xhigh, which the step settings do not yet accept (ruled). */
-const LEVELS: readonly ThinkingLevel[] = COMPANY_EFFORT_LEVELS;
-const EFFORT_OPTIONS: readonly SelectOption[] = [{ value: "inherit", label: "Rovara's default" }, { value: "null", label: "Model default" }, ...LEVELS.map(level => ({ value: level, label: EFFORT_LABELS[level] }))];
 const effortWords = (effort: ThinkingLevel | null): string => effort === null ? "Model default" : effortLabel(effort);
 
 /** The "Who does it" content of a stage card from the stage-models read: each stage's resolved result, and (when the person can edit and the stage is not locked) the model and effort pickers and the different-vendor toggle. A review card holds two reviewers' results and one picker. */
