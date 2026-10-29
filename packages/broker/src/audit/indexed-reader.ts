@@ -47,7 +47,7 @@ export async function readIndexedAudit(deps: AuditExportClientDeps, caller: Audi
     const { cursor, ...normalized } = query;
     const binding = auditCanonicalJson(z.json().parse(normalized));
     let fromSeq = query.fromSeq ?? 1, throughSeq = query.toSeq ?? coverage.throughSeq, after = 0;
-    if (throughSeq > coverage.throughSeq) throw unavailable();
+    if (fromSeq > coverage.throughSeq || throughSeq > coverage.throughSeq) throw unavailable();
     if (cursor !== undefined) {
       let decoded: z.infer<typeof CursorSchema>;
       try {
@@ -60,7 +60,12 @@ export async function readIndexedAudit(deps: AuditExportClientDeps, caller: Audi
       if (!timingSafeEqual(Buffer.from(tag, "hex"), Buffer.from(expected, "hex")) || decoded.orgId !== caller.orgId || decoded.developerId !== caller.developerId || decoded.role !== caller.orgRole || decoded.query !== binding || decoded.throughSeq > coverage.throughSeq || decoded.fromSeq < 1 || decoded.after < decoded.fromSeq || decoded.after >= decoded.throughSeq) throw invalid();
       fromSeq = decoded.fromSeq; throughSeq = decoded.throughSeq; after = decoded.after;
     } else {
-      if (query.from !== undefined) fromSeq = Math.max(fromSeq, await firstSeqAtOrAfter(deps, caller.orgId, throughSeq, Date.parse(query.from)));
+      if (query.from !== undefined) {
+        // Resolve against coverage, not a narrower requested upper bound: missing coverage is never an empty result.
+        const first = await firstSeqAtOrAfter(deps, caller.orgId, coverage.throughSeq, Date.parse(query.from));
+        if (first > coverage.throughSeq) throw unavailable();
+        fromSeq = Math.max(fromSeq, first);
+      }
       if (query.to !== undefined) throughSeq = Math.min(throughSeq, await lastSeqAtOrBefore(deps, caller.orgId, throughSeq, Date.parse(query.to)));
     }
     const dimension = query.actorKind !== undefined ? "actor" : query.targetKind !== undefined ? "target" : "action";
