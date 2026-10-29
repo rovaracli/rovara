@@ -10,7 +10,7 @@ import { failureText } from "../agents/agent-context.js";
 import { HowWeWorkCard, stageDomId } from "./HowWeWorkCard.js";
 import { HowWeWorkHistory } from "./HowWeWorkHistory.js";
 import { EDITABLE_KINDS, REVIEWING_KINDS, hasChanged, type Filter } from "./how-we-work-rows.js";
-import { EMPTY_RULES, applyRuleEdits, ruleValues, type RuleEdits } from "./how-we-work-draft.js";
+import { EMPTY_RULES, UNUSED_STAGE_ID, applyRuleEdits, ruleValues, type RuleEdits } from "./how-we-work-draft.js";
 import type { Overlay } from "../builder/draft-state.js";
 import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
@@ -40,16 +40,30 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (changedStages.length > 0) patch.stages = Object.fromEntries(changedStages.map(([id, text]) => [id, cleanRuleText(text)]));
  const dirty = patch.rules !== undefined || patch.stages !== undefined, tooLong = [rulesValue, ...editableStages.map(stage => stageValue(stage.id))].some(ruleTooLong);
  const setStage = (id: string, text: string) => { setSaved(false);setEdits(current => ({ ...current, stages: { ...current.stages, [id]: text } })); };
- /** Make sure the layer exists, read its draft, write the edited rules into it. */
+ /** Make sure the layer exists, read its draft, write `changes` into it. */
+ async function write(changes: RuleEdits) {
+  const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId), next = await builder.save(layer.agentId, applyRuleEdits(current.draft.overlay as Overlay, changes), current.draft.revision);
+  query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
+  setEnsured(layer.agentId);
+ }
  async function save() {
   if (!dirty || tooLong || saving) return;
   setSaving(true);setSaveError(undefined);setSaved(false);
   try {
-   const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId), next = await builder.save(layer.agentId, applyRuleEdits(current.draft.overlay as Overlay, patch), current.draft.revision);
-   query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
-   setEnsured(layer.agentId);setEdits({ stages: {} });setSaved(true);
+   await write(patch);
+   setEdits({ stages: {} });setSaved(true);
   } catch (failure) {
    setSaveError(failureText(failure, "Couldn't save the draft. Your edits are still here."));
+   if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
+  } finally { setSaving(false); }
+ }
+ /** An old draft can hold rules on the pull request stage, which nothing uses and the server won't let a new publish add. Saves the draft without them (removal is allowed); other unsaved edits stay in their boxes. */
+ async function removeUnusedStage() {
+  if (saving) return;
+  setSaving(true);setSaveError(undefined);setSaved(false);
+  try { await write({ stages: { [UNUSED_STAGE_ID]: "" } });setSaved(true); }
+  catch (failure) {
+   setSaveError(failureText(failure, "Couldn't remove the rules. Try again."));
    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
   } finally { setSaving(false); }
  }
@@ -81,7 +95,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   {canEdit ? <section className="rv-hww-rules" aria-label="Project rules">
    <RuleField label="Project rules" hint="These apply to every stage that plans or builds. Reviewing stages only follow rules written for them." value={rulesValue} onChange={text => { setSaved(false);setEdits(current => ({ ...current, rules: text })); }} disabled={saving} />
   </section> : data.rules.length > 0 && <section className="rv-hww-rules" aria-label="Project rules"><h2>Project rules</h2><ul>{data.rules.map((rule, index) => <li key={index}><VisibleText text={rule.value} /></li>)}</ul></section>}
-  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
+  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
   {canEdit && <div className="rv-hww-actions">
    <Button variant="primary" busy={saving} disabled={!dirty || tooLong} onClick={() => { void save(); }}>Save draft</Button>
    <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} notInUse={savedVersion !== undefined} openRequest={reviewRequest} onPublished={refresh} />

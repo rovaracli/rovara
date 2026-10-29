@@ -26,3 +26,5 @@ export function applyRuleEdits(overlay: Overlay, edits: RuleEdits): Overlay {
  }
  return next;
 }
+/** The stage whose instructions an old draft can still hold although nothing uses them (the pull request stage). */
+export const UNUSED_STAGE_ID = "pull_request";
