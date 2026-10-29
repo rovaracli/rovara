@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import * as contracts from "../../packages/contracts/src/stage-models.js";
 const model = { provider: "anthropic", modelId: "claude-sonnet-4" };
 const at = "2026-10-29T21:00:00.000Z";
-const choice = { model, thinkingLevel: "xhigh", differentFrom: { stage: "build", level: "model" } };
-const stage = { stage: "code_review", projectChoice: choice, companyDefault: null, locked: false, editable: true, candidates: [], candidatesState: "complete", effective: { model, sourceId: "rovara", thinkingLevel: "xhigh", decidedBy: "project", reason: "PROJECT_CHOICE", locked: false } };
+const choice = { model, thinkingLevel: "high", differentFrom: { stage: "build", level: "model" } };
+const stage = { stage: "code_review", projectChoice: choice, companyDefault: null, locked: false, editable: true, candidates: [], candidatesState: "complete", effective: { model, sourceId: "rovara", thinkingLevel: "high", decidedBy: "project", reason: "PROJECT_CHOICE", locked: false } };
 const view = { version: 1, checkedAt: at, companyRevision: 0, projectRevision: 1, process: { agentId: "rovara-code", version: 2, digest: "a".repeat(64) }, rankingVersion: "g3-v1", stages: [stage] };
 describe("G3 v1 shared browser contracts", () => {
  it("reads the flat effective shape with existing thinking levels and distinct stages", () => {
@@ -40,3 +40,21 @@ describe("G3 v1 shared browser contracts", () => {
   expect(contracts.ModelFallbackSchema.safeParse({ ...fallback, reasonCode: "a provider exception" }).success).toBe(false);
  });
 });
+
+it("exports company candidates, applied and shared sole-owner confirmation bodies", async () => {
+ const candidate={model,label:"Sonnet",provider:"anthropic",company:"anthropic",status:"verified",checkedAt:at};
+ expect(contracts.ModelSelectionPolicyResponseSchema.safeParse({version:1,revision:0,rankingVersion:"g3-v1",stepOverrides:{},candidates:{build:[candidate]}}).success).toBe(true);
+ expect(contracts.ModelSelectionPolicyAppliedSchema.parse({status:"APPLIED",revision:1,requestId:"e09bc654-d227-48df-b523-69f0046a9af2"})).toHaveProperty("revision",1);
+ const body={status:"NEEDS_CONFIRMATION",code:"REAUTH_REQUIRED",confirmUrl:"https://example.test/app/confirm",changes:["Removes a lock"],soleOwner:{available:false,availableAt:at,reasonCode:"COOL_OFF"}};
+ expect(contracts.ModelSelectionPolicyPendingSchema.safeParse(body).success).toBe(true);
+ const {PendingConfirmationReaderSchema}=await import("../../packages/contracts/src/pending-api.js");
+ expect(PendingConfirmationReaderSchema.parse(body)).toHaveProperty("soleOwner",body.soleOwner);
+});
+it("exports browser-safe mapping/edit groups without widening the recipe thinking scale",()=>{
+ expect(contracts.STAGE_OPERATION_MAPPING.REVIEW.stages).toEqual(["code_review","security_review"]);
+ expect(contracts.STAGE_EDIT_RULES.code_review.editGroup).toBe("review");
+ expect(contracts.STAGE_EDIT_RULES.security_review.editGroup).toBe("review");
+ expect(contracts.STAGE_MODEL_THINKING_LEVELS).toEqual(["off","minimal","low","medium","high"]);
+});
+
+it("does not silently widen stage thinking beyond the recipe schema",()=>{expect(contracts.StageModelChoiceSchema.safeParse({model,thinkingLevel:"xhigh"}).success).toBe(false);});

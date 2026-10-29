@@ -99,3 +99,5 @@ export * from "./org-slack-workspace-evidence.js";
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 
 export * from "./stage-models.js";
+
+export { SoleOwnerConfirmationSchema } from "./session-views.js";
