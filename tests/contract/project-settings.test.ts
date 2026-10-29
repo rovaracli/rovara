@@ -410,7 +410,7 @@ describe("repositories", () => {
         { name: "api", url: "https://github.com/Acme/api.git", path: "repo/api", defaultBranch: "trunk", credentialRef: "github-app" },
       ],
     });
-    expect((await h.detail()).repositories).toEqual([{ fullName: "acme/web", defaultBranch: "main" }, { fullName: "Acme/api", defaultBranch: "trunk" }]);
+    expect((await h.detail()).repositories).toEqual([{ name: "web", fullName: "acme/web", defaultBranch: "main" }, { name: "api", fullName: "Acme/api", defaultBranch: "trunk" }]);
   });
 
   it("refuses an added repository that is not connected with GITHUB_NOT_CONNECTED, and writes no revision", async () => {
@@ -707,3 +707,5 @@ describe("GitHub's events find a project by repository (Plan 4 Task 21)", () => 
     expect(rows(h)).toEqual([[githubRepoProjectKey(1, TEST_ORG, "other").pk, `${TEST_ORG}#other`]]);
   });
 });
+
+it("refuses the cloud settings registration path with a fixed409 when latest has working branch selections",async()=>{const h=await install(),key=projectRevisionKey(TEST_ORG,"web",1),before=h.db.get(key)!;h.db.set({...before,workingBranchSelections:{web:{branch:"release/current"}}});const result=await h.put(OMAR,{setupCommands:["npm run changed"]});expect(result.status,JSON.stringify(result.body)).toBe(409);expect(result.body.error).toMatchObject({code:"PROJECT_REVISION_MISMATCH",message:STALE});expect(h.revision(2)).toBeUndefined();expect(h.db.get(key)?.workingBranchSelections).toEqual({web:{branch:"release/current"}});});

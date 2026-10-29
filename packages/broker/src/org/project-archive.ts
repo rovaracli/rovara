@@ -31,10 +31,10 @@ async function markArchived(deps: ProjectArchiveDependencies, orgId: OrgId, name
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName,
       Key: projectMetaKey(orgId, name),
-      UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown), #status = :archived, archivedAt = :at, archivedBy = :by",
+      UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown), #status = :archived, archivedAt = :at, archivedBy = :by ADD archiveRevision :one",
       ConditionExpression: "attribute_not_exists(#status) OR #status <> :archived",
       ExpressionAttributeNames: { "#name": "name", "#status": "status" },
-      ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": name, ":at": at, ":unknown": "unknown", ":archived": "archived", ":by": actor.developerId },
+      ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": name, ":at": at, ":unknown": "unknown", ":archived": "archived", ":by": actor.developerId, ":one": 1 },
     }));
   } catch (error) {
     // Already archived: the first archive's record stands.
@@ -58,10 +58,10 @@ export async function restoreProject(deps: ProjectArchiveDependencies, orgId: Or
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName,
       Key: projectMetaKey(orgId, name),
-      UpdateExpression: "SET #status = :active REMOVE archivedAt, archivedBy",
+      UpdateExpression: "SET #status = :active REMOVE archivedAt, archivedBy ADD archiveRevision :one",
       ConditionExpression: "#status = :archived",
       ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: { ":active": "active", ":archived": "archived" },
+      ExpressionAttributeValues: { ":active": "active", ":archived": "archived", ":one": 1 },
     }));
   } catch (error) {
     // Not archived (active, or a project with no META): nothing to undo here. The egress flip below still runs, to finish a restore that stopped after META.
@@ -75,23 +75,24 @@ export async function restoreProject(deps: ProjectArchiveDependencies, orgId: Or
 const archiveRequestKey = (orgId: OrgId, name: string, requestId: string): OrgKey => ({ pk: projectMetaKey(orgId, name).pk, sk: `ARCHIVE_REQUEST#${requestId}` });
 
 /**
- * META's change for one request, as a transaction item. It carries no condition of its own: archiving an archived project keeps its first
- * `archivedAt` and `archivedBy`, and restoring an active one changes nothing, so a request that changes nothing still records its request item.
- * A project that predates META gets one, as active and created by "unknown".
+ * META's transition and lifecycle fence for one request. Each real transition advances archiveRevision; a no-op only fences the
+ * observed META and still records its request item. This preserves legacy no-op receipts while invalidating stale reviewed previews.
+ * A project that predates META gets one, created by "unknown".
  */
-function metaChange(deps: ProjectArchiveDependencies, orgId: OrgId, name: string, change: "archive" | "restore", actor: { developerId: string }, at: string): RequestTransactItem {
-  const make = "entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)";
+function metaChange(deps: ProjectArchiveDependencies, orgId: OrgId, name: string, change: "archive" | "restore", actor: { developerId: string }, at: string, current: Record<string, unknown> | undefined): RequestTransactItem {
+  // Creating a missing META on legacy restore establishes epoch 1 even without a prior transition.
+  const epoch = current?.archiveRevision ?? 0;
+  if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0 || epoch >= Number.MAX_SAFE_INTEGER) throw agentXError("RUNTIME_UNAVAILABLE", "Project lifecycle could not be checked.");
+  const before = current?.status, desired = change === "archive" ? "archived" : "active";
+  const condition = current === undefined ? "attribute_not_exists(pk)" : (before === undefined ? "attribute_not_exists(#status)" : "#status = :before") + " AND " + (current.archiveRevision === undefined ? "attribute_not_exists(archiveRevision)" : "archiveRevision = :expected");
+  const fenceValues = { ...(current !== undefined && before !== undefined ? { ":before": before } : {}), ...(current?.archiveRevision === undefined ? {} : { ":expected": epoch }) };
+  if (current !== undefined && (before ?? "active") === desired) return { ConditionCheck: { TableName: deps.tableName, Key: projectMetaKey(orgId, name), ConditionExpression: condition, ExpressionAttributeNames: { "#status": "status" }, ...(Object.keys(fenceValues).length ? { ExpressionAttributeValues: fenceValues } : {}) } };
+  const make = "entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown), archiveRevision = :next";
   return { Update: {
-    TableName: deps.tableName,
-    Key: projectMetaKey(orgId, name),
-    UpdateExpression: change === "archive"
-      ? `SET ${make}, #status = :archived, archivedAt = if_not_exists(archivedAt, :at), archivedBy = if_not_exists(archivedBy, :by)`
-      : `SET ${make}, #status = :active REMOVE archivedAt, archivedBy`,
-    ExpressionAttributeNames: { "#name": "name", "#status": "status" },
-    ExpressionAttributeValues: {
-      ":entity": "PROJECT_META", ":name": name, ":at": at, ":unknown": "unknown",
-      ...(change === "archive" ? { ":archived": "archived", ":by": actor.developerId } : { ":active": "active" }),
-    },
+    TableName: deps.tableName, Key: projectMetaKey(orgId, name),
+    UpdateExpression: change === "archive" ? `SET ${make}, #status = :archived, archivedAt = if_not_exists(archivedAt, :at), archivedBy = if_not_exists(archivedBy, :by)` : `SET ${make}, #status = :active REMOVE archivedAt, archivedBy`,
+    ConditionExpression: condition, ExpressionAttributeNames: { "#name": "name", "#status": "status" },
+    ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": name, ":at": at, ":unknown": "unknown", ":next": epoch + 1, ...fenceValues, ...(change === "archive" ? { ":archived": "archived", ":by": actor.developerId } : { ":active": "active" }) },
   } };
 }
 
@@ -120,9 +121,10 @@ export async function applyArchiveRequest(
       requireSameRequest(stored, { by: actor.developerId, action: change });
       return { warnings: [], replayed: true };
     }
+    const current = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMetaKey(orgId, name), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        metaChange(deps, orgId, name, change, actor, new Date(nowMs).toISOString()),
+        metaChange(deps, orgId, name, change, actor, new Date(nowMs).toISOString(), current),
         requestRecordPut(deps.tableName, key, "PROJECT_ARCHIVE_REQUEST", { action: change, by: actor.developerId }, nowMs),
       ] }));
     } catch (error) {
@@ -187,3 +189,13 @@ export async function archiveOrgProjects(deps: ProjectArchiveDependencies, orgId
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
 }
+
+// Lane B reviewed transaction and app effect adapter.
+export { readProjectArchivePreview, archiveProjectReviewed } from "./reviewed-project-archive.js";
+export { archiveProjectReviewedWithEffects } from "./reviewed-project-archive-app.js";
+
+// Lane B internal restore primitive; not wired to HTTP/UI.
+export { readProjectRestorePreview, restoreProjectReviewed } from "./reviewed-project-restore.js";
+
+// Lane B reviewed restore app adapter.
+export { readReviewedProjectRestoreAppPreview, restoreProjectReviewedWithEffects } from "./reviewed-project-restore-app.js";

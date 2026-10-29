@@ -1,6 +1,7 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../org/project-working-branch-provider.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
 import { withDecideIsolation } from "../developer/confirm-page.js";
 import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
@@ -779,7 +780,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "getRepositoryStanding" | "replyToReviewThread" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "readWorkingBranch" | "createWorkingBranchPreviewSession" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "mergePullRequest" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -1430,6 +1431,26 @@ function repositoryGateOf(dependencies: AwsBrokerDependencies): RepositoryGateDe
       ...(app.getRepositoryIdentity === undefined ? {} : { repositoryIdentity: (url, scope) => app.getRepositoryIdentity!(url, scope) }),
     },
   };
+}
+
+/** Lane B: no legacy provider/private-install fallback for branch listing. */
+function workingBranchPagesRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "projectWorkingBranches"> {
+  const app = dependencies.githubPullRequests;
+  if (app.createWorkingBranchPreviewSession === undefined) return {};
+  return { projectWorkingBranches: () => {
+    const session = app.createWorkingBranchPreviewSession!();
+    return { ...createWorkingBranchPageProvider(session), finish: () => session.finish("list") };
+  } };
+}
+
+/** Lane B: exact previews require both pinned SDK methods; no legacy fallback. */
+function workingBranchPreviewRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "projectWorkingBranchPreview"> {
+  const app = dependencies.githubPullRequests;
+  if (app.createWorkingBranchPreviewSession === undefined) return {};
+  return { projectWorkingBranchPreview: () => {
+    const session = app.createWorkingBranchPreviewSession!();
+    return { ...createWorkingBranchProvider(session), finish: () => session.finish("preview") };
+  } };
 }
 
 /** `requireRepositoriesConnected` for the task routes, absent where there is no gate. */
@@ -2452,6 +2473,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
+          ...workingBranchPagesRoute(dependencies),
+          ...workingBranchPreviewRoute(dependencies),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
             // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
@@ -2785,7 +2808,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
         return isolate ? withDecideIsolation(response) : response;
       }
       const response = unexpectedErrorAnswer(error, request.requestId);
@@ -3297,6 +3320,21 @@ export async function registerProjectFor(
     throw agentXError("FORBIDDEN", `only an administrator of project ${definition.name} can register a new revision of it. An instance administrator who is not one can take the project over by asking explicitly: send takeOwnership: true with a takeOwnershipReason (agentx admin project register --take-ownership --reason "...")`);
   };
   const readCatalogSnapshot = () => readProjectCatalogSnapshot(dependencies, orgId, definition.name);
+  // Legacy registration cannot carry or revalidate reviewed branch selections. Refuse rather than
+  // silently discard them; even malformed/present metadata needs its own reviewed migration.
+  const selectionFence = async (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>): Promise<TransactItems> => {
+    if (snapshot.newestRevision === 0) return [];
+    const latestKey = projectRevisionKey(orgId, definition.name, snapshot.newestRevision);
+    const latest = await getItem<Record<string, unknown>>(dependencies, latestKey);
+    if (latest === undefined || Object.hasOwn(latest, "workingBranchSelections")) {
+      throw agentXError("PROJECT_REVISION_MISMATCH", "Working branch selections must be preserved or revalidated before registering another project revision.");
+    }
+    // The Put already fences this item when an identical revision won after our existence read.
+    // DynamoDB forbids a second operation on the same item; the conditional winner path handles it.
+    if (snapshot.newestRevision === definition.revision) return [];
+    return [{ ConditionCheck: { TableName: dependencies.tableName, Key: latestKey,
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(workingBranchSelections)" } }];
+  };
   const repairCatalogPointerFromHistory = () => repairProjectCatalogPointerFromHistory(dependencies, orgId, definition.name);
   const existing = await getItem<RegisteredProjectRecord>(dependencies, key);
   if (existing) {
@@ -3313,7 +3351,9 @@ export async function registerProjectFor(
     return respond(withoutKeys(existing), true, preflight);
   }
   // Refused before any vendor is contacted for a registrant who may not store this revision; the commit judges it again.
-  await judgeAuthority((await readCatalogSnapshot()).newestRevision);
+  const initialSnapshot = await readCatalogSnapshot();
+  await judgeAuthority(initialSnapshot.newestRevision);
+  await selectionFence(initialSnapshot);
   const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight, options.credentialsChecked);
   const now = new Date().toISOString();
   const record: RegisteredProjectRecord = {
@@ -3380,6 +3420,7 @@ export async function registerProjectFor(
     // An existing project changes (its test accounts included) only at the hand of one of its administrators, or of an instance administrator who takes it over explicitly.
     // Judged against the project as it is on this attempt: an administrator who raced a first registration and lost finds the project there on the next one.
     const authority = await judgeAuthority(snapshot.newestRevision);
+    const selectionsAbsent = await selectionFence(snapshot);
     const accounts = await planAccounts();
     // H6: the models, checks and E2E capture this revision changes against the newest one are audited in this transaction. A revision registered late (older than the newest) changes nothing the project runs.
     const audit = definition.revision < snapshot.newestRevision ? { items: [] as TransactItems, events: [] as AuditEventInput[] } : await auditedWrite(dependencies, () => projectDefinitionAuditEvents({
@@ -3422,6 +3463,12 @@ export async function registerProjectFor(
         ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now,
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
+      // A late older revision does not update the catalog, but must still observe its same pointer.
+      ...(!updateCatalog && snapshot.catalog?.latestRevision !== undefined ? [{ ConditionCheck: {
+        TableName: dependencies.tableName, Key: orgProjectCatalogKey(orgId, definition.name),
+        ConditionExpression: "latestRevision = :observed", ExpressionAttributeValues: { ":observed": snapshot.catalog.latestRevision },
+      } }] : []),
+      ...selectionsAbsent,
       ...(setupAdmissionRows?.transactionItems ?? []),
       ...accounts.items,
       ...repositoryIndex,
@@ -18613,6 +18660,12 @@ async function assertCurrentWorkflowPublication(dependencies: AwsBrokerDependenc
   }
   const baseCommitSha = (workflow.reviewBase ?? task.preparedBase)?.find((item) => item.repositoryId === repository.repositoryId)?.baseCommitSha;
   if (baseCommitSha !== publication.expectedBaseCommit) throw agentXError("CALLBACK_FORBIDDEN", "workflow publication base is stale");
+  // B32/C94: retain the existing stale refusal, with a fixed settings reason.
+  const publicationOrg = await orgOfRecord(dependencies, task);
+  const currentCatalog = await getItem<{latestRevision?:unknown}>(dependencies,orgProjectCatalogKey(publicationOrg,task.project));
+  if(currentCatalog?.latestRevision!==publication.admittedLatestRevision){
+    throw Object.assign(agentXError("CALLBACK_FORBIDDEN","Project settings changed. Review again before publishing."),{reason:"settingsChanged" as const});
+  }
   const currentAuthority = await currentWorkflowPublicationAuthorityForTask({
     actions: developerTaskActions(dependencies),
     tableName: dependencies.tableName,

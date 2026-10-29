@@ -44,7 +44,7 @@ export const AppProjectSummarySchema = z.object({
   description: z.string().optional(),
   status: ProjectStatusSchema,
   latestRevision: z.number().int().positive(),
-  repositories: z.array(z.object({ fullName: z.string(), defaultBranch: z.string() })),
+  repositories: z.array(z.object({ name: z.string().optional(), fullName: z.string(), defaultBranch: z.string() })),
   myRole: ProjectRoleSchema,
   setup: z.object({
     status: ProjectSetupStatusSchema,
@@ -58,6 +58,7 @@ export type AppProjectSummary = z.infer<typeof AppProjectSummarySchema>;
 export const AppProjectDomainStatusSchema = z.enum(["approved", "pending", "rejected"]);
 
 export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
+  savedWorkingBranches: z.array(z.object({repository:z.string(),fullName:z.string(),branch:z.string(),commit:z.string().regex(/^[a-f0-9]{40}$/)})).max(32).optional(),
   settings: z.object({
     setupCommands: z.array(z.string()),
     testCommands: z.array(z.string()),

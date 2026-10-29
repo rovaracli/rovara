@@ -50,6 +50,15 @@ export { ChainRunViewReaderSchema } from "./chain-session.js";
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
+
+// Lane B reviewed project archive boundary.
+export * from "./reviewed-project-archive.js";
+
+// Lane B reviewed restore boundary.
+export * from "./reviewed-project-restore.js";
+
+// Lane B: browser-safe project-scoped working-branch page data.
+export * from "./app-working-branches.js";
 export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";
 
 // "How we work": the project playbook and its effective view (the How we work tab).
