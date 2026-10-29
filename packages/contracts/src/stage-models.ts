@@ -28,13 +28,14 @@ export const StageModelChoiceSchema = z.object({
 }).strict();
 export type StageModelChoice = z.infer<typeof StageModelChoiceSchema>;
 export const CompanyStageModelOverrideSchema = StageModelChoiceSchema.extend({ locked: z.boolean().default(false) }).strict();
-const CheckingStages = new Set<string>(["plan_check", "code_review", "security_review"]);
+export const STAGE_REFERENCE = { plan_check: "plan", code_review: "build", security_review: "build" } as const;
+const CheckingStages = new Set<string>(Object.keys(STAGE_REFERENCE));
 /** Validate structural references here; actual callability, independence and permission are server decisions. */
 export const StageModelOverridesSchema = z.partialRecord(StageIdSchema, CompanyStageModelOverrideSchema).superRefine((rows, context) => {
   for (const [stage, row] of Object.entries(rows)) {
     if (row === undefined) continue;
     if (row.locked && (row.model === undefined || row.thinkingLevel === undefined)) context.addIssue({ code: "custom", path: [stage], message: "a lock requires model and thinkingLevel (null means model default)" });
-    const reference = stage === "plan_check" ? "plan" : "build";
+    const reference = STAGE_REFERENCE[stage as keyof typeof STAGE_REFERENCE];
     if (row.differentFrom !== undefined && (!CheckingStages.has(stage) || row.differentFrom.stage !== reference)) context.addIssue({ code: "custom", path: [stage, "differentFrom"], message: "invalid stage reference" });
   }
 });
@@ -107,7 +108,7 @@ export const STAGE_OPERATION_MAPPING = {
  CHECKS:{stages:[],stepKind:"check"},
  FEEDBACK_REVIEW:{stages:["pull_request"],stepKind:"pull_request"},
 } as const;
-export const STAGE_EDIT_GROUPS = [["understand"],["plan"],["plan_check"],["build"],["code_review","security_review"],["pull_request"]] as const;
+export const STAGE_EDIT_GROUPS = [["understand","plan"],["plan_check"],["build"],["code_review","security_review"],["pull_request"]] as const;
 /** Metadata only: eligibility, lock state, validation and model decisions remain server-owned. */
 export const STAGE_EDIT_RULES = {
  understand:{stepKind:"plan",editGroup:"plan",reviewerSlot:null},
