@@ -66,6 +66,7 @@ import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { requireNotCurrentProcess } from "../playbook/process-in-use.js";
+import { diffLessSafe } from "../playbook/process-diff.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
@@ -443,7 +444,7 @@ async function diffAgent(deps: AgentRouteDependencies, caller: AgentCaller, agen
   };
   const before = await recipeOf(from);
   const after = await recipeOf(to);
-  return { from, to, changes: diffRecipes(before, after), lessSafe: lessSafeChanges(before, after), comparison: { before, after } };
+  return { from, to, changes: diffRecipes(before, after), lessSafe: "owner" in agent ? diffLessSafe(agent, before, after, from) : lessSafeChanges(before, after), comparison: { before, after } };
 }
 
 // ---- repeated requests (R18)

@@ -414,6 +414,7 @@ import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown
 import { readCiChecks } from "../rovara-code/ci-checks.js";
 import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
+import { assessmentForTask } from "../rovara-code/explicit-path.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
 import { mergedStateItems } from "../rovara-code/merged-state.js";
@@ -16532,9 +16533,8 @@ async function completedWorkflowItems(
         if (understood === undefined) throw new Error("no readable assessment");
         // A question that needs no code change ends the task Answered: the answer is kept, the milestone is written and the task is queued for its release, all in this commit.
         // A task that follows an answered one never answers again: the person asked for the change, so the answer is read as the restatement of a plan to make it.
-        const assessed: IntentAssessment = understood.assessment.kind === "answer" && task.retryOfTaskId !== undefined
-          ? { kind: "ready", path: current.path, restatement: understood.assessment.restatement, assumptions: ["An earlier answer said no change was needed; you asked for the change anyway."] }
-          : understood.assessment;
+        // Nor does a task whose person chose Quick or Full themselves (a typed prefix or a button): their choice runs.
+        const assessed: IntentAssessment = assessmentForTask({ assessment: understood.assessment, workflow: current, followsAnswer: task.retryOfTaskId !== undefined });
         next = assessed.kind === "answer"
           ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
           : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });

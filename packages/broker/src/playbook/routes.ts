@@ -17,8 +17,8 @@ import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
 import { postProjectProcess } from "./process-layer.js";
 import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-store.js";
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
-import { holdBuiltinSwitch } from "./process-switch.js";
-import { requireProcessLayer, type ProcessAgentReader } from "./project-process.js";
+import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
+import { requireProcessLayer } from "./project-process.js";
 
 // Loading this module registers what confirming a switch back to the built-in does (the agent routes register the rest of the approvals).
 registerPlaybookApprovals();
@@ -36,7 +36,7 @@ export interface ProjectPlaybookDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
-  store: ProcessAgentReader | undefined;
+  store: SwitchAgentStore | undefined;
   audit?: AuditRuntime | undefined;
   /** The approvals: a switch back to the built-in that loses something waits for a second person (process-switch.ts). Absent where agents are not set up. */
   approvals?: ApprovalDependencies | undefined;

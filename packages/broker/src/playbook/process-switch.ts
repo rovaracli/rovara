@@ -16,9 +16,12 @@ import { processLessSafeChanges } from "./process-less-safe.js";
 import { readProjectPlaybookState, type ProjectPlaybookReader } from "./project-playbook-store.js";
 import type { ProcessAgentReader } from "./project-process.js";
 
+/** The agent store the switch reads. `list` is required (PB21): with an unreadable playbook it is the only way to find the layer, and a store that could not list would skip the second person. */
+export type SwitchAgentStore = ProcessAgentReader & { list(orgId: OrgId): Promise<AgentRecord[]> };
+
 /** What the switch needs: the playbook documents, the agent store, and (for a switch that must wait) the approvals. */
 export interface BuiltinSwitchDependencies extends ProjectPlaybookReader {
-  store: (ProcessAgentReader & { list?(orgId: OrgId): Promise<AgentRecord[]> }) | undefined;
+  store: SwitchAgentStore | undefined;
   approvals?: ApprovalDependencies | undefined;
 }
 
@@ -44,14 +47,14 @@ const UNREADABLE_REASON = "Replaces the project's saved way of working, which ca
 
 /** The project's process layer when its playbook can't say which it is: the one process layer it owns (an active one first), as `existingLayer` finds it. */
 async function ownedLayer(deps: BuiltinSwitchDependencies, orgId: OrgId, project: string): Promise<AgentRecord | undefined> {
-  const owned = ((await deps.store?.list?.(orgId)) ?? []).filter((agent) => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project);
+  const owned = ((await deps.store?.list(orgId)) ?? []).filter((agent) => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project);
   return owned.find((agent) => agent.status === "active") ?? owned[0];
 }
 
 /**
  * The reply that holds a switch of `project` to the built-in, or undefined when it may apply at once. The caller has checked the role and that `expectedRevision` is what the maintainer read.
  * A layer with no published version, or one that is gone, loses nothing. An archived layer that still has a published version is compared like any other: archiving it is no way round the second person (and the archive of the project's current default is refused anyway, process-in-use.ts). When the layer must be compared and the approvals are not available the switch
- * is refused (`RUNTIME_UNAVAILABLE`), never applied.
+ * is refused (`RUNTIME_UNAVAILABLE`), never applied; so is a switch that has no agent store to find the layer with (R3-1).
  * A playbook document that exists but can't be read is not the built-in (F2, PB16): the project chose something we can't see, so a project that has a published process layer is held
  * for a second person whatever the comparison says. A project with no such layer has nothing to lose, and the write repairs the document.
  */
@@ -61,7 +64,10 @@ export async function holdBuiltinSwitch(
   const { playbook: current, unreadable } = await readProjectPlaybookState(deps, caller.orgId, project);
   if (current.defaultProcess.kind !== "project_process" && !unreadable) return {};
   if (expectedRevision !== current.revision) throw agentXError("PLAYBOOK_STALE", PLAYBOOK_STALE_MESSAGE);
-  const layer = current.defaultProcess.kind === "project_process" ? await deps.store?.get(caller.orgId, current.defaultProcess.agentId) : await ownedLayer(deps, caller.orgId, project);
+  // Without the agent store the layer can't be found, and "no layer" would read as "nothing to lose": refuse, as for missing approvals below.
+  const store = deps.store;
+  if (store === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Switching back to the built-in way of working needs the project's saved way of working, which isn't available right now.");
+  const layer = current.defaultProcess.kind === "project_process" ? await store.get(caller.orgId, current.defaultProcess.agentId) : await ownedLayer(deps, caller.orgId, project);
   if (layer === undefined || layer.currentVersion === undefined) return {};
   const { agentId } = layer;
   const approvals = deps.approvals;

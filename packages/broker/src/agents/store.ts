@@ -625,7 +625,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (agent.purpose === "process") {
       const target = await this.getVersion(input.orgId, agentId, input.version);
       requireRovaraCodeBaseForProcess(agent, target?.extends);
-      if (target !== undefined) requireNoSkillsForProcess(agent, target.overlay);
+      if (target !== undefined) {
+        requireNoSkillsForProcess(agent, target.overlay);
+        // The version that runs now is the baseline, as for a publish: older pull request stage text can't come back.
+        await requireNoNewPullRequestInstructionsToPublish(this, agent, target.overlay);
+      }
     }
     return this.rollbackItem({ ...rest, id: agentId });
   }

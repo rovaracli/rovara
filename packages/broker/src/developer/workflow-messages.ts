@@ -14,7 +14,7 @@ import { reviewModelLines } from "../rovara-code/review-model-lines.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
 import { PLAN_UNREADABLE_SENTENCES, type PlanUnreadableCategory } from "./plan-check-summary.js";
 import { autoFixCardLines, type AutoFixAsk } from "./autofix-messages.js";
-import { noCodeChangedText } from "./no-change-findings-text.js";
+import { maskForSlack, noCodeChangedText } from "./no-change-findings-text.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -508,7 +508,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   }
   // Rovara Code version 2: the planner found that no code change is needed. The card gives the answer (a model's words, escaped for Slack) and says what the owner can do with it.
   if (structured.noChangeNeeded !== undefined && !needsE2ECorrection) {
-    const lines = [slackText(answeredMessage(structured.noChangeNeeded)), "", "Close it as answered, or ask for the change anyway: both are on the task page, and Request changes here asks for it too.",
+    const lines = [slackText(maskForSlack(answeredMessage(structured.noChangeNeeded))), "", "Close it as answered, or ask for the change anyway: both are on the task page, and Request changes here asks for it too.",
       context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Open the ${name}`)];
     return { text: lines.join("\n"), buttons: decisions };
   }
@@ -892,10 +892,13 @@ function planRunning(context: WorkflowMessageContext): string {
   return `Working on the ${name}. I'll post it here for your approval; nothing changes in the code until you approve.`;
 }
 
-/** The message that gives an answered task's answer; a task whose answer can't be read still says that no code change was needed. */
+/**
+ * The message that gives an answered task's answer; a task whose answer can't be read still says that no code change was needed. The answer is a model's words about files it read, so it is
+ * masked for Slack like the no-change findings are (a thread can be read by people who cannot see the task): `NAME=value` and opaque runs have their value hidden.
+ */
 function answeredText(workflow: WorkflowSnapshot): string {
   const answer = workflowAnswer(workflow);
-  return answer === undefined ? "No code change is needed." : answeredMessage(answer);
+  return answer === undefined ? "No code change is needed." : maskForSlack(answeredMessage(answer));
 }
 
 /** A step's refusal for a model the company or the project doesn't allow (Plan 3's words); shown as it is, escaped. */

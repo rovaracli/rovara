@@ -40,6 +40,7 @@ import { resolveAgent, type AgentStore } from "../agents/store.js";
 import { latestRevision } from "../org/project-settings.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { existingLayer } from "./process-layer.js";
+import { processUpdate } from "./process-update.js";
 import { isReviewingStage, wholeAgentLayers } from "./process-reviewers.js";
 import { readProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -90,7 +91,8 @@ async function runningProcess(deps: HowWeWorkDependencies, orgId: OrgId, name: s
   const recipe = await resolveAgent(store, orgId, agentId, version);
   const published = await store.getVersion(orgId, agentId, version);
   const draft = await store.getDraft(orgId, agentId);
-  return { process: { kind: "project_process", agentId, version, ...(draft === undefined ? {} : { draftRevision: draft.revision }) }, recipe, base, overlay: published?.overlay };
+  const update = await processUpdate(store, orgId, agentId, version);
+  return { process: { kind: "project_process", agentId, version, ...(draft === undefined ? {} : { draftRevision: draft.revision }), ...(update === undefined ? {} : { update }) }, recipe, base, overlay: published?.overlay };
 }
 
 interface Inputs {

@@ -18,7 +18,7 @@ import {
   ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage,
   type CodeMilestone, type IntentAssessment,
 } from "../../packages/contracts/src/rovara-code.js";
-import { DeveloperTaskResponseSchema, SessionResponseReaderSchema, UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
+import { DeveloperTaskResponseSchema, NO_CHANGE_VALUE_HIDDEN, SessionResponseReaderSchema, UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/contracts/src/task-workflow-node.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
@@ -358,6 +358,17 @@ async function world(options: { live?: boolean; orgs?: boolean } = {}) {
     await finishUnderstand(run, assessment);
     return run;
   };
+  /**
+   * A task the person started on a chosen path that ended Answered, as one did before an explicit path always ran (now Understand's answer to such a start plans the change instead): the
+   * workflow keeps `pathFrom: "request"`, so "Make a change anyway" still has to keep the path.
+   */
+  const answeredUnderChosenPath = async (path: "QUICK" | "FULL") => {
+    const run = await answeredTask();
+    const task = meta(run.taskId);
+    h.db.set({ ...task, workflow: { ...task.workflow, path, ...(path === "FULL" ? { reviewPhase: "REQUIREMENTS" } : {}), intent: { ...task.workflow.intent, pathFrom: "request" } } });
+    expect(meta(run.taskId).workflow).toMatchObject({ outcome: "ANSWERED", path, intent: { pathFrom: "request" } });
+    return run;
+  };
   /** A task whose plan says no change is needed, waiting for its owner. */
   const noChangePlan = async () => {
     const run = await understanding();
@@ -377,7 +388,7 @@ async function world(options: { live?: boolean; orgs?: boolean } = {}) {
   const share = (sessionId: string, who: Developer, level: "view" | "use" | "edit") =>
     h.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: who.developerId }, level });
   const changeAnyway = (who: Developer, sessionId: string, body: Record<string, unknown> = {}) => h.dev(who, "POST", `/v1/app/sessions/${sessionId}/change-anyway`, { requestId: randomUUID(), ...body });
-  return { ...h, access, member, meta, operations, operationOf, invocationOf, rows, refreshSummary, start, understanding, finishUnderstand, answeredTask, noChangePlan, decide, sessionRecord, events, milestones, share, changeAnyway };
+  return { ...h, access, member, meta, operations, operationOf, invocationOf, rows, refreshSummary, start, understanding, finishUnderstand, answeredTask, answeredUnderChosenPath, noChangePlan, decide, sessionRecord, events, milestones, share, changeAnyway };
 }
 
 const ended: TaskEndEvent[] = [];
@@ -479,6 +490,19 @@ describe("Understand answers a question: the task ends Answered", () => {
     expect(text).not.toContain("<script>");
     expect(text).toContain("&lt;script&gt;");
     expect(t.operations(run.workspaceId).filter((item) => item.workflowMode !== "UNDERSTAND" && item.kind === "task")).toEqual([]);
+  });
+
+  it("masks what a Slack thread must never carry in the answer, as the no-change findings do: NAME=value, long opaque runs, \"token is ...\"", async () => {
+    const t = await world();
+    const opaque = "9f8e7d6c5b4a39281706f5e4d3c2b1a0";
+    const run = await t.answeredTask(answerAssessment({ answer: `The worker reads DB_PASSWORD=hunter2-prod-value at start.\nexport SESSION_SECRET=abc123def\nThe build id is ${opaque}.\nThe token is s3cr3tw0rd.\nIt retries three times.`, sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] }));
+    const text = workflowMessage({ taskId: run.taskId, workflow: t.meta(run.taskId).workflow as never })!.text;
+    for (const leaked of ["hunter2-prod-value", "abc123def", opaque, "s3cr3tw0rd"]) expect(text, leaked).not.toContain(leaked);
+    expect(text).toContain(NO_CHANGE_VALUE_HIDDEN);
+    // The rest of the answer, the first line and the sources are as they were.
+    expect(text.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
+    expect(text).toContain("It retries three times.");
+    expect(text).toContain("demo/src/retry.ts:4");
   });
 
   it("an unreadable answer (bad JSON, or too long) is not an answer: the step blocks with the plain reason and the task stays open", async () => {
@@ -607,7 +631,7 @@ describe("Make a change anyway after an answer", () => {
 
   it("starts a NEW task for the caller with the same request and path, the earlier answer as context and a link to the old task; the caller pays", async () => {
     const t = await world();
-    const run = await t.answeredTask(answerAssessment(), { path: "FULL" });
+    const run = await t.answeredUnderChosenPath("FULL");
     const reply = await t.changeAnyway(MAYA, run.sessionId);
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     const created = reply.body.task as { taskId: string };
@@ -728,7 +752,7 @@ describe("Make a change anyway after an answer", () => {
     await t.finishUnderstand({ workspaceId, operationId: String(t.operationOf(workspaceId, "UNDERSTAND")!.id) }, { ...ready(), path: "FULL" });
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", path: "FULL", reviewPhase: "REQUIREMENTS" });
     // A path the person named for the first request is the one they asked for, and it stays.
-    const named = await t.answeredTask(answerAssessment(), { path: "QUICK" });
+    const named = await t.answeredUnderChosenPath("QUICK");
     const again = await t.changeAnyway(MAYA, named.sessionId);
     expect(t.meta((again.body.task as { taskId: string }).taskId).workflow).toMatchObject({ path: "QUICK", intent: { pathFrom: "request" } });
   });
@@ -856,7 +880,7 @@ describe("retryOf is checked, not trusted", () => {
 describe("round trip: the answers after an Answered task, as the broker sends them", () => {
   it("POST …/change-anyway answers 202 { task }, which the clients' task schema reads; the Answered task's session reads too", async () => {
     const t = await world();
-    const run = await t.answeredTask(answerAssessment(), { path: "FULL" });
+    const run = await t.answeredUnderChosenPath("FULL");
     const reply = await t.changeAnyway(MAYA, run.sessionId);
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     expect(typeof reply.body.requestId, "every /v1/app answer carries the gateway's requestId").toBe("string");
@@ -871,5 +895,48 @@ describe("round trip: the answers after an Answered task, as the broker sends th
       const parsed = DeveloperTaskResponseSchema.safeParse(answered.body);
       expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
     }
+  });
+});
+
+// ---- R1b: the web app reads the answer from the task view
+
+describe("the answer in the task view the web app reads", () => {
+  const HEADER = { "x-agentx-task-view": "2" };
+  const secretAnswer = () => answerAssessment({ answer: "The worker reads DB_PASSWORD=hunter2-prod-value at start.\nIt retries three times.", sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] });
+  const answerOf = (reply: { body: Record<string, unknown> }) => {
+    const session = reply.body.session as { body: { task: { status: string; workflow: { outcome?: string; intent?: { assessment?: { kind: string; answer?: string; sources?: unknown } } } } } };
+    return session.body.task.workflow;
+  };
+
+  it("carries the answer and its sources to a reader who asks for the version 2 view, with a credential already redacted", async () => {
+    const t = await world();
+    const run = await t.answeredTask(secretAnswer());
+    const read = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(read.status).toBe(200);
+    const workflow = answerOf(read);
+    expect(workflow.outcome).toBe("ANSWERED");
+    expect(workflow.intent?.assessment).toMatchObject({ kind: "answer", sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] });
+    const answer = workflow.intent!.assessment!.answer!;
+    expect(answer).toContain("It retries three times.");
+    // Redaction happens when the answer is kept (so the view, the stored task and "Make a change anyway" all hold the same words); the view adds nothing of its own to mask.
+    expect(answer).toContain("DB_PASSWORD=[REDACTED]");
+    expect(JSON.stringify(read.body)).not.toContain("hunter2-prod-value");
+    expect(workflowAnswer(t.meta(run.taskId).workflow as never)!.answer).toBe(answer);
+    // A client that does not ask for the version 2 view reads the task as it always has: closed, with no answer in it.
+    const old = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect(answerOf(old).intent).toBeUndefined();
+  });
+
+  it("carries it to a person who may only view the session, and to nobody else", async () => {
+    const t = await world({ orgs: true });
+    await t.member(ARJUN);
+    const run = await t.answeredTask(secretAnswer());
+    expect((await t.share(run.sessionId, ARJUN, "view")).status).toBeLessThan(300);
+    const viewer = await t.dev(ARJUN, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(viewer.status).toBe(200);
+    expect(answerOf(viewer).intent?.assessment?.answer).toContain("It retries three times.");
+    const other = await t.dev(OMAR, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(other.status).toBe(404);
+    expect(JSON.stringify(other.body)).not.toContain("retries three times");
   });
 });

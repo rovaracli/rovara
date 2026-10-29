@@ -4811,7 +4811,7 @@ async function queueWorkflowUnderstand(
     const fed = fedThroughUpdate(notes);
     const receivedAt = iso(deps);
     const next = startWorkflowUnderstand(workflow, receivedAt);
-    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix, ...(current.retryOfTaskId === undefined ? {} : { changeAnyway: true }) });
+    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix, ...(current.retryOfTaskId === undefined ? {} : { changeAnyway: true }), ...(workflow.intent?.pathFrom === "request" ? { explicitPath: true } : {}) });
     return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt }, (operation) => [
       { Update: {
         TableName: deps.tableName, Key: taskKey(current.taskId),

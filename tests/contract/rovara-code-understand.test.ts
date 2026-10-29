@@ -17,7 +17,7 @@ import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { workflowSlackHandlers } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import {
-  ANSWERS_BLOCK_HEADER, PLAN_UNDERSTANDING_HEADER, UNDERSTAND_REQUEST_HEADER, UNDERSTAND_RULES, understandPrompt,
+  ANSWERS_BLOCK_HEADER, EXPLICIT_PATH_RULE, PLAN_UNDERSTANDING_HEADER, UNDERSTAND_REQUEST_HEADER, UNDERSTAND_RULES, understandPrompt,
 } from "../../packages/broker/src/rovara-code/understand.js";
 import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
 import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
@@ -216,6 +216,26 @@ describe("what Understand is asked", () => {
     ]) expect(text, rule).toContain(rule);
     expect(text).toContain(INTENT_BLOCK_INFO_STRING);
     expect(text).toMatch(/Do not edit, write or create files/);
+  });
+
+  it("tells Understand to answer read-only requests, to plan a wanted change, to plan what needs a command run, and to ask one question when it cannot tell", () => {
+    const text = UNDERSTAND_RULES.join("\n");
+    for (const rule of [
+      "Choose `answer` when the request asks for information and needs no code change: it asks you to check why something happens, find out, tell, explain, list or trace something, or it is a question (why does, what is, how does, where is, is there) with no verb that asks for a change. Read the code with the read-only tools, then give the answer and its sources.",
+      "Choose `ready` when the person wants a code change, including a request that mixes a question with a change, such as \"check why this fails and fix it\".",
+      "Choose `ready` with the `QUICK` path when the answer needs a command run, such as \"run the tests and tell me what fails\": you have no shell here, and the change step runs it.",
+      "When you cannot tell whether the person wants information or a change, ask one question with `questions`, and only one.",
+    ]) expect(text, rule).toContain(rule);
+    // The answer limits and the shape are as they were.
+    expect(text).toContain("an answer of at most 4,000 characters and 10 sources");
+  });
+
+  it("says the person chose the path only for a task they gave a path to, and never to the plan step", () => {
+    expect(understandPrompt({ requestText: request, intent: undefined, notes: "" })).not.toContain(EXPLICIT_PATH_RULE);
+    expect(understandPrompt({ requestText: request, intent: undefined, notes: "", explicitPath: false })).not.toContain(EXPLICIT_PATH_RULE);
+    expect(understandPrompt({ requestText: request, intent: undefined, notes: "", explicitPath: true })).toContain(EXPLICIT_PATH_RULE);
+    expect(understandPrompt({ requestText: request, intent: undefined, notes: "", explicitPath: true, forPlan: true })).not.toContain(EXPLICIT_PATH_RULE);
+    expect(EXPLICIT_PATH_RULE).toContain("Do not answer with `answer`");
   });
 
   it("puts the request only inside its labelled block, after the rules", () => {
@@ -539,6 +559,46 @@ describe("what Understand answered becomes the next step", () => {
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED" });
     expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
     expect(t.rows()).toEqual([]);
+  });
+
+  it("an explicit Quick (a typed prefix or a button, both stored as the request's path) that Understand answered runs Quick: the plan is queued, not Answered", async () => {
+    const t = await world();
+    const run = await t.understanding({ path: "QUICK" });
+    t.planStartBlocked();
+    await t.answers(run, answerOnly());
+    const workflow = t.meta(run.taskId).workflow;
+    expect(workflow).toMatchObject({ stage: "PLAN", state: "READY", path: "QUICK", intent: { pathFrom: "request", assessment: {
+      kind: "ready", path: "QUICK", restatement: "What does the retry flag do?", assumptions: ["You chose Quick, so I planned the change instead of answering."],
+    } } });
+    expect(workflow.outcome).toBeUndefined();
+    expect(t.rows().filter((item) => item.kind === "PLAN")).toEqual([expect.objectContaining({ taskId: run.taskId })]);
+    expect(t.meta(run.taskId)).toMatchObject({ budgetUsd: 2 });
+  });
+
+  it("an explicit Full that Understand answered runs Full: the plan is queued with the Full limit and requirements first, not Answered", async () => {
+    const t = await world();
+    const run = await t.understanding({ path: "FULL" });
+    t.planStartBlocked();
+    await t.answers(run, answerOnly());
+    const workflow = t.meta(run.taskId).workflow;
+    expect(workflow).toMatchObject({ stage: "PLAN", state: "READY", path: "FULL", reviewPhase: "REQUIREMENTS", intent: { pathFrom: "request", assessment: { kind: "ready", path: "FULL", assumptions: ["You chose Full, so I planned the change instead of answering."] } } });
+    expect(workflow.outcome).toBeUndefined();
+    expect(t.meta(run.taskId).budgetUsd).toBe(6);
+  });
+
+  it("a start that chose no path is told nothing of a chosen path, and one that chose a path is", async () => {
+    const t = await world();
+    const open = await t.understanding();
+    expect(open.invocation.payload.prompt).not.toContain(EXPLICIT_PATH_RULE);
+    const chosen = await t.understanding({ path: "QUICK" });
+    expect(chosen.invocation.payload.prompt).toContain(EXPLICIT_PATH_RULE);
+  });
+
+  it("an explicit path does not change anything else Understand returns: ready keeps the request's path, questions still wait", async () => {
+    const t = await world();
+    const run = await t.understanding({ path: "QUICK" });
+    await t.answers(run, questions());
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "WAITING", path: "QUICK" });
   });
 
   it("never trusts the worker's output: a missing, oversized, malformed, wrong-shaped or doubled answer blocks with the exact words and plans nothing", async () => {
