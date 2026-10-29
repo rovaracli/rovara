@@ -414,7 +414,7 @@ async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chain
   const { accountable: _before, ...kept } = chain; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
   const moved = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark,
-    (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, options));
+    (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (moved instanceof StatusReply) return moved;
   return { chain: chainView(moved, access) };
 }

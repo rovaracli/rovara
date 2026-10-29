@@ -676,7 +676,7 @@ describe("every write leaves one event", () => {
       ["published", 1, () => ctx.publish(chain.chainId)],
       ["rolled_back", 1, async () => { await ctx.edit(chain.chainId, TWO_STEPS, "again"); await ctx.publish(chain.chainId); }],
       ["budget_changed", 1, () => ctx.chains.setBudget(ORG_A, chain.chainId, 10, fixtureActor(ctx.db, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(ctx.db, ORG_A, ALICE) })],
-      ["owner_changed", 1, () => ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE)],
+      ["owner_changed", 1, () => ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) })],
       ["archived", 1, () => ctx.chains.archive(ORG_A, chain.chainId, ALICE)],
       ["unarchived", 1, () => ctx.chains.unarchive(ORG_A, chain.chainId, ALICE)],
       ["shared", 1, () => setChainShares(ctx.deps, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: CAROL }, level: "use" }], by: ALICE })],
@@ -788,11 +788,11 @@ describe("the owner's monthly total", () => {
     const ctx = setup();
     const chain = await ctx.create("Investigate");
     await ctx.chains.setBudget(ORG_A, chain.chainId, 10, fixtureActor(ctx.db, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(ctx.db, ORG_A, ALICE) });
-    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE);
+    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(ctx.total(ALICE)).toBe(0);
     expect(ctx.total(BOB)).toBe(10);
     expect(await ctx.chains.get(ORG_A, chain.chainId)).toMatchObject({ owner: { kind: "member", developerId: BOB } });
-    const moved = await ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN, { developerId: CAROL });
+    const moved = await ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN, { developerId: CAROL }, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) });
     expect(moved).toMatchObject({ owner: WEB_OWNS, accountable: { developerId: CAROL } });
     expect(ctx.total(BOB)).toBe(0);
     expect(ctx.total(CAROL)).toBe(10);
@@ -800,8 +800,8 @@ describe("the owner's monthly total", () => {
     expect(ctx.total(CAROL)).toBe(0);
     expect(ctx.total(BOB)).toBe(10);
     // A member owner has no accountable; a project owner needs one.
-    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, ALICE_OWNS, DAN, { developerId: BOB }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, ALICE_OWNS, DAN, { developerId: BOB }, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(ctx.chains.setAccountable(ORG_A, (await ctx.create("Mine")).chainId, { developerId: BOB }, DAN))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
@@ -855,7 +855,7 @@ describe("the owner's monthly total", () => {
   it("archives only a chain whose owner, status and budget are as they were read, even when no total is involved", async () => {
     const ctx = setup();
     const chain = await ctx.create("Investigate");
-    ctx.hooks.push(async () => { await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN); });
+    ctx.hooks.push(async () => { await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }); });
     expect(await code(ctx.chains.archive(ORG_A, chain.chainId, ALICE))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect(await ctx.chains.get(ORG_A, chain.chainId)).toMatchObject({ status: "active", owner: { kind: "member", developerId: BOB } });
   });
@@ -864,7 +864,7 @@ describe("the owner's monthly total", () => {
     const ctx = setup();
     const chain = await ctx.create("Investigate");
     ctx.hooks.push(async () => { ctx.clock.now += 1000; await ctx.chains.updateProfile({ orgId: ORG_A, chainId: chain.chainId, description: "changed meanwhile", by: ALICE }); });
-    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect((await ctx.chains.get(ORG_A, chain.chainId))!.owner).toEqual(ALICE_OWNS);
   });
 
@@ -933,7 +933,7 @@ describe("merged with Plan 3: one owner total with a version, an effective cap a
     expect(version(ctx)).toBe(3);
     await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE);
     expect(version(ctx)).toBe(4);
-    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE);
+    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(version(ctx, ALICE)).toBe(5);
     expect(version(ctx, BOB)).toBe(1);
     // An agent's budget change of the same owner moves the same counter.
@@ -1105,7 +1105,7 @@ describe("audit events", () => {
     await ctx.edit(chain.chainId);
     await ctx.publish(chain.chainId);
     await ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: BOB });
-    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN);
+    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) });
     await ctx.chains.setBudget(ORG_A, chain.chainId, 12, fixtureActor(ctx.db, ORG_A, BOB).developerId, undefined, { ...({}), actor: fixtureActor(ctx.db, ORG_A, BOB) });
     const audit = ctx.audit!;
     expect(audit.recordedBy("chain.published")).toMatchObject([{ target: { kind: "chain", id: chain.chainId }, facts: { version: 1 } }, { facts: { version: 2 } }]);

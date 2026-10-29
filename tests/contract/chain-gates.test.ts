@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 8: gates. A chain gate is a Plan 3 approval record (`chain_gate`), opened with the attempt that waits on it and decided only on Plan 3's confirmation page
 // (R66): a browser session whose interactive sign-in is at most 10 minutes old, for someone one of the gate's rules matches AT THE MOMENT THEY DECIDE (R68). The run
 // moves only through `onChainGateDecided`, once, with the decision and its event in one transaction; nothing in a report, a branch, an event or a trigger can pass a gate.
@@ -249,7 +250,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     const w = setupGateWorld();
     const { chain, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]));
     expect(chain.owner).toEqual({ kind: "member", developerId: PRIYA });
-    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX);
+    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(403);
     expect(await w.approval(approvalId)).toMatchObject({ status: "PENDING" });
@@ -260,7 +261,7 @@ describe("who may decide a gate (checked when they decide)", () => {
   it("follows a move to a project too: the old member owner is refused and the new project's maintainer decides", async () => {
     const w = setupGateWorld();
     const { chain, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]));
-    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "project", project: "web" }, MAX, { developerId: MAX });
+    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "project", project: "web" }, MAX, { developerId: MAX }, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect(await refusal(w.decideRoute(CARL, approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect((await w.decideAs(MAX, approvalId)).statusCode).toBe(200);
@@ -282,7 +283,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     const w = setupGateWorld();
     const chain = await w.publish(gated([{ kind: "chain_owner" }]));
     const run = await w.start(chain.chainId, PRIYA);
-    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX);
+    await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     await w.endLatest();
     const gate = w.attempts(run.runId).find((attempt) => attempt.kind === "gate")!;
     expect((await w.stepApproval(gate.approvalId!)).approvers).toMatchObject({ candidates: [CARL] });

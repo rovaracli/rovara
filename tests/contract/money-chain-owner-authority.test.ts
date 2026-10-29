@@ -1,22 +1,23 @@
 // M42 controller: chain owner only, real HTTP and native atomic commit.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { chainKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { chainKey, ownerBudgetKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, setup } from "../support/spend-world.js";
+import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { TEST_ORG } from "../support/orgs.js";
 const otherOrg=OrgIdSchema.parse("org_"+"b".repeat(20));
 async function fixture(project=false){
- const capture=capturingAuditDeps(),t=await setup({extra:{audit:capture.audit}});capture.attach(t.db);
+ const capture=capturingAuditDeps(),t=await setup({decide:true,extra:{audit:capture.audit}});capture.attach(t.db);
  const created=await t.api(project?BEN:MAYA,"POST","/v1/app/chains",{name:`Fence ${randomUUID().slice(0,8)}`,...(project?{owner:{kind:"project",project:"payments"},accountable:{developerId:BEN.developerId}}:{})});
  expect(created.status,JSON.stringify(created.body)).toBe(201);
  const id=(created.body.chain as {chainId:string}).chainId;
  expect((await t.api(ADA,"PUT",`/v1/app/chains/${id}/budget`,{monthlyUsd:10})).status).toBe(200);
- const chains=new ChainStore({documentClient:t.db,tableName:"state",agents:t.deps().store,audit:capture.audit});
+ const chains=new ChainStore({documentClient:t.db,tableName:"state",now:Date.now,agents:t.deps().store,audit:capture.audit});
  await t.budgeted(1,OMAR);const key=chainKey(TEST_ORG,id,"META"),path=`/v1/app/chains/${id}`,requestId=randomUUID();
- const snapshot=()=>({chain:t.db.get(key),totals:[t.ownerTotal(MAYA),t.ownerTotal(OMAR),t.ownerTotal(BEN)],events:t.db.find(row=>row.pk===key.pk && row.entityType==="CHAIN_EVENT"),audit:capture.recorded(),pending:capture.pending()});
+ const snapshot=()=>({chain:t.db.get(key),totals:[t.ownerTotal(MAYA),t.ownerTotal(OMAR),t.ownerTotal(BEN)],events:t.db.find(row=>row.pk===key.pk && row.entityType==="CHAIN_EVENT"),receipts:t.db.find(row=>row.entityType==="AGENT_REQUEST"),audit:capture.recorded(),pending:capture.pending()});
  const transfer=()=>t.api(DEB,"PUT",path+"/owner",{requestId,owner:{kind:"member",developerId:OMAR.developerId}});
  return{t,chains,id,key,path,requestId,capture,snapshot,transfer};
 }
@@ -85,4 +86,36 @@ for(const field of ["owner","accountable"] as const)it(`refuses a real ${field} 
   return result;
  };
  expect((await f.transfer()).status).toBe(409);expect(raced).toBe(true);expect(f.snapshot()).toEqual(afterRace);expect(f.t.db.get(agentRequestKey(TEST_ORG,DEB.developerId,f.requestId))).toBeUndefined();
+});
+
+for(const kind of ["removed","merged"] as const)it(`preserves real SYSTEM ${kind} owner moves`,async()=>{
+ const f=await fixture(),members=await import("../../packages/broker/src/chains/members.js"),deps={...f.t.deps(),chains:f.chains};
+ const moved=kind==="removed"?await members.onChainOwnersRemoved(deps,{orgId:TEST_ORG,developerId:MAYA.developerId,successorId:ADA.developerId}):await members.onChainOwnersMerged(deps,{orgId:TEST_ORG,duplicateId:MAYA.developerId,survivorId:OMAR.developerId});
+ const target=kind==="removed"?ADA:OMAR;expect(moved).toContain(target.developerId);expect(f.t.db.get(f.key)?.owner).toEqual({kind:"member",developerId:target.developerId});
+ expect(f.t.db.find(row=>row.pk===f.key.pk&&row.kind==="owner_changed")).toEqual([expect.objectContaining({by:"system",cause:{kind:kind==="removed"?"member_removed":"member_merged",developerId:MAYA.developerId}})]);
+});
+for(const loss of [false,true])it(`actual owner_cap decider ${loss?"loses authority atomically":"approves with one org-open check"}`,async()=>{
+ const f=await fixture();await f.t.budgeted(49,OMAR);await f.t.budgeted(50,OMAR);const reply=await f.transfer();expect(reply.status).toBe(202);const id=String(reply.body.spendRequestId),before=f.snapshot(),send=f.t.db.send.bind(f.t.db);let commits=0;
+ f.t.db.send=async command=>{const items=(command.input as {TransactItems?:Array<{Update?:{Key?:{pk?:string;sk?:string}};ConditionCheck?:{Key:{pk:string;sk:string}}}>}).TransactItems;
+ if(items?.some(i=>i.Update?.Key?.pk===f.key.pk&&i.Update.Key.sk===f.key.sk)){
+ commits++;expect(items.filter(i=>i.ConditionCheck?.Key.pk===orgMetaKey(TEST_ORG).pk&&i.ConditionCheck.Key.sk==="META")).toHaveLength(1);
+ if(loss)f.t.db.set({...f.t.db.get(orgMemberKey(TEST_ORG,ADA.developerId))!,role:"member"});
+ }return send(command);};
+ if(loss){await expect(decideSpendRequest({...f.t.deps(),chains:f.chains},f.t.caller(ADA,"owner"),id,{requestId:randomUUID(),decision:"APPROVE"})).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.snapshot()).toEqual(before);expect(f.t.requests().find(r=>r.spendRequestId===id)?.status).toBe("PENDING");}
+ else {await decideSpendRequest({...f.t.deps(),chains:f.chains},f.t.caller(ADA,"owner"),id,{requestId:randomUUID(),decision:"APPROVE"});expect(f.t.db.get(f.key)?.owner).toEqual({kind:"member",developerId:OMAR.developerId});expect(f.t.requests().find(r=>r.spendRequestId===id)?.status).toBe("APPROVED");expect(f.t.db.find(row=>row.pk===f.key.pk&&row.kind==="owner_changed")).toEqual([expect.objectContaining({by:ADA.developerId})]);}
+ expect(commits).toBe(1);
+});
+for(const after of ["none","actor","snapshot"] as const)it(`holdingOwnerCap retry retains original authority: ${after}`,async()=>{
+ const f=await fixture(),send=f.t.db.send.bind(f.t.db);let commits=0,nested=false,afterRace=f.snapshot();
+ f.t.db.send=async command=>{const items=(command.input as {TransactItems?:Array<{Update?:{Key?:{pk?:string;sk?:string}}}>}).TransactItems;
+ if(!nested&&items?.some(i=>i.Update?.Key?.pk===f.key.pk&&i.Update.Key.sk===f.key.sk)){
+ commits++;
+ if(commits===1){const key=ownerBudgetKey(TEST_ORG,OMAR.developerId),row=f.t.db.get(key)!;f.t.db.set({...row,version:Number(row.version??0)+1});
+ try{return await send(command);}catch(error){
+ if(after==="snapshot"){nested=true;expect((await f.t.api(ADA,"PUT",f.path+"/budget",{monthlyUsd:12})).status).toBe(200);afterRace=f.snapshot();nested=false;}
+ throw error;}}
+ if(after==="actor")f.t.db.set({...f.t.db.get(orgMemberKey(TEST_ORG,DEB.developerId))!,role:"member"});
+ }return send(command);};
+ const before=f.snapshot(),reply=await f.transfer();expect(commits).toBe(2);expect(reply.status).toBe(after==="actor"?403:after==="snapshot"?409:200);
+ if(after!=="none"){expect(f.snapshot()).toEqual(after==="snapshot"?afterRace:before);expect(f.t.db.get(agentRequestKey(TEST_ORG,DEB.developerId,f.requestId))).toBeUndefined();}
 });

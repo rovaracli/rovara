@@ -613,7 +613,7 @@ describe("a publish or rollback that makes something less safe", () => {
     expect(await rule(s.deps, record, s.asCaller(CARL))).toBe(false);
     expect(await rule(s.deps, record, { orgId: ORG_B, developerId: DANA.developerId, orgRole: "admin" })).toBe(false);
     // Read live: an owner who was handed the chain over to someone else no longer decides.
-    await s.chains.setOwner(TEST_ORG, s.chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    await s.chains.setOwner(TEST_ORG, s.chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(s.db, TEST_ORG, DANA.developerId) });
     expect(await rule(s.deps, record, s.asCaller(MAYA))).toBe(false);
     expect(await rule(s.deps, record, s.asCaller(EVE))).toBe(true);
   });
@@ -802,7 +802,7 @@ describe("what the routes and the confirmation handlers hold to", () => {
     const first = await s.dev(MAYA, "POST", "/v1/app/chains", body);
     expect(first.status).toBe(201);
     const chainId = (first.body.chain as { chainId: string }).chainId;
-    await s.chains.setOwner(TEST_ORG, chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    await s.chains.setOwner(TEST_ORG, chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(s.db, TEST_ORG, DANA.developerId) });
     const again = await s.dev(MAYA, "POST", "/v1/app/chains", body);
     expect(again.status).toBe(404);
     expect((again.body.error as { code: string }).code).toBe("NOT_FOUND");
