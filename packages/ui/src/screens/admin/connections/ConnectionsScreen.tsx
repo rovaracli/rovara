@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { useState } from "react";
+import { Button } from "../../../design/Button.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { DataTable } from "../../../design/DataTable.js";
 import { TextField } from "../../../design/TextField.js";
@@ -34,6 +35,7 @@ function RegisteredConnections({ connections }: { connections: ConnectionInfo[] 
  const shown = connections.filter(c => connectionMatchText(visibleText(c.label)).includes(term) || connectionMatchText(visibleText(c.type)).includes(term));
  return <>
  <TextField type="search" maxLength={200} label="Find registered connections" hint="Filters only names and types in this returned list. It does not check connection health." value={filter} onChange={event => setFilter(event.target.value)} />
+ <Button onClick={() => setFilter("")}>Clear connection filter</Button>
  <p role="status" aria-live="polite" aria-atomic="true">{shown.length} of {connections.length} registered connections shown in this returned list.</p>
  {!connections.some(c => c.type === "linear") && <p>Linear: Not configured.</p>}
  {connections.length === 0 ? <p>No registered connections were returned.</p> : shown.length === 0 ? <p>No registered connections match this filter in the returned list.</p> : <DataTable caption="Registered company connections" rows={shown} rowKey={c => c.connectionId} columns={[
