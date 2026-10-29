@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type Page } from "../support/verifier-playwright.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readBrowserState } from "../../packages/verifier/src/executor/browser-state-reader.js";
 import type { BrowserSecretState } from "../../packages/verifier/src/executor/browser-state-secrets.js";

@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser } from "../support/verifier-playwright.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tellBrowserState, type BrowserSecretState } from "../../packages/verifier/src/executor/browser-state-secrets.js";
 import { classifyString, isTokenShape, type ClassifiedValue } from "../../packages/verifier/src/executor/credential-classifier.js";

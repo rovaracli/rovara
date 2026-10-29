@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser } from "../support/verifier-playwright.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPlaywrightFormLoginDriver } from "../../packages/verifier/src/executor/form-login.js";
 import { READ_SESSION_STORAGE, readBrowserState } from "../../packages/verifier/src/executor/browser-state-reader.js";

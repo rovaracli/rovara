@@ -554,7 +554,7 @@ describe("the task sandbox on the worker", () => {
   });
 
   it("mounts the workspace inside the worker at the path it has on the host, so the sandbox's bind mount names the same files", () => {
-    expect(bootScript).toContain('--volume "$MOUNT_PATH:$MOUNT_PATH"');
+    expect(bootText).toContain('--volume "$MOUNT_PATH:$MOUNT_PATH"');
   });
 });
 

@@ -1,12 +1,5 @@
 {
   "extends": "./base-referenced.json",
-  "compilerOptions": {
-    "paths": {
-      "playwright-core": [
-        "../packages/verifier/node_modules/playwright-core/index.d.ts"
-      ]
-    }
-  },
   "include": [
     "../tests/unit/**/*.ts"
   ],
