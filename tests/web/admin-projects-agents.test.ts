@@ -11,13 +11,14 @@ import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { navFixture, meFixture } from "./support/fixtures.js";
+import { projectFixture } from "./support/project-fixture.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 const project = { name: "payments", description: "Payment service", status: "active", latestRevision: 3, repositories: [{ fullName: "Acme/payments", defaultBranch: "main" }], myRole: "maintainer", setup: { status: "ready" }, settings: { setupCommands: ["sensitive command"], testCommands: ["sensitive test"], devcontainer: null, allowedDomains: [{ domain: "docs.example.com", status: "pending" }] }, createdAt: "2026-10-01T00:00:00Z", createdBy: { developerId: "a".repeat(64), name: "Priya" } };
 const agent = { agentId: "rovara-code", name: "Rovara Code", description: "Build code", builtin: true, status: "active", access: "edit", latestVersion: 2, pinnedVersion: 1, monthlyBudgetUsd: 0 };
 const guardrails = { maxAutonomy: "prepare", forbiddenModels: [], requireCrossCompanyReview: true, maxAgentMonthlyUsd: 100, maxPerRunCeilingUsd: 10, disabledBuiltins: [], extraTriggerLabels: [], extraCommandWords: [], reportLinkDomains: [] };
-function mount(path = "/app/admin/projects", options: {role?:string; respond?:(r:ApiRequest)=>Promise<ApiResponse>; theme?:string} = {}) {
+function mount(path = "/app/admin/projects", options: {role?:string; respond?:(r:ApiRequest)=>Promise<ApiResponse>; theme?:string; shipped?:boolean} = {}) {
  const me = meFixture();me.developer.orgRole = (options.role ?? "owner") as typeof me.developer.orgRole;
- const nav = navFixture({ me: { developerId: me.developer.id, name: "Priya", orgRole: "owner" }, features: { localAgents:false, admin:true, usage:false, chains:false, describe:false, notices:false } });
+ const nav = navFixture({ me: { developerId: me.developer.id, name: "Priya", orgRole: options.role==="member"?"member":"owner" }, features: { localAgents:false, admin:true, usage:false, chains:false, describe:false, notices:false } });
  const f = fakeHost(async r => {
   if (r.path === "/v1/app/me") return { status:200, body:structuredClone(me) };
   if (r.path === "/v1/app/nav") return { status:200, body:nav };
@@ -25,7 +26,7 @@ function mount(path = "/app/admin/projects", options: {role?:string; respond?:(r
   return { status:200, body:r.path.includes("/versions") ? { versions:[{version:1,current:true},{version:2,safety:"unknown"}] } : r.path.includes("agent-guardrails") ? {guardrails,revision:1} : r.path.includes("/agents?") ? {agents:[agent]} : r.path.endsWith("/members") ? {members:[{developerId:"b".repeat(64),name:"Maya",role:"contributor",source:"grant",email:"synthetic@example.test"}]} : r.path === "/v1/app/projects/payments" ? project : {projects:[project,{...project,name:"old",status:"archived"}]} };
  });
  const query = createQueryClient();query.setQueryData(["nav"],nav);f.storage.set("rovara.theme",options.theme??"light");
- const router = createMemoryRouter(appRoutes(nav.features),{initialEntries:[path]});
+ const routes=appRoutes(nav.features);if(!options.shipped){const admin=routes.find(r=>r.path==="/app")!.children!.find(r=>r.path==="admin/*")!;admin.children!.unshift({path:"agents",lazy:async()=>({Component:(await import("../../packages/ui/src/screens/admin/agents/AgentsScreen.js")).AgentsScreen})},{path:"agents/:id/versions",lazy:async()=>({Component:(await import("../../packages/ui/src/screens/admin/agents/AgentVersionsScreen.js")).AgentVersionsScreen})});}const router = createMemoryRouter(routes,{initialEntries:[path]});
  const view = renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(ThemeProvider,{host:f.host,children:h(RouterProvider,{router})})})}));
  return {...f,...view,me,query,router,close(){view.unmount();router.dispose();query.clear();}};
 }
@@ -100,3 +101,7 @@ for(const [status,label] of [["unchecked","Not checked yet"],["checking","Checki
  const f=mount("/app/admin/projects",{respond:async()=>({status:200,body:{projects:[{...project,setup:{status}}]}})});await screen.findByRole("table");expect(screen.getByRole("table").textContent).toContain(label);expect(screen.getByRole("table").textContent).toContain("Maintainer");f.close();
  const detail=mount("/app/admin/projects/payments",{respond:async r=>({status:200,body:r.path.endsWith("/members")?{members:[]}:{...project,setup:{status}}})});await screen.findByText("Setup status: "+label);detail.close();
 });
+
+for(const path of ["/app/admin/agents","/app/admin/agents/rovara-code/versions"])it(`B32 shipped console hides ${path} without agent reads`,async()=>{const f=mount(path,{shipped:true});await screen.findByRole("heading",{name:"Not found"});expect(screen.queryByRole("link",{name:"Agents"})).toBeNull();expect(f.request.mock.calls.some(([r])=>r.path.includes("/agents"))).toBe(false);f.close();});
+
+it("B32 member project maintainer has own-project settings entry and no admin navigation",async()=>{const value=projectFixture();value.project.setup.status="failed";const f=mount("/app/projects/payments",{role:"member",shipped:true,respond:async r=>r.path.endsWith("/overview")?{status:200,body:value}:{status:200,body:{notices:[],next:"settled"}}});await screen.findByRole("heading",{name:"payments"});expect(screen.getByRole("link",{name:"Setup needs attention"}).getAttribute("href")).toBe("/app/onboard?project=payments&step=setup");expect(screen.queryByRole("link",{name:"Admin",exact:true})).toBeNull();expect(screen.queryByRole("navigation",{name:"Administration"})).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/projects/")).every(([r])=>r.path.includes("/projects/payments/"))).toBe(true);f.close();});
