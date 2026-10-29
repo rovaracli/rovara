@@ -154,6 +154,30 @@ describe("editable model rows", () => {
   expect(Object.keys(body.overlay.steps!)).not.toContain("understand");
  });
 
+ it("keeps the Plan card editable when Understand runs no model of its own, says it uses the Plan model, and saves the shared value", async () => {
+  const f = await open({ stages: { understand: stageEntry("understand", { editable: false, notApplicable: true }) } });
+  const plan = card("Plan (and Understand)");
+  await waitFor(() => expect(within(plan).getAllByRole("combobox", { name: "Model" })).toHaveLength(1));
+  expect(within(plan).getByText("Uses the Plan model.", { selector: "[data-stage='understand'] *" })).toBeTruthy();
+  expect(within(plan).queryByText("The model for this stage can't be changed here.")).toBeNull();
+  fireEvent.change(picker("Plan (and Understand)"), { target: { value: SONNET } });
+  fireEvent.change(picker("Plan (and Understand)", "Effort"), { target: { value: "low" } });
+  const body = await saved(f);
+  expect(body.overlay.steps!.plan).toEqual({ model: sonnet, thinkingLevel: "low" });
+ });
+
+ it("keeps the card read only when a member that does run a model is not editable or is locked", async () => {
+  await open({ stages: { understand: stageEntry("understand", { editable: false }) } });
+  await waitFor(() => expect(within(card("Plan (and Understand)")).getAllByText("Opus 5.5").length).toBeGreaterThan(0));
+  expect(within(card("Plan (and Understand)")).queryByRole("combobox")).toBeNull();
+ });
+
+ it("keeps the card read only when a member that runs a model is locked by the company", async () => {
+  await open({ stages: { understand: stageEntry("understand", { locked: true, effective: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) } });
+  await waitFor(() => expect(within(card("Plan (and Understand)")).getAllByText("Locked by company").length).toBeGreaterThan(0));
+  expect(within(card("Plan (and Understand)")).queryByRole("combobox")).toBeNull();
+ });
+
  it("shows a stage that is not editable read only", async () => {
   await open({ stages: { plan: stageEntry("plan", { editable: false }) } });
   await waitFor(() => expect(within(card("Plan (and Understand)")).getByText("Opus 5.5", { selector: "[data-stage='plan'] *" })).toBeTruthy());

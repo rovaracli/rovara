@@ -19,7 +19,7 @@ import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
 import { StageModelRows } from "./StageModelRows.js";
 import { DRAFT_CHANGED_TEXT, EDITS_REMOVED_TEXT } from "./stage-model-text.js";
-import { applyModelEdits, mergeEdit, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
+import { applicableStages, applyModelEdits, mergeEdit, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
 import { cleanRuleText, ruleTooLong } from "./rule-text.js";
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [{ value: "all", label: "All" }, { value: "changed", label: "Changed here" }, { value: "locked", label: "Locked" }];
 const NOT_IN_USE = "This project runs Rovara Code's defaults.";
@@ -65,7 +65,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   const ids = cardStages(stage.kind), found = models.data === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
   if (found.length === 0) return undefined;
   const reference = referenceStage(stage.kind);
-  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found.find(entry => entry.stage === editBaseStage(ids)) ?? found[0]!)); }} />;
+  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, applicableStages(found).find(entry => entry.stage === editBaseStage(ids)) ?? applicableStages(found)[0] ?? found[0]!)); }} />;
  };
  const modelsProp = (stage: (typeof data.stages)[number]) => { const rows = stageModelRows(stage);return rows === undefined ? {} : { models: rows }; };
  const setStage = (id: string, text: string) => { setSaved(false);setEdits(current => ({ ...current, stages: { ...current.stages, [id]: text } })); };

@@ -6,12 +6,12 @@ import { modelKey, stageResult, type StageModelsStage, type ThinkingLevel } from
 import { editBaseStage } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
 import { COMPANY_PAGE, COST_TEXT, EFFORT_OPTIONS, STAGE_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
-import { DEFAULT_MODEL, baselineEffort, baselineModel, baselineVendor, stagesEditable, type EffortValue, type StageEdit } from "./how-we-work-models.js";
+import { DEFAULT_MODEL, baselineEffort, baselineModel, applicableStages, baselineVendor, stagesEditable, type EffortValue, type StageEdit } from "./how-we-work-models.js";
 const effortWords = (effort: ThinkingLevel | null): string => effort === null ? "Model default" : effortLabel(effort);
 
 /** The "Who does it" content of a stage card from the stage-models read: each stage's resolved result, and (when the person can edit and the stage is not locked) the model and effort pickers and the different-vendor toggle. A card can hold several stages' results (two reviewers; Understand with Plan) and one picker, which edits the stage that names the group. */
 export function StageModelRows({ stages, reference, kind, viewerOnly, edit, disabled, onChange }: { stages: readonly StageModelsStage[]; reference: "Build" | "Plan" | undefined; kind: string; viewerOnly: boolean; edit: StageEdit | undefined; disabled: boolean; onChange: (patch: StageEdit) => void }) {
- const primary = stages.find(stage => stage.stage === editBaseStage(stages.map(entry => entry.stage))) ?? stages[0]!, locked = stages.some(stage => stage.locked || ("effective" in stage && stage.effective.locked)), editable = !viewerOnly && stagesEditable(stages) && !locked;
+ const applicable = applicableStages(stages), primary = applicable.find(stage => stage.stage === editBaseStage(stages.map(entry => entry.stage))) ?? applicable[0] ?? stages[0]!, locked = applicable.some(stage => stage.locked || ("effective" in stage && stage.effective.locked)), editable = !viewerOnly && stagesEditable(stages) && !locked;
  const labelOf = (model: string) => primary.candidates.find(candidate => modelKey(candidate.model) === model)?.label ?? stages.flatMap(stage => stage.candidates).find(candidate => modelKey(candidate.model) === model)?.label ?? model;
  const options: SelectOption[] = [{ value: DEFAULT_MODEL, label: "Rovara's default" }, ...(primary.candidatesState === "complete" ? primary.candidates.map(candidate => { const block = candidateBlock(candidate);return { value: modelKey(candidate.model), label: block === undefined ? candidate.label : candidate.label + ": " + block, disabled: block !== undefined }; }) : [])];
  const current = edit?.model ?? baselineModel(primary);
@@ -25,7 +25,7 @@ export function StageModelRows({ stages, reference, kind, viewerOnly, edit, disa
    {result.kind === "effective" ? <>
     <p><span className="rv-hww-text"><VisibleText text={labelOf(modelKey(result.model))} /></span> <HowWeWorkMarker mark={{ source: result.decidedBy, locked: result.locked, ...(result.locked ? { lockedBy: "company" } : {}) }} /> <span className="rv-muted">Effort: {effortWords(result.thinkingLevel)}</span></p>
     <p className="rv-muted">{"Picked because: " + reasonLine(result.reason)}</p>
-   </> : result.kind === "refusal" ? <p role="status"><VisibleText text={refusalText(result.code)} />{result.fixHref !== undefined && <> <Link to={result.fixHref}>How to fix this</Link></>}</p> : <p className="rv-muted">This stage does not use a model.</p>}
+   </> : result.kind === "refusal" ? <p role="status"><VisibleText text={refusalText(result.code)} />{result.fixHref !== undefined && <> <Link to={result.fixHref}>How to fix this</Link></>}</p> : <p className="rv-muted">{stages.length > 1 && primary !== stage && STAGE_NAMES[primary.stage] !== undefined ? "Uses the " + STAGE_NAMES[primary.stage] + " model." : "This stage does not use a model."}</p>}
   </div>; })}
   {conflict !== undefined && conflict.projectChoice?.model !== undefined && <p>{"Your project's choice (" + labelOf(modelKey(conflict.projectChoice.model)) + ") isn't used while the company locks this stage."}</p>}
   {locked && <p>Locked by company. <Link to={lockHref}>Company How we work</Link></p>}

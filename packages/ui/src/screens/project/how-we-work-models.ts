@@ -41,14 +41,20 @@ export function applyModelEdits(overlay: Overlay, edits: ModelEdits, references:
  if (Object.keys(steps).length > 0) next.steps = steps;else delete next.steps;
  return next;
 }
-/** Whether a person can change this card's model settings: every stage of the card is editable and none is locked or model-free. */
-export const stagesEditable = (stages: readonly StageModelsStage[]): boolean => stages.length > 0 && stages.every(stage => stage.editable && stage.notice === undefined && !stage.locked && !("notApplicable" in stage) && !("effective" in stage && stage.effective.locked));
+/** The stages of a card that run a model of their own: a member that runs none (not applicable, e.g. Understand using the Plan model) is not counted. */
+export const applicableStages = (stages: readonly StageModelsStage[]): StageModelsStage[] => stages.filter(stage => !("notApplicable" in stage));
+/** Whether a person can change this card's model settings: at least one member runs a model, and every member that does is editable and not locked. */
+export const stagesEditable = (stages: readonly StageModelsStage[]): boolean => {
+ const applicable = applicableStages(stages);
+ return applicable.length > 0 && applicable.every(stage => stage.editable && stage.notice === undefined && !stage.locked && !("effective" in stage && stage.effective.locked));
+};
 /** Drops the pending edits the latest read no longer allows: a stage that is locked, not editable or gone, or a chosen model that is not (or no longer) verified and unblocked in every stage of the card. Returns the same object when nothing was dropped. */
 export function pruneEdits(edits: ModelEdits, stagesOf: (stepId: string) => readonly StageModelsStage[] | undefined): ModelEdits {
  const kept: ModelEdits = {};
  for (const [id, edit] of Object.entries(edits)) {
-  const stages = stagesOf(id);
-  if (stages === undefined || !stagesEditable(stages)) continue;
+  const all = stagesOf(id);
+  if (all === undefined || !stagesEditable(all)) continue;
+  const stages = applicableStages(all);
   const model = edit.model;
   if (model !== undefined && model !== DEFAULT_MODEL && !stages.every(stage => stage.candidatesState === "complete" && stage.candidates.some(candidate => modelKey(candidate.model) === model && candidateBlock(candidate) === undefined))) {
    const { model: _dropped, ...rest } = edit;void _dropped;
