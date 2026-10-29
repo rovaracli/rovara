@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import { ProjectOverviewProjectSchema, ThinkingLevelSchema } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, StepThinkingLevelSchema, ThinkingLevelSchema } from "@agentx/contracts/web";
 export { ThinkingLevelSchema };
 import { useAppHost, type AppHost } from "../host.js";
 import { safeAppPath } from "../text/links.js";
@@ -66,3 +66,44 @@ export function useStageModels(project: string, draftRevision: number | undefine
  const host = useAppHost(), key = useMemo(() => stageModelsKey(project, draftRevision), [project, draftRevision]);
  return useQuery({ queryKey: key, enabled, placeholderData: keepPreviousData, queryFn: () => getStageModels(host, project, draftRevision) });
 }
+
+// ---- Company scope (C53 "Company GET / PUT /v1/app/org/model-selection-policy" and "Company affected-project preview"). Temporary until lane C's export. ----
+/** The effort levels the step settings schema accepts today; the company page offers only these (plus "Model default", null) until lane C widens the schema. */
+export const COMPANY_EFFORT_LEVELS = StepThinkingLevelSchema.options;
+const CompanyEffortSchema = StepThinkingLevelSchema;
+export const CompanyOverrideSchema = z.object({
+ model: ModelSchema.optional(), effort: CompanyEffortSchema.nullable().optional(),
+ differentFrom: z.object({ stage: StageIdSchema, level: z.enum(["model", "vendor"]) }).strict().optional(), locked: z.boolean(),
+}).strict();
+export type CompanyOverride = z.infer<typeof CompanyOverrideSchema>;
+export type CompanyOverrides = Partial<Record<StageId, CompanyOverride>>;
+const OverridesSchema = z.partialRecord(StageIdSchema, CompanyOverrideSchema);
+export const CompanyPolicySchema = z.object({ version: z.literal(1), revision: z.number().int().min(0), rankingVersion: z.string().min(1).max(32), stepOverrides: OverridesSchema }).strict();
+export type CompanyPolicy = z.infer<typeof CompanyPolicySchema>;
+/** The PUT body: the full set of overrides, at most seven stages. */
+export const CompanyPolicyPutSchema = z.object({ version: z.literal(1), requestId: z.string().uuid(), expectedRevision: z.number().int().min(0), stepOverrides: OverridesSchema }).strict();
+export const CompanyPreviewBodySchema = z.object({ version: z.literal(1), expectedRevision: z.number().int().min(0), stepOverrides: OverridesSchema, cursor: z.string().min(1).max(2048).optional() }).strict();
+export type CompanyPreviewBody = z.infer<typeof CompanyPreviewBodySchema>;
+export const IMPACTS = ["unchanged", "changed", "blocked", "unavailable"] as const;
+export const CompanyPreviewSchema = z.object({
+ version: z.literal(1), checkedAt: TimeSchema, policyRevision: z.number().int().min(0), coverage: z.enum(["page", "unavailable"]),
+ projects: z.array(z.object({ project: z.string().min(1).max(128), impact: z.enum(IMPACTS), reasonCodes: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u)).max(10) }).strict()).max(5),
+ nextCursor: z.string().min(1).max(2048).optional(),
+}).strict();
+export type CompanyPreview = z.infer<typeof CompanyPreviewSchema>;
+export const CompanyAppliedSchema = z.object({ version: z.literal(1), status: z.literal("APPLIED"), revision: z.number().int().min(0), requestId: z.string().uuid() }).strict();
+/** 202. `soleOwner` is the owner's decision for a company with one admin (a 24-hour safety wait, then the requester may confirm); lane C's field name to be matched at integration. */
+export const CompanyNeedsConfirmationSchema = z.object({
+ version: z.literal(1), status: z.literal("NEEDS_CONFIRMATION"), confirmationId: z.string().min(1).max(128), confirmUrl: z.string().min(1).max(2048).optional(),
+ reasonCodes: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u)).max(20), requestId: z.string().uuid(), soleOwner: z.object({ availableAt: TimeSchema }).strict().optional(),
+}).strict();
+export type CompanyNeedsConfirmation = z.infer<typeof CompanyNeedsConfirmationSchema>;
+/** The stages the company page shows, in order; Review is one row that writes both reviewers. */
+export const COMPANY_ROWS = [
+ { id: "understand", stages: ["understand"], title: "Understand", reference: undefined },
+ { id: "plan", stages: ["plan"], title: "Plan", reference: undefined },
+ { id: "plan_check", stages: ["plan_check"], title: "Plan check", reference: "plan" },
+ { id: "build", stages: ["build"], title: "Build", reference: undefined },
+ { id: "review", stages: ["code_review", "security_review"], title: "Review (code and security)", reference: "build" },
+ { id: "pull_request", stages: ["pull_request"], title: "Pull request", reference: undefined },
+] as const satisfies ReadonlyArray<{ id: string; stages: readonly StageId[]; title: string; reference: "plan" | "build" | undefined }>;
