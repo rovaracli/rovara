@@ -111,6 +111,25 @@ describe("the switch's store must be able to list agents (PB21)", () => {
     expect(reply.statusCode).toBe(202);
   });
 
+  it("refuses the switch (RUNTIME_UNAVAILABLE) when the agent store is missing and the project runs a process layer, or its playbook can't be read, and writes nothing", async () => {
+    const w = world();
+    await layerWith(w);
+    const before = rawPlaybook(w);
+    const events = changedEvents(w).length;
+    expect(await failure(toBuiltin(w, { ...playbookDeps(w), store: undefined }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(rawPlaybook(w)).toEqual(before);
+    corruptPlaybook(w);
+    const unreadable = rawPlaybook(w);
+    expect(await failure(toBuiltin(w, { ...playbookDeps(w), store: undefined }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(rawPlaybook(w)).toEqual(unreadable);
+    expect(changedEvents(w)).toHaveLength(events);
+  });
+
+  it("a project already on the built-in switches at once with no agent store (nothing to lose)", async () => {
+    const w = world();
+    expect((await toBuiltin(w, { ...playbookDeps(w), store: undefined })).statusCode).toBe(200);
+  });
+
   it("is checked by the compiler: a store with no list is not accepted (tsc fails if `list` is optional again)", () => {
     const w = world();
     const noList = { get: w.store.get.bind(w.store), getVersion: w.store.getVersion.bind(w.store) };

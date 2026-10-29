@@ -174,14 +174,20 @@ describe("Update is a normal reviewed change", () => {
     const w = world();
     const layer = await publishedLayer(w);
     const published = w.audit.recordedBy("process.published").length;
-    const all = w.audit.recorded().length;
+    const before = w.audit.recorded().map((event) => JSON.stringify(event));
     await adopt(w, 2);
-    const afterAdopt = w.audit.recorded().length;
+    const afterAdopt = w.audit.recorded().map((event) => JSON.stringify(event));
     await rebase(w, layer);
-    expect(w.audit.recorded().length).toBe(afterAdopt);
-    expect(afterAdopt).toBeGreaterThanOrEqual(all);
+    expect(w.audit.recorded().map((event) => JSON.stringify(event))).toEqual(afterAdopt);
+    expect(afterAdopt.slice(0, before.length)).toEqual(before);
+    // Positive control: the adoption is audited, so the recorder is live and a base move that wrote an event would show.
+    expect(afterAdopt.length).toBeGreaterThan(before.length);
     await publish(w, layer);
+    const after = w.audit.recorded().map((event) => JSON.stringify(event));
     expect(w.audit.recordedBy("process.published")).toHaveLength(published + 1);
+    // Exactly one new event: the publish. Nothing else (no event for the base move, none twice).
+    expect(after).toHaveLength(afterAdopt.length + 1);
+    expect(after.slice(0, afterAdopt.length)).toEqual(afterAdopt);
   });
 });
 

@@ -1,6 +1,8 @@
-// Rovara Code (playbook round 2, R1a): a path the person chose themselves always runs. A typed `quick:` or `full:` prefix and a Slack Quick or Full button both start the task with the path
-// in the request (`intent.pathFrom` is "request"); a start that left the choice to Understand has "understand". Understand may answer a question instead of planning only when the person did
-// not choose: otherwise its answer is read as the restatement of the change to plan, as it already is for a task that follows an answered one ("Make a change anyway").
+// Rovara Code (playbook round 2, R1a): a path the start named always runs. Every start that puts a path in the request sets `intent.pathFrom` to "request": a typed `quick:` or `full:`
+// prefix, a Slack Quick or Full button, the app API's `path` field, the MCP `workflow_path` argument (a required tool parameter, so the AI client names it), the setup draft's "open a pull
+// request" start (always QUICK), and "Make a change anyway" (which carries over the first task's path only when that was "request" too). A start that left the choice to Understand has
+// "understand". Understand may answer a question instead of planning only when the start named no path: otherwise its answer is read as the restatement of the change to plan, as it already
+// is for a task that follows an answered one. The web's Start work box sends no path, so its starts are Understand's to route. The effect of a named path is only ever more planning and approval.
 import type { IntentAssessment, WorkflowPath, WorkflowSnapshot } from "@agentx/contracts";
 
 /** The assumption an explicit-path conversion states, in fixed words (the person's own choice is the only thing named). */
@@ -8,7 +10,7 @@ export function explicitPathAssumption(path: WorkflowPath): string {
   return `You chose ${path === "FULL" ? "Full" : "Quick"}, so I planned the change instead of answering.`;
 }
 
-/** True when the person chose the path (a prefix or a button), not Understand. A hand-off or a start that left the choice open is not. */
+/** True when the start named the path (a prefix, a button, the app API `path`, MCP `workflow_path`, the setup-draft pull request start or change-anyway), not Understand. A hand-off or a start that left the choice open is not. */
 export function isExplicitPath(workflow: Pick<WorkflowSnapshot, "intent">): boolean {
   return workflow.intent?.pathFrom === "request";
 }

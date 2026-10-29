@@ -192,6 +192,13 @@ describe("rolling a process layer back", () => {
     // Reviewer instructions are a less-safe change: without the refusal the rollback would wait for a second person.
     const id = await twoVersions(w, { steps: { pull_request: { instructions: "Old text." }, review: { instructions: "Check the tests." } } }, { instructions: "Keep it small." });
     expect(await failure(roll(w, id))).toEqual(refused);
+    // Early means no one was asked: no approval was created.
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(0);
+    // Positive control: the same less-safe rollback without the pull request text does wait for a second person, so the lookup above sees approvals.
+    const control = world();
+    const controlId = await twoVersions(control, { steps: { review: { instructions: "Check the tests." } } }, { instructions: "Keep it small." });
+    expect(await roll(control, controlId)).toMatchObject({ applied: false });
+    expect(control.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(1);
   });
 
   it("refuses a different text, and allows going back to the same text, and to a version without any", async () => {
