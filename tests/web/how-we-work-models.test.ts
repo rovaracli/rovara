@@ -154,6 +154,20 @@ describe("editable model rows", () => {
   expect(Object.keys(body.overlay.steps!)).not.toContain("understand");
  });
 
+ it("says a member runs no model in the plain words, except Understand using the Plan model: not for a reviewer, not for Plan itself", async () => {
+  await open({ stages: { security_review: stageEntry("security_review", { editable: false, notApplicable: true }) } });
+  await waitFor(() => expect(within(card("Review")).getByText("This stage does not use a model.", { selector: "[data-stage='security_review'] *" })).toBeTruthy());
+  expect(within(card("Review")).queryByText(/Uses the/)).toBeNull();
+ });
+
+ it("says a Plan that runs no model does not use one, even with Understand applicable", async () => {
+  await open({ stages: { plan: stageEntry("plan", { editable: false, notApplicable: true }) } });
+  const plan = card("Plan (and Understand)");
+  await waitFor(() => expect(within(plan).getByText("This stage does not use a model.", { selector: "[data-stage='plan'] *" })).toBeTruthy());
+  expect(within(plan).queryByText(/Uses the/)).toBeNull();
+  expect(within(plan).getByText("Opus 5.5", { selector: "[data-stage='understand'] *" })).toBeTruthy();
+ });
+
  it("keeps the Plan card editable when Understand runs no model of its own, says it uses the Plan model, and saves the shared value", async () => {
   const f = await open({ stages: { understand: stageEntry("understand", { editable: false, notApplicable: true }) } });
   const plan = card("Plan (and Understand)");

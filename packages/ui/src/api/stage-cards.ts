@@ -11,6 +11,8 @@ export function cardStages(kind: string): readonly StageId[] {
 }
 /** The stage of a group whose setting the card or row shows and edits first: the one that names the group (Plan, for Plan and Understand), else the first. */
 export const editBaseStage = (stages: readonly StageId[]): StageId => stages.find(stage => ruleOf(stage).editGroup === stage) ?? stages[0]!;
+/** Whether `stage` has no setting of its own in its group but uses the one of `base` (Understand, which is edited through Plan): its edit group is named by the base stage. */
+export const usesBaseSetting = (stage: StageId, base: StageId): boolean => stage !== base && ruleOf(stage).editGroup === base;
 
 /** The step kind of the card a checking card is compared with ("plan" or "build"), if any. */
 export function referenceKind(kind: string): string | undefined {

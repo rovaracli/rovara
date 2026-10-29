@@ -3,7 +3,7 @@ import { Select, type SelectOption } from "../../design/Select.js";
 import { Switch } from "../../design/Switch.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { modelKey, stageResult, type StageModelsStage, type ThinkingLevel } from "../../api/stage-models.js";
-import { editBaseStage } from "../../api/stage-cards.js";
+import { editBaseStage, usesBaseSetting } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
 import { COMPANY_PAGE, COST_TEXT, EFFORT_OPTIONS, STAGE_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
 import { DEFAULT_MODEL, baselineEffort, baselineModel, applicableStages, baselineVendor, stagesEditable, type EffortValue, type StageEdit } from "./how-we-work-models.js";
@@ -25,7 +25,7 @@ export function StageModelRows({ stages, reference, kind, viewerOnly, edit, disa
    {result.kind === "effective" ? <>
     <p><span className="rv-hww-text"><VisibleText text={labelOf(modelKey(result.model))} /></span> <HowWeWorkMarker mark={{ source: result.decidedBy, locked: result.locked, ...(result.locked ? { lockedBy: "company" } : {}) }} /> <span className="rv-muted">Effort: {effortWords(result.thinkingLevel)}</span></p>
     <p className="rv-muted">{"Picked because: " + reasonLine(result.reason)}</p>
-   </> : result.kind === "refusal" ? <p role="status"><VisibleText text={refusalText(result.code)} />{result.fixHref !== undefined && <> <Link to={result.fixHref}>How to fix this</Link></>}</p> : <p className="rv-muted">{stages.length > 1 && primary !== stage && STAGE_NAMES[primary.stage] !== undefined ? "Uses the " + STAGE_NAMES[primary.stage] + " model." : "This stage does not use a model."}</p>}
+   </> : result.kind === "refusal" ? <p role="status"><VisibleText text={refusalText(result.code)} />{result.fixHref !== undefined && <> <Link to={result.fixHref}>How to fix this</Link></>}</p> : <p className="rv-muted">{"notApplicable" in primary || !usesBaseSetting(stage.stage, primary.stage) || STAGE_NAMES[primary.stage] === undefined ? "This stage does not use a model." : "Uses the " + STAGE_NAMES[primary.stage] + " model."}</p>}
   </div>; })}
   {conflict !== undefined && conflict.projectChoice?.model !== undefined && <p>{"Your project's choice (" + labelOf(modelKey(conflict.projectChoice.model)) + ") isn't used while the company locks this stage."}</p>}
   {locked && <p>Locked by company. <Link to={lockHref}>Company How we work</Link></p>}
