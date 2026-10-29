@@ -3,10 +3,11 @@ import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import {
- CompanyStageModelOverrideSchema, EffectiveStageModelSchema, ModelPolicyPreviewResponseReaderSchema, ModelSelectionPolicyResponseReaderSchema, ProjectOverviewProjectSchema,
+ EffectiveStageModelSchema, ModelPolicyPreviewResponseReaderSchema, ModelSelectionPolicyResponseReaderSchema, ProjectOverviewProjectSchema,
  STAGE_IDS, STAGE_MODEL_REFUSAL_CODES, StageIdSchema, StageModelCandidateSchema, StageModelsResponseReaderSchema, StepThinkingLevelSchema, ThinkingLevelSchema,
  type ModelPolicyPreviewResponse, type ModelSelectionPolicyResponse, type StageId, type StageModelChoice, type StageModelRefusal, type StageModelRefusalCode, type StageModelRow, type StageModelsResponse,
 } from "@agentx/contracts/web";
+import type { CompanyStageModelOverrideSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { howWeWorkKey } from "./how-we-work.js";

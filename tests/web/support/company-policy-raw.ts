@@ -26,6 +26,7 @@ export function previewPage(cursor?: string) {
 }
 export const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 export const applied = (revision: number, requestId = REQUEST_ID) => ({ version: 1, status: "APPLIED", revision, requestId });
-export const needsConfirmation = (origin: string, requestId = REQUEST_ID, soleOwner?: string) => ({
- version: 1, status: "NEEDS_CONFIRMATION", confirmationId: "cnf_aaaaaaaaaaaaaaaaaaaa", confirmUrl: origin + "/v1/app/approve/" + "A".repeat(43), reasonCodes: ["LOCK_REMOVED"], changes: ["A stage lock is removed"], requestId, ...(soleOwner === undefined ? {} : { soleOwner: { available: true, availableAt: soleOwner } }),
+/** `soleOwner`: a time (the path is open from then) or a ready-made field. */
+export const needsConfirmation = (origin: string, requestId = REQUEST_ID, soleOwner?: string | Record<string, unknown>) => ({
+ version: 1, status: "NEEDS_CONFIRMATION", confirmationId: "cnf_aaaaaaaaaaaaaaaaaaaa", confirmUrl: origin + "/v1/app/approve/" + "A".repeat(43), reasonCodes: ["LOCK_REMOVED"], changes: ["A stage lock is removed"], requestId, ...(soleOwner === undefined ? {} : { soleOwner: typeof soleOwner === "string" ? { available: true, availableAt: soleOwner } : soleOwner }),
 });

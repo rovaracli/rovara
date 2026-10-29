@@ -193,6 +193,7 @@ describe("editable model rows", () => {
   await waitFor(() => expect(within(card("Build")).queryByRole("combobox")).toBeNull());
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
   expect(puts(f)).toEqual([]);
+  expect(screen.getByText("Some changes were removed because the company locked a stage or a model is no longer verified.")).toBeTruthy();
  });
 
  it("drops a pending model edit when the stage stops being editable", async () => {
@@ -216,8 +217,10 @@ describe("editable model rows", () => {
   await f.query.invalidateQueries();
   await waitFor(() => expect(picker("Build").value).toBe("__default"));
   expect(picker("Build", "Effort").value).toBe("low");
+  expect(screen.getByText("Some changes were removed because the company locked a stage or a model is no longer verified.")).toBeTruthy();
   const body = await saved(f);
   expect(body.overlay.steps!.build).toEqual({ instructions: "Run the linter.", thinkingLevel: "low" });
+  expect(screen.queryByText("Some changes were removed because the company locked a stage or a model is no longer verified.")).toBeNull();
  });
 
  it("discards pending model edits when the read is refused as stale", async () => {
@@ -243,6 +246,41 @@ describe("editable model rows", () => {
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true));
   expect(picker("Build").value).toBe("__default");
   expect(puts(f)).toEqual([]);
+ });
+
+ it("never writes model choices onto a draft someone else saved after the last fetch: no write, the message, the choices dropped", async () => {
+  let moved = false;
+  const f = await open({ handle: (request, url) => moved && url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "GET" ? { status: 200, body: draftBody({ instructions: "Keep changes small." }, 4) } : undefined });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  moved = true;
+  fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+  expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
+  expect(puts(f)).toEqual([]);
+  expect(screen.queryByText("Draft saved. Review changes to publish it.")).toBeNull();
+  await waitFor(() => expect(picker("Build").value).toBe("__default"));
+ });
+
+ it("keeps the rule text the person typed when the model choices are dropped for a moved draft", async () => {
+  let moved = false;
+  const f = await open({ handle: (request, url) => moved && url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "GET" ? { status: 200, body: draftBody({ instructions: "Keep changes small." }, 4) } : undefined });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Project rules" }), { target: { value: "Be careful." } });
+  moved = true;
+  fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+  expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
+  expect(puts(f)).toEqual([]);
+  expect((screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" })).value).toBe("Be careful.");
+ });
+
+ it("saves model choices when the draft is still at the revision they were made on", async () => {
+  const f = await open();
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  const body = await saved(f);
+  expect(body.expectedRevision).toBe(3);
+  expect(body.overlay.steps!.build!.model).toEqual(opus);
  });
 
  it("still saves a valid edit after the read refreshes without changing anything", async () => {

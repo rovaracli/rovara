@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyPutSchema, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
@@ -18,7 +18,7 @@ import { COMPANY_BUILD, REQUEST_ID, applied, companyCandidates, companyPolicyRaw
 const POLICY = "/v1/app/org/model-selection-policy";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
-function mount(options: { role?: "owner" | "admin" | "member"; path?: string; theme?: "light" | "dark"; handle?: Handler; policy?: unknown; width?: number } = {}) {
+function mount(options: { role?: "owner" | "admin" | "member"; path?: string; theme?: "light" | "dark"; handle?: Handler; policy?: unknown; width?: number; refocusRereads?: boolean } = {}) {
  const role = options.role ?? "owner";
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, admin: true } });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
@@ -35,7 +35,7 @@ function mount(options: { role?: "owner" | "admin" | "member"; path?: string; th
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
  f.host.kind = "web";f.host.origin = "https://cell.example";f.host.viewport = { width: () => options.width ?? 1280, subscribe: () => () => undefined };
- const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
+ const query = createQueryClient();if (options.refocusRereads === true) query.setDefaultOptions({ queries: { staleTime: 0, retry: false, refetchOnWindowFocus: true, refetchOnReconnect: true } });query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/admin/how-we-work"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
  const sent = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method !== "GET");
@@ -285,6 +285,104 @@ describe("Save", () => {
   await save();
   await screen.findByText("Saved. New tasks use these defaults; running tasks keep theirs.");
   expect(Object.keys((f.puts()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides).sort()).toEqual(["build", "code_review", "security_review"]);
+ });
+});
+
+const refocus = async () => { await act(async () => { focusManager.setFocused(false);focusManager.setFocused(true); }); };
+const gate = () => { let open!: () => void;const opened = new Promise<void>(resolve => { open = resolve; });return { opened, open }; };
+
+describe("a window refocus", () => {
+ it("keeps unsaved edits and an open review, and reads nothing again", async () => {
+  const f = await open({ refocusRereads: true });
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await review();
+  await screen.findByRole("region", { name: "Review of company changes" });
+  await refocus();
+  await new Promise(resolve => { setTimeout(resolve, 50); });
+  expect(f.calls().filter(call => call === "GET " + POLICY)).toHaveLength(1);
+  expect(effort("Build").value).toBe("high");
+  expect(screen.getByRole("region", { name: "Review of company changes" })).toBeTruthy();
+ });
+ it("during a save still shows the confirmation message", async () => {
+  const held = gate();
+  await open({ refocusRereads: true, handle: async request => { if (request.method === "PUT" && request.path === POLICY) { await held.opened;return { status: 202, body: needsConfirmation("https://cell.example", (request.body as { requestId: string }).requestId) }; } return undefined; } });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  await refocus();
+  await new Promise(resolve => { setTimeout(resolve, 50); });
+  held.open();
+  expect(await screen.findByText("Another company admin must confirm this less-safe change.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Open confirmation" })).toBeTruthy();
+ });
+ it("during a save still shows the stale-settings message", async () => {
+  const held = gate();
+  await open({ refocusRereads: true, handle: async request => { if (request.method === "PUT" && request.path === POLICY) { await held.opened;return { status: 409, body: { error: { code: "POLICY_STALE", message: "Stale." } } }; } return undefined; } });
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await save();
+  await refocus();
+  await new Promise(resolve => { setTimeout(resolve, 50); });
+  held.open();
+  expect((await screen.findByRole("alert")).textContent).toContain("The model settings changed. Reload and try again.");
+ });
+});
+
+describe("after a save that did not go through, or a page that is out of date", () => {
+ it("keeps Review changes and Save disabled after a stale answer until Reload", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 409, body: { error: { code: "POLICY_STALE", message: "Stale." } } } : undefined });
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await save();
+  await screen.findByText(/The model settings changed/);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save company defaults" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(screen.queryByText(/The model settings changed/)).toBeNull());
+ });
+ it("says the page couldn't reload when the read after a save fails, and disables Save until Reload", async () => {
+  let reads = 0;
+  const f = await open({ handle: request => { if (request.method === "GET" && request.path === POLICY && ++reads > 1 && reads < 3) return { status: 400, body: { error: { code: "BAD_REQUEST", message: "x" } } };return undefined; } });
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await save();
+  expect(await screen.findByText("Saved, but the page couldn't reload. Reload to see the latest.")).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save company defaults" }).disabled).toBe(true);
+  expect(f.puts()).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(screen.queryByText(/couldn't reload/)).toBeNull());
+  expect(screen.getByRole("region", { name: "Build" })).toBeTruthy();
+ });
+});
+
+describe("the company 202 and the model list", () => {
+ it("lists what needs confirming from the answer's changes", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 202, body: needsConfirmation("https://cell.example", (request.body as { requestId: string }).requestId) } : undefined });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  expect(await screen.findByText("A stage lock is removed")).toBeTruthy();
+ });
+ it("shows no self-confirm time when the sole-owner path is not yet available", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 202, body: needsConfirmation("https://cell.example", (request.body as { requestId: string }).requestId, { available: false, availableAt: null, reasonCode: "OTHER_ADMIN_EXISTS" }) } : undefined });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  expect(await screen.findByText("Another company admin must confirm this.")).toBeTruthy();
+  expect(screen.queryByText(/only admin/)).toBeNull();
+ });
+ it("does not take a 202 without the confirmation fields as a save", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 202, body: { version: 1, status: "NEEDS_CONFIRMATION" } } : undefined });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  expect((await screen.findByRole("alert")).textContent).toBe("Couldn't save the company defaults. Try again.");
+  expect(screen.queryByText(/Saved\./)).toBeNull();
+ });
+ it("offers a model picker where the read lists models, with only verified ones selectable, and writes the choice", async () => {
+  const f = await open({ policy: { ...companyPolicyRaw(), candidates: companyCandidates() } });
+  const model = within(card("Plan")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
+  expect(screen.queryByText("Pick models after the model list is available.")).toBeNull();
+  const options = Object.fromEntries(Array.from(model.options).filter(option => option.value !== "").map(option => [option.value || option.textContent, option.disabled]));
+  expect(options["openai/gpt-5-codex"]).toBe(true);
+  expect(options[COMPANY_BUILD]).toBe(false);
+  fireEvent.change(model, { target: { value: COMPANY_BUILD } });
+  await review();
+  await screen.findByText("This list may be incomplete.");
+  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan).toEqual({ model: mid(COMPANY_BUILD), locked: false });
  });
 });
 

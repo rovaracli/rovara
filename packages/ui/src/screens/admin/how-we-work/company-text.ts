@@ -7,6 +7,7 @@ export const MODEL_NOTE = "Pick models after the model list is available.";
 export const SAVED = "Saved. New tasks use these defaults; running tasks keep theirs.";
 export const MODEL_DEFAULT_OPTION = "Rovara's default";
 export const OTHER_ADMIN = "Another company admin must confirm this less-safe change.";
+export const OTHER_ADMIN_SHORT = "Another company admin must confirm this.";
 export const soleOwnerText = (time: string) => "You're the only admin. You can confirm this yourself after " + time + " (a 24-hour safety wait).";
 export const STALE = REFUSAL_TEXT.POLICY_STALE;
 export const INCOMPLETE_LOCK = "A locked stage needs a model, an effort (or Model default) and, for a checking stage, a vendor rule.";

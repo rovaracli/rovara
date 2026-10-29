@@ -119,6 +119,6 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
   </section>}
   {notice?.kind === "stale" && <p role="alert">{T.STALE} <Button onClick={reload}>Reload</Button></p>}
   {notice?.kind === "failed" && <p role="alert">{notice.text}</p>}
-  {notice?.kind === "confirm" && <div role="status"><p>{notice.soleOwner?.available === true && notice.soleOwner.availableAt !== null ? T.soleOwnerText(checkedTime(notice.soleOwner.availableAt)) : T.OTHER_ADMIN}</p>{notice.changes.length > 0 && <ul>{notice.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul>}{notice.url !== undefined && <Button onClick={() => host.openExternal(notice.url!)}>Open confirmation</Button>}</div>}
+  {notice?.kind === "confirm" && <div role="status"><p>{notice.soleOwner?.available === true && notice.soleOwner.availableAt !== null ? T.soleOwnerText(checkedTime(notice.soleOwner.availableAt)) : notice.soleOwner !== undefined ? T.OTHER_ADMIN_SHORT : T.OTHER_ADMIN}</p>{notice.changes.length > 0 && <ul>{notice.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul>}{notice.url !== undefined && <Button onClick={() => host.openExternal(notice.url!)}>Open confirmation</Button>}</div>}
  </div>;
 }
