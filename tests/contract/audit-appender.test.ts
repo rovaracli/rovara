@@ -173,7 +173,7 @@ describe("appendOne: the chain", () => {
     const shape = (items: Array<Record<string, Record<string, unknown>>>) => items.map((entry) => {
       const [kind, action] = Object.entries(entry)[0]!;
       const key = (action.Key ?? action.Item) as { pk: string; sk: string };
-      return [kind, action.TableName, key.pk.startsWith("AUDIT#") ? `AUDIT#<org> ${key.sk.replace(/[0-9a-f]{40}|[0-9]{12}/, "<id>")}` : `${key.pk} ${key.sk === ORG ? "<org>" : key.sk}`, action.ConditionExpression];
+      return [kind, action.TableName, key.pk.startsWith("AUDIT#") ? `AUDIT#<org> ${key.sk.replace(/[0-9a-f]{64}/g, "<digest>").replace(/[0-9a-f]{40}|[0-9]{12}/g, "<id>")}` : `${key.pk} ${key.sk === ORG ? "<org>" : key.sk}`, action.ConditionExpression];
     });
     expect(shape(genesis!)).toStrictEqual([
       ["Put", LEDGER, "AUDIT#<org> SEQ#<id>", "attribute_not_exists(pk)"],
@@ -181,12 +181,16 @@ describe("appendOne: the chain", () => {
       ["Put", LEDGER, "AUDIT#<org> EVENT#aev_<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT_DIRTY <org>", undefined],
       ["Put", LEDGER, "AUDIT_ORGS <org>", undefined],
+      ...["action", "actor", "target"].map(dimension => ["Put", LEDGER, `AUDIT#<org> FILTER#v1#${dimension}#<digest>#SEQ#<id>`, "attribute_not_exists(pk)"]),
+      ["Put", LEDGER, "AUDIT#<org> FILTER#v1#COVERAGE", "attribute_not_exists(pk)"],
     ]);
     expect(shape(second!)).toStrictEqual([
       ["Put", LEDGER, "AUDIT#<org> SEQ#<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT#<org> HEAD", "#seq = :prev AND #hash = :prevHash"],
       ["Put", LEDGER, "AUDIT#<org> EVENT#aev_<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT_DIRTY <org>", undefined],
+      ...["action", "actor", "target"].map(dimension => ["Put", LEDGER, `AUDIT#<org> FILTER#v1#${dimension}#<digest>#SEQ#<id>`, "attribute_not_exists(pk)"]),
+      ["Put", LEDGER, "AUDIT#<org> FILTER#v1#COVERAGE", "#through = :prev"],
     ]);
   });
 
@@ -434,7 +438,8 @@ describe("appendOne: targets and details (I8)", () => {
     await appendOne(h.deps, event("a"));
     expect(item(h.db, `AUDIT#${ORG}`, seqKey(1))).not.toHaveProperty("sealedDetails");
     expect(recordsOf(h.db)[0]!.target).toStrictEqual({ kind: "pull_request", id: "pr_1" });
-    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#"))).toStrictEqual([]);
+    // The org cursor key is prepared even for id-only events; no subject/detail key is created.
+    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map(entry => entry.sk).sort()).toStrictEqual(["DATA_KEY", "PSEUDONYM_KEY"]);
   });
 
   it("commits to each part: the record's commitments match the opened details", async () => {
@@ -504,7 +509,7 @@ describe("appendOne: targets and details (I8)", () => {
     const record = recordsOf(h.db)[0]!;
     expect(record.details).toStrictEqual([]);
     expect(item(h.db, `AUDIT#${ORG}`, seqKey(1))).not.toHaveProperty("sealedDetails");
-    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map((entry) => entry.sk)).toStrictEqual(["SUBJECT#dev_1"]);
+    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map((entry) => entry.sk)).toStrictEqual(["SUBJECT#dev_1", "DATA_KEY", "PSEUDONYM_KEY"]);
   });
 
   it("appends after SHREDDED with the target as n_shredded, no details and no key made", async () => {

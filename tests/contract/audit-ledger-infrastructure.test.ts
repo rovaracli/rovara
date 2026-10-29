@@ -1815,8 +1815,8 @@ describe("the audit ledger in templates", () => {
           const grant = ownStatements(synthesis).find(statement => statement.Sid === "ReadLedgerAndSeals")!;
           const expected = { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] };
           expect(grant).toStrictEqual(expected);
-          for (const action of expected.Action) expect(simulateIam([grant as IamStatement], { action, resource: LEDGER }).allowed).toBe(true);
-          expect(simulateIam([grant as IamStatement], { action: "dynamodb:BatchGetItem", resource: LEDGER }).allowed).toBe(false);
+          for (const action of expected.Action) expect(simulateIam([grant], { action, resource: LEDGER }).allowed).toBe(true);
+          expect(simulateIam([grant], { action: "dynamodb:BatchGetItem", resource: LEDGER }).allowed).toBe(false);
           const broadened = { ...grant, Action: [...expected.Action, "dynamodb:BatchGetItem"] };
           expect(() => expect(broadened).toStrictEqual(expected)).toThrow();
         });

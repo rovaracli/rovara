@@ -261,7 +261,7 @@ async function recordedAtOf(deps: AuditReadDeps, orgId: string, seq: number): Pr
 }
 
 /** The first sequence number in 1..head whose `recordedAt` is at or after `ms` (head + 1 when none is). `recordedAt` rises with `seq`. */
-async function firstSeqAtOrAfter(deps: AuditReadDeps, orgId: string, head: number, ms: number): Promise<number> {
+export async function firstSeqAtOrAfter(deps: AuditReadDeps, orgId: string, head: number, ms: number): Promise<number> {
   let low = 1;
   let high = head + 1;
   while (low < high) {
@@ -275,7 +275,7 @@ async function firstSeqAtOrAfter(deps: AuditReadDeps, orgId: string, head: numbe
 }
 
 /** The last sequence number in 1..head whose `recordedAt` is at or before `ms` (0 when none is). */
-async function lastSeqAtOrBefore(deps: AuditReadDeps, orgId: string, head: number, ms: number): Promise<number> {
+export async function lastSeqAtOrBefore(deps: AuditReadDeps, orgId: string, head: number, ms: number): Promise<number> {
   let low = 1;
   let high = head + 1;
   while (low < high) {
