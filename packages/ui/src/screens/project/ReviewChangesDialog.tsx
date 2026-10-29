@@ -13,9 +13,11 @@ import { RecipeDiffView, useRecipeDiff } from "../builder/RecipeDiffView.js";
 import { summariseChange } from "./how-we-work-summary.js";
 import { PendingConfirmation, publishedMessage } from "./PendingConfirmation.js";
 /** "Review changes": what the draft changes against what runs now, the less-safe reasons, and Publish. A less-safe change waits for a second person; the page says so and never claims it is live. */
-export function ReviewChangesDialog({ project, agentId, from, revision, disabled, notInUse = false, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; /** The project runs the built-in, not this layer: a publish saves a version only. */ notInUse?: boolean; onPublished: () => void }) {
+export function ReviewChangesDialog({ project, agentId, from, revision, disabled, notInUse = false, openRequest = 0, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; /** The project runs the built-in, not this layer: a publish saves a version only. */ notInUse?: boolean; /** Opens the dialog when it goes up (the page moved the draft and wants it reviewed). */ openRequest?: number; onPublished: () => void }) {
  const [open, setOpen] = useState(false), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [published, setPublished] = useState<number>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), [checking, setChecking] = useState(false);
  const sending = useRef(false), intent = useRef<{ body: string; id: string } | undefined>(undefined), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), diff = useRecipeDiff(agentId, from, "draft", open, revision);
+ const [seenRequest, setSeenRequest] = useState(openRequest);
+ if (openRequest !== seenRequest) { setSeenRequest(openRequest);if (openRequest > 0) { setNote("");setError(undefined);setPublished(undefined);setPending(undefined);setOpen(true); } }
  const summary = diff.data === undefined ? undefined : (() => { try { return summariseChange(diff.data); } catch { return undefined; } })(), empty = diff.data !== undefined && diff.data.changes.length === 0;
  async function publish() {
   if (sending.current || pending !== undefined || published !== undefined || diff.isPending || diff.isError || empty) return;
