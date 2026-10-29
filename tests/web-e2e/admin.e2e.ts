@@ -1,5 +1,6 @@
 import { test, expect } from "./support/csp.js";
 import { evidenceShot } from "./support/screenshot.js";
+import { activate } from "./support/keyboard.js";
 import { checkA11y } from "./support/axe.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 test.beforeEach(async ({ context, request, baseURL }) => {
@@ -63,5 +64,5 @@ test("reads masked indexed invites through the real cookie route, paginates and 
 });
 
 test("keeps usable invites and exposes incomplete coverage after a deliberate refresh", async ({ page, request }) => {
- expect((await request.post("/__mock/admin-invites")).ok()).toBe(true);await page.goto("/app/admin/invites");await expect(page.getByRole("table")).toBeVisible();expect((await request.post("/__mock/admin-damage-invite")).ok()).toBe(true);const refresh = page.getByRole("button", { name: "Refresh invites" });await refresh.click();await expect(page.getByRole("alert")).toContainText("1 invite entry could not be checked");await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(24);await expect(page.getByRole("status").filter({ hasText: "Page 1:" })).toContainText("24 confirmed pending invites shown");await expect(refresh).toBeFocused();await expect(page.getByRole("button", { name: /create|revoke/ })).toHaveCount(0);await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: ".superpowers/sdd/codex/m6-partial-light.png" });await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: ".superpowers/sdd/codex/m6-partial-dark.png" });
+ expect((await request.post("/__mock/admin-invites")).ok()).toBe(true);await page.goto("/app/admin/invites");await expect(page.getByRole("table")).toBeVisible();expect((await request.post("/__mock/admin-damage-invite")).ok()).toBe(true);const refresh = page.getByRole("button", { name: "Refresh invites" });await activate(refresh);await expect(page.getByRole("alert")).toContainText("1 invite entry could not be checked");await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(24);await expect(page.getByRole("status").filter({ hasText: "Page 1:" })).toContainText("24 confirmed pending invites shown");await expect(refresh).toBeFocused();await expect(page.getByRole("button", { name: /create|revoke/ })).toHaveCount(0);await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: ".superpowers/sdd/codex/m6-partial-light.png" });await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: ".superpowers/sdd/codex/m6-partial-dark.png" });
 });
