@@ -5,9 +5,11 @@
 //   AUDIT#<org> HEAD              { seq, hash, updatedAt }
 //   AUDIT#<org> EVENT#<eventId>   { seq }: the claim that makes an event append once
 //   AUDIT_DIRTY <org>             { since, lastSeq }: an org with records the anchor has not sealed (C2)
+//   AUDIT#<org> FILTER#v1#...    canonical metadata postings and contiguous coverage; retained after erase/shred
 //   AUDIT_ORGS  <org>             written once, with the org's first record
 import { TransactWriteCommand, GetCommand, type DynamoDBDocumentClient, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { genesisHash, recordHash, type AuditDetailPart, type AuditEventInput, type AuditRecordV1 } from "@agentx/contracts";
+import { AUDIT_INDEX_COVERAGE, auditIndexPostings } from "./search-index.js";
 import type { AuditKeyring } from "./keyring.js";
 
 /** A conflict or a lost race is retried this many times after the first attempt, then the message is left to SQS. */
@@ -74,7 +76,7 @@ export function auditDetailParts(event: AuditEventInput): AuditDetailPart[] {
   return [...parts].map(([subject, fields]) => ({ subject, fields }));
 }
 
-function buildTransaction(deps: AppenderDeps, event: AuditEventInput, built: { seq: number; record: AuditRecordV1; sealedDetails: unknown[] }, prev: { seq: number; hash: string }): TransactWriteCommandInput["TransactItems"] {
+function buildTransaction(deps: AppenderDeps, event: AuditEventInput, built: { seq: number; record: AuditRecordV1; sealedDetails: unknown[] }, prev: { seq: number; hash: string }, advanceCoverage: boolean): TransactWriteCommandInput["TransactItems"] {
   const { ledgerTable: TableName } = deps;
   const { seq, record } = built;
   const pk = `AUDIT#${event.orgId}`;
@@ -111,6 +113,12 @@ function buildTransaction(deps: AppenderDeps, event: AuditEventInput, built: { s
       },
     },
     ...(first ? [{ Put: { TableName, Item: { pk: "AUDIT_ORGS", sk: event.orgId, createdAt: updatedAt } } }] : []),
+    ...auditIndexPostings(record).map(Item => ({ Put: { TableName, Item, ConditionExpression: "attribute_not_exists(pk)" } })),
+    ...(advanceCoverage ? [{ Put: {
+      TableName, Item: { pk, sk: AUDIT_INDEX_COVERAGE, v: 1, orgId: event.orgId, fromSeq: 1, throughSeq: seq },
+      ConditionExpression: first ? "attribute_not_exists(pk)" : "#through = :prev",
+      ...(first ? {} : { ExpressionAttributeNames: { "#through": "throughSeq" }, ExpressionAttributeValues: { ":prev": prev.seq } }),
+    } }] : []),
   ];
 }
 
@@ -128,6 +136,7 @@ export async function appendEvent(deps: AppenderDeps, event: AuditEventInput): P
     ? { kind: event.target.kind, id: event.target.id }
     : { kind: event.target.kind, id: await deps.keyring.pseudonym(event.orgId, event.target.kind, event.target.name) };
   const parts = auditDetailParts(event);
+  await deps.keyring.prepareCursorKey(event.orgId);
 
   for (let attempt = 0; ; attempt += 1) {
     const head = await documentClient.send(new GetCommand({ TableName: ledgerTable, Key: { pk, sk: "HEAD" }, ConsistentRead: true }));
@@ -135,6 +144,8 @@ export async function appendEvent(deps: AppenderDeps, event: AuditEventInput): P
       ? { seq: 0, hash: genesisHash(event.orgId) }
       : { seq: head.Item.seq as unknown, hash: head.Item.hash as unknown };
     if (typeof prev.seq !== "number" || !Number.isSafeInteger(prev.seq) || typeof prev.hash !== "string") throw new Error("audit append: the head is malformed");
+    const coverage = await documentClient.send(new GetCommand({ TableName: ledgerTable, Key: { pk, sk: AUDIT_INDEX_COVERAGE }, ConsistentRead: true }));
+    const advanceCoverage = prev.seq === 0 || (coverage.Item?.v === 1 && coverage.Item.orgId === event.orgId && coverage.Item.fromSeq === 1 && coverage.Item.throughSeq === prev.seq);
     const seq = prev.seq + 1;
     const sealed = await deps.keyring.sealDetails(event.orgId, seq, parts);
     const unhashed: Omit<AuditRecordV1, "hash"> = {
@@ -157,10 +168,12 @@ export async function appendEvent(deps: AppenderDeps, event: AuditEventInput): P
 
     let outcome: Outcome;
     try {
-      await documentClient.send(new TransactWriteCommand({ TransactItems: buildTransaction(deps, event, { seq, record, sealedDetails: sealed.sealed }, { seq: prev.seq, hash: prev.hash }) }));
+      await documentClient.send(new TransactWriteCommand({ TransactItems: buildTransaction(deps, event, { seq, record, sealedDetails: sealed.sealed }, { seq: prev.seq, hash: prev.hash }, advanceCoverage) }));
       outcome = { kind: "appended", seq };
     } catch (error) {
-      const classified = classify(error);
+      const reasons = (error as { CancellationReasons?: Reason[] } | null | undefined)?.CancellationReasons;
+      const coverageRace = advanceCoverage && reasons?.at(-1)?.Code === "ConditionalCheckFailed";
+      const classified = classify(error) ?? (coverageRace ? { kind: "retry" as const, wait: false } : undefined);
       if (classified === undefined) throw error;
       outcome = classified;
     }
@@ -176,7 +189,7 @@ export async function appendEvent(deps: AppenderDeps, event: AuditEventInput): P
 
 /**
  * Appends `event` to its org's chain: reads the head, builds the record (a name-keyed target becomes a pseudonym and its
- * name moves into the sealed `org` details), and commits record, head, claim and dirty marker in one transaction.
+ * name moves into the sealed `org` details), and commits record, head, claim, dirty marker, postings and contiguous coverage in one transaction.
  * `duplicate` when the event's claim exists already. A lost race for the sequence number, or a TransactionConflict, is
  * retried with a fresh read, at most five times; then it throws and SQS delivers the message again.
  */

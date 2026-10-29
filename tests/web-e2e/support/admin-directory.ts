@@ -1,7 +1,8 @@
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMemberKey, orgMetaKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
+import { orgMemberKey, orgMetaKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
+import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { AuditRuntime } from "../../../packages/broker/src/audit/outbox.js";
@@ -19,6 +20,7 @@ export function createAdminDirectory() {
  }
  put({ ...orgMetaKey("org_bbbbbbbbbbbbbbbbbbbb"), orgId: "org_bbbbbbbbbbbbbbbbbbbb", name: "Other company", plan: "team" });
  put({ ...orgMetaKey(FIXTURE_ORG), orgId: FIXTURE_ORG, name: "Acme", plan: "team", createdBy: FIXTURE_DEVELOPER });
+ put({ ...modelSourcesKey(FIXTURE_ORG),entityType:"ORG_MODEL_SOURCES",revision:1,sources:[],order:["personal-chatgpt","rovara"],credentials:[],removing:[],updatedBy:FIXTURE_DEVELOPER,updatedAt:"2026-10-27T12:00:00Z" });
  function condition(expression: string | undefined, row: Row | undefined, names: Record<string, string> = {}, values: Row = {}): boolean {
   if (expression === undefined) return true;
   if (expression === "attribute_not_exists(pk) OR indexExpiresAt <= :now") return row === undefined || (typeof row.indexExpiresAt === "number" && typeof values[":now"] === "number" && row.indexExpiresAt <= values[":now"]);
@@ -95,14 +97,17 @@ export function createAdminDirectory() {
  } };
  return {
   setRole,
+  changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
   async seedInvites() { let seedNow = Date.now() - 60_000;const store = new OrgStore({ documentClient, tableName: "mock-state", now: () => seedNow });for (let i = 0; i < 26; i++) { if (i === 20) seedNow += 60_000;await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` }); }await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },
-  evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), inviteReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST"), createReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_CREATE_RECEIPT").map(row => ({ orgId: row.orgId, inviteId: row.inviteId, requestId: row.requestId, role: row.role })), audit }; },
+  evidence() { return { members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), inviteReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST"), createReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_CREATE_RECEIPT").map(row => ({ orgId: row.orgId, inviteId: row.inviteId, requestId: row.requestId, role: row.role })), sourceOrder: rows.get(keyOf(modelSourcesKey(FIXTURE_ORG))), sourceReceipts: [...rows.values()].filter(row => String(row.pk).includes("SOURCE_ORDER_REVIEW")), audit }; },
   async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown) {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
-   const deps = { ...base, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }) };
+   // Only source routes use this seam; unused agent collaborators stay absent and fail closed if reached.
+   const sourceAgents = {documentClient,tableName:"mock-state",now:Date.now,modelSources:{store:new ModelSourceStore({documentClient,tableName:"mock-state",now:Date.now,chatgptSwitch:async()=>true,audit:runtime}),access:{async upsertSource(){throw new Error("No proxy writes in order fixture.");},async removeSource(){throw new Error("No proxy writes in order fixture.");},async checkSource(){throw new Error("No proxy checks in order fixture.");}},egress:{documentClient,tableName:"mock-state",now:()=>new Date()}}} as unknown as NonNullable<DeveloperRouteDependencies["agents"]>;
+   const deps = { ...base, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
    return routeDeveloperRequest(deps, { method, path, headers: {}, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },
  };

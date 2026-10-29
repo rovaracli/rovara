@@ -17,6 +17,7 @@ const columns: readonly Column<Row>[] = [
 ];
 export function BudgetsScreen() {
  const { orgId, developerId, role } = useAdminContext();
+ if (role !== "owner" && role !== "admin") return <section><PageHeader focusOnMount title="Spending" /><p role="alert">Only current company owners and admins can view these budgets. No amounts are shown.</p></section>;
  return <MonthlyBase key={`${orgId}:${developerId}:${role}`} orgId={orgId} developerId={developerId} role={role} />;
 }
 function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId: string; role: "owner" | "admin" }) {

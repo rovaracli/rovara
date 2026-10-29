@@ -14,11 +14,12 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
 function utc(value: string) { return new Date(value).toLocaleString("en-US", { timeZone: "UTC" }); }
 export function InvitesScreen() {
- const { orgId, developerId } = useAdminContext();
- return <InviteDirectory key={`${orgId}:${developerId}`} orgId={orgId} developerId={developerId} />;
+ const { orgId, developerId, role } = useAdminContext();
+ if (role !== "owner" && role !== "admin") return <section><PageHeader focusOnMount title="Invites" /><p role="alert">Only current company owners and admins can view company invites.</p></section>;
+ return <InviteDirectory key={`${orgId}:${developerId}`} orgId={orgId} developerId={developerId} role={role} />;
 }
-function InviteDirectory({ orgId, developerId }: { orgId: string; developerId: string }) {
- const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), { checking, company, role } = useAdminContext();
+function InviteDirectory({ orgId, developerId, role }: { orgId: string; developerId: string; role: "owner" | "admin" }) {
+ const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), { checking, company } = useAdminContext();
  const [selected, setSelected] = useState<InviteRevokeTarget & { fromCreation?: boolean }>(), trigger = useRef<HTMLElement>(null), preferSummary = useRef(false), region = useRef<HTMLElement>(null);
  const [createOpen, setCreateOpen] = useState(false), [createSession, setCreateSession] = useState(false), [createKey, setCreateKey] = useState(0), [resumeCreate, setResumeCreate] = useState(false);
  const createTrigger = useRef<HTMLButtonElement>(null), blockingInvite = useRef<string | undefined>(undefined), activeRevokeId = useRef<string | undefined>(undefined), creatingRevoke = useRef(false), restartPending = useRef(false);

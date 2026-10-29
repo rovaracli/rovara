@@ -18,13 +18,13 @@ export async function listOrganizationMembers(deps: Deps, caller: DeveloperCalle
  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "Organizations are not available.");
  const role = await liveDirectoryRole(deps, caller), full = role === "owner" || role === "admin";
  const records = await deps.orgs.listMembers(caller.orgId), store = storeOf(deps);
+ const developerRecords = await store.getDevelopers(records.map(member => member.developerId));
  records.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId));
- const developers = await store.getDevelopers(records.map(member => member.developerId));
  const listed: Array<{ developerId: string; name: string; role: OrgRole | "unknown"; email?: string; joinedAt?: string; identities?: string[] }> = [];
  // Bound concurrent reads. Restricted requests never read sign-in identity rows.
  for (let at = 0; at < records.length; at += 8) {
   const page = await Promise.all(records.slice(at, at + 8).map(async member => {
-   const record = developers.get(member.developerId), parsedRole = OrgRoleSchema.safeParse(member.role);
+   const record = developerRecords.get(member.developerId), parsedRole = OrgRoleSchema.safeParse(member.role);
    const publicFields = { developerId: member.developerId, name: record?.displayName ?? "Unknown", role: parsedRole.success ? parsedRole.data : "unknown" as const };
    if (!full) return publicFields;
    const identities = await store.identitiesOf(member.developerId), email = record?.email ?? identities.find(identity => identity.email !== undefined)?.email;
@@ -32,7 +32,7 @@ export async function listOrganizationMembers(deps: Deps, caller: DeveloperCalle
    return { ...publicFields, ...(email === undefined ? {} : { email }), joinedAt: member.joinedAt, identities: [...new Set(methods)] };
   }));listed.push(...page);
  }
- return { members: full ? listed : listed.sort((a,b) => a.name.localeCompare(b.name) || a.developerId.localeCompare(b.developerId)) };
+ return { members: full ? listed : listed.sort((a, b) => a.name.localeCompare(b.name) || a.developerId.localeCompare(b.developerId)) };
 }
 export async function lookupOrganizationMember(deps: Deps, caller: DeveloperCaller, body: unknown) {
  await liveDirectoryRole(deps, caller);

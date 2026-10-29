@@ -10,6 +10,7 @@ import { getTaskStopCeiling } from "../org/task-stop-ceiling.js";
 import { getAdminBudgetSettings } from "../org/admin-budget-settings.js";
 import { createReviewedOrganizationInvite, getInviteCreationReceipt } from "../org/invite-creation.js";
 import { getOrganizationInviteStatus } from "../org/invite-status.js";
+import { readSlackWorkspaceEvidence } from "../org/slack-workspace-evidence.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
@@ -134,6 +135,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
@@ -1979,6 +1981,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
+  if (authenticated !== undefined) requireReviewedModelSourceWebWrite(request, url);
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (request.method === "GET" && url.pathname === "/v1/app/models") {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
@@ -2113,6 +2117,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const revokeInvite = /^\/v1\/app\/org\/invites\/([^/]+)\/revoke$/.exec(url.pathname);
   if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
+  // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
+    if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
+    return readSlackWorkspaceEvidence(deps, caller);
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/members/lookup") return lookupOrganizationMember(deps, caller, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));

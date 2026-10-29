@@ -82,3 +82,8 @@ export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.
 // "How we work": the project playbook and its effective view (the How we work tab).
 export * from "./project-playbook.js";
 export * from "./how-we-work.js";
+
+// Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
+export * from "./org-slack-workspace-evidence.js";
+
+export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
