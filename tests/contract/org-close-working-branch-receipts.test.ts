@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { expect, it } from "vitest";
-import { orgMemberKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { expect, it, vi } from "vitest";
+import { githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgScoped, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { clearWorkingBranchSaveReceipts } from "../../packages/broker/src/org/project-working-branch-receipt-cleanup.js";
+import * as receiptCleanup from "../../packages/broker/src/org/project-working-branch-receipt-cleanup.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 async function fixture() {
@@ -17,15 +19,22 @@ async function fixture() {
 }
 it("clears only this company's receipts after the durable closing fence and before teardown/final close", async () => {
  const f = await fixture(); f.receipt(); f.receipt(); const foreign = f.receipt(f.other);
- const send = f.db.send.bind(f.db); let observed = false;
+ await f.store.bindSlackTeam({ orgId: f.orgId, teamId: "T1" });
+ const bindingKeys = [githubInstallationKey(11), orgGithubInstallationKey(f.orgId, 11), slackTeamOrgKey("T1"), orgSlackTeamKey(f.orgId, "T1")];
+ for (const key of bindingKeys.slice(0, 2)) f.db.set({ ...key, orgId: f.orgId, installationId: 11 });
+ const bindings = bindingKeys.map(key => f.db.get(key));
+ const send = f.db.send.bind(f.db); let observed = false; let observedBindings: unknown;
  f.db.send = async command => {
   if (command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"] === f.partition()) {
    observed = true; expect(f.db.get(orgMetaKey(f.orgId))?.closingAt).toBeDefined(); expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeUndefined();
    expect(f.db.get(orgMemberKey(f.orgId, "owner"))).toBeDefined();
+   observedBindings = bindingKeys.map(key => f.db.get(key));
   }
   return send(command);
  };
  await f.store.closeOrg(f.orgId, { archiveProjects: async () => { expect(f.remaining()).toEqual([]); }, clearEgress: async () => undefined });
+ expect(observedBindings).toEqual(bindings);
+ expect(bindingKeys.map(key => f.db.get(key))).toEqual([undefined, undefined, undefined, undefined]);
  expect(observed).toBe(true); expect(f.remaining()).toEqual([]); expect(f.db.get(foreign)).toEqual(foreign);
  expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeDefined();
  f.db.send = send;
@@ -50,8 +59,26 @@ for (const failure of ["query", "malformed", "conflict", "fence"] as const) it(`
  expect(closingAt).toBeDefined(); expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeUndefined(); expect(f.db.get(orgMemberKey(f.orgId, "owner"))).toBeDefined(); expect(f.remaining()).toHaveLength(1);
  await f.close(); expect(f.remaining()).toEqual([]); expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeDefined(); expect(f.db.get(orgMetaKey(f.orgId))?.closingAt).toBeUndefined();
 });
-it("leaves empty cleanup a no-op and allows repeat close", async () => {
- const f = await fixture(); await f.close(); const meta = f.db.get(orgMetaKey(f.orgId)); await f.close(); expect(f.db.get(orgMetaKey(f.orgId))).toEqual(meta); expect(f.remaining()).toEqual([]);
+it("empty cleanup preserves the no-cleanup close audit, shred, rows and transaction count", async () => {
+ const setup = async () => {
+  const now = () => Date.parse("2026-10-29T00:00:00.000Z"), db = new FakeDynamoDb(), capture = capturingAuditDeps({ db, now });
+  const store = new OrgStore({ documentClient: db, tableName: "state", now, newOrgId: () => "org_aaaaaaaaaaaaaaaaaaaa", audit: capture.audit });
+  const orgId = await store.createOrgWithOwner({ name: "Closing", developerId: "a".repeat(64) });
+  const initialTransactions = db.transactions().length;
+  const snapshot = () => ({ rows: db.find(() => true).sort((a, b) => `${String(a.pk)}/${String(a.sk)}`.localeCompare(`${String(b.pk)}/${String(b.sk)}`)),
+   audit: capture.recorded(), pending: capture.pendingItems(), transactions: db.transactions().length - initialTransactions });
+  return { db, capture, snapshot, close: () => store.closeOrg(orgId, { archiveProjects: async () => undefined, clearEgress: async () => undefined }) };
+ };
+ const baseline = await setup(), actual = await setup();
+ // Test-only prior path: skip exactly the newly added helper call, preserving every other real close operation.
+ const noCleanup = vi.spyOn(receiptCleanup, "clearWorkingBranchSaveReceipts").mockResolvedValueOnce({ deleted: 0 });
+ try { await baseline.close(); expect(noCleanup).toHaveBeenCalledTimes(1); } finally { noCleanup.mockRestore(); }
+ await actual.close();
+ expect(actual.capture.recordedBy("org.closed")).toHaveLength(1);
+ expect(actual.capture.recordedBy("audit.org_shred_scheduled")).toHaveLength(1);
+ expect(actual.db.find(row => row.pk === "AUDIT_SHRED_DUE")).toHaveLength(1);
+ expect(actual.snapshot()).toEqual(baseline.snapshot());
+ const beforeRepeat = actual.snapshot(); await actual.close(); expect(actual.snapshot()).toEqual(beforeRepeat);
 });
 it("a concurrent close safely wins while the stale cleanup caller retains no ability to reopen or partially finalize", async () => {
  const f = await fixture(); f.receipt(); const foreign = f.receipt(f.other); const send = f.db.send.bind(f.db); let raced = false;
