@@ -1,5 +1,5 @@
-import { fixtureActor } from "../support/money-authority.js";
 // The existing owner-cap approval boundary, across agent and chain money/ownership changes.
+import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";

@@ -615,7 +615,15 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
 
   /** Changes the maintainer answerable for a project's chain. That the new person holds `manage_agents` on the project is the route's check. */
   async setAccountable(orgId: OrgId, chainId: ChainId, accountable: { developerId: string }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
+    const actor = options.actor;
+    if ((request !== undefined && actor === undefined) ||
+      (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+      (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+      (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const chain = await this.require(orgId, chainId);
+    const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
+    if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(chain), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     if (chain.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
     const updatedAt = this.iso();
     const changed: ChainRecord = { ...chain, accountable, updatedAt };
@@ -626,12 +634,16 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId: chainId, accountable: accountable.developerId,
       ...(chain.accountable === undefined ? {} : { previous: chain.accountable.developerId }),
     }, "chain")]);
-    await this.commit(...withOverride([
-      this.update(chainKey(orgId, chainId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(chain.updatedAt)} AND ${guard(a)}` }),
+    const items = [
+      this.update(chainKey(orgId, chainId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(chain.updatedAt)} AND ${guard(a)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}` }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, changed);
     await flushAuditEvents(this.input, audit.events);
     return changed;
   }

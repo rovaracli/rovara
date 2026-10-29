@@ -1347,7 +1347,7 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
     switch (change.op) {
       case "set_budget": await deps.chains.setBudget(record.orgId, chainId, change.budget.monthlyUsd === null ? undefined : change.budget.monthlyUsd, by, undefined, options); return;
       case "set_owner": await deps.chains.setOwner(record.orgId, chainId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap }); return;
-      case "set_accountable": await deps.chains.setAccountable(record.orgId, chainId, change.accountable, by, undefined, options); return;
+      case "set_accountable": await deps.chains.setAccountable(record.orgId, chainId, change.accountable, by, undefined, { overrideCap: options.overrideCap }); return;
       case "unarchive": await deps.chains.unarchive(record.orgId, chainId, by, undefined, options); return;
     }
   }

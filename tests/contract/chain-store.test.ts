@@ -796,13 +796,13 @@ describe("the owner's monthly total", () => {
     expect(moved).toMatchObject({ owner: WEB_OWNS, accountable: { developerId: CAROL } });
     expect(ctx.total(BOB)).toBe(0);
     expect(ctx.total(CAROL)).toBe(10);
-    await ctx.chains.setAccountable(ORG_A, chain.chainId, { developerId: BOB }, DAN);
+    await ctx.chains.setAccountable(ORG_A, chain.chainId, { developerId: BOB }, DAN, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) });
     expect(ctx.total(CAROL)).toBe(0);
     expect(ctx.total(BOB)).toBe(10);
     // A member owner has no accountable; a project owner needs one.
     expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, ALICE_OWNS, DAN, { developerId: BOB }, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(ctx.chains.setAccountable(ORG_A, (await ctx.create("Mine")).chainId, { developerId: BOB }, DAN))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(ctx.chains.setAccountable(ORG_A, (await ctx.create("Mine")).chainId, { developerId: BOB }, DAN, undefined, { actor: fixtureActor(ctx.db, ORG_A, DAN) }))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("does not count an archived chain, or one with no budget, when it builds a total", async () => {

@@ -428,7 +428,7 @@ async function putAccountable(deps: ChainRouteDependencies, caller: AgentCaller,
   if (chain.owner.kind !== "project") throw agentXError("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
   const accountable = await requireChainAccountable(deps, caller.orgId, chain.owner.project, input.accountable.developerId);
   const done = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { accountable }), { op: "set_accountable", accountable }, mark,
-    (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, options));
+    (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (done instanceof StatusReply) return done;
   return { accountable };
 }
