@@ -5,13 +5,8 @@ import { StepThinkingLevelSchema as ThinkingLevelSchema } from "./agent-recipe.j
 import { NeedsConfirmationSchema } from "./session-views.js";
 import { forwardReader } from "./forward-reader.js";
 
-export const STAGE_IDS = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"] as const;
-export const StageIdSchema = z.enum(STAGE_IDS);
-export type StageId = z.infer<typeof StageIdSchema>;
-export const STAGE_MODEL_REFUSAL_CODES = ["MODEL_NOT_VERIFIED", "MODEL_STALE", "MODEL_FORBIDDEN", "MODEL_NOT_ALLOWED_IN_PROJECT", "STAGE_LOCKED", "DIFFERENT_FROM_UNSATISFIABLE", "LOCK_UNSATISFIABLE", "NO_VERIFIED_CANDIDATE", "POLICY_STALE", "DRAFT_STALE", "NEEDS_CONFIRMATION"] as const;
-export const StageModelRefusalCodeSchema = z.enum(STAGE_MODEL_REFUSAL_CODES);
-export type StageModelRefusalCode = z.infer<typeof StageModelRefusalCodeSchema>;
-export const ModelFallbackReasonCodeSchema = z.enum([...STAGE_MODEL_REFUSAL_CODES, "DEFAULT_MODEL_UNAVAILABLE", "CHATGPT_PLAN_UNAVAILABLE", "MODEL_CALL_REFUSED", "CONFIGURED_FALLBACK"]);
+export * from "./stage-model-shared.js";
+import {StageIdSchema,StageModelRefusalCodeSchema} from "./stage-model-shared.js";
 const Revision = z.number().int().min(0);
 const Digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const Instant = z.string().datetime();
@@ -86,10 +81,6 @@ export const ModelPolicyPreviewResponseSchema = z.object({
 export type ModelPolicyPreviewRequest = z.infer<typeof ModelPolicyPreviewRequestSchema>;
 export type ModelPolicyPreviewResponse = z.infer<typeof ModelPolicyPreviewResponseSchema>;
 export const ModelPolicyPreviewResponseReaderSchema = forwardReader(ModelPolicyPreviewResponseSchema);
-export const ModelFallbackSchema = z.object({ stage: StageIdSchema, used: Line, wanted: Line.nullable(), reasonCode: ModelFallbackReasonCodeSchema }).strict();
-export type ModelFallback = z.infer<typeof ModelFallbackSchema>;
-export const ModelFallbacksSchema = z.array(ModelFallbackSchema).max(64);
-
 /** Stage editing uses the existing recipe scale; xhigh is NOT a v1.1 stage setting. */
 export const STAGE_MODEL_THINKING_LEVELS = ThinkingLevelSchema.options;
 export const ModelSelectionPolicyAppliedSchema = z.object({ status:z.literal("APPLIED"),revision:Revision,requestId:z.uuid() }).strict();

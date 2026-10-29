@@ -64,3 +64,14 @@ it("keeps every edit group aligned and exports the policy reference pairs",()=>{
  for(const group of contracts.STAGE_EDIT_GROUPS) expect(new Set(group.map(stage=>contracts.STAGE_EDIT_RULES[stage].editGroup)).size).toBe(1);
  expect(contracts.STAGE_REFERENCE).toEqual({plan_check:"plan",code_review:"build",security_review:"build"});
 });
+
+it("keeps fallback history in the canonical task and nested session task contract",async()=>{
+ const {DeveloperTaskViewSchema}=await import("../../packages/contracts/src/developer-tasks.js");
+ const fallback={stage:"build",used:"anthropic/claude-sonnet-4",wanted:null,reasonCode:"DEFAULT_MODEL_UNAVAILABLE"};
+ const task={taskId:"11111111-1111-4111-8111-111111111111",title:"Work",project:"payments",status:"RUNNING",startingRevision:1,client:"test",shared:false,createdAt:"2026-10-29T00:00:00Z",updatedAt:"2026-10-29T00:00:00Z",events:[]};
+ expect(DeveloperTaskViewSchema.parse({...task,modelFallbacks:[fallback]}).modelFallbacks).toEqual([fallback]);
+ expect(DeveloperTaskViewSchema.safeParse(task).success).toBe(true);
+ for(const modelFallbacks of [[{...fallback,reasonCode:"raw provider exception"}],[{...fallback,sourceBinding:"private"}],Array(65).fill(fallback)]) expect(DeveloperTaskViewSchema.safeParse({...task,modelFallbacks}).success).toBe(false);
+ const {SessionStepTaskResponseSchema}=await import("../../packages/contracts/src/session-views.js");
+ expect(SessionStepTaskResponseSchema.parse({task:{...task,modelFallbacks:[fallback]}}).task.modelFallbacks).toEqual([fallback]);
+});
