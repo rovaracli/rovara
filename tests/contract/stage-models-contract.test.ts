@@ -58,3 +58,9 @@ it("exports browser-safe mapping/edit groups without widening the recipe thinkin
 });
 
 it("does not silently widen stage thinking beyond the recipe schema",()=>{expect(contracts.StageModelChoiceSchema.safeParse({model,thinkingLevel:"xhigh"}).success).toBe(false);});
+
+it("keeps every edit group aligned and exports the policy reference pairs",()=>{
+ expect(contracts.STAGE_EDIT_GROUPS).toContainEqual(["understand","plan"]);
+ for(const group of contracts.STAGE_EDIT_GROUPS) expect(new Set(group.map(stage=>contracts.STAGE_EDIT_RULES[stage].editGroup)).size).toBe(1);
+ expect(contracts.STAGE_REFERENCE).toEqual({plan_check:"plan",code_review:"build",security_review:"build"});
+});
