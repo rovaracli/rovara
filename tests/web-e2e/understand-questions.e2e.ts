@@ -2,6 +2,7 @@ import type { BrowserContext } from "@playwright/test";
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
+import { evidenceShot } from "./support/screenshot.js";
 import { understandSession } from "../web/support/understand-fixture.js";
 const id = "ses_aaaaaaaaaaaaaaaaaaaa";
 const sign = async (context: BrowserContext, baseURL: string) => context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL, secure: true, httpOnly: true, sameSite: "Strict" }]);
@@ -16,7 +17,7 @@ test("answers Understand's questions on the session page with the keyboard, once
  await page.setViewportSize({ width: 360, height: 800 });
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
- await page.screenshot({ path: ".test-build/web-e2e/understand-questions-form.png", fullPage: true });
+ await evidenceShot(page, { path: ".test-build/web-e2e/understand-questions-form.png", fullPage: true });
  await page.getByRole("button", { name: "Send answers" }).focus();await page.keyboard.press("Enter");
  await expect(page.getByRole("radio").first()).toBeFocused();await expect(page.getByRole("alert")).toContainText("Answer every question");
  await page.keyboard.press("Space");await page.keyboard.press("Tab");await page.keyboard.press("Tab");
@@ -27,7 +28,7 @@ test("answers Understand's questions on the session page with the keyboard, once
  const posts = ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string; body?: unknown }>).filter(row => row.method === "POST" && row.path.endsWith("/answers"));
  expect(posts).toHaveLength(1);
  expect(posts[0]!.body).toMatchObject({ round: 1, revision: 4, answers: [{ questionId: "q1", optionId: "a" }, { questionId: "q2", text: "Yes, the last year" }] });
- await page.screenshot({ path: ".test-build/web-e2e/understand-questions.png", fullPage: true });
+ await evidenceShot(page, { path: ".test-build/web-e2e/understand-questions.png", fullPage: true });
 });
 
 test("tells a late answerer the questions were already answered, and shows the questions read-only to someone who cannot answer", async ({ page, context, request, baseURL }) => {
