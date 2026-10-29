@@ -364,7 +364,7 @@ describe("agent.owner_changed", () => {
     const s = storeSetup();
     const agent = await s.make("Web helper", { kind: "project", project: "web" }, { accountable: { developerId: ALICE } });
     s.clock.now += 1000;
-    await s.store.setAccountable(TEST_ORG, agent.agentId, { developerId: BOB }, ALICE);
+    await s.store.setAccountable(TEST_ORG, agent.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(s.db, TEST_ORG, ALICE) });
     s.clock.now += 1000;
     await s.store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, ALICE);
     const events = s.capture!.recordedBy("agent.owner_changed");

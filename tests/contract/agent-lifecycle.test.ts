@@ -1326,7 +1326,7 @@ describe("the broker's wiring", () => {
 
     // Removing the grant of a maintainer does the same.
     await put("maintainer");
-    await h.store.setAccountable(TEST_ORG, agent.agentId, { developerId: MAYA.developerId }, OMAR.developerId);
+    await h.store.setAccountable(TEST_ORG, agent.agentId, { developerId: MAYA.developerId }, OMAR.developerId, undefined, { actor: fixtureActor(h.db, TEST_ORG, OMAR.developerId) });
     const removed = await h.dev(OMAR, "DELETE", `/v1/app/projects/payments/members/${MAYA.developerId}`, { requestId: randomUUID() });
     expect(removed.status, JSON.stringify(removed.body)).toBe(200);
     expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: OMAR.developerId });

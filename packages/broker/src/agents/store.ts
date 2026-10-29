@@ -800,7 +800,15 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       await flushAuditEvents(this.input, audit.events);
       return;
     }
+    const actor = options.actor;
+    if ((request !== undefined && actor === undefined) ||
+      (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+      (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+      (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const agent = await this.require(orgId, agentId);
+    const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
+    if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
@@ -809,12 +817,16 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
       ...(agent.accountable === undefined ? {} : { previous: agent.accountable.developerId }),
     })]);
-    await this.commit(...withOverride([
-      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
+    const items = [
+      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}` }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
     await flushAuditEvents(this.input, audit.events);
   }
 

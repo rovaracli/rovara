@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // The existing owner-cap approval boundary, across agent and chain money/ownership changes.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -121,7 +122,7 @@ it("refuses direct chain money after ownership moves between manage access and t
   t.db.send = async command => {
     const result = await send(command), key = (command.input as { Key?: { pk?: string; sk?: string } }).Key;
     if (!moved && command.constructor.name === "GetCommand" && key?.pk === s.key.pk && key.sk === s.key.sk) {
-      moved = true; await t.deps().chains!.setOwner(TEST_ORG, s.id, { kind: "member", developerId: OMAR.developerId }, ADA.developerId, undefined, undefined, { actor: { developerId: ADA.developerId, role: "owner" } });
+      moved = true; await t.deps().chains!.setOwner(TEST_ORG, s.id, { kind: "member", developerId: OMAR.developerId }, ADA.developerId, undefined, undefined, { actor: fixtureActor(t.db, TEST_ORG, ADA.developerId) });
     }
     return result;
   };

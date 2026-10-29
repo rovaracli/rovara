@@ -640,7 +640,7 @@ async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller,
   }
   // The agent's budget moves from the old accountable maintainer's total to the new one's.
   const current = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
-  const done = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { accountable }), { op: "set_accountable", accountable }, mark, (options) => deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark, options));
+  const done = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { accountable }), { op: "set_accountable", accountable }, mark, (options) => deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark, "owner" in agent ? { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent } : options));
   if (done instanceof StatusReply) return done;
   return { accountable };
 }

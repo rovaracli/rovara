@@ -421,7 +421,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     const project = await store.create({ orgId: TEST_ORG, name: "Project agent", owner: { kind: "project", project: "web" }, accountable: { developerId: ALICE }, createdBy: ALICE });
     await store.setBudget(TEST_ORG, project.agentId, { monthlyUsd: 35 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(35);
-    await store.setAccountable(TEST_ORG, project.agentId, { developerId: BOB }, ALICE, undefined, { ownerCap: await capOf() });
+    await store.setAccountable(TEST_ORG, project.agentId, { developerId: BOB }, ALICE, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(0);
     expect(totalOf(BOB)).toBe(35);
     // A member-owned agent moved to the project counts for the maintainer who is accountable for it.
