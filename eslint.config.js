@@ -26,6 +26,7 @@ export default tseslint.config(
       "**/.test-build/**",
       "tests/fixtures/orders-web-m14/**",
       "tests/fixtures/e2e-accounts-app/**",
+      "tests/fixtures/e2e-midstep-carriers/**",
       "tests/fixtures/e2e-inferred-web-app/**",
       "tests/fixtures/orders-web-m13/**",
       "eslint.config.js",

@@ -39,7 +39,7 @@
     "@hpcc-js/wasm-graphviz": "1.29.0",
     "jose": "6.2.12",
     "yaml": "2.9.1",
-    "zod": "4.6.5",
+    "zod": "4.6.6",
     "@agentx/design-tokens": "0.1.0"
   }
 }

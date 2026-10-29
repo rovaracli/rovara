@@ -63,7 +63,7 @@
     "eslint": "10.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "jsdom": "29.1.1",
-    "jsonata": "2.0.6",
+    "jsonata": "2.2.1",
     "playwright-core": "1.64.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -71,6 +71,14 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.0",
     "vite": "8.3.0",
-    "vitest": "5.0.1"
+    "vitest": "5.0.3"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.12.2"
+    },
+    "e2e": {
+      "zod": "4.6.6"
+    }
   }
 }
