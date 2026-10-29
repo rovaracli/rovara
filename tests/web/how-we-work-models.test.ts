@@ -10,8 +10,9 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
-import { LAYER, howWeWorkHost, type Handler } from "./support/how-we-work-fixture.js";
-import { OPUS, SONNET, effective, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
+import { LAYER, draftBody, howWeWorkHost, type Handler } from "./support/how-we-work-fixture.js";
+import { StepThinkingLevelSchema } from "@agentx/contracts/web";
+import { OPUS, SONNET, candidates, effective, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
 
 const PATH = "/v1/app/projects/payments/stage-models";
 type Json = Record<string, unknown>;
@@ -21,8 +22,8 @@ const stageModels = (body: (draft: string | null) => unknown): Handler => (_requ
  const answer = body(url.searchParams.get("draft"));
  return typeof answer === "object" && answer !== null && "status" in answer ? answer as { status: number; body: unknown } : { status: 200, body: answer };
 };
-function setup(options: { canEdit?: boolean; stages?: Record<string, Json>; read?: (draft: string | null) => unknown; overlay?: Record<string, unknown>; theme?: "light" | "dark" } = {}) {
- const cell = howWeWorkHost({ ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }), ...(options.overlay === undefined ? {} : { overlay: options.overlay }), handle: stageModels(options.read ?? (() => stageModelsBody(options.stages))) }), query = createQueryClient();
+function setup(options: { canEdit?: boolean; stages?: Record<string, Json>; read?: (draft: string | null) => unknown; handle?: Handler; overlay?: Record<string, unknown>; theme?: "light" | "dark" } = {}) {
+ const cell = howWeWorkHost({ ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }), ...(options.overlay === undefined ? {} : { overlay: options.overlay }), handle: (request, url) => options.handle?.(request, url) ?? stageModels(options.read ?? (() => stageModelsBody(options.stages)))(request, url) }), query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...cell, ...ui, query };
 }
@@ -60,10 +61,13 @@ describe("editable model rows", () => {
   expect(f.sent().map(request => request.method + " " + request.path).slice(-2)).toEqual(["POST /v1/app/projects/payments/playbook/process", `PUT /v1/app/agents/${LAYER}/draft`]);
  });
 
- it("offers the full thinking scale plus Model default", async () => {
+ it("offers only the thinking levels the step settings accept, plus Model default", async () => {
   await open();
   await waitFor(() => expect(picker("Build", "Effort")).toBeTruthy());
-  expect(Array.from(picker("Build", "Effort").options).filter(option => option.value !== "").map(option => option.value)).toEqual(["inherit", "null", "off", "minimal", "low", "medium", "high", "xhigh"]);
+  const values = Array.from(picker("Build", "Effort").options).filter(option => option.value !== "").map(option => option.value);
+  expect(values).toEqual(["inherit", "null", "off", "minimal", "low", "medium", "high"]);
+  for (const value of values.filter(value => value !== "inherit" && value !== "null")) expect(StepThinkingLevelSchema.safeParse(value).success).toBe(true);
+  expect(values).not.toContain("xhigh");
  });
 
  it("removes the model field from the saved draft for Rovara's default, and keeps the step's other settings", async () => {
@@ -176,6 +180,80 @@ describe("editable model rows", () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(false);
   fireEvent.change(picker("Build"), { target: { value: "__default" } });
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
+ });
+
+ it("drops a pending model edit when the stage becomes locked, and Save draft goes quiet", async () => {
+  let stages: Record<string, Json> = {};
+  const f = await open({ read: () => stageModelsBody(stages) });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(false);
+  stages = { build: stageEntry("build", { companyDefault: { choice: { model: SONNET, effort: null }, locked: true }, result: effective(SONNET, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) };
+  await f.query.invalidateQueries();
+  await waitFor(() => expect(within(card("Build")).queryByRole("combobox")).toBeNull());
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
+  expect(puts(f)).toEqual([]);
+ });
+
+ it("drops a pending model edit when the stage stops being editable", async () => {
+  let stages: Record<string, Json> = {};
+  const f = await open({ read: () => stageModelsBody(stages) });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  stages = { build: stageEntry("build", { editable: false }) };
+  await f.query.invalidateQueries();
+  await waitFor(() => expect(within(card("Build")).queryByRole("combobox")).toBeNull());
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
+ });
+
+ it("drops a pending model edit when the chosen model is no longer verified, and keeps the other edits", async () => {
+  let aged = false;
+  const f = await open({ read: () => stageModelsBody({ build: stageEntry("build", { candidates: candidates().map(candidate => aged && candidate.model === OPUS ? { ...candidate, status: "stale" } : candidate) }) }) });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  fireEvent.change(picker("Build", "Effort"), { target: { value: "low" } });
+  aged = true;
+  await f.query.invalidateQueries();
+  await waitFor(() => expect(picker("Build").value).toBe("__default"));
+  expect(picker("Build", "Effort").value).toBe("low");
+  const body = await saved(f);
+  expect(body.overlay.steps!.build).toEqual({ instructions: "Run the linter.", thinkingLevel: "low" });
+ });
+
+ it("discards pending model edits when the read is refused as stale", async () => {
+  let stale = false;
+  const f = await open({ read: () => stale ? { status: 409, body: { error: { code: "DRAFT_STALE", message: "Stale." } } } : stageModelsBody() });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  stale = true;
+  await f.query.invalidateQueries();
+  expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
+  expect(puts(f)).toEqual([]);
+ });
+
+ it("discards pending model edits when the draft revision changes under the person, and says so", async () => {
+  let moved = false;
+  const f = await open({ handle: (request, url) => moved && url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "GET" ? { status: 200, body: draftBody({ instructions: "Keep changes small." }, 4) } : undefined });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  moved = true;
+  await f.query.invalidateQueries();
+  expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true));
+  expect(picker("Build").value).toBe("__default");
+  expect(puts(f)).toEqual([]);
+ });
+
+ it("still saves a valid edit after the read refreshes without changing anything", async () => {
+  const f = await open();
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  await f.query.invalidateQueries();
+  await waitFor(() => expect(f.request.mock.calls.filter(([request]) => request.path.startsWith(PATH)).length).toBeGreaterThan(1));
+  expect(picker("Build").value).toBe(OPUS);
+  const body = await saved(f);
+  expect(body.overlay.steps!.build).toEqual({ instructions: "Run the linter.", model: opus });
  });
 
  it.each(["light", "dark"] as const)("passes axe in the %s theme", async theme => {

@@ -2,6 +2,7 @@
 // the answers come from the stage-models read and the server checks what is saved.
 import type { Overlay } from "../builder/draft-state.js";
 import type { StageModelsStage, ThinkingLevel } from "../../api/stage-models.js";
+import { candidateBlock } from "./stage-model-text.js";
 /** The picker's "Rovara's default": the project makes no choice and the model field is removed. */
 export const DEFAULT_MODEL = "__default";
 /** `inherit` removes the setting, `null` is "Model default" (no explicit level), else a level. */
@@ -39,4 +40,23 @@ export function applyModelEdits(overlay: Overlay, edits: ModelEdits, references:
  const next: Overlay = { ...overlay };
  if (Object.keys(steps).length > 0) next.steps = steps;else delete next.steps;
  return next;
+}
+/** Whether a person can change this card's model settings: every stage of the card is editable and none is locked or model-free. */
+export const stagesEditable = (stages: readonly StageModelsStage[]): boolean => stages.length > 0 && stages.every(stage => stage.editable && stage.notice === undefined && !stage.companyDefault.locked && stage.result.kind !== "not_applicable" && !(stage.result.kind === "effective" && stage.result.locked));
+/** Drops the pending edits the latest read no longer allows: a stage that is locked, not editable or gone, or a chosen model that is not (or no longer) verified and unblocked in every stage of the card. Returns the same object when nothing was dropped. */
+export function pruneEdits(edits: ModelEdits, stagesOf: (stepId: string) => readonly StageModelsStage[] | undefined): ModelEdits {
+ const kept: ModelEdits = {};
+ for (const [id, edit] of Object.entries(edits)) {
+  const stages = stagesOf(id);
+  if (stages === undefined || !stagesEditable(stages)) continue;
+  const model = edit.model;
+  if (model !== undefined && model !== DEFAULT_MODEL && !stages.every(stage => stage.candidatesState === "complete" && stage.candidates.some(candidate => candidate.model === model && candidateBlock(candidate) === undefined))) {
+   const { model: _dropped, ...rest } = edit;void _dropped;
+   if (Object.keys(rest).length > 0) kept[id] = rest;
+   continue;
+  }
+  kept[id] = edit;
+ }
+ const same = Object.keys(kept).length === Object.keys(edits).length && Object.entries(kept).every(([id, edit]) => edit === edits[id]);
+ return same ? edits : kept;
 }
