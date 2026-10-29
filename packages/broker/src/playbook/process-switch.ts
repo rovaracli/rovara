@@ -16,9 +16,12 @@ import { processLessSafeChanges } from "./process-less-safe.js";
 import { readProjectPlaybookState, type ProjectPlaybookReader } from "./project-playbook-store.js";
 import type { ProcessAgentReader } from "./project-process.js";
 
+/** The agent store the switch reads. `list` is required (PB21): with an unreadable playbook it is the only way to find the layer, and a store that could not list would skip the second person. */
+export type SwitchAgentStore = ProcessAgentReader & { list(orgId: OrgId): Promise<AgentRecord[]> };
+
 /** What the switch needs: the playbook documents, the agent store, and (for a switch that must wait) the approvals. */
 export interface BuiltinSwitchDependencies extends ProjectPlaybookReader {
-  store: (ProcessAgentReader & { list?(orgId: OrgId): Promise<AgentRecord[]> }) | undefined;
+  store: SwitchAgentStore | undefined;
   approvals?: ApprovalDependencies | undefined;
 }
 
@@ -44,7 +47,7 @@ const UNREADABLE_REASON = "Replaces the project's saved way of working, which ca
 
 /** The project's process layer when its playbook can't say which it is: the one process layer it owns (an active one first), as `existingLayer` finds it. */
 async function ownedLayer(deps: BuiltinSwitchDependencies, orgId: OrgId, project: string): Promise<AgentRecord | undefined> {
-  const owned = ((await deps.store?.list?.(orgId)) ?? []).filter((agent) => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project);
+  const owned = ((await deps.store?.list(orgId)) ?? []).filter((agent) => agent.purpose === "process" && agent.owner.kind === "project" && agent.owner.project === project);
   return owned.find((agent) => agent.status === "active") ?? owned[0];
 }
 
