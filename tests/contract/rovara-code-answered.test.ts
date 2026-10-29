@@ -897,3 +897,46 @@ describe("round trip: the answers after an Answered task, as the broker sends th
     }
   });
 });
+
+// ---- R1b: the web app reads the answer from the task view
+
+describe("the answer in the task view the web app reads", () => {
+  const HEADER = { "x-agentx-task-view": "2" };
+  const secretAnswer = () => answerAssessment({ answer: "The worker reads DB_PASSWORD=hunter2-prod-value at start.\nIt retries three times.", sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] });
+  const answerOf = (reply: { body: Record<string, unknown> }) => {
+    const session = reply.body.session as { body: { task: { status: string; workflow: { outcome?: string; intent?: { assessment?: { kind: string; answer?: string; sources?: unknown } } } } } };
+    return session.body.task.workflow;
+  };
+
+  it("carries the answer and its sources to a reader who asks for the version 2 view, with a credential already redacted", async () => {
+    const t = await world();
+    const run = await t.answeredTask(secretAnswer());
+    const read = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(read.status).toBe(200);
+    const workflow = answerOf(read);
+    expect(workflow.outcome).toBe("ANSWERED");
+    expect(workflow.intent?.assessment).toMatchObject({ kind: "answer", sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] });
+    const answer = workflow.intent!.assessment!.answer!;
+    expect(answer).toContain("It retries three times.");
+    // Redaction happens when the answer is kept (so the view, the stored task and "Make a change anyway" all hold the same words); the view adds nothing of its own to mask.
+    expect(answer).toContain("DB_PASSWORD=[REDACTED]");
+    expect(JSON.stringify(read.body)).not.toContain("hunter2-prod-value");
+    expect(workflowAnswer(t.meta(run.taskId).workflow as never)!.answer).toBe(answer);
+    // A client that does not ask for the version 2 view reads the task as it always has: closed, with no answer in it.
+    const old = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect(answerOf(old).intent).toBeUndefined();
+  });
+
+  it("carries it to a person who may only view the session, and to nobody else", async () => {
+    const t = await world({ orgs: true });
+    await t.member(ARJUN);
+    const run = await t.answeredTask(secretAnswer());
+    expect((await t.share(run.sessionId, ARJUN, "view")).status).toBeLessThan(300);
+    const viewer = await t.dev(ARJUN, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(viewer.status).toBe(200);
+    expect(answerOf(viewer).intent?.assessment?.answer).toContain("It retries three times.");
+    const other = await t.dev(OMAR, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, HEADER);
+    expect(other.status).toBe(404);
+    expect(JSON.stringify(other.body)).not.toContain("retries three times");
+  });
+});

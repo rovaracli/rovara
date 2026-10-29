@@ -11,7 +11,7 @@ type Answer = ReturnType<typeof TaskResponseReaderSchema.parse>;
 export type StartedCode = Answer & { sessionId?: string; sessionUrl?: string };
 
 /** The route's answer: the task, plus `sessionId` and `sessionUrl` beside it. A session id that is not one is left out, never guessed. */
-const StartedCodeReader: Reader<StartedCode> = { parse(value: unknown): StartedCode {
+export const StartedCodeReader: Reader<StartedCode> = { parse(value: unknown): StartedCode {
  const answer = TaskResponseReaderSchema.parse(value), body = value as { sessionId?: unknown; sessionUrl?: unknown };
  const session = SessionIdSchema.safeParse(body.sessionId ?? (answer.task as { sessionId?: unknown }).sessionId);
  if (!session.success) return answer;

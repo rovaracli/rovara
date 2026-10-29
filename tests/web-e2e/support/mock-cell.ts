@@ -181,6 +181,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (input.revision !== session.revision || input.round !== 1) { json(409, { error: { code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." } });return; }
   current.session = understandSession({ waiting: false, revision: session.revision + 1 });json(200, { session: current.session });return;
  }
+ // "Make a change anyway" after an Answered task (R1b): the route starts a new task and its session (202); the mock then serves that new, running session, as the browser opens it.
+ if (url.pathname === path + "/change-anyway" && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4000) throw new Error("Mock body limit."); }
+  evidence.body = JSON.parse(body) as unknown;
+  const next = "ses_bbbbbbbbbbbbbbbbbbbb";
+  current.session = SessionViewSchema.parse({ ...understandSession({ waiting: false }), sessionId: next });
+  json(202, { task: taskFixture({ sessionId: next }), sessionId: next, sessionUrl: origin + "/s/" + next });return;
+ }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
  if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
  if ((url.pathname === path + "/messages" && method === "POST") || (url.pathname === path + "/shares" && method === "PUT")) {
