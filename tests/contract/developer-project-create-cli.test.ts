@@ -56,6 +56,21 @@ describe("agentx project create", () => {
     expect(h.requests[0]?.body).toEqual({ requestId: expect.stringMatching(UUID) as string, repository: "acme/web", name: "web-app", description: "The web app.", setupCommand: "npm ci", testCommand: "npm test" });
   });
 
+  it("keeps every repeated --test-command and --setup-command, in the order they were given (blind test 02: only the last test command was kept)", async () => {
+    const h = await signedIn(created);
+    expect(await h.run(["project", "create", "--repository", "acme/web", "--setup-command", "pip install -r requirements.txt", "--setup-command", "npm ci", "--test-command", "python3 -m ruff check .", "--test-command", "python3 -m pytest"])).toBe(0);
+    expect(h.requests[0]?.body).toEqual({
+      requestId: expect.stringMatching(UUID) as string, repository: "acme/web",
+      setupCommands: ["pip install -r requirements.txt", "npm ci"], testCommands: ["python3 -m ruff check .", "python3 -m pytest"],
+    });
+  });
+
+  it("still sends one command as testCommand, so an older control plane reads it", async () => {
+    const h = await signedIn(created);
+    expect(await h.run(["project", "create", "--repository", "acme/web", "--test-command", "npm test"])).toBe(0);
+    expect(h.requests[0]?.body).toEqual({ requestId: expect.stringMatching(UUID) as string, repository: "acme/web", testCommand: "npm test" });
+  });
+
   it("sends a new request id for each command, so a second project is not a replay", async () => {
     const h = await signedIn(created);
     expect(await h.run(["project", "create", "--repository", "acme/web"])).toBe(0);

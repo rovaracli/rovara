@@ -253,6 +253,23 @@ describe("pull request maintenance", () => {
       expect(await git(fixture.bare, ["rev-parse", `refs/heads/${fixture.headBranch}`])).toBe(`${fixture.pullRequestHead}\n`);
     });
 
+    it("fetches no credential and pushes nothing while another operation is still running in the worker", async () => {
+      const fixture = await createFixture("append");
+      await writeFile(join(fixture.checkout, "FIX.md"), "address feedback\n", "utf8");
+      const reviewedTree = await workspaceTree(fixture.checkout);
+      const credential = vi.fn(async () => ({}));
+      await expect(pushFix({
+        rootPath: fixture.root,
+        invocation: failingReadiness(fixture.invocation, reviewedTree, { workflowBaseCommit: fixture.baseCommit }),
+        credentialProvider: credential,
+        pullRequestUpdateSink: sink(),
+        otherOperationActive: () => true,
+        otherOperationWait: { timeoutMs: 60, pollMs: 5 },
+      })).rejects.toThrow(/another operation still running.*did not push/);
+      expect(credential).not.toHaveBeenCalled();
+      expect(await git(fixture.bare, ["rev-parse", `refs/heads/${fixture.headBranch}`])).toBe(`${fixture.pullRequestHead}\n`);
+    });
+
     it("pushes the reviewed fix tree to the existing PR branch as a fast-forward", async () => {
       const fixture = await createFixture("append");
       await writeFile(join(fixture.checkout, "FIX.md"), "address feedback\n", "utf8");

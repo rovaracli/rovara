@@ -1,5 +1,7 @@
 .rv-agent-list { list-style: none; margin: 0; padding: 0; }
 .rv-agent-list > li { display: flex; justify-content: space-between; gap: var(--rv-space-4); border-bottom: 1px solid var(--rv-border); padding: var(--rv-space-5) 0; }
+/* The text column of a flex row is as wide as its longest unbroken word unless it may shrink, so a 60-character name with no spaces pushed the whole page wider than the viewport (a wider fallback font made it show on Linux). */
+.rv-agent-list > li > div { min-width: 0; overflow-wrap: anywhere; }
 .rv-agent-list h2 { margin: 0; font-size: var(--rv-font-lg); }
 .rv-agent-list p { max-width: 65ch; }
 .rv-agent-profile-tray { inset: 0 0 0 auto; transform: none; width: min(840px, 88vw); max-width: none; max-height: 100dvh; border-radius: 0; animation: rv-agent-enter var(--rv-motion-normal) ease-out; }

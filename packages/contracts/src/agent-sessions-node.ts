@@ -1,4 +1,4 @@
-import { cleanDisplayName } from "./display-name.js";
+import { emailSafeName } from "./display-name.js";
 import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { TriggerIdSchema } from "./chains.js";
@@ -84,10 +84,11 @@ export const HANDOFF_SUMMARY_MAX_BYTES = 8192;
  * A person's or an agent's name as a session keeps it: control characters become spaces, every format character other than ZWNJ and ZWJ (bidi
  * controls, tag characters, soft hyphens, zero-width spaces) is dropped, and the rest is cleaned and cut to 80 characters between whole character
  * clusters. A ZWJ emoji, a Persian name with ZWNJ and a flag keep their meaning. `undefined` when nothing is left. The session schemas accept exactly
- * what this leaves alone, so a start that builds a record with this never fails on a name.
+ * what this leaves alone, so a start that builds a record with this never fails on a name. An email address is never part of a name (release 0.4.16): a name
+ * that is one is `undefined` (callers say "Someone" or "a member"), and one that holds one keeps the rest.
  */
 export function cleanSessionName(name: string): string | undefined {
-  return cleanDisplayName(name.replace(/\p{Cc}+/gu, " ").replace(/(?![\u200C\u200D])\p{Cf}/gu, ""));
+  return emailSafeName(name.replace(/\p{Cc}+/gu, " ").replace(/(?![\u200C\u200D])\p{Cf}/gu, ""));
 }
 
 const ProjectNameSchema = z.string().regex(AGENTX_NAME_PATTERN);

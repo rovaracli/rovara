@@ -111,6 +111,8 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   },
   { key: "mcp.confirmElicitation", description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button or the CLI", target: parameter("control-plane", "McpConfirmElicitation"), defaultValue: "enabled", parse: oneOf("mcp.confirmElicitation", ["enabled", "disabled"]) },
   { key: "rovaraCode.v2", description: "true: Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment and an admin may adopt it; false: every org stays on version 1. Existing tasks keep their version", target: parameter("control-plane", "RovaraCodeV2Enabled"), defaultValue: "false", parse: oneOf("rovaraCode.v2", ["true", "false"]) },
+  { key: "planSelfCheck.enabled", description: "true: every coding plan is checked before the owner sees it and the planner is asked again once for a fixable problem (also checks the plan against the current app); false: plans go to the owner as written", target: parameter("control-plane", "PlanSelfCheckEnabled"), defaultValue: "true", parse: oneOf("planSelfCheck.enabled", ["true", "false"]) },
+  { key: "autofix.enabled", description: "true: Rovara sends blocked checks or reviews back to coding by itself (before any pull request, within its limits); false: only the owner does", target: parameter("control-plane", "AutofixEnabled"), defaultValue: "true", parse: oneOf("autofix.enabled", ["true", "false"]) },
 ];
 
 export function configKey(name: string): ConfigKey {

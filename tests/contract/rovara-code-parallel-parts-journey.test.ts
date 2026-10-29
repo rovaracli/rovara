@@ -94,6 +94,8 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     expect(implement).toHaveLength(1);
     expect(dependenciesOf(implement[0]!)?.parallel).toEqual({ max: PARALLEL_PARTS_MAX });
     expect(dependenciesOf(implement[0]!)?.graph.items).toHaveLength(3);
+    // With room for every part there is no line about running them one at a time.
+    expect(e2e.db.find((item) => item["entityType"] === "EVENT" && /^Running (parts|up to)/.test((item["payload"] as { message?: string } | undefined)?.message ?? ""))).toEqual([]);
     // A and B started before either finished, and C started after both were merged.
     const progress = progressOf(e2e);
     expect(progress.map((entry) => entry.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
@@ -116,6 +118,27 @@ describe("a Rovara Code v2 task builds the independent parts of its plan side by
     // The prompts: one per part, and C's prompt came after the other two.
     expect(itemTitles(e2e).sort()).toEqual(["A: create formatter", "B: create clock", "C: integration assertion"]);
     expect(itemTitles(e2e).at(-1)).toBe("C: integration assertion");
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("says on the timeline why the parts run one after another when the person's workspaces are in use (Bug N)", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    const e2e = await createWorkflowE2E({ readiness: READINESS, realProjectCommands: true, model: modelFor(context) });
+    context.current = e2e;
+    // One workspace allowed per person: the task's own is the only one, so its two independent parts have no room to run together.
+    e2e.db.set({ ...workspaceLimitsKey(TEST_ORG), entityType: "SETTING", perPerson: 1, perOrganization: 1, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    const implement = implementInvocations(e2e);
+    expect(dependenciesOf(implement[0]!)?.parallel).toEqual({ max: 1 });
+    const lines = e2e.db.find((item) => item["entityType"] === "EVENT" && item["operationId"] === implement[0]!.operationId)
+      .map((item) => (item["payload"] as { message?: string }).message).filter((message) => /^Running parts/.test(message ?? ""));
+    expect(lines).toEqual(["Running parts one at a time: 1 of 1 of your workspaces are in use."]);
+    // The worker's own events follow it without a clash of sequence numbers.
+    const sequences = e2e.db.find((item) => item["entityType"] === "EVENT" && item["operationId"] === implement[0]!.operationId).map((item) => item["sequence"] as number).sort((x, y) => x - y);
+    expect(sequences[0]).toBe(1);
+    expect(new Set(sequences).size).toBe(sequences.length);
     assertJourneyInvariants(e2e);
   }, 240_000);
 

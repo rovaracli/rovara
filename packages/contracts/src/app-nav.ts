@@ -9,7 +9,7 @@ export const AppTrialSchema = z.object({ state: z.enum(["locked", "unlocked", "g
 export const NavAgentSchema = z.object({ agentId: AgentIdSchema, name: z.string().min(1) }).strict();
 export const NavSessionSchema = z.object({ sessionId: SessionIdSchema, title: z.string().min(1) }).strict();
 export const AppNavSchema = z.object({
- me: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/u), name: z.string().min(1), orgRole: OrgRoleSchema }).strict(),
+ me: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/u), name: z.string().min(1), orgRole: OrgRoleSchema, nameChosen: z.boolean().optional() }).strict(),
  org: z.object({ name: z.string().min(1), trial: AppTrialSchema.optional() }).strict(),
  homeCount: CountSchema,
  projects: z.array(z.object({ name: z.string().regex(AGENTX_NAME_PATTERN), agents: z.array(NavAgentSchema.extend({ running: CountSchema, needsYou: CountSchema })) }).strict()).max(50),

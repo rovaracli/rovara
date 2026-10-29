@@ -28,6 +28,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
         return run === undefined ? "a project maintainer" : `${shownText(run.owner.name, NAME_MAX)} or a project maintainer`;
       }
       case "org_admin": return "an organization owner or admin";
+      case "pull_request_merge": return "the person who pressed Merge, while they can still merge this task";
       case "agent_publish":
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
       case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
@@ -64,6 +65,9 @@ const TITLES: Record<string, string> = {
   opt_out: "Let agents comment in a repository whose workflows act on comments",
   session_share_org: "Share a session with everyone",
   session_owner: "Take over a session",
+  pull_request_merge: "Merge a pull request",
+  code_settings: "Let people approve their own pull requests",
+  playbook_default_process: "Switch a project back to the built-in way of working",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -136,7 +140,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -156,6 +160,12 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     facts.push(fact("Session", session === undefined ? subject.sessionId : shownText(session.title, NAME_MAX * 3)), fact("Everyone in your company", LEVEL_WORDS[subject.level]));
   }
   if (subject.kind === "session_owner") facts.push(...await takeOverFacts(deps.agentSessions, record));
+  if (subject.kind === "pull_request_merge") {
+    // The pull requests and the heads the press checked: what the presser is deciding to merge, as it was shown to them.
+    for (const pr of subject.pullRequests) facts.push(fact("Pull request", `${shownText(pr.repositoryId, NAME_MAX)} #${String(pr.number)} (code ${pr.headSha.slice(0, 7)})`));
+  }
+  if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
+  if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };
 }

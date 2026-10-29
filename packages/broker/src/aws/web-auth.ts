@@ -14,8 +14,9 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use the reviewed preview/commit routes.
  if (family === "projects" && /^projects\/[^/]+\/(archive|restore)$/.test(relative)) return false;
- // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read only /me.
- if (family === "me") return read && relative === "me";
+ // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read /me. Release 0.4.16: and set its own display name (PUT /me/name, which
+ // authenticateWebRequest guards with the cookie, the Origin and the CSRF token like every browser write).
+ if (family === "me") return (read && relative === "me") || (method === "PUT" && relative === "me/name");
  if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
  if (family === "spend-requests") return relative === "spend-requests" && (read || method === "POST");
  return true;
@@ -35,5 +36,6 @@ export async function authenticateWebRequest(deps: DeveloperRouteDependencies, r
   if (request.headers.origin !== new URL(deps.developer.issuer).origin || csrf === undefined) throw agentXError("FORBIDDEN", WEB_REQUEST_REFUSED);
   if (!appCsrfMatches(cookie, csrf)) throw agentXError("CSRF_STALE", CSRF_STALE_MESSAGE);
  }
- return caller;
+ // Only this function says a caller came through a browser session with its CSRF token: Merge merges at once for such a caller and never for a token.
+ return { ...caller, browserSession: true };
 }

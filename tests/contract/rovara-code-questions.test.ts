@@ -9,7 +9,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { agentSessionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/contracts/src/index.js";
+import { DeveloperTaskResponseSchema, SessionResponseReaderSchema, TaskResponseReaderSchema, SessionResponseSchema, UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/contracts/src/index.js";
 import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -548,6 +548,19 @@ describe("POST /v1/app/sessions/{id}/answers", () => {
     expect(errorOf(none).code).toBe("INTENT_NOT_WAITING");
   });
 
+  it("takes the workflow revision the page read: a revision that has moved on is INTENT_NOT_WAITING and writes nothing, the current one answers", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    const revision = (t.meta(run.taskId).workflow as { revision: number }).revision;
+    const before = JSON.stringify(t.meta(run.taskId).workflow);
+    const stale = await t.respond(MAYA, run.sessionId, { revision: revision - 1 });
+    expect(stale.status).toBe(409);
+    expect(errorOf(stale)).toEqual({ code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." });
+    expect(JSON.stringify(t.meta(run.taskId).workflow)).toBe(before);
+    expect((await t.respond(MAYA, run.sessionId, { revision })).status).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+  });
+
   it("answers a repeat of the same request with the first outcome and writes nothing; the same id with other answers, or from another person, is a conflict", async () => {
     const t = await world();
     const run = await t.waitingTask();
@@ -899,5 +912,66 @@ describe("an owner's Slack reply while the task waits", () => {
     expect(t.meta(run.taskId).workflow.intent?.answers).toHaveLength(1);
     const notes = t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && String(item.sk).startsWith("NOTE#"));
     expect(notes.map((note) => [note.text, note.answeredAt !== undefined])).toEqual([["billing", true], ["and keep the diff small", false]]);
+  });
+});
+
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the answers of the session routes, as the broker sends them", () => {
+  /** The strict schemas are the server's contract: an answer must satisfy one once the gateway's `requestId` is set aside. */
+  const withoutGatewayId = (body: Record<string, unknown>): Record<string, unknown> => {
+    const { requestId, ...rest } = body;
+    expect(typeof requestId, "every /v1/app answer carries the gateway's requestId").toBe("string");
+    return rest;
+  };
+  const V2 = { "x-agentx-task-view": "2" };
+
+  it("POST …/answers answers { session }, which the clients' reader and the strict contract both read", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    const reply = await t.respond(MAYA, run.sessionId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(SessionResponseReaderSchema.safeParse(reply.body).success).toBe(true);
+    expect(SessionResponseSchema.safeParse(withoutGatewayId(reply.body)).success).toBe(true);
+  });
+
+  it("GET …/sessions/{id} and GET /v1/dev/tasks/{id} read the same, for a version 2 client and for one that sends no header", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    for (const headers of [V2, {}]) {
+      const session = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, headers);
+      expect(session.status).toBe(200);
+      const read = SessionResponseReaderSchema.safeParse(session.body);
+      expect(read.success, JSON.stringify(read.error?.issues)).toBe(true);
+      const task = await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`, undefined, headers);
+      expect(task.status).toBe(200);
+      const parsed = DeveloperTaskResponseSchema.safeParse(task.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+    // The strict contract holds for the version 2 answer.
+    const full = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, V2);
+    expect(SessionResponseSchema.safeParse(withoutGatewayId(full.body)).success).toBe(true);
+  });
+
+  it("POST /v1/app/projects/{p}/code answers 202 { task }, which the CLI's and the app's task readers read", async () => {
+    const t = await world();
+    const started = await t.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" } });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    expect(DeveloperTaskResponseSchema.safeParse(started.body).success).toBe(true);
+    expect(TaskResponseReaderSchema.safeParse(started.body).success).toBe(true);
+  });
+
+  it("POST …/bindings and DELETE …/bindings/linear answer { session, pullRequest }, which the reader reads", async () => {
+    const t = await world();
+    const run = await t.waitingTask();
+    const linked = await t.dev(MAYA, "POST", `/v1/app/sessions/${run.sessionId}/bindings`, { linear: "ENG-142" });
+    expect(linked.status, JSON.stringify(linked.body)).toBe(200);
+    expect(Object.keys(linked.body).sort()).toEqual(["pullRequest", "requestId", "session"]);
+    expect(SessionResponseReaderSchema.safeParse(linked.body).success).toBe(true);
+    expect(SessionResponseSchema.safeParse({ session: linked.body.session }).success).toBe(true);
+    const unlinked = await t.dev(MAYA, "DELETE", `/v1/app/sessions/${run.sessionId}/bindings/linear`);
+    expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+    expect(SessionResponseReaderSchema.safeParse(unlinked.body).success).toBe(true);
+    expect(SessionResponseSchema.safeParse({ session: unlinked.body.session }).success).toBe(true);
   });
 });

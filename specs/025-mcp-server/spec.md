@@ -700,7 +700,7 @@ guide for Claude Code, Codex and Cursor, then ask the tool to list AgentX projec
   (`SHARED_TASK#{team}/{channel}/{threadTs}`) with the task, its workspace owner key and the mode.
   The Slack ingress MUST check it for every mention in a thread:
   - in view only, it MUST answer with one fixed notice per hour per thread, without creating a
-    thread workspace or queueing a turn. The notice reads: "This thread follows a task that a
+    thread workspace or queueing a turn. The notice reads: "You have view-only access to this task from this thread: it follows a task that a
     developer is driving from their AI tool, so I don't act on messages here. To ask AgentX for
     something, post a new message in the channel; it starts its own thread workspace." (owner
     decision, 2026-09-29; Q1);

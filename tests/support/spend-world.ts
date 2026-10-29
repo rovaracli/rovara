@@ -15,7 +15,7 @@ import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js"
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, ownerBudgetKey, type AgentId, type OrgId, type PauseScope, type SpendRequestRecord } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { projectAgentKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "./developer-task-broker.js";
+import { DEV_ISSUER, MAYA, createSingleAnswerPlanBroker, seedMembership, type Developer } from "./developer-task-broker.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { TEST_ORG } from "./orgs.js";
 import { loadSlackBroker } from "./slack-broker.js";
@@ -61,7 +61,7 @@ export async function setup(options: {
 } = {}) {
   const { createAgentRouteDependencies, createAgentRunStarter } = await brokerModule();
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({
+  const h = await createSingleAnswerPlanBroker({
     ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }),
     brokerExtra: { agents: options.agents ?? {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(options.decide === true ? { decide: {} } : {}), ...options.extra },
   });

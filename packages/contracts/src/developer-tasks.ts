@@ -7,7 +7,7 @@ import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotRe
 import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
-import { MergeTrackingItemSchema, VerificationReportSchema } from "./rovara-code.js";
+import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
@@ -151,6 +151,13 @@ export const DeveloperTaskViewSchema = z.object({
    * text that every reader escapes for its own markup.
    */
   verificationReport: VerificationReportSchema.optional(),
+  /** Playbook P3 (version 2 only, full reads only, like `verificationReport`): the proof table of the approved plan's requirements, as the pull request's Proof section has it. Absent when there is no approved plan with claims. */
+  proofTable: ProofTableViewSchema.optional(),
+  /**
+   * Playbook P2 (version 2 only, like `verificationReport`): which model reviewed the code now on the task, and, when it was the build's own, the note that says so. These are the lines the pull request's Reviews section has
+   * (Trust fix A2's `reviewModelLines`), passed on word for word; absent before any review of the current code. Plain text that every reader escapes for its own markup.
+   */
+  reviewModelLines: z.array(z.string().min(1).max(300)).min(1).max(4).optional(),
   /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
   reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
   /**
@@ -158,6 +165,11 @@ export const DeveloperTaskViewSchema = z.object({
    * as merge tracking last read it. The merge claim is the broker's own and is never part of the view.
    */
   mergeTracking: z.array(MergeTrackingItemSchema.omit({ mergeClaim: true })).max(32).optional(),
+  /**
+   * Plan 6, Task 19 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): whether the viewer pressing Merge now would be allowed to, from what merge
+   * tracking last read. Advisory: the press re-reads GitHub.
+   */
+  merge: MergeViewSchema.optional(),
 });
 
 /**

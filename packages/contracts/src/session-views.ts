@@ -64,7 +64,8 @@ export const SessionViewSchema = z
     approvals: z.array(z.object({ approvalId: z.string().min(1).max(100), title: z.string().min(1).max(300), confirmUrl: LinkSchema }).strict()).max(50),
     followers: CountSchema,
     viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX),
-    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length) }).strict(),
+    // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
+    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional() }).strict(),
     link: LinkSchema,
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
@@ -319,6 +320,9 @@ export const NeedsConfirmationSchema = z
   .strict();
 
 export type NeedsConfirmation = z.infer<typeof NeedsConfirmationSchema>;
+
+/** How a client reads a `202 NEEDS_CONFIRMATION`: the broker adds the gateway's `requestId` to it, which the strict schema above refuses (bug E). */
+export const NeedsConfirmationReaderSchema = forwardReader(NeedsConfirmationSchema);
 
 /** Plan 7 Task 13c: a bounded, redacted page of an authorized session's PR files. */
 export const DIFF_FILES_PAGE_MAX = 100;

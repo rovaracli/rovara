@@ -6,7 +6,7 @@ import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/s
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -18,7 +18,7 @@ type Item = Record<string, unknown>;
 beforeAll(async () => { await loadSlackBroker(); });
 
 async function setup() {
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} } });
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; fence: number; status: string }>;
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; sessionId?: string };
   const session = (sessionId: string) => ({

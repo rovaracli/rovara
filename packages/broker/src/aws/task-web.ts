@@ -1,16 +1,17 @@
-import { serverPageCss } from "@agentx/design-tokens";
+import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // Task 18 (gap 4): the read-only AgentX task page. A brief Slack message links here for the full document; the page
 // shows the task's documents (every version), where it stands, its checks, the current code's review findings, its pull
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { SessionIdSchema, redactText, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { checksAnchor, renderPlanDocument, type PlanAnchor } from "./plan-page/render-plan.js";
+import type { PlanSelfCheckView } from "../developer/plan-self-check.js";
 import { renderThreads, type PageCommentView, type PageSuggestionView } from "./plan-page/comments.js";
 import { TASK_PAGE_DECIDING_SCRIPT, TASK_PAGE_SCRIPT, TASK_PAGE_STYLE } from "./task-page-assets.js";
 import { TASK_PAGE_API_PREFIX } from "./task-web-api.js";
@@ -25,6 +26,7 @@ export type TaskDocumentKind = "requirements" | "design" | "coding plan";
 export type TaskDocumentEntry =
   | { kind: TaskDocumentKind; version: number; approved: boolean; current: boolean; format: "markdown"; markdown: string }
   | { kind: TaskDocumentKind; version: number; approved: boolean; current: boolean; format: "structured"; plan: PlanDocument; evidence?: PlanEvidenceBundle; /** When the document was stored. */ createdAt?: string;
+    /** For a coding plan: what AgentX's plan check stored beside it (or that it was not checked). */ selfCheck?: PlanSelfCheckView;
     /** For a plan stored before quotes named comments by ID: the comment each ref a quote's author names ("comment c1") stood for, from the decision that sent the comments to this document. */ commentRefs?: Record<string, string> };
 
 export interface TaskDocumentView {
@@ -65,6 +67,10 @@ export interface TaskDocumentView {
   access?: { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
   /** Present while the task is blocked on an approved browser and API round that one retry can fix; `canRetry` is whether this reader (the owner) may make it. */
   applicationRetry?: { canRetry: boolean };
+  /** A coding run that ended with no code change: what the agent found (rebuilt, redacted and bounded again, when the page is written). Absent for any other stop; an older worker sent none, and the page then says only that no change was needed. */
+  noChange?: { findings?: NoChangeFindings };
+  /** AUTOFIX: what Rovara already tried on its own and why it asks, as plain sentences (nothing a worker or model said); absent when it did nothing on this task. */
+  autofix?: { lines: string[] };
   /** The per-scenario results of the task's browser and API round (M1.3 Task 3.7), derived by the broker from evidence it verified itself, and the baseline round on the unchanged code. */
   e2eResults?: E2EScenarioResults;
   /** The task's comments, replies and AgentX replies, oldest first, as stored (redacted when written; the page escapes them). */
@@ -124,10 +130,11 @@ const HIDDEN = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "NOT_FOUND"]);
 
 /**
  * This page's policy: its one style element and its one script, each by nonce, and nothing else; nothing is submitted,
+ * images only from data: (the empty page icon, so Firefox does not ask for /favicon.ico; see SERVER_PAGE_ICON),
  * and the only request the script may make is to this origin (`/task/status`).
  */
 const policy = (nonce: string) =>
-  `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src 'none'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+  `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 /**
  * A reviewer's file path, shown only when it is a plain relative path inside the repository: no leading slash or
@@ -263,6 +270,7 @@ async function documentsHtml(view: TaskDocumentView, request: TaskPageRequest): 
         anchor: entry.anchor, kind: entry.planKind, version: document.version, approved: document.approved, current: document === currentDocument,
         currentVersion: currentDocument.version, plan: document.plan, ...(document.evidence === undefined ? {} : { evidence: document.evidence }),
         ...(document.createdAt === undefined ? {} : { createdAt: document.createdAt }), ...(view.now === undefined ? {} : { now: view.now }),
+        ...(document.selfCheck === undefined ? {} : { selfCheck: document.selfCheck }),
         ...(before?.format === "structured" ? { previous: { version: before.version, plan: before.plan } } : {}),
         ...(approvedEarlier === undefined ? {} : { approvedEarlier: approvedEarlier.plan, approvedEarlierDepth: approvedEarlier.depth }),
         ...(approvedPlan === undefined ? {} : { approvedSame: approvedPlan }),
@@ -377,6 +385,26 @@ function decideBar(view: TaskDocumentView): string {
     + `<button type="button" id="decide-approve" hidden>Approve ${escapeHtml(name)}</button> <button type="button" id="decide-request-changes" hidden>Request changes to ${escapeHtml(name)}</button></div>`;
 }
 
+/** What Rovara did by itself and why it asks, in the blocked step's place on the page. */
+function autofixSection(view: TaskDocumentView): string {
+  if (view.autofix === undefined || view.autofix.lines.length === 0) return "";
+  return '<section id="autofix" aria-label="Automatic fixing"><h2>What Rovara did on its own</h2><ul>'
+    + view.autofix.lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("") + "</ul></section>";
+}
+
+/** A coding run that needed no code change: what the agent found (the choices are said once, as the page's next step). Every string is escaped, and was redacted and bounded again before it got here. */
+function noChangeSection(view: TaskDocumentView): string {
+  if (view.noChange === undefined) return "";
+  const findings = noChangeFindingsFrom(view.noChange.findings);
+  if (findings === undefined) return `<section id="no-change" aria-label="What the agent found"><p>${escapeHtml(NO_CHANGE_NEEDED_LINE)}</p></section>`;
+  const commands = findings.commands.length === 0 ? "" : `<h3>${escapeHtml(NO_CHANGE_COMMANDS_HEADER)}</h3>`
+    + (findings.omitted === undefined ? "" : `<p class="muted">${escapeHtml(String(findings.omitted))} earlier ${findings.omitted === 1 ? "command is" : "commands are"} not listed.</p>`)
+    + "<ul>" + findings.commands.map((item) => `<li><code>${escapeHtml(item.command)}</code>${item.failed === true ? " (it failed)" : ""}`
+      + (item.output === undefined ? "" : `<pre>${escapeHtml(item.output)}</pre>`) + "</li>").join("") + "</ul>";
+  const lead = findings.conclusion === undefined ? `${NO_CHANGE_NO_CONCLUSION_LEAD} see what it ran below.` : `${NO_CHANGE_FOUND_HEADER} ${findings.conclusion}`;
+  return `<section id="no-change" aria-label="What the agent found"><p style="white-space:pre-wrap">${escapeHtml(lead)}</p>${commands}</section>`;
+}
+
 /** The retry of a blocked browser and API round: the owner's button (on with the script, as the decide buttons are) or who may press it. */
 function applicationRetrySection(view: TaskDocumentView): string {
   if (view.applicationRetry === undefined) return "";
@@ -453,7 +481,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
   const movedOn = `<div id="moved-on" class="moved-on" role="status" hidden data-version="${escapeHtml(view.revision ?? 0)}" data-stage="${escapeHtml(view.stage)}"`
     + ` data-check="/review/${escapeHtml(view.taskId)}/task/status"><p>This task has moved on. Refresh to see the latest.</p>`
     + `<button type="button" id="moved-on-refresh">Refresh</button></div>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>AgentX task · ${escapeHtml(view.title)}</title>`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>AgentX task · ${escapeHtml(view.title)}</title>${SERVER_PAGE_ICON}`
     + `<style nonce="${nonce}">${TASK_PAGE_STYLE}</style></head><body>${movedOn}`
     + (SessionIdSchema.safeParse(view.sessionId).success ? `<p><a href="/s/${escapeHtml(view.sessionId!)}">Back to the session</a></p>` : "")
     + `<header><h1>${escapeHtml(view.title)}</h1><p class="muted">${role}</p>${progressStrip(view, { checks: checks !== undefined && checks !== "" })}`
@@ -461,6 +489,8 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + `<main>${unverified}${documents}${noDocuments}`
     + (checks === undefined || checks === "" ? "" : `<section id="checks" aria-label="Checks"><h2>Checks</h2>${checks}</section>`)
     + (view.e2eResults === undefined ? "" : renderE2EScenarioRowsHtml(view.e2eResults, { artifactPath: (sha256) => `/review/${encodeURIComponent(view.taskId)}/task/api/e2e/artifacts/${sha256}` }))
+    + noChangeSection(view)
+    + autofixSection(view)
     + applicationRetrySection(view)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
@@ -476,7 +506,7 @@ function confirmationPage(taskId: string, csrf: string, capabilities: { peopleRe
   const data = { taskId, csrf, revision: 0, role: capabilities.canManagePeople ? "owner" : "reader", canRead: true,
     canComment: false, canSuggest: false, canDecide: false, canAsk: false, canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), commentSeq: 0 };
-  return htmlResponse(200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Review People change</title>`
+  return htmlResponse(200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Review People change</title>${SERVER_PAGE_ICON}`
     + `<style nonce="${nonce}">${TASK_PAGE_STYLE}</style></head><body><main>${content}</main>`
     + `<script type="application/json" id="agentx-page-data">${scriptJson(data)}</script><script nonce="${nonce}">${TASK_PAGE_DECIDING_SCRIPT}</script></body></html>`, nonce);
 }
@@ -495,14 +525,16 @@ const NO_ACCESS = "You don't have access to this task.";
 /** A person's name as it reads inside a sentence: one line, redacted, cut short. messagePage escapes it. */
 export function plainName(name: unknown): string | undefined {
   if (typeof name !== "string") return undefined;
-  const characters = Array.from(redactText(name).replace(/[\p{Cc}\s]+/gu, " ").trim());
+  const cleaned = redactText(name).replace(/[\p{Cc}\s]+/gu, " ").trim();
+  // Release 0.4.16: an email address is never part of a name shown to others. A name without one is left exactly as it was.
+  const characters = Array.from(containsEmailAddress(cleaned) ? withoutEmailAddresses(cleaned) : cleaned);
   if (characters.length === 0) return undefined;
   return characters.length <= 80 ? characters.join("") : `${characters.slice(0, 79).join("")}…`;
 }
 
 function messagePage(statusCode: number, heading: string, text: string): WebResponse {
   const nonce = randomBytes(18).toString("base64url");
-  return htmlResponse(statusCode, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentX</title>`
+  return htmlResponse(statusCode, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentX</title>${SERVER_PAGE_ICON}`
     + `<style nonce="${nonce}">${serverPageCss()}:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:40rem;margin:0 auto;padding:2rem 1rem}</style></head>`
     + `<body><main><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(text)}</p></main></body></html>`, nonce);
 }

@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, projectMemberKey } from "../../packages/contracts/src/index.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -16,7 +16,7 @@ type Item = Record<string, unknown>;
 beforeAll(async () => { await loadSlackBroker(); });
 
 async function setup() {
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} } });
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; requestId?: string; workflowMode?: string }>;
   const task = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; workflow: { revision: number; stage: string; state: string } & Item };
   const events = (sessionId: string) => h.db.find((item) => item.pk === agentSessionKey(TEST_ORG, sessionId, "META").pk && String(item.sk).startsWith("EVENT#")).map((item) => ({ type: item.type, text: item.text }));

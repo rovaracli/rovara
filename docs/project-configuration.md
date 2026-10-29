@@ -172,16 +172,23 @@ below is refused, with a message naming the setting, before any container starts
 | `dockerComposeFile` | The Compose services' settings cannot be checked. |
 | `privileged: true`, `securityOpt`, or any `capAdd` other than `SYS_PTRACE` | They grant powers over the host. |
 | `runArgs` with `--privileged`, `--pid`, `--ipc=host` or `container:…`, `--network=host` (or `--net`) or `container:…`, `--userns=host`, `--uts=host`, `--cgroupns=host`, `--cap-add` (other than `SYS_PTRACE`), `--security-opt`, `--device`, `--device-cgroup-rule`, `--gpus` or `--volumes-from` | They share the host's (or the worker's) processes, network, devices or files. |
-| A bind mount (`mounts`, `workspaceMount`, or `-v`/`--volume`/`--mount` in `runArgs`) of `/`, `/var/run/docker.sock`, the workspace root itself, the worker's own folders in it (`.docker`, `.agentx`, `agent-sessions`, `.agentx-runtime`; AgentX hides them inside the container too), or any path outside the workspace, including through a link (whether or not its target exists), or a path AgentX cannot check | They expose host files or the Docker socket. |
+| A bind mount (`mounts`, `workspaceMount`, or `-v`/`--volume`/`--mount` in `runArgs`) whose source is not inside the repository folder (so not `/`, `/var/run/docker.sock`, the workspace root, the worker's own folders in it (`.docker`, `.agentx`, `agent-sessions`, `.agentx-runtime`; AgentX hides them inside the container too), another folder of the workspace, or anything outside it), including through a link (whether or not its target exists), or a source AgentX cannot check | They expose host files or the Docker socket. |
+| A mount written in any form but the plain one (the `type` is read without regard to case, as Docker does): settings in quotes, a setting given twice or under two spellings (`source` and `src`, `target` and `dst`), a setting AgentX does not list, or a comma or quote in a field of a mount object | AgentX reads a mount only in the one form every tool reads the same way. |
+| `${localEnv:…}` (or `${env:…}`) anywhere in the configuration | It would copy the worker's environment variables into the container. |
+| `runArgs` with `-e NAME` or `--env NAME` (an environment flag whose value has no `=`, in any spelling, including a short cluster such as `-ite NAME`), or `--env-file` in any form; `--build-arg NAME` with no value in `build.options` | Each copies a variable of the worker's environment, or reads a file of the worker, into the container or the build, the same as `${localEnv:…}`. Write the value: `-e NAME=value`. |
+| A named volume (`mounts`, `workspaceMount`, or `-v`/`--volume`/`--mount` in `runArgs`) whose name starts with `agentx` (any case, as written or once the variables are filled in), or whose name has neither `${devcontainerId}` nor `${localWorkspaceFolderBasename}` in it | A named volume attaches any volume of that name that already exists on the worker host, including AgentX's own. `${devcontainerId}` (a hash of the project folder and the config path) and `${localWorkspaceFolderBasename}` (the folder's name) make the name specific to the project folder, for example `cache-${devcontainerId}`. A volume with no source is anonymous and allowed. |
+| `runArgs` with `--cidfile` (it writes a file anywhere on the worker), `--label-file` (it reads a file of the worker) or `--volume-driver`; `build.options` with `--push` | They write or read files of the worker, change how volumes are made, or push an image with the worker's registry credentials. |
 | A feature AgentX cannot pin to the content it checked (one fetched from a GitHub release) | Its content could change before the container is built. |
+| A local feature whose folder is outside the dev container config's own folder, including through a link | It would read files of the workspace that are not the project's. |
 | A volume with `volume-opt` or `volume-driver` options | Such a volume can be a bind mount of any host path. |
-| `build.context` or `build.dockerfile` outside the workspace | The build would read host files. |
-| `build.options` with `--network=host` or `container:…`, `--output`/`-o`, `--iidfile`, `--metadata-file`, `--allow`, `--security-opt`, `--secret`, `--ssh`, `--build-context`, `--cache-to` or `--file`/`-f` | They reach the host's network, extra privileges, or files outside the build. |
+| `build.dockerfile` or `build.context`, or the top-level `dockerFile` or `context`, outside the repository folder (every spelling present is checked), or a `BUILDKIT_*` build argument (`build.args`, or `--build-arg` in `build.options`) | The build shares the Dockerfile's folder and the context with its frontend, and the workspace holds more than the repository (the worker's own folders). |
+| `build.options` with `--network=host` or `container:…`, `--output`/`-o`, `--iidfile`, `--metadata-file`, `--allow`, `--security-opt`, `--secret`, `--ssh`, `--build-context`, `--cache-to`, `--cache-from` (or `build.cacheFrom`) with anything but an image reference or `type=registry,ref=<image>`, or `--file`/`-f` | They reach the host's network, extra privileges, or files outside the build. |
 
 Everything else is allowed: `image` or `build` (with options such as `--build-arg`, `--target`,
 `--pull` or `--add-host`), `features`, `containerEnv`, `remoteUser`, lifecycle commands such as
 `postCreateCommand`, `capAdd: ["SYS_PTRACE"]` or `--cap-add=SYS_PTRACE` (debuggers need it to trace
-the container's own processes), `runArgs` such as `--env` or `--cpus`, named volumes, `tmpfs`
+the container's own processes), `runArgs` such as `--env NAME=value` or `--cpus`, volumes named per project or container (for example
+`${localWorkspaceFolderBasename}-node_modules`), `tmpfs`
 mounts, and bind mounts of folders inside the workspace (for example
 `source=${localWorkspaceFolder}/.cache,target=/cache,type=bind`).
 
@@ -195,8 +202,13 @@ the version available when the check runs, not to the repository's lockfile.
 
 After the container starts, AgentX checks it again as Docker ran it; a container that breaks the
 rules is removed and the step fails. AgentX mounts the whole workspace into the container at the
-same path, with the workspace's `.docker` folder (Docker's own data) hidden by an empty volume. A
-container created before AgentX hid that folder is created again once. Before each publication
+same path, with the worker's own folders of it (`.docker`, which is Docker's own data, `.agentx`,
+`agent-sessions` and `.agentx-runtime`) hidden by empty volumes. A container created before AgentX
+hid those folders is created again once. The agent's file tools (read, write, edit, grep, find and
+ls) run inside the dev container, as its user, so they only reach the repository folders it mounts.
+If the dev container cannot run them, they run in a separate sandbox container instead, and the
+task says so. A review of pull request feedback does not start the dev container: its file tools run
+in the task sandbox. Before each publication
 AgentX removes the dev container (see the security notes below), so the next step creates it again;
 creating it reruns its creation commands, such as `onCreateCommand` and `postCreateCommand`.
 

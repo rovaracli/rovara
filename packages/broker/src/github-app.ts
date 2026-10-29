@@ -1,5 +1,5 @@
 import { createHash, createSign } from "node:crypto";
-import { GitBranchNameSchema, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { GitBranchNameSchema, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
@@ -16,6 +16,10 @@ const GITHUB_APP_ID = /^[1-9][0-9]*$/;
 /** A GitHub user or organization login: letters, digits and single hyphens inside, at most 39 characters. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const FILE_AT_COMMIT_MAX_BYTES = 20_971_520;
+/** The most characters of a CODEOWNERS file read (GitHub's own cap is 3 MB; a file this large is not read at all). */
+const CODEOWNERS_MAX_CHARS = 262_144;
+/** The pages of changed files (100 each) the code-owner check reads. */
+const CHANGED_PATH_PAGES = 10;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
 /** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
@@ -201,8 +205,30 @@ export interface GitHubPullRequestDetails {
   baseBranch: string;
   headCommit: string;
   mergeCommit?: string;
+  /** The login of the account that merged it, when GitHub says (a merged pull request only). */
+  mergedBy?: string;
   title: string;
   body: string;
+}
+
+/** What a merge came to (Plan 6 Task 19): merged (by the method asked, or the other one when the repository does not allow it), merged already, or refused for a fixed reason. */
+export type MergePullRequestResult =
+  | { outcome: "merged"; method: "squash" | "merge"; fellBack: boolean; mergeCommitSha?: string }
+  | { outcome: "already_merged" }
+  | { outcome: "refused"; reason: "head_changed" | "not_mergeable" | "closed" | "forbidden"; githubMessage?: string };
+
+/** The most characters of GitHub's own reason that are kept. */
+const GITHUB_REASON_MAX = 200;
+
+/**
+ * GitHub's words for a refusal, made safe to show a person (owner decision 2026-10-27: when GitHub refuses a merge, the person sees why): redacted, markup and mentions gone, one line, cut to 200 characters.
+ * Undefined when GitHub gave none.
+ */
+export function githubReasonOf(body: Record<string, unknown>): string | undefined {
+  if (typeof body.message !== "string") return undefined;
+  const plain = redactText(body.message).replace(/<[^>]*>/gu, "").replace(/[<>@]/gu, "").replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
+  const cut = [...plain].slice(0, GITHUB_REASON_MAX).join("").trim();
+  return cut === "" ? undefined : cut;
 }
 
 export class GithubMergeRateLimitError extends Error {
@@ -868,6 +894,14 @@ export class GitHubAppCredentialProvider {
    * permission this needs is checked at staging.
    */
   async getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none"> {
+    return (await this.getRepositoryStanding(repositoryUrl, login, scope, budget)).permission;
+  }
+
+  /**
+   * The person's permission (as `getRepositoryPermission`) and the kind of account GitHub says they are: the permission answer names its `user` and that user's `type` (`User`, `Bot`, `Organization`)
+   * (Plan 6 Task 16). The kind is absent when GitHub does not say; the rule for an automatic fix then relies on the login (a bot's ends in `[bot]`). Verify at staging that the answer carries it.
+   */
+  async getRepositoryStanding(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<{ permission: "admin" | "write" | "read" | "none"; userType?: string }> {
     if (!GITHUB_LOGIN.test(login)) throw agentXError("CONFIG_INVALID", "GitHub login is invalid");
     const provider = this.trackingProvider(budget);
     const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
@@ -876,9 +910,28 @@ export class GitHubAppCredentialProvider {
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/collaborators/${encodeURIComponent(login)}/permission`, token,
     );
     // 404: not a collaborator. 403: the App may not ask about this person; a person it cannot vouch for has no permission here (and does not count).
-    if (answered.status === 404 || answered.status === 403) return "none";
+    if (answered.status === 404 || answered.status === 403) return { permission: "none" };
     if (answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub permission lookup failed with HTTP ${answered.status}`);
-    return parseRepositoryPermission(answered.body);
+    const permission = parseRepositoryPermission(answered.body);
+    const user = (answered.body as { user?: unknown } | null)?.user;
+    const kind = user !== null && typeof user === "object" ? (user as { type?: unknown }).type : undefined;
+    return { permission, ...(typeof kind === "string" && kind.length > 0 ? { userType: kind.slice(0, 20) } : {}) };
+  }
+
+  /**
+   * Replies once in a review thread, to a comment of it (`POST pulls/{n}/comments/{id}/replies`): the one place Rovara writes into a thread of comments (Plan 6 Task 16). The text is Rovara's own and fixed.
+   * A comment or thread that is gone (404, 422) is "gone": nothing to reply to, not an error.
+   */
+  async replyToReviewThread(repositoryUrl: string, number: number, commentId: string, body: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"replied" | "gone"> {
+    if (!/^[1-9][0-9]{0,18}$/.test(commentId)) throw agentXError("CONFIG_INVALID", "review comment id is invalid");
+    if (body.length === 0 || body.length > 200 || /[\p{Cc}@]/u.test(body)) throw agentXError("CONFIG_INVALID", "the reply is not Rovara's fixed text");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { contents: "read", pull_requests: "write" }, scope);
+    const answered = await provider.trackingJson(`${pullRequestUrl(repository, number)}/comments/${commentId}/replies`, token, { method: "POST", body: { body } });
+    if (answered.status === 404 || answered.status === 422) return "gone";
+    if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reply failed with HTTP ${answered.status}`);
+    return "replied";
   }
 
   /** Takes a draft pull request out of draft (GraphQL `markPullRequestReadyForReview`); one that is ready already is left alone. */
@@ -925,6 +978,121 @@ export class GitHubAppCredentialProvider {
     if (answered.status === 422) return "refused";
     if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub reviewer request failed with HTTP ${answered.status}`);
     return "requested";
+  }
+
+  /**
+   * Merges a pull request (Plan 6 Task 19): `PUT pulls/{n}/merge` with `sha`, the head the caller checked, so GitHub refuses when the head moved. The token asks for `contents` and
+   * `pull_requests` at write on this one repository. A method the repository does not allow is tried once more with the other of `squash` and `merge` (never `rebase`). A refusal
+   * (405, 409, 422, or a 200 that does not say merged) reads the pull request again and says what it finds: already merged, closed, head changed, or not mergeable. GitHub's own reason
+   * (branch protection, a required check, a ruleset) rides along as `githubMessage`, cleaned and cut (`githubReasonOf`), so the person sees why. A rate limit, a server fault and an unreadable pull request throw `RUNTIME_UNAVAILABLE`, to be tried again (the caller's claim keeps that from merging twice).
+   */
+  async mergePullRequest(repositoryUrl: string, number: number, input: { sha: string; method: "squash" | "merge" }, scope: GitHubTokenScope): Promise<MergePullRequestResult> {
+    if (!/^[a-f0-9]{40}$/u.test(input.sha)) throw agentXError("CONFIG_INVALID", "the commit to merge is invalid");
+    if (input.method !== "squash" && input.method !== "merge") throw agentXError("CONFIG_INVALID", "the merge method is invalid");
+    if (!Number.isInteger(number) || number < 1) throw agentXError("CONFIG_INVALID", "pull request number is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "write", pull_requests: "write" }, scope);
+    let method = input.method;
+    let fellBack = false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImplementation(`${pullRequestUrl(repository, number)}/merge`, {
+          method: "PUT", headers: githubHeaders(token), body: JSON.stringify({ sha: input.sha, merge_method: method }), redirect: "error", signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        // The request may or may not have reached GitHub: the caller's next run reads the pull request and finds out.
+        throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge outcome is unknown");
+      }
+      const parsedBody: unknown = await response.json().catch(() => undefined);
+      const body: Record<string, unknown> = parsedBody !== null && typeof parsedBody === "object" && !Array.isArray(parsedBody) ? parsedBody as Record<string, unknown> : {};
+      if (response.status === 200 && body.merged === true) {
+        const commit = typeof body.sha === "string" && /^[a-f0-9]{40}$/u.test(body.sha) ? body.sha : undefined;
+        return { outcome: "merged", method, fellBack, ...(commit === undefined ? {} : { mergeCommitSha: commit }) };
+      }
+      if (mergeRateLimitRetryAt(response, this.now()) !== undefined || response.status === 429) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub is limiting requests; the merge will be tried again");
+      const githubMessage = githubReasonOf(body);
+      const said = githubMessage === undefined ? {} : { githubMessage };
+      if (response.status === 403) return { outcome: "refused", reason: "forbidden", ...said };
+      const message = typeof body.message === "string" ? body.message : "";
+      // GitHub words a method the repository does not allow as "Squash merges are not allowed on this repository." (verify at staging, Task 27).
+      if (response.status === 405 && /\b(?:squash|merge commits?|merge)\b[^.]*\bnot allowed\b/iu.test(message)) {
+        if (attempt === 0) {
+          method = method === "squash" ? "merge" : "squash";
+          fellBack = true;
+          continue;
+        }
+        return { outcome: "refused", reason: "not_mergeable", ...said };
+      }
+      if (response.status !== 405 && response.status !== 409 && response.status !== 422 && response.status !== 200) {
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub merge failed with HTTP ${response.status}`);
+      }
+      const now = await this.getPullRequestWithToken(repository, number, token);
+      if (now.state === "merged") return { outcome: "already_merged" };
+      if (now.state === "closed") return { outcome: "refused", reason: "closed" };
+      return now.headCommit !== input.sha ? { outcome: "refused", reason: "head_changed" } : { outcome: "refused", reason: "not_mergeable", ...said };
+    }
+    return { outcome: "refused", reason: "not_mergeable" };
+  }
+
+  /**
+   * The CODEOWNERS file of a branch (owner decision 2026-10-27): the first of `.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` that exists, as GitHub looks for it. Undefined when the repository has none; a
+   * failing GitHub, a file over the cap or an unreadable one throws, so the caller fails closed. Read only: the token asks for `contents: read`.
+   */
+  async readCodeOwners(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string | undefined> {
+    if (branch.length === 0 || branch.length > 255 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(branch) || branch.includes("..") || branch.endsWith("/") || branch.endsWith(".lock")) throw agentXError("CONFIG_INVALID", "the branch name is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read" }, scope);
+    for (const path of [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]) {
+      const response = await this.fetchImplementation(
+        `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${path}?ref=${encodeURIComponent(branch)}`,
+        { headers: { ...githubHeaders(token), accept: "application/vnd.github.raw+json" }, signal: AbortSignal.timeout(8_000), redirect: "error" },
+      );
+      if (response.status === 404) { await response.body?.cancel(); continue; }
+      if (!response.ok) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", `GitHub code owners lookup failed with HTTP ${response.status}`); }
+      const text = await response.text();
+      if (text.length > CODEOWNERS_MAX_CHARS) throw agentXError("RUNTIME_UNAVAILABLE", "the code owners file is too large to read");
+      return text;
+    }
+    return undefined;
+  }
+
+  /**
+   * Every path a pull request changes, a renamed file under both names, for the code-owner check. Reads up to `CHANGED_PATH_PAGES` pages of 100; `complete` is false when there are more.
+   * Read only (`contents` and `pull_requests` at read).
+   */
+  async listChangedPaths(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<{ paths: string[]; complete: boolean }> {
+    const paths: string[] = [];
+    for (let page = 1; page <= CHANGED_PATH_PAGES; page += 1) {
+      const read = await this.listPullRequestFiles(repositoryUrl, number, { page }, scope);
+      for (const file of read.files) paths.push(file.filename, ...(file.previous_filename === undefined ? [] : [file.previous_filename]));
+      if (read.nextPage === undefined) return { paths, complete: true };
+    }
+    return { paths, complete: false };
+  }
+
+  /**
+   * Whether a person is an active member of a team of the repository's own organization (`team` is `org/slug`). `unknown` for anything Rovara cannot tell: another organization's team, a name
+   * that is not one, an installation that has not accepted the members permission, a GitHub failure. Never `member` on a guess.
+   */
+  async isTeamMember(repositoryUrl: string, team: string, login: string, scope: GitHubTokenScope): Promise<"member" | "not_member" | "unknown"> {
+    const parts = team.split("/");
+    const parsed = parseGitHubRepository(repositoryUrl);
+    if (parts.length !== 2 || parts[0]!.toLowerCase() !== parsed.owner.toLowerCase() || !/^[A-Za-z0-9_.-]{1,100}$/u.test(parts[1]!) || !GITHUB_LOGIN.test(login)) return "unknown";
+    try {
+      const repository = await this.installed(parsed, scope);
+      const token = await this.createInstallationToken(repository, { members: "read" }, scope);
+      const response = await this.fetchImplementation(
+        `https://api.github.com/orgs/${encodeURIComponent(parts[0]!)}/teams/${encodeURIComponent(parts[1]!)}/memberships/${encodeURIComponent(login)}`,
+        { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" },
+      );
+      if (response.status === 404) { await response.body?.cancel(); return "not_member"; }
+      if (response.status !== 200) { await response.body?.cancel(); return "unknown"; }
+      const body: unknown = await response.json().catch(() => undefined);
+      return body !== null && typeof body === "object" && (body as Record<string, unknown>).state === "active" ? "member" : "not_member";
+    } catch {
+      return "unknown";
+    }
   }
 
   /**
@@ -1101,7 +1269,26 @@ export class GitHubAppCredentialProvider {
     const headTreeSha = await this.getCommitTreeSha(repository, after.headCommit, token);
     const final = await this.getPullRequestWithToken(repository, number, token);
     if (final.number !== number || final.headCommit !== after.headCommit || final.state !== after.state) throw feedbackReadError("PR head or state changed during collection");
+    // The App's own comments (Rovara's "Fixed in ..." replies, Plan 6 Task 16) are not feedback: they are left out of the comments and of their threads, after every consistency check above,
+    // so a reply Rovara left never starts a round of its own and is never part of a round's comment set. A slug that cannot be read leaves the comments as they are.
+    const own = await this.ownBotLogin();
+    const ownIds = new Set(own === undefined ? [] : comments.filter((comment) => comment.author.toLowerCase() === own).map((comment) => comment.id));
+    if (ownIds.size > 0) {
+      return {
+        pullRequest: { ...final, headTreeSha }, comments: comments.filter((comment) => !ownIds.has(comment.id)),
+        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })),
+      };
+    }
     return { pullRequest: { ...final, headTreeSha }, comments, threads };
+  }
+
+  /** The login the App's own comments carry (`<slug>[bot]`, lower-case), or undefined when the slug cannot be read. */
+  private async ownBotLogin(): Promise<string | undefined> {
+    try {
+      return `${(await this.appSlug()).toLowerCase()}[bot]`;
+    } catch {
+      return undefined;
+    }
   }
 
   /** The tree of a commit GitHub holds in the installed repository; throws when GitHub does not have that commit. */
@@ -2080,6 +2267,12 @@ function parsePullRequestWithDraft(value: unknown, repository: InstalledReposito
   return typeof draft === "boolean" ? { ...basic, isDraft: draft } : basic;
 }
 
+/** The login in a pull request's `merged_by`, when it is one GitHub could have issued (letters, digits and single hyphens, a bot's `[bot]` suffix allowed). */
+function mergedByLogin(value: unknown): string | undefined {
+  const login = value !== null && typeof value === "object" ? (value as Record<string, unknown>).login : undefined;
+  return typeof login === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/u.test(login) ? login : undefined;
+}
+
 function parsePullRequestDetails(
   value: unknown,
   repository: InstalledRepository,
@@ -2117,6 +2310,7 @@ function parsePullRequestDetails(
     baseBranch: (base as Record<string, unknown>).ref as string,
     headCommit: (head as Record<string, unknown>).sha as string,
     ...(typeof candidate.merge_commit_sha === "string" ? { mergeCommit: candidate.merge_commit_sha } : {}),
+    ...(candidate.merged === true && typeof mergedByLogin(candidate.merged_by) === "string" ? { mergedBy: mergedByLogin(candidate.merged_by)! } : {}),
     title: candidate.title,
     body: candidate.body ?? "",
   };
@@ -2231,7 +2425,11 @@ export function parseGitHubRepository(repositoryUrl: string): { owner: string; n
   try {
     url = new URL(repositoryUrl);
   } catch {
-    throw agentXError("CONFIG_INVALID", "GitHub repository URL is invalid");
+    // An address that is not a URL at all (for example `git@gitlab.com:org/repo`): say "github.com only" when it names another host.
+    const named = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@\s/]+@)?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)[:/]/.exec(repositoryUrl.trim())?.[1];
+    throw agentXError("CONFIG_INVALID", named !== undefined && named.toLowerCase() !== "github.com"
+      ? "GitHub repository URL is invalid: only github.com repositories are supported"
+      : "GitHub repository URL is invalid");
   }
   const segments = url.pathname.split("/").filter(Boolean);
   if (
@@ -2245,7 +2443,10 @@ export function parseGitHubRepository(repositoryUrl: string): { owner: string; n
     segments.length !== 2 ||
     segments.some((segment) => segment.includes("%"))
   ) {
-    throw agentXError("CONFIG_INVALID", "credentialed repository must be a canonical GitHub HTTPS URL");
+    // An empty host (`github.com:org/repo` parses as a scheme) is not another host: no blame.
+    throw agentXError("CONFIG_INVALID", url.hostname === "" || url.hostname.toLowerCase() === "github.com"
+      ? "credentialed repository must be a canonical GitHub HTTPS URL"
+      : "credentialed repository must be a canonical GitHub HTTPS URL: only github.com repositories are supported");
   }
   const [owner, rawName] = segments;
   const name = rawName?.endsWith(".git") ? rawName.slice(0, -4) : rawName;

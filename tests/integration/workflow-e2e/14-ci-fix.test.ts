@@ -8,7 +8,7 @@ import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { ciEvidenceKey } from "../../../packages/broker/src/rovara-code/ci-fix.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, PUSHED_FIX, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, PUSHED_FIX_TRACKED, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -115,7 +115,7 @@ describe("Suite 14: fixing failing CI", () => {
     // The thread said what it was doing and what it did.
     const said_ = said(e2e);
     expect(said_.some((text) => /^Fixing the failing CI check \(test\)\./u.test(text))).toBe(true);
-    expect(said_.at(-1)).toBe(PUSHED_FIX(pullRequest.number));
+    expect(said_.at(-1)).toBe(PUSHED_FIX_TRACKED(pullRequest.number));
     expect(milestones(e2e, "fixing")).toHaveLength(1);
     // The evidence is kept for the fix, apart from the workflow.
     expect(e2e.db.get(ciEvidenceKey(e2e.taskId(), 10).pk, ciEvidenceKey(e2e.taskId(), 10).sk) ?? e2e.db.find((item) => item.entityType === "CI_EVIDENCE")[0]).toBeDefined();
@@ -177,7 +177,7 @@ describe("Suite 14: fixing failing CI", () => {
     await trackAndFix(e2e);
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 1 } });
     expect(e2e.workflow().ciFixApproved).toBeUndefined();
-    expect(said(e2e).at(-1)).toBe(PUSHED_FIX(pullRequest.number));
+    expect(said(e2e).at(-1)).toBe(PUSHED_FIX_TRACKED(pullRequest.number));
     expect(prompts.some((prompt) => prompt.includes(CI_OUTPUT_BLOCK_HEADER))).toBe(true);
   }, 240_000);
 

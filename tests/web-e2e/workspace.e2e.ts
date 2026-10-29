@@ -1,6 +1,7 @@
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
+import { evidenceShot } from "./support/screenshot.js";
 const id = "ses_aaaaaaaaaaaaaaaaaaaa";
 test("keeps plan and file evidence stable while teammates discuss their actual context", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });
@@ -21,8 +22,8 @@ test("keeps plan and file evidence stable while teammates discuss their actual c
  await expect(page.getByRole("button", { name: "Message the agent" })).toHaveCount(0);await page.getByRole("textbox", { name: "Comment", exact: true }).fill("<img src=x onerror=window.__pwned=1>");await page.getByRole("button", { name: "Send comment" }).click();await expect(page.getByText("<img src=x onerror=window.__pwned=1>", { exact: true })).toBeVisible();
  expect(await page.evaluate(() => "__pwned" in window)).toBe(false);await page.getByRole("button", { name: "Close dialog" }).click();await expect(fileSource).toBeFocused();
  await page.getByRole("tab", { name: "Plan", exact: true }).focus();await page.keyboard.press("Enter");await expect(page).toHaveURL(/#plan$/u);await page.reload();await expect(page.getByRole("heading", { name: "Refund investigation" })).toBeVisible();
- await page.screenshot({ path: ".test-build/web-e2e/workspace-desktop.png", fullPage: true });
- await page.setViewportSize({ width: 360, height: 800 });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });await page.screenshot({ path: ".test-build/web-e2e/workspace-phone-dark.png", fullPage: true });
+ await evidenceShot(page, { path: ".test-build/web-e2e/workspace-desktop.png", fullPage: true });
+ await page.setViewportSize({ width: 360, height: 800 });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: ".test-build/web-e2e/workspace-phone-dark.png", fullPage: true });
 });
 
 for(const denied of [false,true])test("chain step evidence "+(denied?"refuses an unreadable task":"restores its context after reload"),async({page,context,request,baseURL})=>{

@@ -10,11 +10,16 @@ describe("the test runner's configuration", () => {
     expect(config.test?.testTimeout).toBe(60_000);
   });
 
+  it("removes the CDK assemblies each test file leaves when it ends, so a shard never fills the disk", () => {
+    expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts"]);
+  });
+
   it("keeps the three required contained P0 journeys in an explicit no-empty native profile", () => {
     expect(config.test?.exclude).toEqual(expect.arrayContaining(nativeP0Files));
     expect(nativeP0Config.test?.include).toEqual(nativeP0Files);
     expect(nativeP0Config.test?.passWithNoTests).toBe(false);
     expect(nativeP0Config.test?.globalSetup).toEqual(config.test?.globalSetup);
     expect(nativeP0Config.test?.testTimeout).toBe(config.test?.testTimeout);
+    expect(nativeP0Config.test?.setupFiles).toEqual(config.test?.setupFiles);
   });
 });

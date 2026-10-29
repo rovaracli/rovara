@@ -37,7 +37,11 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "alerts.address")?.value).toBe("none");
     expect(rows.find((row) => row.key === "limits.workspacesPerMember")?.value).toBe("3 (install-time default; the control plane may hold a newer setting)");
     expect(rows.find((row) => row.key === "models.chatgpt.enabled")).toMatchObject({ value: "false unless an admin changed it (the control plane holds the setting)", where: "control-plane setting CHATGPT.enabled" });
-    expect(rows).toHaveLength(18);
+    // The two switches a9fbe07a4 added (packed settings on the control-plane stack), both on unless an admin turns them off; rovaraCode.v2 (d4c4e9136) is off by default.
+    expect(rows.find((row) => row.key === "planSelfCheck.enabled")).toMatchObject({ value: "true", where: "stack parameter PlanSelfCheckEnabled on agentx-staging-control-plane" });
+    expect(rows.find((row) => row.key === "autofix.enabled")).toMatchObject({ value: "true", where: "stack parameter AutofixEnabled on agentx-staging-control-plane" });
+    expect(rows.find((row) => row.key === "rovaraCode.v2")).toMatchObject({ value: "false", where: "stack parameter RovaraCodeV2Enabled on agentx-staging-control-plane" });
+    expect(rows).toHaveLength(20);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

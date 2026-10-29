@@ -333,7 +333,7 @@ describe("preparing a thread: authorization and the thread record", () => {
 
     const prepared = await prepareThread(handler, threadOne, bob);
     expect(prepared.body).toMatchObject({ outcome: "WORKSPACE", workspaceId, status: "PREPARING", created: true });
-    const threadRecord = db.find((item) => String(item.pk).startsWith("SLACK_THREAD#"));
+    const threadRecord = db.find((item) => String(item.pk).startsWith(`ORG#${TEST_ORG}#SLACK_THREAD#`));
     expect(threadRecord).toHaveLength(1);
     expect(threadRecord[0]).toMatchObject({ entityType: "SLACK_THREAD", thread: threadOne, workspaceId, starterUserId: bob });
     expect([...(threadRecord[0]!.requesters as Set<string>)]).toEqual([bob]);

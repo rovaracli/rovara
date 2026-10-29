@@ -9,6 +9,7 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   RealtimeNoticeSchema,
   SessionSharedNoticeSchema,
+  CodeSettingsChangedNoticeSchema,
   agentXError,
   changesKey,
   type ChangesFeedEntry,
@@ -112,5 +113,7 @@ function entryOf(item: Record<string, unknown>, at: string, sk: string): Changes
   const stored = RealtimeNoticeSchema.safeParse(item["notice"]);
   if (stored.success) return { ...stored.data, at, sk };
   const shared = SessionSharedNoticeSchema.safeParse({ type: item["type"], sessionId: item["sessionId"], revision: item["revision"], by: item["by"], undo: item["undo"] });
-  return shared.success ? { ...shared.data, at, sk } : undefined;
+  if (shared.success) return { ...shared.data, at, sk };
+  const settings = CodeSettingsChangedNoticeSchema.safeParse({ type: item["type"], project: item["project"], revision: item["revision"], by: item["by"] });
+  return settings.success ? { ...settings.data, at, sk } : undefined;
 }

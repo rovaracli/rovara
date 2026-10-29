@@ -11,13 +11,16 @@ import {
   DEVELOPER_CODE_SECONDS,
   DEVELOPER_SESSION_SECONDS,
   FRESH_SIGN_IN_SECONDS,
+  SetMyNameBodySchema,
   type AuditEventInput,
   type DeveloperSignInMethod,
   type LinkedIdentity,
 } from "@agentx/contracts";
-import { auditIdentityLinked, auditIdentityUnlinked, auditOccurrence } from "../audit/events.js";
+import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
+import { chosenNameKey, readChosenName, readChosenNames, withChosenName } from "./chosen-name.js";
+import { readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
@@ -56,7 +59,12 @@ export type DeveloperMarks = {
   [attribute: `identityUnlinked#${string}`]: string | undefined;
   [attribute: `sessionsEndedByMethod#${string}`]: string | undefined;
 };
-export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
+export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string;
+  /** The name others see. Never an email address: a sign-in stores the provider's real name or a placeholder, and a record from before release 0.4.16 reads back safe (`getDeveloper`). */
+  displayName: string;
+  /** True once the person chose their own name (`PUT /v1/app/me/name`); a sign-in then leaves the name alone. False (or absent on an older record): the provider's name or a placeholder. */
+  displayNameChosen?: boolean;
+  email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
   /** Plan 2, Task 3: the developer this one was merged into (a duplicate member of the same person); its sign-in identity is linked there. */
   mergedInto?: string; mergedAt?: string }
 /** One item of a TransactWriteItems request, for a transaction that also writes another table. */
@@ -126,6 +134,8 @@ interface RefreshRecord { sessionId: string; expiresAt: number; usedAt?: string;
 interface CancellationReason { Code?: string }
 
 export const META = "META";
+/** How many sign-in records a list reads at once (`getDevelopers`). */
+const RECORD_READS_AT_ONCE = 16;
 
 /** E8: the email index's key, the SHA-256 of the normalized email (normalizeEmail, the same as the org email pointer), so no email is stored as a key. */
 export function emailIndexKey(email: string): { pk: string; sk: "META" } {
@@ -174,6 +184,12 @@ export const REAUTH_SAME_METHOD = "you are signed in with the method you are rem
 export const RELINK_NOT_REMOVED = "that sign-in was not removed from your account, so it cannot be added back here";
 export const RELINK_OWN_ACCOUNT = "that sign-in has since started its own account, so it cannot be added back to this one";
 export const RELINK_ALREADY = "that sign-in is already part of your account";
+/** The name a person chose, as `SetMyNameBodySchema` allows it, or undefined. */
+const safeChosenName = (name: string): string | undefined => {
+  const parsed = SetMyNameBodySchema.safeParse({ name });
+  return parsed.success ? parsed.data.name : undefined;
+};
+
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -204,6 +220,11 @@ export class DeveloperSignInStore {
     documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number;
     /** The Audit Ledger's outbox (Task 18): a sign-in method linked or unlinked is recorded in the transaction that does it. Absent on a legacy install. */
     audit?: AuditRuntime;
+    /**
+     * Release 0.4.18: the State table, where the name a person chose is kept (`chosen-name.ts`). The broker passes it: `getDeveloper` and `getDevelopers` then show the chosen
+     * name, and `setChosenDisplayName` writes it. The sign-in function leaves it out (it has no grant on that item) and reads the sign-in record's name.
+     */
+    nameTableName?: string;
   }) {}
 
   private seconds(): number { return Math.floor(this.input.now() / 1000); }
@@ -306,17 +327,18 @@ export class DeveloperSignInStore {
     return item === undefined ? undefined : strip(item);
   }
 
-  async upsertDeveloper(profile: Omit<DeveloperRecord, "firstSignInAt" | "lastSignInAt" | "revoked">): Promise<DeveloperRecord> {
+  async upsertDeveloper(profile: Omit<DeveloperRecord, "firstSignInAt" | "lastSignInAt" | "revoked" | "displayNameChosen">): Promise<DeveloperRecord> {
     // One atomic update, not a read-then-overwrite: a concurrent revocation (or another sign-in)
     // must never be clobbered by this call. firstSignInAt and revoked are set only if absent;
     // revoked in particular must never flip true back to false (fix round 1, F3).
     const at = this.iso();
+    // Release 0.4.16: whatever the provider calls the person (the email-code sign-in calls them by their address), no email is stored as a name.
+    const displayName = safeDisplayName(profile.displayName, profile.developerId);
     const setClauses = [
       "entityType = :entityType",
       "provider = :provider",
       "issuer = :issuer",
       "subject = :subject",
-      "displayName = :displayName",
       "lastSignInAt = :at",
       "firstSignInAt = if_not_exists(firstSignInAt, :at)",
       "revoked = if_not_exists(revoked, :false)",
@@ -327,7 +349,6 @@ export class DeveloperSignInStore {
       ":provider": profile.provider,
       ":issuer": profile.issuer,
       ":subject": profile.subject,
-      ":displayName": profile.displayName,
       ":at": at,
       ":false": false,
     };
@@ -336,12 +357,21 @@ export class DeveloperSignInStore {
     if (profile.slackUserId === undefined) removeClauses.push("slackUserId");
     else { setClauses.push("slackUserId = :slackUserId"); values[":slackUserId"] = profile.slackUserId; }
 
-    await this.input.documentClient.send(new UpdateCommand({
+    const update = async (withName: boolean) => this.input.documentClient.send(new UpdateCommand({
       TableName: this.input.tableName,
       Key: { pk: `DEVELOPER#${profile.developerId}`, sk: META },
-      UpdateExpression: `SET ${setClauses.join(", ")}${removeClauses.length > 0 ? ` REMOVE ${removeClauses.join(", ")}` : ""}`,
-      ExpressionAttributeValues: values,
+      UpdateExpression: `SET ${[...setClauses, ...(withName ? ["displayName = :displayName", "displayNameChosen = :notChosen"] : [])].join(", ")}${removeClauses.length > 0 ? ` REMOVE ${removeClauses.join(", ")}` : ""}`,
+      // A name the person chose is theirs: the sign-in writes the provider's name only while they have not chosen one. The check is part of the write, so a
+      // choice made while this sign-in is in flight is never overwritten either.
+      ...(withName ? { ConditionExpression: "attribute_not_exists(displayNameChosen) OR displayNameChosen = :notChosen" } : {}),
+      ExpressionAttributeValues: { ...values, ...(withName ? { ":displayName": displayName, ":notChosen": false } : {}) },
     }));
+    try {
+      await update(true);
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      await update(false);
+    }
     if (profile.email !== undefined) {
       // E8 (Q4): the latest sign-in with this verified email wins; the email itself is not stored here.
       await this.put({ ...emailIndexKey(profile.email), entityType: "DEVELOPER_EMAIL", developerId: profile.developerId, updatedAt: at });
@@ -351,9 +381,92 @@ export class DeveloperSignInStore {
     return stored;
   }
 
+  /**
+   * Release 0.4.16: the person chooses their own name. `developerId` is the verified session's, never anything a request carries. The name was validated at the
+   * route (`SetMyNameBodySchema`) and is checked again here, so no other caller can store an email as a name. Marks the name chosen, so a sign-in leaves it alone,
+   * and records `member.renamed` (no name in the record) in the same transaction as the change.
+   *
+   * Release 0.4.18: the name is an item of its own in the State table (`DEVELOPER_NAME#<id>`), written in one transaction with a ConditionCheck on the person's sign-in
+   * record (not revoked, not merged) and the audit's pending item. The broker has no write on the sign-in table, only the read and the ConditionCheckItem it already had.
+   */
+  async setChosenDisplayName(input: { developerId: string; orgId: string; name: string }): Promise<DeveloperRecord> {
+    const name = safeChosenName(input.name);
+    if (name === undefined) throw agentXError("CONFIG_INVALID", "name: give a name of 1 to 80 characters, with no email address");
+    const nameTable = this.input.nameTableName;
+    if (nameTable === undefined) throw new Error("the chosen-name table is not configured");
+    const at = this.iso();
+    // The name already chosen again changes nothing, so it writes and audits nothing.
+    const current = await this.getDeveloper(input.developerId);
+    if (current === undefined) throw agentXError("NOT_FOUND", "your sign-in record was not found; sign in again");
+    if (current.displayNameChosen === true && current.displayName === name) return current;
+    const [event] = await tryAuditEvents(this.auditDeps(), () => [auditMemberRenamed({
+      orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: at, occurrence: auditOccurrence(input.developerId, at), memberId: input.developerId,
+    })]);
+    const signInCheck = 1;
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Put: { TableName: nameTable, Item: { ...chosenNameKey(input.developerId), entityType: "DEVELOPER_NAME", developerId: input.developerId, name, chosenAt: at } } },
+        // A person whose sign-in was turned off, or who was merged into another developer, cannot rename (a revocation landing after the session check is caught here).
+        // The check is on the sign-in record, which this transaction only reads.
+        { ConditionCheck: {
+          TableName: this.input.tableName, Key: { pk: `DEVELOPER#${input.developerId}`, sk: META },
+          ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(revoked) OR revoked = :false) AND attribute_not_exists(mergedInto)",
+          ExpressionAttributeValues: { ":false": false },
+        } },
+        ...this.pendingFor(event),
+      ] }));
+    } catch (error) {
+      if (error instanceof Error && error.name === "TransactionCanceledException") {
+        const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+        if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
+        throw error;
+      }
+      if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
+      throw error;
+    }
+    await this.flush(event);
+    const stored = await this.getDeveloper(input.developerId);
+    if (stored === undefined) throw agentXError("NOT_FOUND", "your sign-in record was not found; sign in again");
+    return stored;
+  }
+
+  /** The developer's record. Its name reads back safe to show: a name stored as an email (a record from before release 0.4.16) is the placeholder. */
   async getDeveloper(developerId: string): Promise<DeveloperRecord | undefined> {
-    const item = await this.get<DeveloperRecord>(`DEVELOPER#${developerId}`);
-    return item === undefined ? undefined : strip(item);
+    const nameTable = this.input.nameTableName;
+    // The name a person chose (release 0.4.18) is read beside the record, and shows instead of the record's name.
+    const [item, chosen] = await Promise.all([
+      this.get<DeveloperRecord>(`DEVELOPER#${developerId}`),
+      nameTable === undefined ? Promise.resolve(undefined) : readChosenName(this.input.documentClient, nameTable, developerId),
+    ]);
+    // The id is the item's key: a sign-in writes no `developerId` attribute, so the record's own field is absent on every real item.
+    return item === undefined ? undefined : readableDeveloper(withChosenName({ ...strip(item), developerId }, chosen));
+  }
+
+  /**
+   * Many developers' records for a list (members, cards): the records one read each, in parallel (the broker has no batch read on this table), and the chosen names
+   * of all of them in one BatchGetItem per 100. A person with no record is missing from the map.
+   */
+  async getDevelopers(developerIds: readonly string[]): Promise<Map<string, DeveloperRecord>> {
+    const unique = [...new Set(developerIds)];
+    const nameTable = this.input.nameTableName;
+    // At most a few reads at a time, as the routes' lists did when they read the records one by one.
+    const read = async (): Promise<Array<(DeveloperRecord & { pk: string; sk: string }) | undefined>> => {
+      const found: Array<(DeveloperRecord & { pk: string; sk: string }) | undefined> = [];
+      for (let start = 0; start < unique.length; start += RECORD_READS_AT_ONCE) {
+        found.push(...await Promise.all(unique.slice(start, start + RECORD_READS_AT_ONCE).map((developerId) => this.get<DeveloperRecord>(`DEVELOPER#${developerId}`))));
+      }
+      return found;
+    };
+    const [items, chosen] = await Promise.all([
+      read(),
+      nameTable === undefined ? Promise.resolve(new Map<string, string>()) : readChosenNames(this.input.documentClient, nameTable, unique),
+    ]);
+    const records = new Map<string, DeveloperRecord>();
+    unique.forEach((developerId, index) => {
+      const item = items[index];
+      if (item !== undefined) records.set(developerId, readableDeveloper(withChosenName({ ...strip(item), developerId }, chosen.get(developerId))));
+    });
+    return records;
   }
 
   /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */

@@ -45,6 +45,7 @@ import {
   TaskPeopleDisplayReadResponseSchema,
   AgentXError,
   agentXError,
+  projectArchivedMessage,
   LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
@@ -63,6 +64,8 @@ import {
   type DeveloperTaskView,
   type RunInput,
   type AppMeResponse,
+  SetMyNameBodySchema,
+  type SetMyNameResponse,
   type AppProjectDetail,
   type AppProjectSummary,
   type AppProjectsResponse,
@@ -70,6 +73,8 @@ import {
   StartDeveloperTaskRequestSchema,
   type ProjectMemberChangeResponse,
   type ProjectMemberRemoveResponse,
+  type ProjectSlackChannelRemoveResponse,
+  type ProjectSlackChannelResponse,
   type ProjectMembersResponse,
   type ProjectRole,
   type ChannelByNameRequest,
@@ -102,6 +107,8 @@ import {
   OrgRoleSchema,
   ProjectSetupCheckBodySchema,
   PutProjectMemberBodySchema,
+  PutProjectSlackChannelBodySchema,
+  RemoveProjectSlackChannelBodySchema,
   RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
@@ -116,6 +123,8 @@ import {
   type TaskPeopleDisplayReadResponse,
   SESSION_PROJECT_BINDINGS_MAX,
   workflowAnswer,
+  type MergeTrackingItem,
+  type MergeView,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -123,6 +132,7 @@ import { releaseOrgModelSources } from "../model-sources/release.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
+import { bindProjectChannel, unbindProjectChannel, type ProjectSlackChannelDependencies } from "../org/slack-binding.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
@@ -136,6 +146,8 @@ import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
+import { safeDisplayName } from "../developer/person-name.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { developerTaskIdentity, type DeveloperTaskRecord, type WorkspaceCharge } from "../developer/task-records.js";
@@ -169,6 +181,10 @@ import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
+import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
+import { projectProcessOf } from "../playbook/project-process.js";
+import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
+import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
 import { startCodeIntent } from "../rovara-code/intent.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -232,6 +248,8 @@ export interface DeveloperRouteDependencies {
   now: () => number;
   /** The developer task routes' broker actions; without them /v1/dev/tasks* answers NOT_FOUND. */
   tasks?: DeveloperTaskActions;
+  /** Rovara Code (Bug G): whether the viewer may press Merge now, for the words of a task page (the browser pages carry no `agents`, so they carry this instead). */
+  codeMergeView?: (task: DeveloperTaskRecord, items: MergeTrackingItem[], viewerDeveloperId: string) => Promise<MergeView | undefined>;
   /** Reconciles all already-linked PRs using GitHub's current API state before owner decisions. */
   refreshTaskFeedback?(taskId: string): Promise<void>;
   /** Builds E2E projections only from the task's current server-owned admission and evidence references. */
@@ -239,6 +257,8 @@ export interface DeveloperRouteDependencies {
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
   currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
+  currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
+  taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
@@ -250,7 +270,7 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  orgs?: Pick<OrgStore, "bindSlackTeam" | "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
@@ -327,7 +347,8 @@ export { StatusReply };
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
 export { effectiveProjectRole, requireNewWorkAllowed };
-export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole }
+export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true;
+  /** Release 0.4.16: true once the person chose their own display name (`PUT /v1/app/me/name`). Set by the session read; absent on a caller built another way. */ nameChosen?: boolean }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
@@ -653,7 +674,11 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
   }
-  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`);
+  // Release 0.4.18: the name the person chose is an item in the State table, read with their sign-in record.
+  const [developer, chosenName] = await Promise.all([
+    getSignIn<Pick<DeveloperRecord, "displayName" | "displayNameChosen" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`),
+    readChosenName(deps.documentClient, deps.tableName, token.developerId),
+  ]);
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
@@ -673,7 +698,9 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     amr: token.amr,
     orgId: membership.orgId,
     orgRole: membership.role,
-    name: developer.displayName,
+    // Release 0.4.16: the caller's name is everywhere a task, a session or a comment names them, so it is never an email address.
+    name: chosenName ?? safeDisplayName(developer.displayName, token.developerId),
+    nameChosen: chosenName !== undefined || developer.displayNameChosen === true,
     ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
     ...(developer.email === undefined ? {} : { email: developer.email }),
   };
@@ -1241,16 +1268,22 @@ async function getProjectMembers(deps: DeveloperRouteDependencies, caller: Devel
   // Who added a person is shown as the developer they have since been merged into, if any.
   const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
     ? { ...row, grantedBy: { developerId: await survivorOf(merge, row.grantedBy.developerId) } } : row));
-  return buildProjectMembersResponse(deps, await Promise.all(rows));
+  return buildProjectMembersResponse(deps, await Promise.all(rows), isOrgAdmin(caller));
 }
 
-async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>): Promise<ProjectMembersResponse> {
+/** Whether the caller is an owner or admin of the org: the people who may see other people's emails, join dates and sign-in methods (release 0.4.16, owner decision "option A"). */
+const isOrgAdmin = (caller: Pick<DeveloperCaller, "orgRole">): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
+
+/** The project's people. Names are email-safe for everyone; an email is shown to an owner or admin only (`showEmails`). */
+async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>, showEmails: boolean): Promise<ProjectMembersResponse> {
   const store = signInStoreOf(deps);
   const cards = new Map<string, { name: string; email?: string }>();
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
+  const records = await store.getDevelopers(ids);
   await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
-    const [record, identities] = await Promise.all([store.getDeveloper(id), store.identitiesOf(id)]);
-    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    const record = records.get(id);
+    const identities = await store.identitiesOf(id);
+    const email = showEmails ? record?.email ?? identities.find((identity) => identity.email !== undefined)?.email : undefined;
     cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
   });
   const members: ProjectMember[] = rows.map((row) => {
@@ -1308,6 +1341,47 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
   await notifyProjectMemberChanged(deps, caller.orgId, name, removed.developerId);
   return removed;
+}
+
+const SLACK_BIND_ROLE_MESSAGE = "only an organization owner or admin can bind a Slack channel to a project";
+
+/**
+ * `PUT /v1/app/projects/{name}/slack-channel` (release 0.4.17): an org owner or admin binds a Slack channel of the org's Slack workspace to a
+ * project of the org, with the developer sign-in. Owner or admin only, read live from the membership on every call: the operator's bind needs the
+ * project's `administrator` membership, which a project's own maintainer does not hold, so a project maintainer who is only an org member is 403.
+ * No access to the project is the usual 404. The team and channel checks, the replay and the audit are `bindProjectChannel`'s.
+ */
+async function putProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<ProjectSlackChannelResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
+  const parsed = PutProjectSlackChannelBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  // Slack must not route new work to an archived project (an unbind is still allowed).
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
+  const result = await bindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
+  if (result.changed) logDeveloperEvent({ event: "developer.slack_channel_bound", orgId: caller.orgId, project: name });
+  return result;
+}
+
+/** `DELETE /v1/app/projects/{name}/slack-channel`: the same people unbind one of the project's channels. `removed` is false when it was not bound. */
+async function deleteProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<ProjectSlackChannelRemoveResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
+  const parsed = RemoveProjectSlackChannelBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const result = await unbindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
+  if (result.removed) logDeveloperEvent({ event: "developer.slack_channel_unbound", orgId: caller.orgId, project: name });
+  return result;
+}
+
+/** What a bind writes and reads. A Rovara Cloud install gives an org no claim on the installation's own Slack team: its orgs connect their own. */
+function slackChannelDepsOf(deps: DeveloperRouteDependencies): ProjectSlackChannelDependencies {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, now: () => new Date(deps.now()), orgs: deps.orgs,
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    ...(deps.cloud === true || deps.developer.slackTeamId === undefined ? {} : { installSlackTeamId: deps.developer.slackTeamId }),
+  };
 }
 
 /**
@@ -1484,11 +1558,14 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
   return {
     ...deps.agents,
     callerFor: async (orgId, developerId) => {
-      const developer = await getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`);
+      const [developer, chosenName] = await Promise.all([
+        getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`),
+        readChosenName(deps.documentClient, deps.tableName, developerId),
+      ]);
       const membership = await deps.orgs?.orgForDeveloper(developerId);
       if (developer === undefined || developer.revoked || membership === undefined || membership.orgId !== orgId) return undefined;
       return {
-        developerId, sessionId: "agent-run", amr: developer.provider, name: developer.displayName, orgId, orgRole: membership.role,
+        developerId, sessionId: "agent-run", amr: developer.provider, name: chosenName ?? safeDisplayName(developer.displayName, developerId), orgId, orgRole: membership.role,
         ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
         ...(developer.email === undefined ? {} : { email: developer.email }),
       };
@@ -1531,6 +1608,7 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
     starter: agentRunStarterOf(deps),
     startPlainTask: (who, body, thread) => startTask(developerTaskRouteDependencies(deps, who, thread), who, body),
     ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
+    projectProcess: (orgId, project) => projectProcessOf({ documentClient: deps.documentClient, tableName: deps.tableName, store: deps.agents?.store }, orgId, project),
     origin: new URL(deps.developer.issuer).origin,
     visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
     // A follow-up may follow only a task of the caller's own org, whose session they can see, that ended Answered (read now, never trusted from the request).
@@ -1630,6 +1708,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
         return registered?.definition.repositories.find(item => item.name === repository)?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
+    ...(taskDeps.actions.turnRecordsTableName === undefined ? {} : { turnRecordsTableName: taskDeps.actions.turnRecordsTableName }),
     ...(chainDeps === undefined ? {} : {
       chain: chainSessionReads(chainDeps, caller.orgId),
       chainSteer: chainSteerReadsFor(chainDeps),
@@ -1647,6 +1726,8 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
           console.log(JSON.stringify({ component: "broker", event: "rovara_code.understand_start_deferred", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
         }
       },
+      // Plan 6 Task 20: the open pull request's Fixes line follows a link, an unlink or a replace of the session's Linear issue at once.
+      ...(taskDeps.actions.rewriteLinearCloseLine === undefined ? {} : { rewritePullRequestLinearLine: (task: DeveloperTaskRecord, key: string | undefined) => taskDeps.actions.rewriteLinearCloseLine!(task, key) }),
       startAgentRun: async (request) => {
         const starter = agentRunStarterOf(deps);
         if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
@@ -1757,12 +1838,16 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.currentPullRequestHead === undefined ? {} : { currentPullRequestHead: deps.currentPullRequestHead }),
+    ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
+    ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),
     ...(deps.validateWorkflowE2EApplicationPlan === undefined ? {} : { validateWorkflowE2EApplicationPlan: deps.validateWorkflowE2EApplicationPlan }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
+    ...(agents?.codeMerge !== undefined ? { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }
+      : deps.codeMergeView === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => deps.codeMergeView!(task, items, caller.developerId) }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
@@ -1861,6 +1946,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
         getTaskPeopleCapabilities: (caller, taskId) => getTaskPeopleCapabilities(routeDeps(caller), caller, taskId),
         api: createTaskWebApi({
           origin: deps.developer.issuer,
+          log: logDeveloperEvent,
           authenticateSession,
           taskState: (caller, taskId) => getTaskPageState(routeDeps(caller), caller, taskId),
           listComments: (caller, taskId) => listPageComments(routeDeps(caller), caller, taskId),
@@ -1955,10 +2041,37 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "GET") return readReviewedProjectRestoreAppPreview(deps, caller, name);
     return restoreProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
   }
+  const projectSlackChannelRoute = /^\/v1\/app\/projects\/([^/]+)\/slack-channel$/.exec(url.pathname);
+  if (projectSlackChannelRoute !== null) {
+    if (request.method === "PUT") return putProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
+    if (request.method === "DELETE") return deleteProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
+  }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
+  // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.
+  const codeSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/code-settings$/.exec(url.pathname);
+  if (codeSettingsRoute !== null && (request.method === "GET" || request.method === "PUT")) {
+    const settingsDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) };
+    return request.method === "GET" ? getCodeSettings(settingsDeps, caller, codeSettingsRoute[1]!) : putCodeSettings(settingsDeps, caller, codeSettingsRoute[1]!, jsonBody(request), deps.agents);
+  }
+  // "How we work": the project's playbook. Anyone who can see the project reads it; a maintainer changes it.
+  const playbookRoute = PLAYBOOK_PATH.exec(url.pathname);
+  const playbookProcessRoute = PLAYBOOK_PROCESS_PATH.exec(url.pathname);
+  if ((playbookRoute !== null && (request.method === "GET" || request.method === "PUT")) || (playbookProcessRoute !== null && request.method === "POST")) {
+    const playbookDeps = {
+      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, audit: deps.agents?.audit, approvals: deps.agents,
+      projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName),
+    };
+    if (playbookProcessRoute !== null) return routeProjectProcess(playbookDeps, caller, playbookProcessRoute[1]!);
+    return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
+  }
+  // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
+  if (request.method === "GET" && howWeWorkRoute !== null) {
+    return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
+  }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
     const drafting = setupDraftDepsOf(deps);
@@ -2009,6 +2122,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/members/lookup") return lookupOrganizationMember(deps, caller, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
+  if (request.method === "PUT" && url.pathname === "/v1/app/me/name") return setMyName(deps, caller, jsonBody(request));
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
@@ -2102,10 +2216,23 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
   return {
-    developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole },
+    developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole, nameChosen: caller.nameChosen === true },
     org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
   };
+}
+
+/**
+ * `PUT /v1/app/me/name` (release 0.4.16): the signed-in person chooses the name teammates see. The person is the verified session's (`caller.developerId`), never anything the
+ * body carries, and the body is the name alone. A sign-in leaves a chosen name alone. Written with a `member.renamed` audit record (no name in it).
+ */
+async function setMyName(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<SetMyNameResponse> {
+  const parsed = SetMyNameBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+  const record = await store.setChosenDisplayName({ developerId: caller.developerId, orgId: caller.orgId, name: parsed.data.name });
+  logDeveloperEvent({ event: "developer.name_chosen" });
+  return { name: record.displayName, nameChosen: true };
 }
 
 /**
@@ -2183,7 +2310,8 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
     : inviteUrl(`${deps.developer.issuer}/join`, token, "query") };
 }
 
-const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
+// The State table is given for the name a person chose (release 0.4.18): the store shows it instead of the sign-in record's.
+const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now });
 
 const bodyError = (error: z.ZodError) => {
   const issue = error.issues[0];

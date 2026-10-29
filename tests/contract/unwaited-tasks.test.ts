@@ -4,7 +4,7 @@
 // A waiter is a thread activeTurn naming the task whose seenAt is under 15 minutes old; one with no
 // seenAt (written by an older Slack service) counts as a waiter until the task is idle 48 hours.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   UNSTAMPED_WAITER_GRACE_MS, UNWAITED_TASK_IDLE_LIMIT_MS, UNWAITED_TASK_NOTE, WAITER_SEEN_WITHIN_MS,
   lastActivityAt, slackBotTokenFrom, sweepUnwaitedTasks,
@@ -12,6 +12,9 @@ import {
 import {
   SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
+
+import { legacySlackThread } from "../support/legacy-slack-thread.js";
+afterEach(() => vi.unstubAllEnvs());
 
 const threadTs = "1695500000.000001";
 const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/${threadTs}`;
@@ -379,3 +382,11 @@ describe("the backstop: review hardening (#173)", () => {
   });
 });
 
+
+it("K1 cancels and notifies an idle pre-org legacy workspace", async () => {
+  vi.stubEnv("AGENTX_ENV", "staging");
+  const h = await runningTask();
+  legacySlackThread(h.db, h.workspaceId);
+  expect((await h.sweep()).cancelled).toEqual([h.operationId]);
+  expect(h.postNote).toHaveBeenCalledOnce();
+});

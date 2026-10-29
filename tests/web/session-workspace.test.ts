@@ -39,6 +39,15 @@ it("offers review only to the owner while the plan is waiting", async () => {
 it("shows the real plan estimate and its run limit without claiming checks passed", async () => {
  const f = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.getByText("$0.50")).toBeTruthy();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$2.00")).toBeTruthy();expect(screen.queryByText("Passed")).toBeNull();f.close();
 });
+it("shows the time to a pull request beside the cost, and says when the plan check was unavailable (staging 0.4.10, bug D)", async () => {
+ const task = taskFixture({ workflow: { ...workflow(), definitionVersion: "1.1.0", critique: { status: "done", critiques: [], revisions: 0 } },
+  runEstimate: { lowUsd: 0.5, highUsd: 1.2, runLimitUsd: 2, stopAtUsd: 2, basis: "default", samples: 0, minutes: { low: 20, high: 45, basis: "default", samples: 0 } } });
+ const f = setup(fixture({ body: { kind: "task", task } }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.getByText("Estimated time: about 20–45 minutes to a pull request.")).toBeTruthy();
+ expect(screen.getByText("Plan check unavailable: this plan was not checked by a second model.")).toBeTruthy();f.close();
+ const plain = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ expect(screen.queryByText(/Estimated time/u)).toBeNull();expect(screen.queryByText(/Plan check unavailable/u)).toBeNull();plain.close();
+});
 it("marks only the server's current pipeline stage", () => {
  const f = setup();const current = f.container.querySelectorAll('[aria-current="step"]');expect(current).toHaveLength(1);expect(current[0]?.textContent).toContain("Plan check");expect(screen.getByText("Understand")).toBeTruthy();expect(screen.getByText("Build")).toBeTruthy();f.close();
 });
@@ -116,4 +125,29 @@ it("keeps a multiline paragraph together when attaching its actual id", async ()
  const task = taskFixture({ workflow: { ...workflow(), planContent: "# Refund investigation\n\nCheck the key.\nThen inspect the retry." } });
  const f = setup(fixture({ body: { kind: "task", task }, anchors: [{ target: "plan_block", targetId: "p2", revision: "v1" }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
  const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });expect(source.closest(".rv-annotated-block")?.textContent).toContain("Then inspect the retry.");f.close();
+});
+const noCodeWorkflow = (extra: Record<string, unknown> = {}) => ({ ...workflow(), stage: "IMPLEMENT", state: "BLOCKED", blockReason: "No code changes were needed, so no tests were run and no pull request was opened. Close the task, or ask for a change.", ...extra });
+it("shows what the agent found when a coding run needed no code change: the findings first, the commands with their output, then the last line, as plain text", () => {
+ const noChangeFindings = { commands: [{ command: "grep -rn retry src", output: "src/a.ts:4: <img src=x onerror=alert(1)>" }, { command: "npm test", output: "12 passed", failed: true }], omitted: 2, conclusion: "We use retry in one file. <script>window.__pwned=1</script>" };
+ const f = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ expect(screen.getByText("No code changes were needed. Here's what I found: We use retry in one file. <script>window.__pwned=1</script>")).toBeTruthy();
+ expect(screen.getByRole("heading", { name: "Commands I ran:" })).toBeTruthy();
+ expect(screen.getByText("grep -rn retry src")).toBeTruthy();expect(screen.getByText("src/a.ts:4: <img src=x onerror=alert(1)>")).toBeTruthy();
+ expect(screen.getByText("2 earlier commands are not listed.")).toBeTruthy();expect(screen.getByText(/\(it failed\)/u)).toBeTruthy();
+ // A task with no Slack thread starts a new request for a change.
+ expect(screen.getByText("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.")).toBeTruthy();
+ expect(f.container.querySelector("script,img,iframe")).toBeNull();expect(f.container.textContent).not.toMatch(/checks passed|verified|nothing was checked/iu);f.close();
+ const threaded = setup(fixture({ body: { kind: "task", task: taskFixture({ share: { mode: "view", channelId: "C0123456789", sharedReason: "requested", threadUrl: "https://acme.slack.com/archives/C0123456789/p1760000000000100" }, workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ expect(screen.getByText("No tests were run and no pull request was opened. To change something, reply here and choose Retry coding; otherwise close the task.")).toBeTruthy();threaded.close();
+ // A share with no thread yet (the start message is not posted) reads as no thread, as the task page does.
+ const unposted = setup(fixture({ body: { kind: "task", task: taskFixture({ share: { mode: "view", channelId: "C0123456789", sharedReason: "requested" }, workflow: noCodeWorkflow({ noChangeFindings }) }) } }));
+ expect(screen.getByText("No tests were run and no pull request was opened. To change something, start a new request describing it; otherwise close the task.")).toBeTruthy();unposted.close();
+});
+it("says the agent wrote no conclusion when the findings have none, and only that no change was needed when an older worker sent none, and nothing on another stop", () => {
+ const none = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ noChangeFindings: { commands: [{ command: "ls src" }] } }) }) } }));
+ expect(screen.getByText("No code changes were needed. The agent didn't write a conclusion; see what it ran below.")).toBeTruthy();none.close();
+ const older = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow() }) } }));
+ expect(screen.getByText("No code changes were needed.")).toBeTruthy();expect(screen.queryByText(/didn't write a conclusion/u)).toBeNull();older.close();
+ const other = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ blockReason: "Coding stopped before it finished.", noChangeFindings: { commands: [], conclusion: "left over" } }) }) } }));
+ expect(screen.queryByText(/left over/u)).toBeNull();expect(screen.queryByText("No code changes were needed.")).toBeNull();other.close();
 });

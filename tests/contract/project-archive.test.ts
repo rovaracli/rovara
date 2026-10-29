@@ -10,7 +10,8 @@ import { createCandidateManifest } from "../../packages/contracts/src/task-workf
 import { approvedUnion, decideEgressDomain, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { archiveProject, restoreProject } from "../../packages/broker/src/org/project-archive.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -36,7 +37,7 @@ const listed = async (h: Harness, who: Developer, query = "") => (await h.dev(wh
 /** A cloud install whose firewall sync is a spy, so a test sees when an archive or restore asks for it. */
 async function cloudInstall(options: { syncOk?: boolean } = {}) {
   const sync = vi.fn(async () => ({ ok: options.syncOk ?? true, domains: 0 }));
-  const h = await createDeveloperTaskBroker({ brokerExtra: { cloud: true, egressDomainsSync: sync } });
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { cloud: true, egressDomainsSync: sync } });
   setRole(h.db, OMAR, "owner");
   const egress: EgressDomainsDependencies = { documentClient: h.db, tableName: "state", cloud: true, now: () => new Date(), sync };
   /** The project asks for exactly these domains and staff approve each, as the app and the operator console do. */
@@ -50,7 +51,7 @@ async function cloudInstall(options: { syncOk?: boolean } = {}) {
 
 describe("POST /v1/app/projects/{name}/archive", () => {
   it("answers the archived project and writes status, archivedAt and archivedBy on META", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const before = metaOf(h)!;
     const answer = await archiveRoute(h, OMAR);
@@ -61,7 +62,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
   });
 
   it("answers 200 and changes nothing when the project is already archived", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     const first = metaOf(h)!;
@@ -74,7 +75,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
   });
 
   it("refuses a contributor with 403 and answers 404 to a member with no access; nothing is written either way", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     // Maya reaches payments through its Slack channel: a contributor.
     const refused = await archiveRoute(h, MAYA);
     expect(refused.status).toBe(403);
@@ -92,7 +93,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
   });
 
   it("never reaches another org's project of the same name", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     h.db.set({ ...orgProjectCatalogKey(OTHER_ORG, "elsewhere"), entityType: "PROJECT_CATALOG", name: "elsewhere", latestRevision: 1, firstRegisteredAt: "x" });
     h.db.set({ ...projectMetaKey(OTHER_ORG, "elsewhere"), entityType: "PROJECT_META", name: "elsewhere", status: "active", createdAt: "x", createdBy: "y" });
@@ -101,7 +102,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
   });
 
   it("refuses a body that is not exactly { requestId } with CONFIG_INVALID, before anything is written", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     for (const body of [{}, { requestId: "not-a-uuid" }, { requestId: randomUUID(), extra: true }]) {
       const refused = await archiveRoute(h, OMAR, "payments", body);
@@ -112,7 +113,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
   });
 
   it("gives a project that predates META one, archived, and reads as created by unknown", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     h.db.delete(projectMetaKey(TEST_ORG, "payments"));
     expect((await archiveRoute(h, OMAR)).status).toBe(200);
@@ -124,7 +125,7 @@ describe("POST /v1/app/projects/{name}/archive", () => {
 
 describe("archiving a project with work in flight", () => {
   it("keeps a running task's continue and cancel working, and refuses only a new task start, with the exact message", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const started = await h.dev(OMAR, "POST", "/v1/dev/tasks", start());
     expect(started.status, JSON.stringify(started.body)).toBe(200);
@@ -190,7 +191,7 @@ describe("archiving a project with work in flight", () => {
     }
 
     it("runs its next round after the project is archived: the creator-authority recheck passes", async () => {
-      const h = await createDeveloperTaskBroker();
+      const h = await createSingleAnswerPlanBroker();
       setRole(h.db, OMAR, "owner");
       const { workspaceId, ownerKey } = await waitingForRound(h, OMAR);
       h.db.delete(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"));
@@ -204,7 +205,7 @@ describe("archiving a project with work in flight", () => {
 
 describe("POST /v1/app/projects/{name}/restore", () => {
   it("makes the project active again: status back, archivedAt and archivedBy removed, starts work", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     expect((await h.dev(MAYA, "POST", "/v1/dev/tasks", start())).body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
@@ -219,7 +220,7 @@ describe("POST /v1/app/projects/{name}/restore", () => {
   });
 
   it("answers 200 and changes nothing on a project that is not archived; a contributor is refused", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const before = metaOf(h);
     const answer = await restoreRoute(h, OMAR);
@@ -236,7 +237,7 @@ describe("POST /v1/app/projects/{name}/restore", () => {
 
 describe("the project list and name", () => {
   it("hides an archived project from GET /v1/app/projects and shows it, marked archived, with include=archived", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     expect(await listed(h, OMAR)).toEqual([]);
@@ -249,7 +250,7 @@ describe("the project list and name", () => {
   });
 
   it("keeps the name: creating a project with an archived project's name is PROJECT_NAME_TAKEN", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js") as unknown as {
@@ -409,7 +410,7 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
   });
 
   it("answers a replay of the same request id without applying it again: a late archive after a restore leaves the project active", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const first = randomUUID();
     expect((await archiveRoute(h, OMAR, "payments", { requestId: first })).status).toBe(200);
@@ -444,7 +445,7 @@ describe("the answer's warnings and the stored request id (fix round)", () => {
   });
 
   it("keeps a request id to its own project", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 1, firstRegisteredAt: "x" });
     const id = randomUUID();
@@ -460,7 +461,7 @@ describe("a settings save on an archived project", () => {
   const command = (executable: string, args: string[], timeoutSeconds: number) => ({ cwd: "repo/web", executable, args, timeoutSeconds });
 
   it("is refused with PROJECT_ARCHIVED, writes no revision and no description, and works again once the project is restored", async () => {
-    const h = await createDeveloperTaskBroker({
+    const h = await createSingleAnswerPlanBroker({
       register: false,
       brokerExtra: { cloud: true, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" } },
     });
@@ -493,7 +494,7 @@ describe("a settings save on an archived project", () => {
   });
 
   it("answers a contributor 403 before it says anything about the archive", async () => {
-    const h = await createDeveloperTaskBroker({ register: true, brokerExtra: { cloud: true, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" } } });
+    const h = await createSingleAnswerPlanBroker({ register: true, brokerExtra: { cloud: true, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" } } });
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     const refused = await h.dev(MAYA, "PUT", "/v1/app/projects/payments/settings", { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["x"] });
@@ -505,7 +506,7 @@ describe("archiveProject and restoreProject", () => {
   const deps = (h: Harness) => ({ documentClient: h.db, tableName: "state", egress: { documentClient: h.db, tableName: "state", cloud: true, now: () => new Date(), sync: async () => ({ ok: true }) } as EgressDomainsDependencies, now: () => new Date("2026-10-21T10:00:00.000Z") });
 
   it("archives with the actor and the time given, once: a second archive keeps the first actor and time", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     await archiveProject(deps(h), TEST_ORG, "payments", { developerId: OMAR.developerId });
     expect(metaOf(h)).toMatchObject({ status: "archived", archivedBy: OMAR.developerId, archivedAt: "2026-10-21T10:00:00.000Z" });
     await archiveProject({ ...deps(h), now: () => new Date("2026-10-22T10:00:00.000Z") }, TEST_ORG, "payments", { developerId: MAYA.developerId });
@@ -516,7 +517,7 @@ describe("archiveProject and restoreProject", () => {
   });
 
   it("touches only the named org's project", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     h.db.set({ ...projectMetaKey(OTHER_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", createdAt: "x", createdBy: "y" });
     await archiveProject(deps(h), TEST_ORG, "payments", { developerId: OMAR.developerId });
     expect(metaOf(h, "payments", OTHER_ORG)).toMatchObject({ status: "active" });
@@ -528,7 +529,7 @@ describe("closing an org archives its projects (POST /v1/app/org/leave by the on
     const orgA = `org_${"a".repeat(20)}`;
     const zed: Developer = { developerId: createHash("sha256").update("zed").digest("hex"), name: "Zed Yu", provider: "oidc", sessionId: "s-zed" };
     const sync = vi.fn(async () => ({ ok: true, domains: 0 }));
-    const h = await createDeveloperTaskBroker({
+    const h = await createSingleAnswerPlanBroker({
       brokerExtra: { cloud: true, egressDomainsSync: sync },
       orgResolver: async ({ developerId }) => (developerId === zed.developerId ? orgA : TEST_ORG),
       developerExtra: { endDeveloperSessions: async () => ({ ok: true as const }) },
@@ -569,7 +570,7 @@ describe("the archive and restore request id (final review M2)", () => {
   const requestsOf = (h: Harness) => h.db.find((item) => item.pk === projectMetaKey(TEST_ORG, "payments").pk && typeof item.sk === "string" && item.sk.startsWith("ARCHIVE_REQUEST#"));
 
   it("stores the request in the same transaction as the META change, bound to the caller and with an expiry", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const sent: Array<Array<Record<string, unknown>>> = [];
     const send = h.db.send.bind(h.db);
@@ -588,7 +589,7 @@ describe("the archive and restore request id (final review M2)", () => {
   });
 
   it("leaves neither the change nor the record when the transaction fails, and the same id then works", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const id = randomUUID();
     h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
@@ -600,7 +601,7 @@ describe("the archive and restore request id (final review M2)", () => {
   });
 
   it("records a request that changes nothing (the project is already archived) and replays it", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     await archiveRoute(h, OMAR);
     const id = randomUUID();
@@ -613,7 +614,7 @@ describe("the archive and restore request id (final review M2)", () => {
   });
 
   it("refuses another person's use of a request id with IDEMPOTENCY_CONFLICT, and applies nothing", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     setRole(h.db, MAYA, "admin");
     const id = randomUUID();
@@ -626,7 +627,7 @@ describe("the archive and restore request id (final review M2)", () => {
   });
 
   it("treats an expired record the State table has not yet deleted as absent, and replaces it in the same transaction", async () => {
-    const h = await createDeveloperTaskBroker();
+    const h = await createSingleAnswerPlanBroker();
     setRole(h.db, OMAR, "owner");
     const id = randomUUID();
     h.db.set({ pk: projectMetaKey(TEST_ORG, "payments").pk, sk: `ARCHIVE_REQUEST#${id}`, entityType: "PROJECT_ARCHIVE_REQUEST", action: "restore", by: MAYA.developerId, indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });

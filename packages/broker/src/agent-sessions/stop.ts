@@ -55,6 +55,11 @@ export interface SessionControlHost {
   startUnderstanding?(task: DeveloperTaskRecord, workflowRevision: number): Promise<void>;
   /** Plan 6 Task 6: `startCodeIntent` for the signed-in person (the "make a change anyway" start). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   startCodeIntent?(request: unknown): Promise<CodeIntentResult<DeveloperTaskView>>;
+  /**
+   * Plan 6 Task 20: after a person linked, replaced or unlinked the session's Linear issue, rewrites the `Fixes <KEY>` line in the open pull requests' descriptions (`key` undefined takes it out). Answers how many
+   * descriptions it changed and how many it could not. Without it the route tells the person to edit the description by hand.
+   */
+  rewritePullRequestLinearLine?(task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }>;
 }
 
 /**

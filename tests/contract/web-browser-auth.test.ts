@@ -103,6 +103,31 @@ describe("browser API boundary", () => {
   const h = await broker();
   for (const [method, path] of [["GET", "/approve/apr_aaaaaaaaaaaaaaaaaaaa"], ["POST", "/approvals/apr_aaaaaaaaaaaaaaaaaaaa/decide"], ["POST", "/spend-requests/spr_aaaaaaaaaaaaaaaaaaaa/decide"], ["POST", "/devices/dvc_aaaaaaaaaaaaaaaaaaaa"], ["DELETE", "/me/identities/cloud"], ["GET", "/admin/keys"]]) expect((await h.call(method!, "/v1/web" + path!, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) })).status, path).toBe(404);
  });
+ it("lets a browser change only its own display name, with Origin and CSRF checked before the write", async () => {
+  const h = await broker();const body = { name: "Web M" };
+  const attempt = (headers: Record<string, string | undefined>, payload: unknown = body) => h.call("PUT", "/v1/web/me/name", headers, payload);
+  for (const headers of [{ cookie: COOKIE }, { cookie: COOKIE, origin: CELL }, { cookie: COOKIE, origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { cookie: COOKIE, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {
+   const start = h.db.commandNames().length;
+   const refused = await attempt(headers);
+   expect(refused.status).toBe(403);expect(errorOf(refused.body)).toEqual({ code: "FORBIDDEN", message: "This request didn't come from Rovara's app." });
+   expect(h.db.commandNames().slice(start).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+  }
+  const stale = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor("old-session") });
+  expect(stale.status).toBe(403);expect(errorOf(stale.body).code).toBe("CSRF_STALE");
+  expect(h.db.get(`DEVELOPER#${WHO}`, "META")).toMatchObject({ displayName: "Web member" });
+  const cross = await h.call("PUT", "/v1/web/me/name", { cookie: COOKIE, origin: CELL, "sec-fetch-site": "cross-site", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body);
+  expect(cross.status).toBe(403);
+  const good = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) });
+  expect(good.status).toBe(200);expect(good.body).toMatchObject({ name: "Web M", nameChosen: true });
+  // Release 0.4.18: the name is an item in the State table; the sign-in record keeps the name it had.
+  expect(h.db.get(`DEVELOPER_NAME#${WHO}`, "NAME")).toMatchObject({ name: "Web M" });
+  expect(h.db.get(`DEVELOPER#${WHO}`, "META")).toMatchObject({ displayName: "Web member" });
+  const refusedName = await attempt({ cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, { name: "web@example.test" });
+  expect(refusedName.status).toBe(400);
+  expect(h.db.get(`DEVELOPER_NAME#${WHO}`, "NAME")).toMatchObject({ name: "Web M" });
+  const unsupportedRoutes: ReadonlyArray<readonly [string, string]> = [["POST", "/me/name"], ["DELETE", "/me/name"], ["PUT", "/me"], ["PUT", "/me/identities/cloud"], ["PUT", "/me/name/x"]];
+  for (const [method, path] of unsupportedRoutes) expect((await h.call(method, "/v1/web" + path, { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body)).status, method + path).toBe(404);
+ });
  it("dispatches each supported read family to the same app handler", async () => {
   const h = await broker();
   for (const path of ["projects", "org", "org/members", "agents", "models", "skills", "approvals", "spend-requests", "connections", "github/installations", "budget", "usage", "nav", "home", "live", "changes", "realtime", "sessions", "chains", "chain-runs", "trash", "devices"]) {

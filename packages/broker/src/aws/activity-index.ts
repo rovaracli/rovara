@@ -1,3 +1,4 @@
+import { slackThreadKey } from "./slack-thread-key.js";
 // packages/broker/src/aws/activity-index.ts
 // Spec 025 A4, A5: the failure index (FR-038) and the usage index, from the state table's stream.
 // The outbox publisher runs it after dispatching; it is best effort, and never fails the batch.
@@ -113,7 +114,7 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : "un
 interface Context { project: string; origin: "slack" | "ai_tool"; orgId?: OrgId; taskId?: string; thread?: string; developerName?: string }
 
 /** A5: the project, the origin and the turn record link, from the workspace's own records. */
-async function contextOf(store: IndexStore, workspaceId: string): Promise<Context> {
+async function contextOf(store: IndexStore, workspaceId: string, fallbackOrg: OrgId): Promise<Context> {
   const workspace = await store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
   const project = text(workspace?.projectName)?.slice(0, PROJECT_MAX) ?? "unknown";
   const stored = OrgIdSchema.safeParse(workspace?.orgId);
@@ -126,7 +127,14 @@ async function contextOf(store: IndexStore, workspaceId: string): Promise<Contex
     return { project, origin: "ai_tool", ...orgId, taskId, ...(developerName === undefined ? {} : { developerName }) };
   }
   const ownerKey = text(workspace?.ownerKey);
-  const storedThread = ownerKey === undefined ? undefined : text((await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }))?.thread);
+  let storedThread: string | undefined;
+  const threadOrg = OrgIdSchema.safeParse(workspace?.orgId ?? fallbackOrg);
+  if (ownerKey !== undefined && threadOrg.success) {
+    const scoped = await store.get(slackThreadKey(threadOrg.data, ownerKey));
+    const legacy = scoped === undefined ? await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }) : undefined;
+    const row = scoped ?? (legacy?.workspaceId === workspaceId && (legacy.orgId === undefined || legacy.orgId === threadOrg.data) ? legacy : undefined);
+    storedThread = text(row?.thread);
+  }
   // A thread subject too long to parse is left out: the failure is still listed, without its link.
   const thread = storedThread !== undefined && storedThread.length <= THREAD_MAX ? storedThread : undefined;
   return { project, origin: "slack", ...orgId, ...(thread === undefined ? {} : { thread }) };
@@ -150,7 +158,7 @@ const link = (context: Context) => ({ ...(context.taskId === undefined ? {} : { 
 
 async function failureItem(store: IndexStore, fallbackOrg: OrgId, next: Record<string, unknown>): Promise<Record<string, unknown> | "invalid"> {
   const workspaceId = String(next.workspaceId);
-  const context = await contextOf(store, workspaceId);
+  const context = await contextOf(store, workspaceId, fallbackOrg);
   const kind = text(next.kind) ?? "unknown";
   const status = String(next.status) as FailureIndexRecord["status"];
   const error = text(next.error);
@@ -178,7 +186,7 @@ async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<st
   const workspaceId = String(event.workspaceId);
   const operationId = String(event.operationId);
   const at = new Date(text(event.timestamp) ?? Date.now()).toISOString();
-  const [context, operation] = await Promise.all([contextOf(store, workspaceId), store.get({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` })]);
+  const [context, operation] = await Promise.all([contextOf(store, workspaceId, fallbackOrg), store.get({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` })]);
   const created = Date.parse(text(operation?.createdAt) ?? at);
   const indexed: UsageIndexRecord = {
     operationId, workspaceId, project: context.project, origin: context.origin,

@@ -67,6 +67,14 @@ export type RealtimeTokenResponse = z.infer<typeof RealtimeTokenResponseSchema>;
 
 // ---- the changes feed
 
+/** A notice that a project's code settings changed (Plan 6 Task 19), left in the feed of the project's other maintainers: the project, the revision and who decided it. */
+export const CodeSettingsChangedNoticeSchema = z.object({
+  type: z.literal("code_settings.changed"),
+  project: z.string().min(1).max(63),
+  revision: CountSchema,
+  by: z.string().regex(/^[a-f0-9]{64}$/u),
+}).strict();
+
 /** A notice an old share left in the feed (Task 4): who shared a session, and how to undo it. Ids only. */
 export const SessionSharedNoticeSchema = z.object({
   type: z.literal("session_shared"),

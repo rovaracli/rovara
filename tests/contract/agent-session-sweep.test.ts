@@ -293,17 +293,19 @@ describe("the sweep's schedule", () => {
     .map((resource) => resource.Properties).filter((properties) => JSON.stringify(properties.Target).includes("agentx.session-sweep"));
   const named = () => buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
 
+  // One synth of the whole named app (the slowest step on a CI runner) serves both reads, within the full-app synth budget the infrastructure tests use.
   it("is an own schedule of a named environment: every 5 minutes, with the exact input, on the recovery role", () => {
-    const [sweep, ...rest] = sweeps(named());
+    const stack = named();
+    const [sweep, ...rest] = sweeps(stack);
     expect(rest).toHaveLength(0);
     expect(sweep).toMatchObject({
       FlexibleTimeWindow: { Mode: "OFF" }, ScheduleExpression: "rate(5 minutes)", State: "ENABLED",
       Target: { Input: JSON.stringify({ source: "agentx.session-sweep" }), RetryPolicy: { MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 300 } },
     });
-    const recovery = Object.values(Template.fromStack(named()).findResources("AWS::Scheduler::Schedule") as Record<string, { Properties: { Target: { RoleArn: unknown; Input: string } } }>)
+    const recovery = Object.values(Template.fromStack(stack).findResources("AWS::Scheduler::Schedule") as Record<string, { Properties: { Target: { RoleArn: unknown; Input: string } } }>)
       .find((resource) => resource.Properties.Target.Input.includes("agentx.workflow-merge-recovery"))!;
     expect((sweep!.Target as { RoleArn: unknown }).RoleArn).toEqual(recovery.Properties.Target.RoleArn);
-  });
+  }, 240_000);
 
   it("is not in a legacy (unnamed) environment's template", () => {
     expect(sweeps(new ControlPlaneStack(new App(), "LegacySweepControlPlane"))).toHaveLength(0);

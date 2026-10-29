@@ -2,6 +2,8 @@
 // Slack buttons. 11.3 (an MCP-started task's Slack press) is covered by developer-task-workflow-flow.test.ts. Here: an
 // MCP-started Quick task to its draft PR, a Slack-started task decided through MCP, each recovery tool against its Slack
 // button, PR feedback decided through MCP [R4, decision D4], and agentx_get_task's next step at every stage.
+import { ensureTaskSession } from "../../../packages/broker/src/agent-sessions/create.js";
+import { agentSessionKey, projectMemberKey } from "@agentx/contracts";
 import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -560,7 +562,8 @@ describe("Suite 11: MCP parity", () => {
     }, "e".repeat(64))).rejects.toThrow("fresh task person proof is unavailable");
     const linkedExternal = { developerId: "f".repeat(64), name: "Maya External", provider: "oidc" as const,
       sessionId: "s-maya-external", slackUserId: SLACK_MAYA.slackUserId! };
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: {
+    // A Code task's ownership take-over is a session confirmation (Plan 5 Task 23): the agent-session machinery and the confirmation pages are on.
+    const e2e = await createWorkflowE2E({ agentSessions: true, model: { plan: PLAN, edits: EDITS }, taskPeople: {
       changesEnabled: true, checkTaskPerson: directory.check, taskPersonProof: directory.proof, taskPeopleDisplayRead: directory.display,
       developers: [linkedExternal, SLACK_BAILEY], boundChannels: [SECOND_CHANNEL],
     } });
@@ -632,16 +635,28 @@ describe("Suite 11: MCP parity", () => {
       people: [expect.objectContaining({ slackUserId: SLACK_MAYA.slackUserId, role: "commenter" }), expect.objectContaining({ slackUserId: BAILEY.slackUserId, role: "viewer" })] });
     expect(e2e.slack.views.at(-1)?.view).toMatchObject({ callback_id: "agentx_task_take_ownership" });
     const beforeTakeoverProposal = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "PEOPLE"));
+    // Taking a session over needs "can edit" on it (Plan 5): Maya, its owner, shares it with Bailey at that level. The task has no session yet (it is made the first time it is needed).
+    const taskMeta = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")! as unknown as Parameters<typeof ensureTaskSession>[1] & { developerName: string; title: string };
+    const sessionId = await ensureTaskSession({ documentClient: e2e.db, tableName: "state", now: Date.now }, taskMeta, { ownerName: taskMeta.developerName, title: taskMeta.title });
+    expect(sessionId).toBeDefined();
+    e2e.db.set({ ...agentSessionKey(TEST_ORG, sessionId!, `SHARE#MEMBER#${SLACK_BAILEY.developerId}`), entityType: "AGENT_SESSION_SHARE", orgId: TEST_ORG, sessionId, principal: { kind: "member", developerId: SLACK_BAILEY.developerId },
+      level: "edit", sharedBy: { developerId: SLACK_MAYA.developerId, name: SLACK_MAYA.name }, sharedAt: new Date().toISOString() });
+    // ... and a person who takes a session over needs a project role that can start work.
+    e2e.db.set({ ...projectMemberKey(TEST_ORG, SLACK_BAILEY.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: SLACK_BAILEY.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
     const takeoverProposal = await tool(e2e, "agentx_take_task_ownership", { task_id: e2e.taskId(), request_id: "11711111-2222-4333-8444-555555555559",
       expected_people_revision: beforeTakeoverProposal!.revision }, SLACK_BAILEY);
     expect(takeoverProposal.value).toMatchObject({ status: "PENDING", request_id: "11711111-2222-4333-8444-555555555559" });
     expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "PEOPLE")).toEqual(beforeTakeoverProposal);
-    await e2e.submitView({}, { user: BAILEY.slackUserId });
+    // Nothing moves until Bailey confirms in a browser; then the session take-over moves the task's owner and lowers the People list's owners.
+    const confirmed = await e2e.confirm(String(takeoverProposal.value.confirmation_url), SLACK_BAILEY);
+    expect(confirmed.status, confirmed.body.slice(0, 300)).toBe(200);
     const taken = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "PEOPLE")!;
     expect(taken).toMatchObject({ orphaned: false, people: [
       expect.objectContaining({ slackUserId: SLACK_MAYA.slackUserId, role: "commenter" }),
-      expect.objectContaining({ slackUserId: BAILEY.slackUserId, role: "owner" }),
+      expect.objectContaining({ slackUserId: BAILEY.slackUserId, role: "viewer" }),
     ] });
+    // The session take-over names the new owner on the task itself (its current owner), and lowers the People list's owners; it does not add an owner entry.
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toMatchObject({ currentOwner: { developerId: SLACK_BAILEY.developerId } });
     expect(e2e.db.get(String(queued.pk), String(queued.sk))?.status).toBe("WAITING_FOR_TASK_ACCESS");
     expect(e2e.invocations).toHaveLength(invocationsBeforeApproval);
     expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!.charge).toEqual(charge);

@@ -16,7 +16,11 @@ export * from "./credentials.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
+export * from "./no-change-findings.js";
+export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
+export * from "./project-playbook.js";
+export * from "./how-we-work.js";
 export * from "./rovara-code-node.js";
 export * from "./rovara-code-intent.js";
 export * from "./rovara-code-understand.js";
@@ -24,6 +28,8 @@ export * from "./plan-critique-block.js";
 export * from "./workflow-proposed-checks.js";
 export * from "./canonical-json.js";
 export * from "./workflow-plan-document.js";
+export * from "./plan-quality.js";
+export * from "./plan-grounding.js";
 export * from "./workflow-dependencies-node.js";
 export * from "./display-name.js";
 export * from "./broker-names.js";
@@ -41,6 +47,10 @@ export * from "./release.js";
 export * from "./session.js";
 export * from "./ssm-parameters.js";
 export * from "./runtime-installation.js";
+export * from "./runtime-requalify.js";
+export * from "./runtime-requalify-schedule.js";
+export * from "./qualification-launch.js";
+export * from "./requalify-drain-reads.js";
 export * from "./e2e-web-api-qualification.js";
 export * from "./e2e-chromium-sandbox.js";
 export * from "./slack.js";
@@ -84,6 +94,7 @@ export * from "./task-people.js";
 export * from "./e2e-openapi-fixture.js";
 export * from "./e2e-executor.js";
 export * from "./e2e-model-channel.js";
+export * from "./e2e-model-session-sync.js";
 export * from "./e2e-model-check.js";
 export * from "./e2e-runtime-expiry.js";
 export * from "./e2e-agent-models.js";
@@ -125,7 +136,7 @@ export * from "./realtime-readers.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 
@@ -147,3 +158,4 @@ export * from "./reviewed-project-restore.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
+export * from "./test-proof.js";

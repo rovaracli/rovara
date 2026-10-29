@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { CLOUD_REPOSITORY, PUBLIC_REPOSITORY, conditionFor } from "../support/workflow-expression.js";
 
 interface Step { name?: string; run?: string; uses?: string; if?: string; env?: Record<string, string>; with?: Record<string, unknown> }
 interface Job { needs?: string | string[]; if?: string; strategy?: { matrix?: Record<string, unknown>; "max-parallel"?: number }; env?: Record<string, string>; steps: Step[] }
@@ -9,6 +10,12 @@ interface Workflow { on: Record<string, unknown>; permissions: Record<string, st
 const text = () => readFile(".github/workflows/release-test.yml", "utf8");
 const workflow = async () => YAML.parse(await text()) as Workflow;
 const runs = (wf: Workflow) => Object.values(wf.jobs).flatMap((job) => job.steps.map((step) => step.run ?? "")).join("\n");
+
+// The workflow files live on both repositories. Cloud has no AWS role or variable, so the Cloud copy guards each job that spends or tears down AWS resources with
+// `github.repository == 'PrepLabsAI/Rovara'`; these tests read each condition as the public repository sees it, and check the guard keeps the job off Cloud.
+const expectNeverOnCloud = (condition: string | undefined) => {
+  if (condition?.includes("github.repository")) expect(conditionFor(condition, CLOUD_REPOSITORY)).toBe("false");
+};
 
 describe("the release test workflow (SC-003 to SC-005, question 6)", () => {
   it("runs only by hand, one at a time, with OIDC and read-only contents", async () => {
@@ -32,7 +39,8 @@ describe("the release test workflow (SC-003 to SC-005, question 6)", () => {
 
   it("always tears down every environment it made with agentx destroy, the name piped in", async () => {
     const wf = await workflow();
-    expect(wf.jobs.teardown?.if).toBe("always()");
+    expect(conditionFor(wf.jobs.teardown?.if, PUBLIC_REPOSITORY)).toBe("always()");
+    expectNeverOnCloud(wf.jobs.teardown?.if);
     expect(wf.jobs.teardown?.needs).toEqual(["lane", "export"]);
     expect(runs(wf)).toMatch(/printf '%s\\n%s\\n' "\$env" "\$ACCOUNT" \| node packages\/cli\/dist\/main\.js --env "\$env" destroy --region "\$AWS_REGION"/);
   });
@@ -61,7 +69,8 @@ describe("the release test workflow (SC-003 to SC-005, question 6)", () => {
   it("does nothing, not even a teardown, unless the repository variable turns it on", async () => {
     const wf = await workflow();
     const gate = "vars.AGENTX_ENABLE_RELEASE_TEST == 'true'";
-    expect(wf.jobs.images?.if).toBe(gate);
+    expect(conditionFor(wf.jobs.images?.if, PUBLIC_REPOSITORY)).toBe(gate);
+    expectNeverOnCloud(wf.jobs.images?.if);
     for (const step of wf.jobs.teardown?.steps ?? []) expect(step.if).toBe(gate);
   });
 

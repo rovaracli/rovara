@@ -33,7 +33,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
   // Plan 6 Task 11: how many parts of an approved plan may build at once is the room left in the creator's and the organization's workspace counts (the creator's own charge keys), so it reads the creator like the other money reads; it never grants authority
   ["aws/developer-tasks.ts", "partsSettingOf", "money", ".developerId", ".slackUserId"],
-  ["rovara-code/parallel-parts.ts", "parallelPartsForTask", "money", ".developerId", ".slackUserId"],
+  ["aws/developer-tasks.ts", "partsDecisionOf", "money", ".developerId", ".slackUserId"],
+  ["rovara-code/parallel-parts.ts", "parallelPartsDecision", "money", ".developerId", ".slackUserId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
   // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
@@ -49,16 +50,18 @@ const ROWS: readonly Row[] = [
   ["developer/task-people.ts", "resolveTaskPeopleAccess", "owner-actor", "taskOwnerKey()"],
   ["developer/task-people.ts", "resolveTaskDispatchPeople", "owner-actor", ".developerId", "taskOwnerKey()"],
   ["aws/task-dispatch-access.ts", "guardTaskDispatchCore", "owner-actor", "taskOwnerKey()"],
-  ["aws/developer-tasks.ts", "planWhyEntries", "attribution", ".developerName"],
+  ["aws/developer-tasks.ts", "planWhyEntries", "attribution", ".developerName*2", ".developerId"],
   ["aws/developer-tasks.ts", "authorizeTaskAction", "caller-actor", "taskOwnerKey()"],
   // the session actor of a stop or retry (Plan 5 Task 13): a person's actor id on a task that is not theirs; it decides nothing about who owns it
   ["aws/developer-tasks.ts", "sessionActorAccess", "caller-actor", "taskOwnerKey()"],
   // Plan 6 Task 5: a person's answers to Understand's questions are recorded under their actor id on the task (the route checked that they may answer); it decides nothing about who owns the task
   ["aws/developer-tasks.ts", "answerIntentFromReply", "caller-actor", "taskOwnerKey()"],
   ["rovara-code/questions.ts", "answerIntentOnSession", "caller-actor", "taskOwnerKey()"],
+  // the test proof is read from the task's own object prefix (`private/<ownerKey>/<workspace>/<operation>/`): the task's principal, never changes
+  ["developer/test-proof-lines.ts", "loadTestProofLines", "principal", ".ownerKey"],
+  ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks.ts", "candidateChangedFiles", "principal", ".ownerKey"],
-  ["aws/developer-tasks.ts", "getWorkflowFeedbackReview", "principal", ".ownerKey*2"],
   ["aws/developer-tasks.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "ownArtifactKey", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "taskView", "history", ".developerName"],
@@ -97,11 +100,27 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/summary.ts", "requestSlotsOf", "authority", ".startedBy", ".developerId*3"],
   ["agents/agent-tools-routes.ts", "frameOf", "principal", ".ownerKey*2"],
   ["agents/agent-tools-routes.ts", "regrantAgentTool", "principal", ".ownerKey"],
+  // Plan 6 Task 23 (Codex): a task's lazily made session records its creator as the session's owner and the starter it was started by, as `ensureTaskSession` always did (its reads moved into `lazyTaskSessionInput`, and `taskSessionHeader` out of `createTaskSessionItems`); history, and a take-over asks the session's own rules before it
+  ["agent-sessions/create.ts", "lazyTaskSessionInput", "history", ".developerId*2", ".startedBy"],
+  ["agent-sessions/create.ts", "taskSessionHeader", "history", ".startedBy"],
+  // Plan 6 Task 23: the task's creator's name is only what the lazily made session shows as its first owner (history); who may take the task over is decided by `askTakeOver` on that session
+  ["aws/developer-tasks.ts", "codeOwnershipConfirmation", "history", ".developerName*2"],
+  // Plan 6 Task 23: who may share a Code task is the session level "edit" (`requireSessionLevel`, which follows a take-over); the actor ids are made from that session's effective owner and the caller, and the write is fenced on the task's owner (`ownerFenceOf` in `shareItems`)
+  ["aws/developer-tasks.ts", "authorizeShare", "caller-actor", "taskOwnerKey()*2"],
+  // Plan 6 Task 16: the review reads of `getWorkflowFeedbackReview` moved into `verifiedFeedbackReview`; the review of comments Rovara fixes on its own is bound to the task's principal (`ownerKey`), which never changes, as the owner's approval path binds it
+  ["aws/developer-tasks.ts", "startAutomaticFeedbackRound", "principal", ".ownerKey"],
+  ["aws/developer-tasks.ts", "verifiedFeedbackReview", "principal", ".ownerKey*2"],
+  // Plan 6 Task 19: which approvals are a requester's own: the creator, whoever started the task and its owner now (read through `tryEffectiveTaskOwner`, so a take-over or a merge is followed and an owner that cannot be read refuses)
+  ["rovara-code/approval.ts", "requesterIds", "authority", ".developerId", ".startedBy"],
+  // Plan 6 Task 23: undoing a Slack share keeps the creator's task-list row and the owner's in step (`effectiveTaskOwner` is called for the owner)
+  ["rovara-code/sharing.ts", "undoCodeShare", "index", ".developerId*2"],
   ["aws/broker.ts", "createAwsBrokerHandler", "other-record", ".ownerKey*2"],
   ["aws/broker.ts", "sharedThread", "principal", "taskOwnerKey()"],
   ["aws/broker.ts", "verifiedSharedStopBinding", "principal", ".developerId*3", ".ownerKey*4", "taskOwnerKey()"],
   ["aws/broker.ts", "sharedStopFences", "principal", ".developerId*2", ".ownerKey*2"],
   ["aws/broker.ts", "taskOperationParts", "money", ".developerId"],
+  // C55: the pull request footer names the identity the workspace was prepared for (as it always did); when its display name is an email address, the GitHub login that same person linked stands in for it (a stored identity, read only to find that login)
+  ["aws/broker.ts", "attributedBody", "history", ".developerId"],
   ["aws/broker.ts", "handleModelAccess>loadScope", "money", ".developerId"],
   ["aws/broker.ts", "workflowE2EPresentationDetailed", "principal", ".ownerKey"],
   ["aws/broker.ts", "currentWorkflowFeedbackApproval", "principal", ".ownerKey"],
@@ -112,7 +131,10 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "completedWorkflowItems", "principal", ".ownerKey"],
   // Plan 6 Task 4: an Understand that chose the Full path is admitted as a Full start is, against the budget of whoever pays for the task (the recorded payer, else the creator; a test run's starter): money, read as `paymentOfTask` reads it
   ["aws/broker.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
-  ["aws/broker.ts", "storePlanAnswer", "principal", ".ownerKey"],
+  ["aws/broker.ts", "storePlanAnswer", "principal", ".ownerKey*2"],
+  // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes
+  ["aws/broker.ts", "runGroundingStep", "principal", ".ownerKey"],
+  ["aws/task-plan-document.ts", "readTaskPlanDocument", "principal", ".ownerKey"],
   ["aws/activity-index.ts", "contextOf", "history", ".developerName"],
   ["aws/activity-index.ts", "contextOf", "principal", ".ownerKey"],
   ["aws/slack-interactivity.ts", "workflowSlackHandlers>requireOwnerAction", "authority", ".slackUserId"],
@@ -160,8 +182,7 @@ const ROWS: readonly Row[] = [
   ["events.ts", "putArtifact", "principal", ".ownerKey*2"],
   ["repository-access.ts", "issue", "principal", ".ownerKey"],
   // reads on NAMED interfaces and aliases that carry a task's id (13 review: the scan sees `interface TaskLike { developerId }` as it sees a literal type), each classified
-  ["agent-sessions/create.ts", "createTaskSessionItems", "history", ".startedBy*7"],
-  ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId*2", ".startedBy"],
+  ["agent-sessions/create.ts", "createTaskSessionItems", "history", ".startedBy*6"],
   ["agent-sessions/create.ts", "startedText", "history", ".startedBy*4"],
   ["agent-sessions/retry.ts", "repairLink", "other-record", ".developerId"],
   // a move to the cloud (Plan 5 Task 19): the task the runtime answered with must be the caller's own new one (its row names the caller as creator); it validates the shape of the runtime's answer and decides nothing about ownership

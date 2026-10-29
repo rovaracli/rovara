@@ -9,6 +9,7 @@ import {
   AUDIT_PENDING_SHARDS,
   AUDIT_PENDING_TTL_DAYS,
   AuditEventInputSchema,
+  auditOperatorId,
   INDEX_EXPIRY_ATTRIBUTE,
   type AuditEventInput,
 } from "@agentx/contracts";
@@ -684,6 +685,7 @@ describe("I4: the builders", () => {
     ["auditSpendPolicyChanged", (occurrence) => builders.auditSpendPolicyChanged({ ...base, occurrence, details, field: "threshold", from: 100, to: 200 })],
     ["auditPullRequestOpened", (occurrence) => builders.auditPullRequestOpened({ ...base, occurrence, details, pullRequestId: "pr_1", number: 7 })],
     ["auditPullRequestMerged", (occurrence) => builders.auditPullRequestMerged({ ...base, occurrence, details, pullRequestId: "pr_1", number: 7 })],
+    ["auditPullRequestMergeRequested", (occurrence) => builders.auditPullRequestMergeRequested({ ...base, occurrence, details, pullRequestId: "pr_1", number: 7, method: "squash" })],
     ["auditMemberJoined", (occurrence) => builders.auditMemberJoined({ ...base, occurrence, details, memberId: "dev_2", role: "member", via: "invite" })],
     ["auditMemberRoleChanged", (occurrence) => builders.auditMemberRoleChanged({ ...base, occurrence, details, memberId: "dev_2", fromRole: "member", toRole: "admin" })],
     ["auditMemberRemoved", (occurrence) => builders.auditMemberRemoved({ ...base, occurrence, details, memberId: "dev_2", role: "member" })],
@@ -699,12 +701,20 @@ describe("I4: the builders", () => {
     ["auditProjectRestored", (occurrence) => builders.auditProjectRestored({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
     ["auditProjectArchived", (occurrence) => builders.auditProjectArchived({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
     ["auditProjectWorkingBranchChanged", (occurrence) => builders.auditProjectWorkingBranchChanged({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 1, toRevision: 2, lifecycleRevision: 3, installationId: 11, repositoryId: 22, requestId: "22222222-2222-4222-8222-222222222222", previousConfigured: false })],
+    // Call sites: developer/store.ts setChosenDisplayName; org/slack-binding.ts bind and unbind; aws/broker.ts connectSlackTeam and disconnectSlackTeam (operator actor).
+    ["auditMemberRenamed", (occurrence) => builders.auditMemberRenamed({ ...base, occurrence, details, memberId: "dev_1" })],
+    ["auditSlackChannelBound", (occurrence) => builders.auditSlackChannelBound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
+    ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
+    ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
+    ["auditSlackTeamDisconnected", (occurrence) => builders.auditSlackTeamDisconnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],
     ["auditSessionStopped", (occurrence) => builders.auditSessionStopped({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task" })],
     ["auditSessionRetried", (occurrence) => builders.auditSessionRetried({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", branch: "new_run" })],
     ["auditSessionSharedOrg", (occurrence) => builders.auditSessionSharedOrg({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", level: "use" })],
+    ["auditSessionLinked", (occurrence) => builders.auditSessionLinked({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", issueKey: "ENG-142" })],
+    ["auditSessionUnlinked", (occurrence) => builders.auditSessionUnlinked({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", issueKey: "ENG-142" })],
     ["auditPublished (agent)", (occurrence) => builders.auditPublished({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", version: 3, safety: "safe" })],
     ["auditPublished (chain)", (occurrence) => builders.auditPublished({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", version: 3, safety: "safe" })],
     ["auditRolledBack (agent)", (occurrence) => builders.auditRolledBack({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", fromVersion: 3, toVersion: 2 })],
@@ -712,6 +722,7 @@ describe("I4: the builders", () => {
     ["auditBuiltinAdopted", (occurrence) => builders.auditBuiltinAdopted({ ...base, occurrence, details, agentId: "agt_1", version: 4 })],
     ["auditConnectionSaved", (occurrence) => builders.auditConnectionSaved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
     ["auditConnectionRemoved", (occurrence) => builders.auditConnectionRemoved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
+    ["auditCodeSettingsChanged", (occurrence) => builders.auditCodeSettingsChanged({ ...base, occurrence, details, projectName: "web", revision: 2, changed: "selfApproval", selfApproval: true, mergeMethod: "squash", reviewers: 0 })],
     ["auditProjectConnectorChanged", (occurrence) => builders.auditProjectConnectorChanged({ ...base, occurrence, details, connectorId: "cnr_1", connectorType: "linear", revision: 3, change: "widened" })],
     ["auditGuardrailsChanged", (occurrence) => builders.auditGuardrailsChanged({ ...base, occurrence, details, guardrailsId: "grd_1", revision: 3, widened: true })],
     ["auditLocalAgentsPolicyChanged", (occurrence) => builders.auditLocalAgentsPolicyChanged({ ...base, occurrence, details, field: "tools", from: "codex", to: "none" })],
@@ -731,6 +742,16 @@ describe("I4: the builders", () => {
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
     ["auditSubjectErased", (occurrence) => builders.auditSubjectErased({ ...base, occurrence, details, subject: "dev_2" })],
     ["auditShredScheduled", (occurrence) => builders.auditShredScheduled({ ...base, occurrence, details, shredAfterDays: 30 })],
+    // "How we work" playbook (H1)
+    ["auditProjectModelsChanged", (occurrence) => builders.auditProjectModelsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, approvedCount: 2, defaultChanged: true })],
+    ["auditProjectChecksChanged", (occurrence) => builders.auditProjectChecksChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, requiredCount: 2, optionalCount: 1 })],
+    ["auditProjectE2ePolicyChanged", (occurrence) => builders.auditProjectE2ePolicyChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, screenshots: true, traces: false, video: false, downloads: true })],
+    ["auditProjectModelSelectionChanged", (occurrence) => builders.auditProjectModelSelectionChanged({ ...base, occurrence, details, projectName: "Secret Project", surface: "slack", cleared: false })],
+    ["auditProjectRosterChanged", (occurrence) => builders.auditProjectRosterChanged({ ...base, occurrence, details, projectName: "Secret Project", added: 2, removed: 1 })],
+    ["auditProcessPublished", (occurrence) => builders.auditProcessPublished({ ...base, occurrence, details, agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: false })],
+    ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
+    ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
+    ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -762,6 +783,23 @@ describe("I4: the builders", () => {
       });
     });
   }
+
+  it("process events target kind process by the process layer's agent id, and carry the pinned actions", () => {
+    const published = builders.auditProcessPublished({ ...base, occurrence: "e1", agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: true });
+    expect(published).toMatchObject({ action: "process.published", target: { kind: "process", id: "agt_1" }, facts: { version: 2, safety: "safe", selfConfirmedSoleOwner: true } });
+    const rolled = builders.auditProcessRolledBack({ ...base, occurrence: "e1", agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" });
+    expect(rolled).toMatchObject({ action: "process.rolled_back", target: { kind: "process", id: "agt_1" }, facts: { fromVersion: 3, toVersion: 2, safety: "safe" } });
+    expect(published.eventId).not.toBe(builders.auditPublished({ ...base, occurrence: "e1", scope: "agent", targetId: "agt_1", version: 2, safety: "safe" }).eventId);
+  });
+
+  it("the project playbook events target the project by name and carry only their fixed facts", () => {
+    const models = builders.auditProjectModelsChanged({ ...base, occurrence: "p1", projectName: "web", revision: 3, approvedCount: 2, defaultChanged: false });
+    expect(models).toMatchObject({ action: "project.models_changed", target: { kind: "project", name: "web" }, facts: { revision: 3, approvedCount: 2, defaultChanged: false } });
+    const selection = builders.auditProjectModelSelectionChanged({ ...base, occurrence: "p1", projectName: "web", surface: "cli", cleared: true });
+    expect(selection.facts).toStrictEqual({ surface: "cli", cleared: true });
+    const company = builders.auditCompanyChangeAppliedToProject({ ...base, occurrence: "p1", projectName: "web", changeRevision: 5, settingCount: 0 });
+    expect(company.facts).toStrictEqual({ changeRevision: 5, settingCount: 0 });
+  });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {
     const decided = (decision: string) => builders.auditApprovalDecided({ ...base, occurrence: "apr_1", approvalId: "apr_1", kind: "write", decision, subjectKind: "write" }).eventId;

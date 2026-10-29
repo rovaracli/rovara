@@ -6,6 +6,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import { z } from "zod";
 import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
+import type { CodeMergeHost, PullRequestMergeSubject } from "../rovara-code/merge.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
@@ -22,6 +23,7 @@ import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
 import type { DecideGuard, WriteGateRuntime } from "./write-gate.js";
 import type { AgentRunHost } from "./run-engine.js";
+import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -73,6 +75,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
    * admission, the realtime events API and Plan 4's chain mover. Without it a `session_share_org` or `session_owner` change can't be decided or applied.
    */
   agentSessions?: SessionTakeOverDependencies;
+  /** Plan 6 Task 19: what merging a task's pull requests needs (GitHub's reads and the merge, the task, its repositories). Without it a `pull_request_merge` change can't be pressed or applied. */
+  codeMerge?: CodeMergeHost;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -131,7 +135,21 @@ export interface SessionShareOrgSubject { kind: "session_share_org"; sessionId: 
 export interface SessionOwnerSubject { kind: "session_owner"; sessionId: SessionId; to: string; sessionRevision: number }
 
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
+/**
+ * Plan 6 Task 19: turns self-approval on for a project's code settings, while they are still at `settingsRevision`. An organization owner or admin decides it; nothing else about the
+ * settings waits for anyone.
+ */
+export interface CodeSettingsSubject { kind: "code_settings"; project: string; settingsRevision: number; changes: { allowSelfApproval: true } }
+
+/**
+ * "How we work" follow-up M2: sets a project's playbook back to the built-in Rovara Code while the project's process layer `agentId` (at published version `layerVersion`) is stricter than
+ * the built-in. It applies only while the playbook is still at `expectedRevision` and the layer still at `layerVersion`; the layer is named so the process self-confirm rules and the
+ * `agent_publish` approvers apply to it as they do to a publish of the layer.
+ */
+export interface PlaybookDefaultProcessSubject { kind: "playbook_default_process"; project: string; agentId: AgentId; layerVersion: number; expectedRevision: number }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -146,7 +164,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -319,6 +337,22 @@ export async function approverRefusalFor(deps: ApprovalDependencies, record: Any
   }
 }
 
+/**
+ * A check a decision passes after the record's rule says the caller may decide it, before anything is claimed: it throws (in the words the person is told) to refuse. Guards are registered
+ * by name, so registering again replaces. "How we work" registers the one that stops the person who asked for a change to a project's process from confirming it themselves.
+ */
+export type ApprovalDecisionGuard = (deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, decision: "APPROVE" | "DECLINE") => Promise<void>;
+const decisionGuards = new Map<string, ApprovalDecisionGuard>();
+
+export function registerApprovalDecisionGuard(name: string, guard: ApprovalDecisionGuard): void {
+  decisionGuards.set(name, guard);
+}
+
+/** Runs every registered guard; the first to throw refuses the decision. */
+export async function runApprovalDecisionGuards(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, decision: "APPROVE" | "DECLINE"): Promise<void> {
+  for (const guard of decisionGuards.values()) await guard(deps, caller, record, decision);
+}
+
 export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);
@@ -355,9 +389,15 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
   z.object({ kind: z.literal("session_owner"), sessionId: SessionIdSchema, to: Hex64, sessionRevision: z.number().int().min(1) }).strict(),
   z.object({
+    kind: z.literal("pull_request_merge"), taskId: z.string().uuid(),
+    pullRequests: z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().positive(), headSha: z.string().regex(/^[a-f0-9]{40}$/) }).strict()).min(1).max(32),
+  }).strict(),
+  z.object({ kind: z.literal("code_settings"), project: z.string().min(1).max(63), settingsRevision: z.number().int().min(0), changes: z.object({ allowSelfApproval: z.literal(true) }).strict() }).strict(),
+  z.object({
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
   }).strict(),
+  z.object({ kind: z.literal("playbook_default_process"), project: z.string().min(1).max(63), agentId: AgentIdSchema, layerVersion: z.number().int().min(1), expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
@@ -458,7 +498,14 @@ export async function getAnyApproval(deps: Pick<ApprovalStoreDependencies, "docu
     console.error(JSON.stringify({ component: "broker", level: "error", event: "approval_record_invalid", orgId, approvalId, problem: parsed.error.issues[0]?.path.join(".") ?? "record" }));
     return undefined;
   }
-  return parsed.data as unknown as AnyApprovalRecord;
+  return withReadableOwner(parsed.data as unknown as AnyApprovalRecord);
+}
+
+/** A record as it is read: a run owner stored under their email (an approval made before release 0.4.16) is named without it, in every view and refusal built from the record. */
+function withReadableOwner(record: AnyApprovalRecord): AnyApprovalRecord {
+  if (record.kind === "change" || record.owner === undefined) return record;
+  const name = safeDisplayName(record.owner.name, record.owner.developerId);
+  return name === record.owner.name ? record : { ...record, owner: { ...record.owner, name } };
 }
 
 /** The change record, or undefined when there is none in this org, what is stored is not a record, or it is a step or a write (those are read with `getAnyApproval`). */

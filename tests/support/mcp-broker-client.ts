@@ -58,7 +58,7 @@ export function mcpBrokerFetch(harness: Harness, options: McpBrokerFetchOptions 
     }
     const response = await harness.handler({
       version: "2.0", rawPath: url.pathname, rawQueryString: url.search.slice(1),
-      headers: { authorization, ...(traceId === undefined ? {} : { "x-agentx-trace-id": traceId }) },
+      headers: { authorization, ...(traceId === undefined ? {} : { "x-agentx-trace-id": traceId }), ...(headers.get("x-agentx-task-view") === null ? {} : { "x-agentx-task-view": headers.get("x-agentx-task-view")! }) },
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
       requestContext: { requestId: randomUUID(), http: { method: init?.method ?? "GET" }, ...(authorizer === undefined ? {} : { authorizer }) },
     });

@@ -1,4 +1,4 @@
-import { serverPageCss } from "@agentx/design-tokens";
+import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // Plan 2, Task 13: the pages a person sees at the end of "agentx github connect": GitHub sends their browser to the callback, and the
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
@@ -92,7 +92,7 @@ export function githubConnectPage(kind: ConnectPageKind, data: ConnectPageData =
   const appStatus = kind === "connected" ? "connected" : kind === "connected_trial_used" ? "trial_used" : kind === "requested" ? "requested" : undefined;
   const appLink = appStatus === undefined ? "" : `<p><a href="/app/onboard?github=${appStatus}">Continue in Rovara</a></p>`;
   const next = copy.code === undefined ? "" : `<p>Next: <code>${escapeHtml(copy.code)}</code></p>`;
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${appLink}${next}</main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>${SERVER_PAGE_ICON}<style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${appLink}${next}</main></body></html>`;
   const response = safeResponse(copy.status, html, nonce);
   return { ...response, headers: { ...response.headers, "referrer-policy": "same-origin" } };
 }

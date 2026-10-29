@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, vi, type MockInstance } from "vitest";
 import type { WorkflowOptionalCheck } from "@agentx/contracts";
 import { planAnswer, planDocument } from "./plan-documents.js";
 import { visibleSlackText } from "./strict-slack.js";
-import { JARGON, registerJourneyInvariants } from "./workflow-e2e-invariants.js";
+import { GITHUB_OWN_WORDS, JARGON, registerJourneyInvariants } from "./workflow-e2e-invariants.js";
 import type { WorkflowE2E } from "./workflow-e2e.js";
 
 /** A small structured coding plan with no decisions. */
@@ -62,7 +62,7 @@ export function everythingShown(e2e: WorkflowE2E): string[] {
 
 /** Nothing shown in Slack uses a word the owner should never see. */
 export function expectNoJargon(e2e: WorkflowE2E): void {
-  expect(everythingShown(e2e).filter((text) => JARGON.test(text))).toEqual([]);
+  expect(everythingShown(e2e).filter((text) => JARGON.test(text.replace(GITHUB_OWN_WORDS, "")))).toEqual([]);
 }
 
 /** The thread's posts, as the owner reads them (links shown as their labels). */
@@ -110,6 +110,8 @@ export const editsOrFix = (latest: string) => (latest.includes(FEEDBACK_FIX) ? F
 /** What the thread says once a pull request (or a fix pushed to it) waits for its merge. */
 export const OPENED_PR = (number: number) => `Draft pull request opened: PR #${number}. Review it and merge it on GitHub; I'll finish this task when it's merged.`;
 export const PUSHED_FIX = (number: number) => `Pushed the fix to PR #${number}. Review it and merge it on GitHub; I'll finish this task when it's merged.`;
+/** The same line for a version 1.1.0 task (Merge is pressed in Rovara once the pull request is approved on GitHub). */
+export const PUSHED_FIX_TRACKED = (number: number) => `Pushed the fix to PR #${number}. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.`;
 export const MERGED = "The pull request is merged. This task is complete.";
 
 /**

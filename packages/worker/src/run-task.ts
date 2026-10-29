@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
+import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
@@ -49,10 +50,13 @@ import { readCheckHistory, restoreCheckHistory } from "./verification/check-hist
 import { candidateUnchangedSinceBase, commitCandidateWorktree, readCandidateRepositories, readCommittedCandidateSourceExport, type CandidateRepositoryInput, type CommittedCandidateSourceExport } from "./verification/candidate.js";
 import { exportCandidateBuildSourceInScratch, type CandidateBuildSourceExport } from "./e2e-build-source-export.js";
 import { exportBaselineSource, type BaselineSourceExport } from "./baseline-source-export.js";
+import { proposedChecksOfPlan, runPlanDryRun } from "./plan-dry-run.js";
 import { runWorkflowFeedbackReview, runWorkflowReviews } from "./verification/review.js";
 import { CHECK_ROUND_BUDGET_MS, createCheckRunners, planChecks, runChecks, type CheckPlan, type CheckRunners } from "./verification/checks.js";
+import { FindingsRecorder } from "./no-change-findings.js";
 import { assistantText, checksArtifactContent, compactCheckReport, finalCheckReport, notVerifiedReport, verificationExtension } from "./verification/extension.js";
-import { gitOriginalCode, recoverAgentFiles, type OriginalCode } from "./verification/original-code.js";
+import { AgentFilesRestoreError, gitOriginalCode, recoverAgentFiles, type OriginalCode } from "./verification/original-code.js";
+import { runTestProof, serializeTestProof } from "./verification/test-proof.js";
 import { CommandRecorder } from "./verification/recorder.js";
 import {
   createTaskUsageTelemetry,
@@ -64,6 +68,7 @@ import { WorkflowPartsHaltedError, executeParallelWorkflowDependencies, type Par
 import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWorkingCopy, integrateTrees, partsFolderIsOutside } from "./parallel-parts-git.js";
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
+import { READ_ONLY_STEP_MODES, STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -120,6 +125,8 @@ export interface TaskInvocationDependencies {
   checkBudgetMs?: () => number;
   /** D-16: the original code for before results; tests supply a fake. Default: each repository's preparation commit. */
   originalCode?: OriginalCode;
+  /** TESTPROOF: how the original code with the new tests kept is shown for a CHECKS run; tests supply a fake. Default: gitOriginalCode. */
+  testProofOriginalCode?: Parameters<typeof runTestProof>[0]["originalCode"];
   /** How long a review (each role) and a PR feedback review may take; tests supply short ones. Default: the reviews' own (5 minutes). */
   timeouts?: { reviewMs?: number; feedbackReviewMs?: number };
   /**
@@ -129,6 +136,8 @@ export interface TaskInvocationDependencies {
   modelCallLimits?: { deadlineMs?: number; stallMs?: number; abortConfirmMs?: number; heartbeatMs?: number; tickMs?: number };
   /** Where the worker's structured model-call lines go. Default: stdout, as the worker's other log lines. */
   log?: WorkerLogSink;
+  /** PLANDRYRUN: how a coding plan's proposed checks are tried on the unchanged code; tests supply a fake. Default: `runPlanDryRun` (a sandbox container per check). */
+  planDryRun?: typeof runPlanDryRun;
   /**
    * Where a project without a devcontainer runs the agent's shell, its checks and its commands (R56): the task sandbox,
    * or the local shell for tests and a developer's machine. Default: chosen from the worker's environment, which is
@@ -144,6 +153,11 @@ export interface TaskInvocationDependencies {
    * worker cannot run an agent step. Tests supply fakes for the catalogs and the call.
    */
   agentRun?: Pick<RunAgentStepInput, "fetch" | "catalogs" | "call"> & { brokerUrl: string };
+  /**
+   * How the programs and containers the coding session left are stopped before a step that only reads the workspace (REVIEW, FEEDBACK_REVIEW, PLAN_CRITIQUE, UNDERSTAND) begins; the same two steps
+   * publication uses before a push. Tests supply fakes. Default: the real ones.
+   */
+  stopBeforeReading?: StopBeforeReadingOptions;
 }
 
 export async function runTaskInvocation(
@@ -170,6 +184,23 @@ async function runTask(
 ): Promise<TaskInvocationResult> {
   const invocation = WorkerInvocationSchema.parse(untrustedInvocation);
   if (invocation.kind !== "task") throw agentXError("CONFIG_INVALID", "runTaskInvocation requires a task");
+  // The reviews, the plan check, Understand and the feedback review read a workspace the coding session wrote. Before any of them starts, and before anything is read from the workspace
+  // (its manifest, a pull request's head), every program and container that session left running is stopped, as publication does before a push (a background job, a process in the task
+  // sandbox, a process in the dev container, which persists between operations). Nothing is read over a live program: if they cannot all be stopped, or another operation is still
+  // running in this worker, the step stops here with one fixed reason. These steps then do not start the dev container (its lifecycle commands are the repository's, and would run before
+  // the read): their file tools run in the task sandbox, as the feedback review's do.
+  const feedbackReview = invocation.payload.workflowMode === "FEEDBACK_REVIEW";
+  const reportFeedbackReviewStartFailure = async (error: unknown): Promise<never> => {
+    // The review's own error handling starts after this; a start that fails still reports as the review does.
+    if (feedbackReview) {
+      const events = new EventBatcher(dependencies.eventSink);
+      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
+      await events.flush().catch(() => undefined);
+    }
+    throw error;
+  };
+  const mode = invocation.payload.workflowMode;
+  const readsOnly = mode !== undefined && READ_ONLY_STEP_MODES.has(mode);
   const step = invocation.payload.agentStep;
   // What a coding step adds to this task's sessions; an agent step is a run of its own, which takes none of the coding paths below.
   const agentStep = step?.kind === "coding" ? step : undefined;
@@ -185,6 +216,12 @@ async function runTask(
   if (approval !== undefined) {
     if (dependencies.authorizeFeedbackApproval === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot verify its PR feedback approval");
     await dependencies.authorizeFeedbackApproval(approval);
+  }
+  // The checks above read nothing in the workspace, so a stale PR feedback approval stops the run before anything is read or any program is stopped.
+  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
+  // AgentX's rerun of the project's checks (CHECKS) stops first too, and then starts the project's dev container fresh, through the same checked start as ever.
+  if (mode !== undefined && STOPS_PROGRAMS_FIRST_MODES.has(mode)) {
+    await stopProgramsBeforeReading(canonicalRoot, dependencies.stopBeforeReading, mode === "CHECKS" ? "run the checks" : "read the workspace").catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   }
   const manifest = JSON.parse(
     await readFile(resolve(dependencies.rootPath, ".agentx/preparation-manifest.json"), "utf8"),
@@ -220,17 +257,24 @@ async function runTask(
   }
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
-  const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // No agent step starts the project's devcontainer (its lifecycle commands are the repository's, and a read step's checkout may be a
-  // contributor's pull request head): it runs in the task sandbox, which also keeps R56's file-tool containment for it.
-  const devcontainer = step?.kind === "agent" ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
+  // The reading steps (above) run no project command, and no agent step starts the project's devcontainer (its lifecycle commands
+  // are the repository's, and a read step's checkout may be a contributor's pull request head): they run in the task sandbox,
+  // whose file tools keep R56's containment.
+  const devcontainer = step?.kind === "agent" || readsOnly ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
   let devcontainerCli: DevcontainerCli | undefined;
   let startedDevcontainer: DevcontainerUpResult | undefined;
   if (devcontainer !== undefined) {
     devcontainerCli = dependencies.devcontainerCli ?? createDevcontainerCli();
+    // The checks' fresh dev container runs the project's setup commands (postCreate and the like). If those rewrite the project's files (`npm install` changing a lockfile, say), the code
+    // the checks would run on, and report as the candidate, is not the code that was written and reviewed. The files are compared before and after the start; a difference stops the
+    // checks with one fixed reason, and the files are left as they are for a person to look at.
+    const filesBeforeStart = mode === "CHECKS" ? await candidateDigestOrUndefined(manifest, canonicalRoot, invocation.payload.workflowBase) : undefined;
     const started = await ensureDevcontainer(devcontainerCli, devcontainer);
+    if (filesBeforeStart !== undefined && await candidateDigestOrUndefined(manifest, canonicalRoot, invocation.payload.workflowBase) !== filesBeforeStart) {
+      throw agentXError("RUNTIME_UNAVAILABLE", `AgentX found that ${WORKFLOW_SETUP_CHANGED_FILES_MESSAGE}, so the checks did not run`);
+    }
     startedDevcontainer = started;
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
@@ -249,7 +293,7 @@ async function runTask(
     sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
-      await sandbox.start();
+      await sandbox.start().catch((error: unknown) => reportFeedbackReviewStartFailure(error));
       bashOperations = sandbox.bashOperations();
     } else {
       // The local shell, chosen explicitly (taskShell or AGENTX_TASK_SHELL=local): tests and a developer's machine.
@@ -326,6 +370,7 @@ async function runTask(
         taskRequirements: collected.taskRequirements, candidateDigest: binding.candidateDigest,
         rootPath: dependencies.rootPath, model: dependencies.model, candidate: candidateRepositories,
         repositories: repositoryInputs, bundles: collected.bundles, artifactSink: dependencies.artifactSink,
+        ruleFileBaseCommits: invocation.payload.workflowBase ?? [],
         ...(collected.taskChecks === undefined ? {} : { taskChecks: collected.taskChecks }),
         ...(feedbackTimeoutMs === undefined ? {} : { timeoutMs: feedbackTimeoutMs }),
         ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
@@ -387,6 +432,8 @@ async function runTask(
         ? "AgentX is running the approved browser and API checks once on the code as the task started, for information only. It has no code-editing tools and decides nothing about the change."
         : invocation.payload.workflowE2EAdmission?.purpose === "replay"
         ? "AgentX is replaying a verified AI-navigated check from its recording, with no model, for an operator's audit. It has no code-editing tools and decides nothing about the change."
+        : invocation.payload.workflowE2EAdmission?.purpose === "grounding"
+        ? "AgentX is checking the plan's unchanged-behaviour checks against the current app. It has no code-editing tools and decides nothing about the change."
         : "AgentX is running the selected project checks against the current code. This retry has no code-editing tools." });
       const runners = dependencies.checkRunners ?? createCheckRunners({
         rootPath: canonicalRoot,
@@ -395,7 +442,10 @@ async function runTask(
         ...(sandbox === undefined ? {} : { sandbox }),
         ...(localShell ? { local: true } : {}),
       });
-      const round = await runChecks(plan, runners, { budgetMs: dependencies.checkBudgetMs?.() ?? CHECK_ROUND_BUDGET_MS, signal: stop.signal });
+      const roundBudgetMs = dependencies.checkBudgetMs?.() ?? CHECK_ROUND_BUDGET_MS;
+      const roundStarted = Date.now();
+      const round = await runChecks(plan, runners, { budgetMs: roundBudgetMs, signal: stop.signal });
+      const roundSpentMs = Date.now() - roundStarted;
       const status = round.stopped ? "not_verified" : reportStatus(round.entries);
       const checks: CheckReport = {
         status,
@@ -414,7 +464,7 @@ async function runTask(
       } catch {
         await events.append("progress", { message: "AgentX could not safely update the workspace check history." });
       }
-      const candidateAfter = await readCandidateRepositories(repositories);
+      let candidateAfter = await readCandidateRepositories(repositories);
       await dependencies.artifactSink({ name: "checks.json", mediaType: "application/json", content: checksArtifactContent(checks) });
       const compact = compactCheckReport(checks);
       let workflowE2EEvidence: Awaited<ReturnType<typeof executeWorkflowE2EChecks>> | undefined;
@@ -431,6 +481,18 @@ async function runTask(
           signal: stop.signal,
           ...(dependencies.workflowE2EOnOwnedContainerRunning === undefined ? {} : { onOwnedContainerRunning: dependencies.workflowE2EOnOwnedContainerRunning }),
         });
+      }
+      // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
+      // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
+      // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.
+      if (status === "verified" && plan.source === "project" && !stop.signal.aborted) {
+        const testProof = await runTestProofStep({ plan, round: round.entries, runners, repositories, candidateBefore, rootPath: canonicalRoot, signal: stop.signal,
+          budgetMs: roundBudgetMs - roundSpentMs, events, originalCode: dependencies.testProofOriginalCode });
+        // Read only when the proof ran, and deliberately fail-closed: a read failure here fails the task rather than reporting a candidate nobody confirmed.
+        // The after-snapshot is read after the proof run too: whatever it left behind in the candidate is then seen by the broker as drift.
+        const afterProof = await readCandidateRepositories(repositories);
+        if (createCandidateManifest(afterProof).digest !== createCandidateManifest(candidateAfter).digest) candidateAfter = afterProof;
+        if (testProof !== undefined) await saveTestProof(dependencies.artifactSink, testProof, events);
       }
       await events.append("result", {
         status: "SUCCEEDED", conversationId: invocation.payload.conversationId, workflowMode: "CHECKS", checks: compact,
@@ -482,6 +544,8 @@ async function runTask(
     clearTimeout(timer);
   };
   const toolEvidence: unknown[] = [];
+  // What the run did, kept to answer for a run that ends with no code change (the commands, their output, the final answer).
+  const findings = new FindingsRecorder();
   const contextDiagnostics: string[] = [];
   const onDiagnostic = (message: string): void => {
     contextDiagnostics.push(redactText(message));
@@ -506,6 +570,12 @@ async function runTask(
   if (fileToolsNote !== undefined) onDiagnostic(fileToolsNote);
   for (const message of modelChangeDiagnostics(registered, dependencies.model)) onDiagnostic(message);
 
+  // Plan 6 Task 17: a CI or feedback fix begins on the head the pull request has, not on what an abandoned conflict round left.
+  const fixStart = invocation.payload.workflowFix?.startFrom;
+  if (fixStart !== undefined && manifest.repositories.length === 1) {
+    const directory = resolve(canonicalRoot, manifest.repositories[0]!.path);
+    if (await restoreFixStart(directory, fixStart)) onDiagnostic("AgentX put the workspace back on the pull request's head, which an earlier round had left.");
+  }
   // D-16 (#290): files an earlier task left while AgentX ran the original code (its worker stopped mid-check) go back
   // before this task starts. If they cannot, the task does not start on the wrong files.
   const repositoryDirectories = manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path));
@@ -530,7 +600,13 @@ async function runTask(
   const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" ? "PLAN" : payloadMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
+  const planCritique = payloadMode === "PLAN_CRITIQUE";
   const reviewing = invocation.payload.workflowMode === "REVIEW";
+  /**
+   * Reviewers' rule files come from the broker's base alone, never from the manifest's commit, which the agent can write. The plan check and Understand are
+   * checks on someone else's words in a workspace a coding session may have written, so they read the base commit as well (A5).
+   */
+  const reviewerRuleBases = { contextFilesAt: "base-commit" as const, baseCommits: invocation.payload.workflowBase ?? [] };
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
     fingerprint: (signal) => recorderFingerprint(
@@ -601,6 +677,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
+        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -613,6 +690,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
+        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -715,6 +793,7 @@ async function runTask(
     monitor.observe(event);
     if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
     fileChanges.observe(event);
+    findings.observe(event);
     // A failed or stopped model call and Pi's retries reach the task as one sanitized note each. The raw events (the provider's message, the model's thinking, the final error
     // text) are not forwarded, so a failure shows once and no provider text is stored in the task's events.
     const modelNote = sanitizeModelCallEvent(event, monitor.attempt);
@@ -734,6 +813,7 @@ async function runTask(
       lastAssistant = outcome;
       lastModelNote = modelNote?.modelCall;
       finalText = assistantText((event as { message?: unknown }).message);
+      findings.concludeWith(finalText);
     }
     if (loopStop !== undefined) return;
     const action = loopGuard.observe(event);
@@ -972,6 +1052,7 @@ async function runTask(
             unsubscribe = open.subscribe((event) => {
               if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
               fileChanges.observe(event);
+              findings.observe(event);
               const note = sanitizeModelCallEvent(event, 0);
               if (note !== undefined) {
                 logModelCallNote(log, invocation.operationId, note.modelCall);
@@ -984,6 +1065,7 @@ async function runTask(
                 lastOutcome = outcome;
                 lastNote = note?.modelCall;
                 lastText = assistantText((event as { message?: unknown }).message);
+                findings.concludeWith(lastText);
               }
               if (stoppedBy !== undefined) return;
               const action = guard.observe(event);
@@ -1203,9 +1285,35 @@ async function runTask(
         if (Buffer.byteLength(plan, "utf8") > WORKFLOW_PLAN_MAX_BYTES) throw agentXError("OPERATION_INTERRUPTED", "the planning run exceeded the maximum plan size");
         await dependencies.artifactSink({ name: "plan.md", mediaType: "text/markdown; charset=utf-8", content: plan });
         await publishEvidence();
+        // PLANDRYRUN: the plan is saved; its proposed checks are tried on the unchanged code and only a fixed class per check is reported. It never fails the planning run.
+        if (invocation.payload.planFormat === "structured" && planDocumentKind(invocation.payload.workflowPhase) === "plan") {
+          const repositoryPaths = manifest.repositories.map((repository) => repository.path);
+          const proposed = proposedChecksOfPlan(plan, repositoryPaths);
+          const [repository] = manifest.repositories;
+          if (proposed.length > 0 && repository !== undefined) {
+            let dryRun: Awaited<ReturnType<typeof runPlanDryRun>> | undefined;
+            try {
+              dryRun = await (dependencies.planDryRun ?? runPlanDryRun)({ planText: plan, checks: proposed, repositoryPath: repository.path,
+                repositories: candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase), signal: verificationStop.signal });
+            } catch (error) {
+              if (verificationStop.signal.aborted && dependencies.cancellationController?.isCancelled(invocation.operationId)) throw new WorkerOperationCancelledError(invocation.operationId);
+              if (error instanceof WorkerOperationCancelledError) throw error;
+            }
+            if (dryRun !== undefined) await emit("progress", { message: "AgentX tried the proposed checks on the code as the task started.", planDryRun: dryRun });
+          }
+        }
+        // T7a PLANGROUNDING: when the broker asked, the unchanged code is exported for the plan's must-not-change scenarios, to be run on the current app before the owner is asked. Only a plan with
+        // such a scenario exports anything. It never decides the plan: a base that cannot be exported is reported with its reason, and only the operation's own cancellation throws.
+        let planGroundingSource: BaselineSourceExport | undefined;
+        if (invocation.payload.workflowE2EGroundingSource === true && planDocumentKind(invocation.payload.workflowPhase) === "plan") {
+          const read = parsePlanDocument(plan, { kind: "plan" });
+          if (read.ok && groundingScenarioIds(read.plan).length > 0) {
+            planGroundingSource = await exportBaselineSource({ signal: verificationStop.signal, repositories: candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase) });
+          }
+        }
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN" });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN" };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN", ...(planGroundingSource === undefined ? {} : { workflowBaselineSource: planGroundingSource }) };
       } else if (understanding) {
         // One fenced `rovara-intent` block; an answer that cannot be read is asked for once more in this session, and then the run fails with fixed words.
         const assessment = await settleUnderstanding(finalText, async (again) => { await promptAndSettle(again); return finalText; });
@@ -1225,6 +1333,7 @@ async function runTask(
           model: session.getModel(),
           candidate: beforeReview.repositories,
           repositories,
+          ruleFileBaseCommits: invocation.payload.workflowBase ?? [],
           ...(invocation.payload.workflowReviewChecks === undefined ? {} : { reviewChecks: invocation.payload.workflowReviewChecks }),
           ...(invocation.payload.workflowReviewPlan === undefined ? {} : { reviewPlan: invocation.payload.workflowReviewPlan }),
           ...(invocation.payload.workflowReviewFeedback === undefined ? {} : { reviewFeedback: invocation.payload.workflowReviewFeedback }),
@@ -1299,7 +1408,9 @@ async function runTask(
       }
       // A coding run that left the code as the task started has nothing to check or publish: the owner is told so.
       if (workflowCandidateRepositories !== undefined && await candidateUnchangedSinceBase(workflowRepositories, workflowCandidateRepositories)) {
-        throw agentXError("CONFIG_INVALID", WORKFLOW_NO_CODE_CHANGE_MESSAGE);
+        // The run's findings go with the refusal (redacted and bounded here, before they leave the worker): the commands the agent ran, what they printed and its own conclusion, so a request that
+        // needed no change (a question, a check) is answered. The broker shows them; nothing else about the refusal changes.
+        throw Object.assign(agentXError("CONFIG_INVALID", WORKFLOW_NO_CODE_CHANGE_MESSAGE), { noChangeFindings: findings.build() });
       }
       // The application build source is computed from the exact committed export, through the safe git path, and only for a run that changed the code
       // (one that left it as it was is refused above). It never decides the export: a candidate the build source cannot hold still exports, and the
@@ -1610,6 +1721,54 @@ function cleanAssistantMessage(message: unknown): unknown {
   const { errorMessage: _errorMessage, diagnostics: _diagnostics, ...rest } = message as Record<string, unknown>;
   void _errorMessage; void _diagnostics;
   return rest.stopReason === "error" || rest.stopReason === "aborted" ? { ...rest, content: [] } : rest;
+}
+
+/** TESTPROOF: the check round's new or changed tests run on the original code. Never throws, except for AgentFilesRestoreError. */
+async function runTestProofStep(input: {
+  plan: CheckPlan; round: Parameters<typeof runTestProof>[0]["newEntries"]; runners: CheckRunners; repositories: readonly CandidateRepositoryInput[];
+  candidateBefore: ReadonlyArray<CandidateRepository>; rootPath: string; signal: AbortSignal; budgetMs: number; events: EventBatcher;
+  originalCode?: Parameters<typeof runTestProof>[0]["originalCode"] | undefined;
+}): Promise<Awaited<ReturnType<typeof runTestProof>> | undefined> {
+  try {
+    // Every repository is passed on: one without a start commit makes the proof "not checked" rather than showing the original code in only some of them.
+    const proofRepositories = input.repositories.map((repository) => ({
+      repositoryId: repository.repositoryId, directory: repository.directory, startCommit: repository.baseCommitSha ?? "",
+      candidateTreeSha: input.candidateBefore.find((entry) => entry.repositoryId === repository.repositoryId)?.treeSha ?? "",
+    }));
+    // Bound to the candidate the checks ran on (the broker rejects a round whose candidate moved while it ran).
+    const proof = await runTestProof({ plan: input.plan, newEntries: input.round, runners: input.runners, repositories: proofRepositories,
+      candidateDigest: createCandidateManifest(input.candidateBefore).digest, rootPath: input.rootPath, signal: input.signal, budgetMs: input.budgetMs,
+      ...(input.originalCode === undefined ? {} : { originalCode: input.originalCode }) });
+    if (proof.status === "no_changed_tests") {
+      await input.events.append("progress", { message: "AgentX found no new or changed tests, so nothing was checked against the original code." });
+    } else if (proof.status === "checked") {
+      const count = (verdict: string) => proof.items.filter((item) => item.verdict === verdict).length;
+      await input.events.append("progress", { message: `AgentX ran the new or changed tests on the original code: ${count("proves_change")} fail there and pass now, ${count("does_not_prove")} pass there too, ${count("could_not_run_on_old")} could not run there.` });
+    }
+    return proof;
+  } catch (error) {
+    if (error instanceof AgentFilesRestoreError) throw error;
+    await input.events.append("progress", { message: "AgentX could not check the new tests against the original code." }).catch(() => undefined);
+    return undefined;
+  }
+}
+
+/** Saves the proof. A failed save is only a missing note, never a failed round. */
+async function saveTestProof(sink: ArtifactSink, proof: NonNullable<Awaited<ReturnType<typeof runTestProofStep>>>, events: EventBatcher): Promise<void> {
+  try {
+    await sink({ name: TEST_PROOF_ARTIFACT, mediaType: "application/json", content: serializeTestProof(proof) });
+  } catch {
+    await events.append("progress", { message: "AgentX could not save its check of the new tests against the original code." }).catch(() => undefined);
+  }
+}
+
+/** The digest of the code in every prepared repository as it is now, or undefined when it cannot be read (the checks' own read then fails as it always did). */
+async function candidateDigestOrUndefined(manifest: PreparationManifest, root: string, base?: ReadonlyArray<{ repositoryId: string; baseCommitSha: string }>): Promise<string | undefined> {
+  try {
+    return createCandidateManifest(await readCandidateRepositories(candidateInputs(manifest, root, base))).digest;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

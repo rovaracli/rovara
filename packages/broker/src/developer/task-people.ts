@@ -1,7 +1,8 @@
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
+import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
@@ -31,6 +32,7 @@ export interface TaskPersonCheck {
 export type CheckTaskPerson = (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
 
 export interface TaskPeopleDependencies {
+  agentSessions?: SessionAccessDependencies;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now(): number;
@@ -85,7 +87,14 @@ const personKey = (taskId: string, personId: string) => ({ pk: taskPk(taskId), s
 const subjectKey = (taskId: string, developerId: string) => ({ pk: taskPk(taskId), sk: `PERSON_SUBJECT#${developerId}` });
 const requestKey = (taskId: string, requestId: string) => ({ pk: taskPk(taskId), sk: `PEOPLE_REQUEST#${requestId}` });
 const eventKey = (taskId: string, requestId: string) => ({ pk: taskPk(taskId), sk: `PEOPLE_EVENT#${requestId}` });
-const safeName = (value: string, fallback: string) => cleanDisplayName(redactAndCap(value, 80).text) ?? fallback;
+/** The name a new row is written with, and the name as it is shown: never an email address (release 0.4.16). */
+const safeName = (value: string, fallback: string) => emailSafeName(redactAndCap(value, 80).text) ?? fallback;
+/**
+ * Whether a stored name is a well-formed one, by the rule rows were written under before 0.4.16 (cleaned, redacted and capped). A row stored under an email passes: the row is
+ * the person's identity and is read as it is stored; `safeName` makes the name safe where it is shown (`shown`).
+ */
+const wellFormedName = (value: string, fallback: string) => (cleanDisplayName(redactAndCap(value, 80).text) ?? fallback) === value;
+const shown = (value: string, fallback: string) => safeName(value, fallback);
 const enabled = (deps: TaskPeopleDependencies) => deps.taskPeopleConfiguration?.peopleChangesEnabled === true;
 const open = (task: DeveloperTaskRecord) => task.closedAt === undefined && task.workflow?.stage !== "CLOSED" && task.workflow?.stage !== "MERGED";
 const conditional = (error: unknown) => error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
@@ -94,7 +103,7 @@ function validEntry(value: unknown): value is PersonEntry {
   if (!isRecord(value) || !exactKeys(value, ["developerId", "slackUserId", "name", "role"])) return false;
   return typeof value.developerId === "string" && HEX64.test(value.developerId)
     && SlackUserIdSchema.safeParse(value.slackUserId).success
-    && typeof value.name === "string" && safeName(value.name, String(value.slackUserId)) === value.name
+    && typeof value.name === "string" && wellFormedName(value.name, String(value.slackUserId))
     && (value.role === "owner" || value.role === "commenter" || value.role === "viewer" || value.role === "denied");
 }
 
@@ -103,18 +112,18 @@ function parsePeople(value: unknown): TaskPeople | undefined {
     || typeof value.pk !== "string" || value.sk !== PEOPLE_SK || value.schemaVersion !== 1
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.orphaned !== "boolean"
     || !Array.isArray(value.people) || !value.people.every(validEntry)) return undefined;
-  const people = value.people;
+  const people = value.people.map((person) => ({ ...person, name: shown(person.name, person.slackUserId) }));
   if (new Set(people.map((person) => person.developerId)).size !== people.length) return undefined;
   return { schemaVersion: 1, revision: Number(value.revision), orphaned: value.orphaned, people };
 }
 
 function parseIdentity(value: Record<string, unknown>): TaskPersonIdentity | undefined {
   if (!HEX64.test(String(value.developerId)) || !SlackUserIdSchema.safeParse(value.slackUserId).success
-    || typeof value.name !== "string" || safeName(value.name, String(value.slackUserId)) !== value.name
+    || typeof value.name !== "string" || !wellFormedName(value.name, String(value.slackUserId))
     || (value.method !== "slack" && value.method !== "oidc") || typeof value.issuer !== "string" || value.issuer.length === 0 || value.issuer.length > 2048
     || typeof value.subject !== "string" || value.subject.length === 0 || value.subject.length > 512) return undefined;
   return {
-    developerId: String(value.developerId), slackUserId: String(value.slackUserId), name: value.name,
+    developerId: String(value.developerId), slackUserId: String(value.slackUserId), name: shown(value.name, String(value.slackUserId)),
     method: value.method, issuer: value.issuer, subject: value.subject,
   };
 }
@@ -225,7 +234,7 @@ async function checkedFresh(deps: Pick<TaskPeopleDependencies, "checkTaskPerson"
   const identity = result.identity;
   if (result.subject.developerId !== developerId || result.subject.slackUserId !== identity.slackUserId
     || identity.developerId !== developerId || !SlackUserIdSchema.safeParse(identity.slackUserId).success
-    || typeof identity.name !== "string" || safeName(identity.name, identity.slackUserId) !== identity.name
+    || typeof identity.name !== "string" || !wellFormedName(identity.name, identity.slackUserId)
     || typeof result.eligible !== "boolean" || typeof result.channelMember !== "boolean") return denied();
   admission?.noteNativeIdentity(identity.developerId, identity.slackUserId);
   return result;
@@ -793,6 +802,13 @@ export async function takeTaskOwnership(
     throw agentXError("CONFIG_INVALID", "ownership request is invalid");
   }
   const task = await loadTask(deps, taskId);
+  // Session ownership moves payer and all authority together, only on the confirmation page.
+  if (task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr") {
+    if (task.orgId !== caller.orgId) return denied();
+    if (deps.agentSessions === undefined) return unavailable();
+    await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "take it over");
+    throw agentXError("REAUTH_REQUIRED", "Confirm the session take-over in your browser.");
+  }
   const people = await currentPeople(deps, task);
   await authorizedRead(deps, task, people, caller);
   const payload = { expectedPeopleRevision: input.expectedPeopleRevision };

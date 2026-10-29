@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, E2EPolicySchema, createCandidateManifest,
   WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, deriveE2EApplicationRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, workflowApplicationRetryOffered,
-  E2EWorkflowAdmissionRefSchema, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
+  E2EWorkflowAdmissionRefSchema, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
   WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, canonicalPlanJson, workflowSendBackOffered,
   WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, workflowRequestId, workspaceSessionKey, readCanonicalPlan, portableOperationId, type E2EApplicationPlanIntent,
   selectE2EApplicationExecutionPlan, E2EScenarioSchema, e2eAnonymousRuntimeAccountRef, E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -25,7 +25,7 @@ import { decodeE2EApplicationExecutionAdmission, validateE2EApplicationExecution
 import { E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, isE2EPlanCorrectionBlockReason } from "../../packages/broker/src/developer/task-records.js";
 import { accountRegistryEntriesFromRows } from "../../packages/broker/src/e2e/application-account-registry.js";
 import { ordersManifestWith, registryFor } from "../support/e2e-account-registry-fixtures.js";
-import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
+import { createSingleAnswerPlanBroker, MAYA } from "../support/developer-task-broker.js";
 import { createRealCandidate, disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { call, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
@@ -605,14 +605,14 @@ describe("planning context for a qualified web target", () => {
 // The ordinary feature PLAN, end to end through the broker: an approved setup whose web target was proposed against the READY profile,
 // planned against the project's current runtime catalog rows (Ruling AL: web and api rows, matched to the project's runtime binding).
 describe("ordinary feature PLAN with an approved qualified web target", () => {
-  type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
+  type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
   type Rows = Record<"web" | "api", Record<string, unknown> | undefined>;
   const SLACK_THREAD = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000099" };
   /** Registers the project against its approved setup and the catalog rows, then starts a task and runs its preparation, up to the planning invocation. */
   async function startPlanning(rows: Rows, afterApproval?: (harness: Harness) => void, viaSlack = false, brokerExtra: Record<string, unknown> = {}) {
     const snapshot = contractSnapshot;
     const capture = vi.fn(async () => snapshot);
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog", ...brokerExtra } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog", ...brokerExtra } });
     const projectRow = () => harness.db.find((row) => row.entityType === "PROJECT" && (row.definition as { name?: string } | undefined)?.name === "payments")[0]!;
     const projectBinding = projectRow().runtimeBinding as typeof binding;
     for (const kind of ["web", "api"] as const) {
@@ -1190,7 +1190,9 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
 
   describe("the selection approved at plan APPROVE must still be the one dispatched (Ruling AL)", () => {
     const refusalPrefix = WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX;
-    const reasonOf = (text: string) => new RegExp(refusalPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + text, "s");
+    // A row that only moved to a newer generation is a renewal of the test machine (AR-3) and has its own opening; every other change keeps the ordinary one.
+    const escaped = (prefix: string) => prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const reasonOf = (text: string) => new RegExp(`(?:${escaped(refusalPrefix)}|${escaped(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX)})` + text, "s");
     const runtimeReasonOf = (text: string) => new RegExp(WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + text, "s");
 
     it("passes the unchanged selection through the check (it is the only thing left standing between it and the round)", async () => {
@@ -1320,7 +1322,7 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
       const dispatched = await atChecksDispatch(planned);
       planned.harness.db.set({ ...planned.harness.db.get(webKey.pk, webKey.sk)!, generation: 5 });
       await dispatched.runDispatch();
-      expect(dispatched.taskNow().workflow.blockReason).toMatch(/Retry the checks to approve the plan again against what is ready now/);
+      expect(dispatched.taskNow().workflow.blockReason).toMatch(/Retry the checks to do that/);
     });
 
     /** Fails the first transaction that deletes the dispatch row (the block write), and lets every later one through. */
@@ -1502,8 +1504,8 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
         const planned = await plannedWithApplicationIntent();
         const dispatched = await atApplicationDispatch(planned);
         planned.harness.db.set({ ...planned.harness.db.get(webKey.pk, webKey.sk)!, generation: 5 });
-        await expectBlockedAtDispatch(dispatched, /can no longer run as approved.*web runtime/s);
-        expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX);
+        await expectBlockedAtDispatch(dispatched, /need approving again against it.*web runtime/s);
+        expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX);
       });
     });
 
@@ -1746,7 +1748,7 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
         dispatched.reseedReadiness();
         await dispatched.runDispatch();
         expect(dispatched.taskNow().workflow).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
-        expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX);
+        expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX);
         expect(dispatched.checksOperations()).toEqual([]);
       });
 
@@ -1822,7 +1824,7 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
           const dispatched = await atApplicationDispatch(planned);
           planned.harness.db.set({ ...planned.harness.db.get(webKey.pk, webKey.sk)!, generation: 5 });
           await dispatched.runDispatch();
-          expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX);
+          expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX);
           return { planned, dispatched };
         };
 
@@ -1940,12 +1942,12 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
           expect(dispatched.checksOperations()).toHaveLength(1);
         });
 
-        it("a row that was only replaced keeps the changed-selection text, which also needs no new code", async () => {
+        it("a row that was only renewed has the renewal text, which also needs no new code", async () => {
           const planned = await plannedWithApplicationIntent();
           const dispatched = await atApplicationDispatch(planned);
           planned.harness.db.set({ ...planned.harness.db.get(webKey.pk, webKey.sk)!, generation: 5 });
           await dispatched.runDispatch();
-          expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX);
+          expect(dispatched.taskNow().workflow.blockReason).toContain(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX);
           const task = dispatched.taskNow() as unknown as { workflow: Parameters<typeof workflowSendBackOffered>[0] };
           expect(workflowSendBackOffered(task.workflow)).toBe(false);
         });
@@ -2174,7 +2176,7 @@ describe("anonymous scenarios and inferred-recipe apps (Ruling AZ)", () => {
 describe("the setup decision of a project with a web app (nothing stored changed with the signed-out variants)", () => {
   it("proposes the base targets alone, approves, and answers an approval retried with duplicate: true; the policy it registers holds no variant", async () => {
     const capture = vi.fn(async () => contractSnapshot);
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog" } });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { projectSetupSource: { capture }, e2eFeatureRuntimeCatalogId: "catalog", projectSetupRuntimeCatalogId: "setup-catalog" } });
     const admin = { subject: "admin-subject", admin: true };
     const proposal = await call(harness.handler, { method: "POST", path: "/v1/admin/projects/setup-proposals", user: admin, body: { repositoryUrl: "https://github.com/example/demo.git", ref: "main" } });
     expect(proposal.status, JSON.stringify(proposal.body)).toBe(200);

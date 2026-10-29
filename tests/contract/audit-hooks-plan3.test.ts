@@ -85,10 +85,24 @@ const writes = (transaction: Tx, pk: string, sk?: string) => transaction.some((i
 });
 
 /** Runs a call to its end under fake timers: the flush's deadline timer is set only once the call has reached it, so time moves until it is done. */
+// The real timer and clock, taken before any test fakes them: the wait in `settle` is real time, however the test has faked the rest.
+const realSetTimeout = globalThis.setTimeout;
+const realNow = Date.now.bind(Date);
+
+/**
+ * Moves the fake clock past the flush deadline until the call has returned. The bound is real time, not a count of steps: a call that still has real work to do
+ * (on a loaded CI runner that can take longer than 100 steps, which are about a millisecond each) would otherwise run out of steps and then hang on `return call`
+ * until the test's 60 s timeout. A call that really never returns still fails, after 30 s, with a message that says so.
+ */
 async function settle<T>(call: Promise<T>): Promise<T> {
   let finished = false;
   void call.then(() => { finished = true; }, () => { finished = true; });
-  for (let step = 0; step < 100 && !finished; step += 1) await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+  const giveUpAt = realNow() + 30_000;
+  while (!finished && realNow() < giveUpAt) {
+    await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+    if (!finished) await new Promise<void>((resume) => { realSetTimeout(resume, 2); });
+  }
+  if (!finished) throw new Error("the call did not return within 30 s of real time, whatever the fake clock did");
   return call;
 }
 

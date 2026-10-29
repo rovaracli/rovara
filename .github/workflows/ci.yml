@@ -1,20 +1,25 @@
 name: CI
 
-# Pull requests and manual runs only, to save Actions minutes. A merge to mainline does not run CI
-# again: its pull request's run already tested the change. A draft pull request runs nothing until it
-# is marked ready for review.
+# PrepLabsAI/Rovara-cloud (private) copy: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the
+# Actions budget). The controller runs it at agreed checkpoints: each release/0.4.x branch before a
+# staging upgrade, security-sensitive merges into cloud/integration, and suspected Linux-only problems.
+# The public PrepLabsAI/Rovara copy of this file keeps its pull_request trigger.
+#
+# This file lives on both repositories, so the Cloud-only parts are guarded by github.repository. A
+# trigger cannot carry an `if`, so the Cloud triggers are narrowed inside `scope` and `local` below (every
+# other job needs `scope`): on the public repository a push, or a pull request run on Cloud into any
+# other branch, runs no job.
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
 
 # Read-only by default; a job that needs more says so itself (linux-runtime reads packages, live-aws mints an OIDC token).
 permissions:
   contents: read
 
 # Pushing to a pull request again supersedes its run in progress. A manual run is never cancelled.
+# A push run (Cloud only) is keyed by its commit, so a burst of merges never drops an intermediate commit.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The checks, the test shards, the release check and the Linux runtime check run side by side, each on its own machine. The
@@ -24,7 +29,10 @@ jobs:
   # jobs below (scripts/ci-docs-only.ts). Manual runs always run them. A draft skips every job,
   # `local` included, so it shows no failed check.
   scope:
-    if: github.event.pull_request.draft != true
+    if: >-
+      github.event.pull_request.draft != true && (
+      (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
+      || (github.repository == 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -51,7 +59,8 @@ jobs:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones.
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,9 +71,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      # The stricter type check (tsconfig.lint.json, which also covers tests/ and scripts/) may not
-      # add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
-      - run: npm run typecheck:all
+      # The stricter type check (the programs in tsconfig.lint/, which also cover tests/ and scripts/)
+      # may not add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
+      # On the public repository a pull request runs only the programs its changed files can affect
+      # (TYPECHECK-SPLIT.md); depth 2 puts the base branch at HEAD^1, as in the scope job. A manual run, and
+      # the release workflow, run all. On Cloud every run, pull request or not, checks every program.
+      - name: Stricter type check (programs the change affects)
+        if: github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name == 'pull_request'
+        run: npm run typecheck:changed -- --base HEAD^1
+      - name: Stricter type check (every program)
+        if: github.repository == 'PrepLabsAI/Rovara-cloud' || github.event_name != 'pull_request'
+        run: npm run typecheck:all
+      # The full repository, on every run on both repositories, with the same config and rules as `eslint .`. One eslint process over the whole
+      # repository needed about 14 GB (13.8 GB measured) and ran out of memory on the 8 GB runner (C90), so scripts/lint-shards.ts lints one TypeScript
+      # program of tsconfig.lint/ at a time (the programs the stricter type check uses), then the web directories, then everything else, each in its own
+      # process. Each process has a 4 GB heap cap; the largest measured peak is about 3.6 GB. The programs read the packages' declarations that
+      # `npm run typecheck` (tsc -b) just built.
       - run: npm run lint
 
   # Vitest hands each shard an even share of the test files. To change the count, change the list:
@@ -74,7 +96,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +105,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -96,7 +125,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 25 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -142,6 +171,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
+      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -241,7 +277,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 20 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -256,11 +292,25 @@ jobs:
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
         env:
           ROVARA_E2E_ALL_BROWSERS: "1"
+      # A failed run leaves the Playwright traces (retained on failure) and the HTML report to open with `npx playwright show-trace` or `show-report`.
+      - name: Upload Playwright traces and report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-playwright
+          path: |
+            .test-build/web-e2e/results
+            .test-build/web-e2e/report
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
     needs: [scope, checks, test, release, linux-runtime, web-e2e]
-    if: always() && github.event.pull_request.draft != true
+    if: >-
+      always() && github.event.pull_request.draft != true && (
+      (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
+      || (github.repository == 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -274,7 +324,8 @@ jobs:
         run: node scripts/ci-gate.ts
 
   live-aws:
-    if: github.event_name == 'workflow_dispatch' && vars.AGENTX_ENABLE_AWS_TESTS == 'true'
+    # Never on Rovara-cloud: no AWS role or variable belongs in that repository.
+    if: github.repository == 'PrepLabsAI/Rovara' && github.event_name == 'workflow_dispatch' && vars.AGENTX_ENABLE_AWS_TESTS == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write

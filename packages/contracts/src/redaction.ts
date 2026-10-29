@@ -320,7 +320,8 @@ function redactKeyValues(text: string): string {
     if (/[?&#;]/.test(before)) stops = /[&;#\s]/;
     else if (separator === "|") stops = /\|/;
     else if (before === '"' || text[match.index + key.length] === '"') stops = /[,}\]\s]/;
-    let end = cursor;
+    // A value that already starts with the marker is read as one piece: the marker's own `]` must not end the value, or each pass would leave one more `]` behind (running the redaction on its own output changes nothing).
+    let end = text.startsWith(REDACTED, cursor) ? cursor + REDACTED.length : cursor;
     while (end < stopLine && !(stops?.test(text[end] ?? "") ?? false)) end += 1;
     if (end === cursor) return null;
     const value = text.slice(cursor, end);

@@ -16,6 +16,7 @@ import {
   SessionMessageSchema,
   SessionResponseReaderSchema,
   TaskPeopleChangeResponseSchema,
+  NeedsConfirmationSchema,
   TaskPeopleViewResponseSchema,
   type AgentXConfigurationConfirm,
   type ContinueDeveloperTaskRequest,
@@ -47,6 +48,10 @@ import { CLOSE_BUSY_STEP, NEXT_STEPS, SHARE_BUSY_STEP, START_BUSY_STEP, ToolErro
 const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 export type SessionListRead = z.output<typeof SessionListReaderSchema>;
 export type SessionViewRead = z.output<typeof SessionResponseReaderSchema>["session"];
+/** Session ownership confirmations do not advertise an expiry on the wire. */
+export type TaskOwnershipResult = Exclude<TaskPeopleChangeResult, { status: "PENDING" }> | {
+  status: "PENDING"; requestId: string; confirmationUrl: string; expiresAt?: string;
+};
 export type SessionMessageRead = z.output<typeof SessionMessageReaderSchema>;
 
 /**
@@ -89,6 +94,8 @@ export interface ControlPlaneClient {
   projects(): Promise<DeveloperProjectsResponse>;
   startTask(request: StartDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   getTask(taskId: string, events: number, options?: CallOptions): Promise<DeveloperTaskClientView>;
+  /** PLANFULLDOC: one stored version of the task's plan, whole (the latest when `version` is left out). */
+  getTaskPlan(taskId: string, query: { document?: "requirements" | "design" | "plan"; version?: number }): Promise<TaskPlanView>;
   listTasks(query: { project?: string; status?: DeveloperTaskStatus; limit: number }): Promise<DeveloperTaskListItem[]>;
   continueTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   decideWorkflowTask(taskId: string, request: WorkflowDecisionRequest): Promise<DeveloperTaskClientView>;
@@ -116,7 +123,7 @@ export interface ControlPlaneClient {
   getTaskPeople(taskId: string): Promise<TaskPeopleView>;
   getTaskPeopleRequest(taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   setTaskPerson(taskId: string, request: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
-  takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
+  takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskOwnershipResult>;
   /** Task 14: how far the signed-in person's organization audit log is sealed. Owners and admins only; anyone else gets the route's refusal. */
   auditStatus(): Promise<AuditStatusView>;
   /** Plan 3 Task 35a: the agents the person can see, or those that work on a project. */
@@ -140,6 +147,8 @@ export interface ControlPlaneClient {
   /** A message to the session's agent; the caller needs "can use". */
   tellSessionAgent(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
   stopSession(sessionId: string, requestId: string): Promise<SessionViewRead>;
+  /** Rovara Code (Plan 6 Task 5): answers the questions a task waits on, in one call (every question needs an answer). The caller needs "can use" on the session. */
+  answerTaskQuestions(sessionId: string, request: { requestId: string; round: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }): Promise<SessionViewRead>;
 }
 
 /** An agent as the agent routes list it; the tool reads only the fields it shows. */
@@ -162,6 +171,20 @@ const OwnerApprovalWaitSchema = z.object({ status: z.literal("NEEDS_OWNER_APPROV
 /** Spec 025 A1: adminApiVersion is absent from a control plane from before 25d. */
 /** Spec 025 E16 (C22): confirm is absent from a control plane from before 25e. */
 const ConfigurationSchema = z.object({ env: z.string(), apiVersion: z.string(), adminApiVersion: z.string().optional(), confirm: AgentXConfigurationConfirmSchema.optional() });
+/** The full-plan answer: the canonical document is untrusted model text, kept as data; the summary is AgentX's plain wording of its checks. */
+const TaskPlanResponseSchema = z.object({
+  plan: z.object({
+    taskId: z.string(), document: z.enum(["requirements", "design", "plan"]), version: z.number().int().positive(), sha256: z.string(),
+    approved: z.boolean(), current: z.boolean(), versions: z.array(z.number().int().positive()),
+    content: z.record(z.string(), z.unknown()),
+    summary: z.object({
+      lines: z.array(z.string()),
+      decisions: z.array(z.object({ id: z.string(), question: z.string(), answer: z.string() })),
+      noneReason: z.string().optional(),
+    }),
+  }),
+});
+export type TaskPlanView = z.infer<typeof TaskPlanResponseSchema>["plan"];
 /** The feedback page's view of a PR feedback proposal; the tool reads only the fields it shows. */
 const FeedbackReviewResponseSchema = z.object({ review: z.record(z.string(), z.unknown()) });
 const UNREADABLE = "AgentX answered with something this version of the CLI cannot read; upgrade it";
@@ -323,6 +346,12 @@ export function httpControlPlaneClient(options: {
     projects: () => call(DeveloperProjectsResponseSchema, "GET", "/v1/dev/projects"),
     startTask: async (request) => task(await call(DeveloperTaskResponseSchema, "POST", "/v1/dev/tasks", request, true, { busyStep: START_BUSY_STEP })),
     getTask: async (taskId, events, options) => task(await call(DeveloperTaskResponseSchema, "GET", path(taskId, `?events=${events}`), undefined, true, options)),
+    getTaskPlan: async (taskId, query) => {
+      const search = new URLSearchParams();
+      if (query.document !== undefined) search.set("document", query.document);
+      if (query.version !== undefined) search.set("version", String(query.version));
+      return (await call(TaskPlanResponseSchema, "GET", path(taskId, `/plan${search.size === 0 ? "" : `?${search.toString()}`}`))).plan;
+    },
     listTasks: async (query) => {
       const search = new URLSearchParams({ limit: String(query.limit) });
       if (query.project !== undefined) search.set("project", query.project);
@@ -350,7 +379,10 @@ export function httpControlPlaneClient(options: {
     getTaskPeople: async (taskId) => (await call(TaskPeopleViewResponseSchema, "GET", path(taskId, "/people"))).view,
     getTaskPeopleRequest: async (taskId, requestId) => (await call(TaskPeopleChangeResponseSchema, "GET", path(taskId, `/people/requests/${encodeURIComponent(requestId)}`))).change,
     setTaskPerson: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/role"), request)).change,
-    takeTaskOwnership: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/take-ownership"), request)).change,
+    takeTaskOwnership: async (taskId, request) => {
+      const answer = await call(z.union([TaskPeopleChangeResponseSchema, NeedsConfirmationSchema.extend({ requestId: z.string().optional() })]), "POST", path(taskId, "/people/take-ownership"), request);
+      return "change" in answer ? answer.change : { status: "PENDING", requestId: request.requestId, confirmationUrl: answer.confirmUrl };
+    },
     auditStatus: () => call(AuditStatusSchema, "GET", "/v1/dev/org/audit/status"),
     listAgents: async (query) => (await call(z.object({ agents: z.array(AgentSummarySchema) }), "GET", `/v1/app/agents${query.project === undefined ? "" : `?project=${encodeURIComponent(query.project)}`}`)).agents,
     runAgent: async (agentId, request) => {
@@ -378,6 +410,7 @@ export function httpControlPlaneClient(options: {
     commentOnSession: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "comment", text: request.text }),
     tellSessionAgent: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "steer", text: request.text }),
     stopSession: async (sessionId, requestId) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session),
+    answerTaskQuestions: async (sessionId, request) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/answers"), request)).session),
     approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };
 }

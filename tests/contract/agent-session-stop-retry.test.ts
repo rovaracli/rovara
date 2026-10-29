@@ -30,7 +30,7 @@ function world(options: { audit?: boolean } = {}) {
   const calls = {
     cancel: [] as Array<{ taskId: string; requestId: string }>, workflow: [] as Array<{ taskId: string; requestId: string }>, start: [] as Array<Record<string, unknown>>,
     chainCancel: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>, chainRetry: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>,
-    admissions: [] as Array<{ payer: Payer; project: string }>, published: [] as Array<{ channel: string; events: string[] }>,
+    admissions: [] as Array<{ payer: Payer; project: string }>, paths: [] as string[], published: [] as Array<{ channel: string; events: string[] }>,
   };
   const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined };
   const started = new Map<string, StartedRun>();
@@ -67,7 +67,7 @@ function world(options: { audit?: boolean } = {}) {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
     control, chainControl, chain: { runView: async (_actor, runId) => chainRunViewOf(runId), stepTask: async () => { throw new Error("not asked"); } },
-    admitPayer: async (input) => { calls.admissions.push({ payer: input.payer, project: input.project }); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
+    admitPayer: async (input) => { calls.admissions.push({ payer: input.payer, project: input.project }); calls.paths.push(input.path); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
     realtimePublish: {
       endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "AKIA", secretAccessKey: "secret" }),
       fetch: (async (_url: unknown, init: { body: string }) => { calls.published.push(JSON.parse(init.body) as { channel: string; events: string[] }); return new Response("{}", { status: 200 }); }) as never,
@@ -293,6 +293,16 @@ describe("retrying a session", () => {
     expect(w.calls.admissions).toEqual([{ payer: { kind: "member", developerId: PRIYA }, project: "web" }]);
     expect(w.calls.workflow).toEqual([]);
     expect(w.eventTexts(sessionId)).toEqual([]);
+  });
+
+  it("checks the budget of a process-layer task on the same floor as a Rovara Code task (TASK), not the agent-run floor", async () => {
+    const w = world();
+    const plain = w.blocked();
+    await w.retry(MAX, plain.sessionId);
+    const layer = w.blocked();
+    w.patchTask(layer.taskId, { agent: { agentId: "agt_pppppppppppppppppppp", name: "web process", version: 1, builtin: false, process: true, digest: "d".repeat(64) } });
+    await w.retry(MAX, layer.sessionId);
+    expect(w.calls.paths).toEqual(["TASK", "TASK"]);
   });
 
   it("answers a repeated request id with the stored answer and asks Plan 3 once", async () => {
@@ -522,6 +532,19 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     expect(await code(retrySession(deps, bare.caller(MAX), open.sessionId, { requestId: randomUUID() }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(await code(retrySession(deps, bare.caller(MAX), failed.sessionId, { requestId: randomUUID() }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(bare.eventTexts(open.sessionId)).toEqual([]);
+  });
+
+  it("tells a person whose task failed at setup that a new task is needed, in words that also name the setup commands (Bug F)", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.blocked();
+    // A workspace that could not be prepared never started the workflow: its step stays RUNNING and its session ends failed (summary.ts).
+    w.patchTask(taskId, { workflow: { revision: 2, stage: "IMPLEMENT", state: "RUNNING" } });
+    w.patchSession(sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
+    expect(await code(w.retry(MAX, sessionId))).toEqual({
+      code: "CONFIG_INVALID",
+      message: "This task failed and has ended, so it can't be retried. Start a new task; if its setup failed, fix the project's setup or test command first.",
+    });
+    expect(w.calls.workflow).toEqual([]);
   });
 
   it("reads a session as ended by its end time alone, or by its ending status alone", async () => {

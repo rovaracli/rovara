@@ -3,13 +3,18 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
+import { mergedLines } from "../rovara-code/merged-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
+import { reviewModelLines } from "../rovara-code/review-model-lines.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
+import { PLAN_UNREADABLE_SENTENCES, type PlanUnreadableCategory } from "./plan-check-summary.js";
+import { autoFixCardLines, type AutoFixAsk } from "./autofix-messages.js";
+import { noCodeChangedText } from "./no-change-findings-text.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -26,8 +31,22 @@ export interface WorkflowMessageContext {
    * A structured document's card: its top claims in rank order (for a tiny plan every claim, a child's text starting
    * with two spaces per level), how many claims and decisions it has in all, and whether it is tiny. Replaces `documentSummary`.
    */
-  structured?: { claims: string[]; claimCount: number; decisionCount: number; tiny: boolean; noChangeNeeded?: NoChangeNeeded | undefined } | undefined;
+  structured?: {
+    claims: string[]; claimCount: number; decisionCount: number; tiny: boolean; noChangeNeeded?: NoChangeNeeded | undefined;
+    /** PLANVIEW: the answer each decision gets if the owner approves here (AgentX's recommended option), in plan order. */
+    decisions?: ReadonlyArray<{ id: string; question: string; answer: string }> | undefined;
+    /** PLANVIEW: one plain line per browser or API scenario and proposed check the plan adds (`planCheckSummary(plan).lines`). */
+    checkLines?: readonly string[] | undefined;
+    /** What AgentX's plan check says of the plan (`planCheckSummary(plan).selfCheckLines`): its findings' sentences, or "Not checked by AgentX's plan check."; empty when it ran and found nothing. */
+    selfCheckLines?: readonly string[] | undefined;
+  } | undefined;
+  /** PLANREADMSG: why the plan could not be read, as a fixed category; absent when not known (the card then says only that it could not be read). */
+  planUnreadableCategory?: PlanUnreadableCategory | undefined;
+  /** PLANREADMSG: AgentX already asked the planner a second time by itself and the answer could not be read either. */
+  planUnreadableAutoRetried?: boolean | undefined;
   findingsUrl?: string | undefined;
+  /** The reviews of the current code ran on the build's own model (`reviewSameModelOf`): the message says so. */
+  reviewSameModel?: boolean | undefined;
   /** The task page, where every thread reply can be read. */
   taskPageUrl?: string | undefined;
   /** Thread replies saved and not yet given to a step. */
@@ -48,6 +67,10 @@ export interface WorkflowMessageContext {
   agentName?: string | undefined;
   /** The task's project, for the plan check's note that the project allows only one model. */
   project?: string | undefined;
+  /** AUTOFIX: automatic fixing is on for this deployment; a blocked checks or reviews card then says what Rovara already tried and, from `autoFixAsk`, why it is asking. Absent: the card reads as it always did. */
+  autoFix?: { ask?: AutoFixAsk | undefined } | undefined;
+  /** T7c: the coding plan is written and held back while its must-not-change checks run on the current app; no card to approve yet. */
+  planGroundingHeld?: boolean | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -111,6 +134,7 @@ const PLAIN_REASONS: ReadonlySet<string> = new Set([
 
 /** Block reasons stored before their wording changed, and what they read as now. */
 const REWORDED_REASONS: ReadonlyMap<string, string> = new Map([
+  ...NO_CODE_CHANGED_LEGACY_REASONS.map((legacy): [string, string] => [legacy, WORKFLOW_BLOCK_REASONS.noCodeChanged]),
   ["No checks ran: this project has no required checks and the task selected no optional checks. Configure or select at least one check, then retry.", WORKFLOW_BLOCK_REASONS.noChecksConfigured],
   ...["failed", "interrupted", "cancelled"].map((status): [string, string] => [`PR feedback review operation ended ${status}`, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed]),
   ["PR feedback review report was invalid, incomplete, or stale", WORKFLOW_BLOCK_REASONS.feedbackReviewFailed],
@@ -118,11 +142,17 @@ const REWORDED_REASONS: ReadonlyMap<string, string> = new Map([
 
 /** Whether a pull request's feedback review failed, by the reason stored now or before its wording changed. */
 export function isFeedbackReviewFailure(blockReason: string | undefined): boolean {
-  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
+  // The feedback review also stops, before it reads anything, when the programs earlier work left running cannot be stopped.
+  return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || blockReason === WORKFLOW_BLOCK_REASONS.leftoverProcesses
+    || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
 const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { understanding: "Understanding", planning: "Planning", "plan check": "The plan check", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
+
+const STOPPED_BY_OWNER = /^(understanding|planning|plan check|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/;
+/** Whether a step's block reason is a stop the owner asked for, which `plainBlockReason` words as a whole sentence of its own. */
+const stoppedByOwner = (blockReason: string | undefined): boolean => blockReason !== undefined && STOPPED_BY_OWNER.test(blockReason);
 
 /** The broker's own reason a step stopped, in words the owner can act on; any other reason is internal. */
 export function plainBlockReason(blockReason: string | undefined, as: "AgentX" | "Rovara" = "AgentX"): string {
@@ -132,11 +162,21 @@ export function plainBlockReason(blockReason: string | undefined, as: "AgentX" |
   const reworded = REWORDED_REASONS.get(blockReason);
   if (reworded !== undefined) return slackText(reworded);
   // PLANINC-2: a stop the owner asked for (cancelled, or interrupted when the stop could not be delivered) says so and what to do; only a failed run is unexpected.
-  const stopped = /^(understanding|planning|plan check|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
+  const stopped = STOPPED_BY_OWNER.exec(blockReason);
   if (stopped !== null) return `${STOPPED_STEP_NAME[stopped[1]!]!} was stopped before it finished. Choose Retry to run it again.`;
   if (/operation ended (failed|interrupted|cancelled)$/.test(blockReason)) return "The run stopped unexpectedly.";
   if (/ was invalid, incomplete, or stale$/.test(blockReason)) return "The result couldn't be trusted, so nothing moved forward.";
+  if (blockReason === FEEDBACK_NOT_RUN_REASON || blockReason === FEEDBACK_STOPPED_REASON) return slackText(blockReason);
   return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : generic;
+}
+
+/** PLANREADMSG: an unreadable plan says why in a fixed category sentence (never the validator's words) and what to do. */
+function planUnreadableText(context: WorkflowMessageContext): string {
+  const name = workflowDocumentName(context.workflow);
+  const category = context.planUnreadableCategory;
+  const again = context.planUnreadableAutoRetried === true ? " AgentX tried once more by itself and got the same problem." : "";
+  if (category === undefined) return `AgentX couldn't read the ${name} it wrote.${again}`;
+  return `AgentX couldn't read the ${name} it wrote: ${PLAN_UNREADABLE_SENTENCES[category]}.${again} Choose Retry planning (it gets the problems found), or Close.`;
 }
 
 /** A review-only task's blocked verification, without advice to rerun checks it does not have. */
@@ -362,6 +402,64 @@ function runEstimateLines(estimate: RunEstimate, agentName: string, workflow: Wo
   return lines;
 }
 
+/** PLANVIEW: what a plan card lists about the answers Approve takes and the checks the plan adds, within the same brief limit as every card. */
+const CARD_CLAIMS_RESERVE = 190;
+const CARD_DECISIONS_SHOWN = 3;
+/** With checks to list too, only the first two decisions are spelled out (the rest read "And N more decisions"). */
+const CARD_DECISIONS_WITH_CHECKS = 2;
+const CARD_CHECK_LINES_SHOWN = 8;
+const CARD_CHECK_LINE_MAX = 280;
+const CARD_DECISION_QUESTION_MAX = 50;
+const CARD_DECISION_ANSWER_MAX = 40;
+
+/** The most plan-check lines a card spells out; the rest read "And N more" and are on the task page. */
+const CARD_SELF_CHECK_SHOWN = 3;
+const CARD_SELF_CHECK_LINE_MAX = 240;
+
+/**
+ * The lines an Approve in Slack must show, in what is left of the brief limit once the fixed lines and a claim's worth of
+ * room are kept: the answer each decision gets (the owner sees them before approving), what AgentX's plan check says of the
+ * plan (its findings, or that it was not checked), then up to 8 lines for the checks the plan adds, each with "And N more ..."
+ * when some are left out. Every value is the plan's own text: `cleanLine` redacts, cuts and escapes it. A line that does not
+ * fit is left out, never cut mid-sentence; the plan check and the checks are never both silent (a short notice stands in).
+ */
+export function structuredExtraLines(structured: NonNullable<WorkflowMessageContext["structured"]>, room: number): string[] {
+  const out: string[] = [];
+  const cost = (lines: readonly string[]) => lines.reduce((total, line) => total + visibleLength(line) + 1, 0);
+  const takeUpTo = (lines: readonly string[], more: (taken: number) => string[], left: number): number => {
+    for (let taken = lines.length; taken > 0; taken -= 1) {
+      const block = [...lines.slice(0, taken), ...more(taken)];
+      if (cost(block) <= left) { out.push(...block); return cost(block); }
+    }
+    return 0;
+  };
+  const checks = structured.checkLines ?? [];
+  const checkLines = checks.slice(0, CARD_CHECK_LINES_SHOWN).map((line) => `• ${cleanLine(line, CARD_CHECK_LINE_MAX)}`);
+  const checkMore = (taken: number) => (checks.length > taken ? [`And ${checks.length - taken} more on the task page.`] : []);
+  // Never silent: when no check line fits, one line still says the plan adds checks and where they read.
+  const notice = checks.length === 0 ? [] : [`This plan adds ${plural(checks.length, "check")}; read ${checks.length === 1 ? "it" : "them"} on the task page.`];
+  const selfCheck = structured.selfCheckLines ?? [];
+  const selfCheckLines = selfCheck.slice(0, CARD_SELF_CHECK_SHOWN).map((line) => `• ${cleanLine(line, CARD_SELF_CHECK_LINE_MAX)}`);
+  const selfCheckMore = (taken: number) => (selfCheck.length > taken ? [`And ${plural(selfCheck.length - taken, "more plan check note")} on the task page.`] : []);
+  const selfCheckNotice = selfCheck.length === 0 ? [] : ["AgentX's plan check: read its result on the task page."];
+  // The decisions go first, but leave room for the first plan-check line (or its notice) and the first check line (or the notice).
+  const firstSelfCheck = selfCheck.length === 0 ? 0 : cost([selfCheckLines[0]!, ...selfCheckMore(1)]);
+  const reserveSelfCheck = selfCheck.length === 0 ? 0 : firstSelfCheck <= room ? firstSelfCheck : cost(selfCheckNotice);
+  const firstCheck = checks.length === 0 ? 0 : cost([checkLines[0]!, ...checkMore(1)]);
+  const reserveChecks = checks.length === 0 ? 0 : firstCheck <= room - reserveSelfCheck ? firstCheck : cost(notice);
+  const decisions = structured.decisions ?? [];
+  const shown = decisions.slice(0, checks.length === 0 ? CARD_DECISIONS_SHOWN : CARD_DECISIONS_WITH_CHECKS)
+    .map((decision) => `• ${cleanLine(decision.id, 12)}: ${cleanLine(decision.question, CARD_DECISION_QUESTION_MAX)} Answer: ${cleanLine(decision.answer, CARD_DECISION_ANSWER_MAX)}`);
+  const usedByDecisions = takeUpTo(shown, (taken) => (decisions.length > taken ? [`And ${plural(decisions.length - taken, "more decision")} on the task page.`] : []), room - reserveSelfCheck - reserveChecks);
+  const usedBySelfCheck = takeUpTo(selfCheckLines, selfCheckMore, room - usedByDecisions - reserveChecks);
+  // Never silent either: when no plan-check line fits, the notice stands in (the claims' reserve is what makes room for it).
+  const usedNotice = usedBySelfCheck === 0 && selfCheck.length > 0 ? cost(selfCheckNotice) : 0;
+  if (usedNotice > 0) out.push(...selfCheckNotice);
+  const checksRoom = room - usedByDecisions - usedBySelfCheck - usedNotice;
+  if (takeUpTo(checkLines, checkMore, checksRoom) === 0 && checks.length > 0) out.push(...notice);
+  return out;
+}
+
 function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
   const { workflow, structured } = context;
   const name = workflowDocumentName(workflow);
@@ -415,16 +513,20 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
-  if (structured.decisionCount > 0) {
-    tail.unshift(`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`);
-  } else if (!structured.tiny) tail.unshift("Approve here includes the open comments (up to 25) from the task page.");
+  const lead = structured.decisionCount > 0
+    ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
+    : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
+  tail.unshift(...lead);
   tail.push(context.documentLink === undefined ? unlinked : link(context.documentLink.url, structured.tiny ? `Open the ${name}` : `Open the full ${name}`));
   const buttons: Button[] = context.documentLink === undefined ? decisions
     : [{ type: "button", action_id: "agentx_open_review", text: { type: "plain_text", text: "Open review" }, url: context.documentLink.url }, ...decisions];
   // What is fixed (the buttons' labels count toward the limit too), then the claims that fit in what is left.
   const labels = buttons.reduce((total, button) => total + (button["text"] as { text: string }).text.length, 0);
   const fixed = [header, ...tail].reduce((total, line) => total + visibleLength(line) + 1, 0) + labels;
-  return { text: [header, ...structuredClaimLines(structured, CARD_BRIEF_LIMIT - fixed), ...tail].join("\n"), buttons };
+  // The decision answers and the checks come right after the line that says what Approve takes; the claims get the room they leave.
+  const extras = structuredExtraLines(structured, Math.max(0, CARD_BRIEF_LIMIT - fixed - CARD_CLAIMS_RESERVE));
+  const extrasCost = extras.reduce((total, line) => total + visibleLength(line) + 1, 0);
+  return { text: [header, ...structuredClaimLines(structured, CARD_BRIEF_LIMIT - fixed - extrasCost), ...tail.slice(0, lead.length), ...extras, ...tail.slice(lead.length)].join("\n"), buttons };
 }
 
 function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
@@ -441,6 +543,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
     if (introduced.length > FINDINGS_SHOWN) lines.push(`And ${introduced.length - FINDINGS_SHOWN} more.`);
     if (older > 0) lines.push(`${older} older ${older === 1 ? "issue was" : "issues were"} noted but ${older === 1 ? "doesn't" : "don't"} block.`);
     if (workflowReviewsSawPartialDiff(context.workflow)) lines.push(PARTIAL_REVIEW);
+    lines.push(...reviewModelNotes(context));
     if (context.findingsUrl !== undefined) lines.push(link(context.findingsUrl, "See all findings"));
     // Resolve findings answers up to 20 at once; with more open, only sending the whole change back to coding is left.
     const first = introduced.length <= WORKFLOW_RESOLVE_FINDINGS_MAX ? exits.resolveFindings() : exits.sendBack();
@@ -450,7 +553,7 @@ function reviewBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
   const text = unfinished.length > 0
     ? `A review couldn't finish (${unfinished.map((review) => `${review.role === "SECURITY" ? "security" : "code"} review: ${plainReviewFailure(review.failureReason, review.status)}`).join("; ")}). Nothing was sent to GitHub.`
     : `${context.workflow.verification?.reviewOnly === true && workflowIsReviewOnly(context.workflow.checkPolicy) ? "No automated check applied, and" : "The checks passed, but"} the reviews couldn't finish. ${plainBlockReason(context.workflow.blockReason)} Nothing was sent to GitHub.`;
-  return { text, buttons: [...exits.retryReviews(), exits.close] };
+  return { text: [text, ...reviewModelNotes(context)].join("\n"), buttons: [...exits.retryReviews(), exits.close] };
 }
 
 function verifyBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
@@ -559,16 +662,28 @@ function waitingForMerge(workflow: WorkflowSnapshot): string | undefined {
   if (required.length === 0) return undefined;
   const name = (pullRequest: { url: string; number: number }) => link(pullRequest.url, `PR #${pullRequest.number}`);
   const merged = required.filter((pullRequest) => pullRequest.state === "MERGED").length;
+  // Rovara Code (version 2, staging 0.4.11 Bug G): Merge is pressed in Rovara once a person has approved the pull request on GitHub.
+  const tracked = workflow.definitionVersion === "1.1.0";
+  const review = (many: boolean): string => (tracked
+    ? `Approve ${many ? "the PRs" : "the PR"} on GitHub, then press Merge in Rovara; I'll finish this task when ${many ? "they're all" : "it's"} merged.`
+    : `${many ? "Review them and merge them" : "Review it and merge it"} on GitHub; I'll finish this task when ${many ? "they're all" : "it's"} merged.`);
   if (merged === 0) {
+    // Plan 6 Task 17: Rovara brought a pull request up to date with its base branch (a clean merge, not a fix).
+    const synced = required.filter((pullRequest) => pullRequest.syncedFrom !== undefined);
+    if (workflow.pullRequestUpdatedAt !== undefined && synced.length > 0) {
+      return required.length === 1
+        ? `Brought ${name(required[0]!)} up to date with its base branch. ${review(false)}`
+        : `Brought ${pullRequestNames(synced, name)} up to date with the base branch. ${review(true)}`;
+    }
     // After approved PR feedback, AgentX pushed the fixed code to the same pull requests.
     if (workflow.pullRequestUpdatedAt !== undefined) {
       return required.length === 1
-        ? `Pushed the fix to ${name(required[0]!)}. Review it and merge it on GitHub; I'll finish this task when it's merged.`
-        : `Pushed the fix to ${pullRequestNames(required, name)}. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+        ? `Pushed the fix to ${name(required[0]!)}. ${review(false)}`
+        : `Pushed the fix to ${pullRequestNames(required, name)}. ${review(true)}`;
     }
     return required.length === 1
-      ? `Draft pull request opened: ${name(required[0]!)}. Review it and merge it on GitHub; I'll finish this task when it's merged.`
-      : `Draft pull requests opened: ${required.map(name).join(", ")}. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+      ? `Draft pull request opened: ${name(required[0]!)}. ${review(false)}`
+      : `Draft pull requests opened: ${required.map(name).join(", ")}. ${review(true)}`;
   }
   const remaining = required.filter((pullRequest) => pullRequest.state !== "MERGED")
     .map((pullRequest) => `${name(pullRequest)} is still ${pullRequest.state === "CLOSED" ? "closed" : "open"}.`).join(" ");
@@ -653,6 +768,8 @@ export function feedbackReviewFailedMessage(input: {
 const PULL_REQUEST_UPDATE_CAUSES: Record<string, { cause: string; then: string }> = {
   HEAD_MOVED: { cause: "it changed on GitHub since I opened it", then: "I've stopped following it, so merge or close it on GitHub and then close this task." },
   PUSH_REFUSED: { cause: "GitHub refused the push", then: STILL_WATCHING },
+  // Plan 6 Task 17: the fix to a conflict would have dropped what the base branch brought.
+  BASE_CHANGES_DROPPED: { cause: "the fix would have dropped changes the base branch made, so I didn't push it (a fix may change the files that conflicted, not a file the base changed without a conflict)", then: "Update the branch on GitHub, or close this task. I'll keep watching for the merge." },
 };
 
 /** The approved fix could not be pushed to the pull requests: which, and why, when AgentX knows. */
@@ -673,8 +790,31 @@ function pushingFixTo(workflow: WorkflowSnapshot): string | undefined {
   return pending.length === 0 ? undefined : pullRequestNames(pending, (pullRequest) => link(pullRequest.url, `PR #${pullRequest.number}`));
 }
 
+/** AUTOFIX: the lines for what Rovara already tried and why it is asking, under a blocked card; nothing when automatic fixing is off or has nothing to add. */
+/**
+ * Whether the checks on this code are being run a second time: the owner pressed Retry checks, or Rovara retried them by itself, and the change was not sent back since (a send back is new code,
+ * and its first run is a first run). The first run after coding has no such sign, so it must not say "again".
+ */
+function checksRunBefore(workflow: WorkflowSnapshot): boolean {
+  const decisions = workflow.decisions ?? [];
+  const last = decisions.at(-1);
+  if (last?.source === "AUTO_RETRY" && last.auto?.stage === "VERIFY") return true;
+  const retry = workflow.verificationRetries?.at(-1);
+  return retry !== undefined && (last === undefined || retry.at > last.at);
+}
+
+function withAutoFix(context: WorkflowMessageContext, copy: { text: string; buttons: Button[] }): { text: string; buttons: Button[] } {
+  const lines = context.autoFix === undefined ? [] : autoFixCardLines(context.workflow, context.autoFix.ask);
+  return lines.length === 0 ? copy : { ...copy, text: `${copy.text}\n${lines.map(slackText).join("\n")}` };
+}
+
 function implementRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
+  // Plan 6 Task 17: the first run of a conflict round says so, naming the files (the repository's own words, escaped); what the fix's own checks and reviews send back says what a send-back says.
+  if (workflow.fixSource === "conflict" && sendBackProblems(workflow).length === 0) {
+    const names = (workflow.fixProblems ?? []).map(slackText);
+    return `The pull request's branch conflicts with the base branch${names.length === 0 ? "" : ` (${names.join(", ")})`}. Resolving it now; the checks and reviews run again after, and I'll push the merge if they pass.`;
+  }
   // Plan 6 Task 15: the first run of a fix for failing CI says so, in the failing checks' own names (GitHub's words, escaped); what the fix's own checks and reviews send back says what a send-back says.
   if (workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0) {
     const names = (workflow.fixProblems ?? []).map(slackText);
@@ -684,8 +824,13 @@ function implementRunning(context: WorkflowMessageContext): string {
   const decision = leadingDecision(workflow);
   const feedback = (workflow.feedbackDecisions ?? []).at(-1);
   if (feedback?.decision === "APPROVE" && feedback.workflowRevision >= workflow.revision - 2 && (decision === undefined || feedback.at >= decision.at)) {
+    // Plan 6 Task 16: a round Rovara decided itself says so and under which autonomy; it is never worded as the owner's approval.
+    if (feedback.actorRole === "ROVARA_AUTONOMY" && feedback.autonomy !== undefined) {
+      return `${feedbackDecidedByText(feedback.autonomy.level)}: the review comments are from people who can write to the repository, so I'm fixing them now. The checks and reviews run again after.`;
+    }
     return "PR feedback approved. Updating the code now; the checks and reviews run again after.";
   }
+  if (decision?.source === "AUTO_FIX") return "Rovara sent this back to coding by itself. Checks and reviews will run again after.";
   // Rovara Code version 2 (Task 12): a review round that found problems sends the work back on its own, and the thread says which round it is. It comes after the
   // approved PR feedback fix (above), and an owner's own send-back keeps its wording (below); a version 1 task, and a fix for CI, a conflict or comments, have no round.
   const round = workflowReviewRound(workflow);
@@ -727,6 +872,9 @@ function fixChangedNothing(context: WorkflowMessageContext, exits: ReturnType<ty
 function approvedBy(context: WorkflowMessageContext, decision: { actorRole: string }): string {
   return context.ownerSlackUserId === undefined || decision.actorRole !== "TASK_OWNER" ? "" : ` by <@${context.ownerSlackUserId}>`;
 }
+
+/** T7c: said while the plan waits for its check on the current app (a few minutes). */
+export const PLAN_GROUNDING_HOLD_LINE = "Checking the coding plan against the current app before asking you (a few minutes).";
 
 function planRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
@@ -771,13 +919,14 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     }
     case "UNDERSTAND/RUNNING": return plain("Reading your request and the code before I plan. I'll ask a question here if I need one; nothing changes in the code until you approve a plan.");
     case "UNDERSTAND/BLOCKED": return { text: `I couldn't finish understanding this task. ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.button("agentx_workflow_retry_plan", "Retry understanding"), exits.close] };
-    case "PLAN/RUNNING": return plain(planRunning(context));
+    case "PLAN/RUNNING": return plain(context.planGroundingHeld === true ? PLAN_GROUNDING_HOLD_LINE : planRunning(context));
     case "PLAN/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.planUnreadable
-      ? `AgentX couldn't read the ${workflowDocumentName(workflow)} it wrote.`
+      ? planUnreadableText(context)
+      : stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
     // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
-    // Only a model the company chose for the check, and that it may not use, blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
+    // Only a model the company chose for the check, and that it may not use, or a base whose rule files could not be verified (its fixed reason), blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
     case "PLAN_CRITIQUE/BLOCKED": {
       const reason = workflow.blockReason;
       const said = reason !== undefined && MODEL_REFUSAL.test(reason) ? slackText(reason) : plainBlockReason(reason, "Rovara");
@@ -793,20 +942,23 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     // Approving the plan needs someone else to accept its run limit (Task 34): the words say who, and coding starts once they do, so there is nothing to retry.
     case "IMPLEMENT/BLOCKED": if (workflow.blockReason !== undefined && isRunLimitBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason), buttons: [exits.close] };
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
-      return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? WORKFLOW_BLOCK_REASONS.noCodeChanged
+      // The run finished and no change was needed: what the agent found, then the choices (reply and Retry coding to ask for a change, or close). No tests were run and no pull request was opened, and nothing here says otherwise.
+      if (isNoCodeChangedReason(workflow.blockReason)) return { text: noCodeChangedText(workflow.noChangeFindings, context.taskPageUrl), buttons: [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
+      // CANCELDUP: a stop the owner asked for already reads "Coding was stopped before it finished. Choose Retry ..."; saying it twice is noise.
+      return { text: stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
       : `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,
       // Rewritten history can't be coded on again: a new task is the way on.
       buttons: workflow.blockReason === WORKFLOW_HISTORY_REWRITTEN_MESSAGE ? [exits.close] : [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
-    case "VERIFY/RUNNING": return plain("Running the selected checks again on the current code. No code is being changed.");
-    case "VERIFY/BLOCKED": return verifyBlocked(context, exits);
+    case "VERIFY/RUNNING": return plain(`Running the selected checks${checksRunBefore(workflow) ? " again" : ""} on the current code. No code is being changed.`);
+    case "VERIFY/BLOCKED": return withAutoFix(context, verifyBlocked(context, exits));
     case "REVIEW/WAITING": return plain(`${allPassed} Starting the code and security reviews.`);
     case "REVIEW/RUNNING": return plain(`${allPassed} Code and security reviews are running on the ${reviewOnly ? "current" : "checked"} code.`);
-    case "REVIEW/BLOCKED": return reviewBlocked(context, exits);
+    case "REVIEW/BLOCKED": return withAutoFix(context, reviewBlocked(context, exits));
     // The pull requests are already open after approved PR feedback: the fix is pushed to them. While it runs, nothing new is said.
     case "PULL_REQUEST/READY": case "PULL_REQUEST/RUNNING": {
       const pushing = pushingFixTo(workflow);
       if (pushing === undefined && workflow.state === "RUNNING") return undefined;
-      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}`);
+      return plain(`${checksAndReviewsPassed} ${pushing === undefined ? "Opening a draft pull request." : `Pushing the fix to ${pushing}.`}${partialReviewNote(workflow)}${reviewModelNotes(context).map((line) => `\n${line}`).join("")}`);
     }
     case "PULL_REQUEST/BLOCKED": return { text: `${checksAndReviewsPassed} ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.retryPublish, exits.close] };
     // The owner can close the task while its pull request is open (the pull request stays on GitHub).
@@ -815,17 +967,22 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       return text === undefined ? undefined : { text, buttons: [exits.close] };
     }
     // The feedback review runs before anything is proposed; no button, as nothing is waiting on the owner yet.
-    case "WAIT_FOR_MERGE/RUNNING": return plain(feedbackReviewStarted(workflow));
+    // Plan 6 Task 17: while the base branch is merged into the pull request's branch nothing is said (nothing the owner can act on, and a merge that changes nothing must not leave a message the thread never takes back).
+    case "WAIT_FOR_MERGE/RUNNING": return plain(workflow.branchSync === undefined ? feedbackReviewStarted(workflow) : undefined);
     // Nothing on GitHub is retried from here: the owner closes the task (its pull request stays on GitHub). Only a changed
     // pull request ends the following; a failed feedback review or push leaves the merge still tracked.
     // Plan 6 Task 15: CI failing and a person needed (Rovara is set to suggest, three fixes did not help, or a fix changed nothing): the reason says it (its check name and log line are GitHub's words, escaped); Retry the fix is in the app.
-    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
+    // Plan 6 Task 17: the branch still conflicts after the conflict rounds, or the base changed CI workflow files, which Rovara can't push: a person updates the branch on GitHub.
+    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason) || isBranchSyncBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
       return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
       ? `I stopped following the pull request. ${plainBlockReason(workflow.blockReason)}`
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed ? plainBlockReason(workflow.blockReason)
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed ? pullRequestUpdateFailed(workflow)
         : `${plainBlockReason(workflow.blockReason)} ${STILL_WATCHING}`, buttons: [exits.close] };
     case "MERGED/COMPLETE": {
+      // A Rovara Code (version 2) task says it as `Merged: <url>`, a line for each pull request (Plan 6 Task 20); version 1 keeps its words.
+      const lines = workflow.definitionVersion === "1.1.0" ? mergedLines(workflow.pullRequests ?? []) : [];
+      if (lines.length > 0) return plain(lines.join("\n"));
       const total = (workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.required).length;
       return plain(total <= 1 ? "The pull request is merged. This task is complete." : `All ${total} pull requests are merged. This task is complete.`);
     }
@@ -887,9 +1044,11 @@ export function answeredWorkflowCard(text: string, note: string): Array<Record<s
 /**
  * What makes two posts the same post, so the thread hears it once: by default the step's revision. The merge step is
  * keyed by what it says (each required pull request's head and state), so a later revision that left them as they
- * were says nothing; opening the pull requests is said once per checked code.
+ * were says nothing; opening the pull requests is said once per checked code. A planning run that the plan self-check sent back to the planner
+ * (`planAutoRevisions` of them, each one revision on, nothing else changed) is the same run: it is keyed by the revision the run started at.
  */
-export function workflowMessageKey(workflow: WorkflowSnapshot): string {
+export function workflowMessageKey(workflow: WorkflowSnapshot, options: { planAutoRevisions?: number } = {}): string {
+  if (workflow.stage === "PLAN" && workflow.state === "RUNNING" && (options.planAutoRevisions ?? 0) > 0) return `revision:${workflow.revision - options.planAutoRevisions!}`;
   if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING" && freshFeedbackAnswer(workflow) === undefined) {
     return `merge:${(workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.required)
       .map((pullRequest) => `${pullRequest.repositoryId}#${pullRequest.number}@${pullRequest.headSha ?? pullRequest.candidateDigest}=${pullRequest.state === "MERGED" ? "merged" : pullRequest.state === "CLOSED" ? "closed" : "open"}`)
@@ -902,6 +1061,8 @@ export function workflowMessageKey(workflow: WorkflowSnapshot): string {
 
 /** Said when a review saw only part of the change: its diff was too large to show in full. */
 const PARTIAL_REVIEW = "The change was too large to show the reviewers in full, so they reviewed only part of it.";
+/** The lines naming the model that reviewed the current code, and the same-model note when it was the build's (Rovara Code version 2 only; a model name is a report's text, so each line is cleaned). */
+const reviewModelNotes = (context: Pick<WorkflowMessageContext, "workflow" | "reviewSameModel">): string[] => reviewModelLines(context.workflow, context.reviewSameModel === true).map((line) => cleanLine(line, 300));
 const partialReviewNote = (workflow: WorkflowSnapshot) => (workflowReviewsSawPartialDiff(workflow) ? ` ${PARTIAL_REVIEW}` : "");
 
 /**

@@ -25,6 +25,14 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
   "task.workflowFix",
+  // Plan 6 Task 16: a coding run whose PR feedback approval is Rovara's own (it carries the autonomy it was decided under).
+  "task.workflowFeedbackAutonomy",
   // Rovara Code v2: independent parts of an approved plan build side by side (parallel-parts.ts).
   "task.workflowParallelParts",
+  // Plan 6 Task 17: a merge of the base branch into a workflow task's pull request branch, and a conflict round's fix pushed as a merge commit.
+  "maintain.workflowSync",
+  // Mainline #408: the plan dry run (a coding plan's proposed checks tried on the unchanged code; the executor monitor withholds it on a host without the executor image) and the grounding round (T7a/T7b).
+  "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
+  // Mainline #413 (MIDSTEPCOOKIE): the executor syncs the browser's session values before every model call; the application-runtime monitor withholds it on a host whose executor image lacks the session-sync label.
+  "task.workflowE2EMidStepSync.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

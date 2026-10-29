@@ -26,14 +26,14 @@ export interface AppResult { env: string; url: string; data: Body; text: string 
  * are, under the broker's code (a 409 exits 1, as a conflict the person resolves by reloading); 2xx answers, 202 included, are returned.
  */
 export async function appRequest(
-  deps: DeveloperSessionDeps, env: string | undefined, path: string, options: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {},
+  deps: DeveloperSessionDeps, env: string | undefined, path: string, options: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; headers?: Readonly<Record<string, string>> } = {},
 ): Promise<{ env: string; url: string; status: number; body: Body }> {
   const session = await developerAccessToken(deps, env);
   let response: Response;
   try {
     response = await deps.fetch(`${session.entry.url}${path}`, {
       method: options.method ?? "GET",
-      headers: { authorization: `Bearer ${session.accessToken}`, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...options.headers, authorization: `Bearer ${session.accessToken}`, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       signal: AbortSignal.timeout(30_000),
     });

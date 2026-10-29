@@ -11,6 +11,8 @@ export const nativeP0Files = [
 export const sharedVitestSettings = {
   coverage: { enabled: false },
   globalSetup: ["tests/support/test-temp-dir.ts"] as string[],
+  // Each test file removes the CDK assemblies it made when it ends (tests/support/test-file-temp-dir.ts).
+  setupFiles: ["tests/support/test-file-temp-dir.ts"] as string[],
   passWithNoTests: false,
   testTimeout: 60_000,
 } as const;

@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EMPTY_GIT_DIRECTORY_ROOT_VARIABLE, createEmptyGitDirectories, removeEmptyGitDirectories } from "./empty-git-directories.js";
 
 export const TEST_TMP_PREFIX = "agentx-vitest-";
 
@@ -34,6 +35,11 @@ export default function setup(): () => void {
   const previousState = process.env.AGENTX_WORKER_STATE_DIR;
   process.env.AGENTX_TASK_SHELL = "local";
   process.env.AGENTX_WORKER_STATE_DIR = join(runDir, "worker-state");
+  // The empty, read-only git directories the worker's verified base read uses; a worker image carries them, a test run makes its own.
+  const emptyGitDirectories = join(runDir, "empty-git-directories");
+  createEmptyGitDirectories(emptyGitDirectories);
+  const previousEmpty = process.env[EMPTY_GIT_DIRECTORY_ROOT_VARIABLE];
+  process.env[EMPTY_GIT_DIRECTORY_ROOT_VARIABLE] = emptyGitDirectories;
   const restore = (name: string, value: string | undefined) => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -42,6 +48,8 @@ export default function setup(): () => void {
     restore("TMPDIR", previous);
     restore("AGENTX_TASK_SHELL", previousShell);
     restore("AGENTX_WORKER_STATE_DIR", previousState);
+    restore(EMPTY_GIT_DIRECTORY_ROOT_VARIABLE, previousEmpty);
+    removeEmptyGitDirectories(emptyGitDirectories);
     rmSync(runDir, { recursive: true, force: true });
   };
 }

@@ -1,17 +1,19 @@
-// The stricter type check's ratchet (issue #50). `tsc -p tsconfig.lint.json` also checks tests/ and
-// scripts/, which `npm run typecheck` (tsc -b) leaves out, and those files still have known errors.
+// The stricter type check's ratchet (issue #50). The programs in tsconfig.lint/ also check tests/ and
+// scripts/, which `npm run typecheck` (tsc -b) leaves out, and those files may have known errors.
+// Each program is one tsc run (scripts/typecheck-programs.ts); together they cover what the single
+// tsconfig.lint.json program used to, without one run needing the whole repository in memory.
 // This script counts the errors per file and compares them with tests/typecheck-baseline.json:
 // a file whose count goes up, or a new file with errors, fails; a count that goes down passes with
 // a reminder to lower the baseline. `update` rewrites the baseline, but only ever lowers it.
 // A tsc crash or config error always fails: it must never read as "0 errors". So does a baseline
 // file the check no longer reads (a narrowed tsconfig), which would otherwise look like a fix.
 // A renamed file keeps its errors under its new path: move its entry in the baseline by hand.
-// Node runs this file directly; it loads TypeScript, a dev dependency, only to list the program.
-import { spawnSync } from "node:child_process";
+// Node runs this file directly; it loads TypeScript, a dev dependency, only to list the programs.
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { relative } from "node:path";
-import type * as TypeScript from "typescript";
+import { availableParallelism } from "node:os";
+import { PROGRAMS_DIR, affectedPrograms, fileGraphDeps, listPrograms, runPool, runProcess, type Program, type ProcessRun } from "./typecheck-programs.ts";
 
 export type Counts = Record<string, number>;
 export interface ParsedOutput { counts: Counts; problems: string[] }
@@ -20,11 +22,17 @@ export type RunResult = { ok: true; counts: Counts } | { ok: false; reason: stri
 export interface Change { file: string; baseline: number; current: number }
 export interface Comparison { pass: boolean; raised: Change[]; lowered: Change[]; lines: string[] }
 export type ProgramList = { ok: true; files: readonly string[] } | { ok: false; reason: string };
+/** What running the programs produced: the merged verdict, and the raw output for hints. */
+export interface Checks { run: RunResult; stdout: string }
 export interface RatchetDeps {
   github: boolean;
   readBaseline(): string;
-  runTsc(): TscRun;
+  /** Runs the programs (all of them, or the ones a change affects) and merges their errors. */
+  runChecks(): Promise<Checks>;
+  /** Every file the programs type-check, whether or not this run executes the program that owns it. */
   listProgram(): ProgramList;
+  /** When only some programs ran: the files they own. Counts can only be lowered for those files. */
+  scope?: ReadonlySet<string>;
   writeBaseline(text: string): void;
 }
 export interface RatchetResult { code: 0 | 1; out: string[]; err: string[] }
@@ -34,9 +42,9 @@ const LOCATED = /^(.+?)\((\d+),(\d+)\): error (TS\d+): /;
 const UNLOCATED = /^error TS\d+: /;
 const REPO_PATH = /^[^/\\:][^\\:]*$/;
 
-/** Per-file error counts from `tsc --pretty false` output; anything unexpected goes in `problems`. */
-export function parseTscOutput(text: string): ParsedOutput {
-  const counts: Counts = {};
+/** Per-file error keys (position, code, first message line) from `tsc --pretty false` output; anything unexpected goes in `problems`. */
+export function parseTscErrors(text: string): { errors: Record<string, string[]>; problems: string[] } {
+  const errors: Record<string, string[]> = {};
   const problems: string[] = [];
   let inError = false;
   for (const line of text.split(/\r?\n/)) {
@@ -48,7 +56,7 @@ export function parseTscOutput(text: string): ParsedOutput {
       // A compiler option error, or any error inside a JSON config file, means the check itself is
       // broken, so it is a problem, not a count a baseline could absorb.
       if (code.startsWith("TS5") || file.endsWith(".json")) problems.push(line);
-      else counts[file] = (counts[file] ?? 0) + 1;
+      else (errors[file] ??= []).push(line.slice(located[1]!.length));
       inError = true;
     } else if (/^\s/.test(line) && inError) {
       continue; // The indented lines that continue a multi-line error.
@@ -57,14 +65,38 @@ export function parseTscOutput(text: string): ParsedOutput {
       inError = UNLOCATED.test(line);
     }
   }
-  return { counts, problems };
+  return { errors, problems };
+}
+
+/** Per-file error counts from `tsc --pretty false` output; anything unexpected goes in `problems`. */
+export function parseTscOutput(text: string): ParsedOutput {
+  const { errors, problems } = parseTscErrors(text);
+  return { counts: Object.fromEntries(Object.entries(errors).map(([file, keys]) => [file, keys.length])), problems };
+}
+
+/**
+ * Merges the errors several programs reported. Two programs that both import a file report its errors twice,
+ * so an error counts once however many programs saw it: per file and error, the highest count of any program.
+ */
+export function mergeErrors(runs: readonly Record<string, string[]>[]): Counts {
+  const best = new Map<string, Map<string, number>>();
+  for (const errors of runs) {
+    for (const [file, keys] of Object.entries(errors)) {
+      const seen = new Map<string, number>();
+      for (const key of keys) seen.set(key, (seen.get(key) ?? 0) + 1);
+      const merged = best.get(file) ?? new Map<string, number>();
+      for (const [key, count] of seen) merged.set(key, Math.max(merged.get(key) ?? 0, count));
+      best.set(file, merged);
+    }
+  }
+  return Object.fromEntries([...best].map(([file, keys]) => [file, [...keys.values()].reduce((sum, count) => sum + count, 0)]));
 }
 
 /** Turns a tsc run into per-file counts, or a reason the run cannot be trusted. */
 export function interpretTscRun(run: TscRun): RunResult {
   if (run.error !== undefined) return { ok: false, reason: `tsc could not run: ${run.error.message}` };
   if (run.signal === "SIGABRT") {
-    return { ok: false, reason: `tsc was stopped by SIGABRT. It may have run out of memory: Node aborts when its heap is full. The heap limit is set by --max-old-space-size in tscArguments (scripts/typecheck-baseline.ts).` };
+    return { ok: false, reason: `tsc was stopped by SIGABRT. It may have run out of memory: Node aborts when its heap is full. The heap limit is set by --max-old-space-size in tscArguments (scripts/typecheck-baseline.ts); if one program needs more, split it in tsconfig.lint/.` };
   }
   if (run.signal !== null) return { ok: false, reason: `tsc was stopped by ${run.signal}` };
   if (run.status === null) return { ok: false, reason: "tsc exited without an exit code" };
@@ -97,10 +129,16 @@ function summary(counts: Counts): string {
   return `${plural(total, "error")} in ${plural(Object.keys(counts).length, "file")}`;
 }
 
-/** Compares the current counts with the baseline: any raised or new file fails. */
-export function compareToBaseline(baseline: Counts, current: Counts): Comparison {
-  const { raised, lowered } = changes(baseline, current);
-  const lines = [`Stricter type check (tsconfig.lint.json): ${summary(current)} (baseline: ${summary(baseline)}).`];
+/**
+ * Compares the current counts with the baseline: any raised or new file fails. When only some programs ran,
+ * `scope` is the files they own: a file outside it that the run did not report is not "fixed", just unchecked.
+ */
+export function compareToBaseline(baseline: Counts, current: Counts, scope?: ReadonlySet<string>): Comparison {
+  const all = changes(baseline, current);
+  const raised = all.raised;
+  const lowered = scope === undefined ? all.lowered : all.lowered.filter((change) => scope.has(change.file));
+  const inScope = scope === undefined ? baseline : Object.fromEntries(Object.entries(baseline).filter(([file]) => scope.has(file)));
+  const lines = [`Stricter type check (${PROGRAMS_DIR}/): ${summary(current)} (baseline${scope === undefined ? "" : " for the files checked"}: ${summary(inScope)}).`];
   if (raised.length > 0) {
     lines.push("", "These files have more type errors than the baseline allows. Fix the new errors:", ...raised.map(describeChange));
   }
@@ -164,7 +202,7 @@ export function githubAnnotations(comparison: Comparison): string[] {
 }
 
 /** The whole command, with its side effects passed in: `check` compares, `update` lowers the baseline. */
-export function runRatchet(mode: "check" | "update", deps: RatchetDeps): RatchetResult {
+export async function runRatchet(mode: "check" | "update", deps: RatchetDeps): Promise<RatchetResult> {
   const out: string[] = [];
   const err: string[] = [];
   const fail = (...lines: string[]): RatchetResult => ({ code: 1, out, err: [...err, ...lines] });
@@ -175,23 +213,23 @@ export function runRatchet(mode: "check" | "update", deps: RatchetDeps): Ratchet
     return fail(`Could not read the baseline: ${error instanceof Error ? error.message : String(error)}`);
   }
   const program = deps.listProgram();
-  if (!program.ok) return fail(`Could not list the files tsconfig.lint.json type-checks: ${program.reason}`);
-  const tsc = deps.runTsc();
-  const run = interpretTscRun(tsc);
+  if (!program.ok) return fail(`Could not list the files the stricter type check covers: ${program.reason}`);
+  if (mode === "update" && deps.scope !== undefined) return fail("The baseline can only be lowered by a run of every program: leave out --changed and --only.");
+  const { run, stdout } = await deps.runChecks();
   if (!run.ok) return fail("The stricter type check did not run cleanly, so it cannot be compared with the baseline.", run.reason);
   const unchecked = uncheckedBaselineFiles(baseline, program.files);
   if (unchecked.length > 0) {
     return fail(
-      ...unchecked.map((file) => `${file} is in the baseline but is no longer type-checked by tsconfig.lint.json.`),
+      ...unchecked.map((file) => `${file} is in the baseline but is no longer type-checked by any program in ${PROGRAMS_DIR}/.`),
       `If the file was deleted or renamed, remove or move its entry in ${BASELINE_PATH} by hand. Otherwise put it back in the check.`,
     );
   }
   if (mode === "check") {
-    const result = compareToBaseline(baseline, run.counts);
+    const result = compareToBaseline(baseline, run.counts, deps.scope);
     (result.pass ? out : err).push(...result.lines);
     if (deps.github) out.push(...githubAnnotations(result));
     if (result.pass) return { code: 0, out, err };
-    if (tsc.stdout.includes("error TS2307")) err.push("", "Some errors are missing-module errors (TS2307). Run `npm run typecheck` first: this check reads the packages' built outputs.");
+    if (/error TS(2307|6305)/.test(stdout)) err.push("", "Some errors are missing-module or unbuilt-output errors (TS2307, TS6305). Run `npm run typecheck` first: this check reads the packages' built outputs.");
     return { code: 1, out, err };
   }
   const lowered = lowerBaseline(baseline, run.counts);
@@ -201,50 +239,127 @@ export function runRatchet(mode: "check" | "update", deps: RatchetDeps): Ratchet
   return { code: 0, out, err };
 }
 
-const LINT_CONFIG = "tsconfig.lint.json";
 const require = createRequire(import.meta.url);
 
-/** Node's arguments for the tsc run. The lint project covers every test file, which outgrows Node's
- * default heap on a CI runner, so it gets 8 GB (the merged Plan 6 tree needs more than the 6 GB it had; `npm run lint` still gives ESLint 6 GB, which is a different tool and is not
- * to be aligned with this value). CI runners must have the memory: a private-repo standard runner is about 7-8 GB, so check the first CI run of the merged branch. */
-export function tscArguments(tscPath: string, heapMb = 8192): string[] {
-  return [`--max-old-space-size=${heapMb}`, tscPath, "-p", LINT_CONFIG, "--noEmit", "--pretty", "false"];
+/** Node's arguments for one program's tsc run. A program is one package, a slice of tests or the scripts,
+ * so the default heap (about 4 GB) is the ceiling; each program peaks well under 3 GB (TYPECHECK-SPLIT.md). */
+export function tscArguments(tscPath: string, config: string, heapMb = 4096): string[] {
+  return [`--max-old-space-size=${heapMb}`, tscPath, "-p", config, "--noEmit", "--pretty", "false"];
 }
 
-function runTsc(): TscRun {
-  const result = spawnSync(process.execPath, tscArguments(require.resolve("typescript/bin/tsc")), {
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-    timeout: 15 * 60 * 1000,
-  });
-  return { status: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr, ...(result.error === undefined ? {} : { error: result.error }) };
+export interface ProgramResult { program: Program; run: ProcessRun }
+
+/** Judges each program's run on its own (a crash in any one fails the whole check), then merges the errors. */
+export function mergeProgramRuns(results: readonly ProgramResult[]): Checks {
+  const errors: Record<string, string[]>[] = [];
+  let stdout = "";
+  for (const { program, run } of results) {
+    const judged = interpretTscRun(run);
+    if (!judged.ok) return { run: { ok: false, reason: `${program.config}: ${judged.reason}` }, stdout };
+    errors.push(parseTscErrors(run.stdout).errors);
+    stdout += run.stdout;
+  }
+  return { run: { ok: true, counts: mergeErrors(errors) }, stdout };
 }
 
-function listProgram(): ProgramList {
-  const ts = require("typescript") as typeof TypeScript;
-  const unrecoverable: string[] = [];
-  const parsed = ts.getParsedCommandLineOfConfigFile(LINT_CONFIG, {}, {
-    ...ts.sys,
-    onUnRecoverableConfigFileDiagnostic: (diagnostic) => { unrecoverable.push(ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")); },
-  });
-  const errors = [...unrecoverable, ...(parsed?.errors ?? []).map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"))];
-  if (parsed === undefined || errors.length > 0) return { ok: false, reason: errors.join("\n") || `${LINT_CONFIG} could not be parsed` };
-  if (parsed.options.noCheck === true) return { ok: false, reason: `${LINT_CONFIG} sets noCheck, so it would report no errors at all` };
-  return { ok: true, files: parsed.fileNames.map((file) => relative(process.cwd(), file).replaceAll("\\", "/")) };
+export interface Options {
+  mode: "check" | "update";
+  changed: boolean;
+  base: string;
+  only: string[];
+  jobs: number;
+  stats: boolean;
+  list: boolean;
 }
 
-// Usage: node scripts/typecheck-baseline.ts check|update, from the repository root, after tsc -b
-if (process.argv[1]?.endsWith("typecheck-baseline.ts")) {
-  const mode = process.argv[2];
-  if (mode !== "check" && mode !== "update") throw new Error("usage: node scripts/typecheck-baseline.ts check|update");
-  const result = runRatchet(mode, {
+export function parseArguments(argv: readonly string[], cpus = availableParallelism()): Options | string {
+  const options: Options = { mode: "check", changed: false, base: "HEAD", only: [], jobs: Math.max(1, Math.min(4, Math.floor(cpus / 2))), stats: false, list: false };
+  const [mode, ...rest] = argv;
+  if (mode !== "check" && mode !== "update") return usage();
+  options.mode = mode;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    const value = (): string | undefined => rest[++i];
+    if (arg === "--changed") options.changed = true;
+    else if (arg === "--stats") options.stats = true;
+    else if (arg === "--list") options.list = true;
+    else if (arg === "--base") { const v = value(); if (v === undefined || v.startsWith("--")) return usage(); options.base = v; }
+    else if (arg === "--only") { const v = value(); if (v === undefined || v.startsWith("--")) return usage(); options.only.push(...v.split(",").filter((name) => name !== "")); }
+    else if (arg === "--jobs") { const v = Number(value()); if (!Number.isInteger(v) || v < 1) return usage(); options.jobs = v; }
+    else return usage();
+  }
+  if (options.base !== "HEAD" && !options.changed) return "--base only makes sense with --changed";
+  return options;
+}
+
+const usage = (): string => "usage: node scripts/typecheck-baseline.ts check|update [--changed [--base REF]] [--only NAME[,NAME]] [--jobs N] [--stats] [--list]";
+
+/** Files that differ from the merge base with REF (committed, staged, unstaged, untracked), deleted ones included. */
+function changedSince(base: string): string[] {
+  const git = (...args: string[]): string => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+  const mergeBase = git("merge-base", base, "HEAD");
+  const tracked = git("diff", "--name-only", "--no-renames", mergeBase).split("\n");
+  const untracked = git("ls-files", "--others", "--exclude-standard").split("\n");
+  return [...new Set([...tracked, ...untracked])].filter((file) => file !== "");
+}
+
+function formatStats(results: readonly ProgramResult[], wallSeconds: number): string[] {
+  const rows = results.map(({ program, run }) => `  ${program.name.padEnd(24)} ${String(program.files.length).padStart(5)} files ${run.seconds.toFixed(1).padStart(6)} s ${run.peakBytes === undefined ? "     n/a" : `${(run.peakBytes / 1024 ** 3).toFixed(2).padStart(6)} GB`}`);
+  const peak = Math.max(0, ...results.map(({ run }) => run.peakBytes ?? 0));
+  return ["Programs (name, root files, time, peak memory):", ...rows, `  ${results.length} programs in ${wallSeconds.toFixed(1)} s wall time, ${peak === 0 ? "peak memory n/a" : `highest single-program peak ${(peak / 1024 ** 3).toFixed(2)} GB`}.`];
+}
+
+async function main(): Promise<void> {
+  const options = parseArguments(process.argv.slice(2));
+  if (typeof options === "string") { console.error(options); process.exitCode = 1; return; }
+  const listed = listPrograms();
+  if (!listed.ok) { console.error(`Could not list the stricter type check's programs: ${listed.reason}`); process.exitCode = 1; return; }
+  const all = listed.programs;
+  const unknown = options.only.filter((name) => !all.some((program) => program.name === name));
+  if (unknown.length > 0) { console.error(`Unknown program ${unknown.join(", ")}. Programs: ${all.map((program) => program.name).join(", ")}`); process.exitCode = 1; return; }
+
+  let selected: readonly Program[] = all;
+  const notes: string[] = [];
+  if (options.only.length > 0) selected = all.filter((program) => options.only.includes(program.name));
+  if (options.changed) {
+    let changed: string[];
+    try { changed = changedSince(options.base); } catch (error) { console.error(`Could not list the files changed since ${options.base}: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; return; }
+    const affected = affectedPrograms(all, changed, fileGraphDeps());
+    selected = selected.filter((program) => affected.names.has(program.name));
+    notes.push(`${changed.length} changed file${changed.length === 1 ? "" : "s"} since ${options.base}: ${selected.length} of ${all.length} programs affected.`);
+    if (options.list) notes.push(...selected.map((program) => `  ${program.name}: ${affected.reasons.get(program.name)}`));
+  } else if (options.list) {
+    notes.push(...selected.map((program) => `  ${program.name}: ${program.files.length} files`));
+  }
+  if (options.list) { console.log(notes.join("\n")); return; }
+  if (notes.length > 0) console.log(notes.join("\n"));
+  if (selected.length === 0) { console.log("No program is affected, so there is nothing to type-check."); return; }
+
+  const tsc = require.resolve("typescript/bin/tsc");
+  const started = Date.now();
+  let results: ProgramResult[] = [];
+  const scope = selected.length === all.length ? undefined : new Set(selected.flatMap((program) => program.files));
+  const result = await runRatchet(options.mode, {
     github: process.env.GITHUB_ACTIONS === "true",
     readBaseline: () => readFileSync(BASELINE_PATH, "utf8"),
-    runTsc,
-    listProgram,
+    runChecks: async () => {
+      // The biggest programs start first, so the last ones to finish are the small ones.
+      const ordered = [...selected].sort((a, b) => b.files.length - a.files.length);
+      results = await runPool(ordered, options.jobs, async (program) => ({
+        program,
+        run: await runProcess(process.execPath, tscArguments(tsc, program.config), { measure: options.stats, timeoutMs: 15 * 60 * 1000 }),
+      }));
+      return mergeProgramRuns(results);
+    },
+    listProgram: () => ({ ok: true, files: all.flatMap((program) => program.files) }),
+    ...(scope === undefined ? {} : { scope }),
     writeBaseline: (text) => { writeFileSync(BASELINE_PATH, text); },
   });
   if (result.out.length > 0) console.log(result.out.join("\n"));
   if (result.err.length > 0) console.error(result.err.join("\n"));
+  if (options.stats && results.length > 0) console.log(formatStats(results, (Date.now() - started) / 1000).join("\n"));
   process.exitCode = result.code;
 }
+
+// Usage: node scripts/typecheck-baseline.ts check|update [options], from the repository root, after tsc -b
+if (process.argv[1]?.endsWith("typecheck-baseline.ts")) await main();

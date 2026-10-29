@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { CLOUD_REPOSITORY, PUBLIC_REPOSITORY, conditionFor } from "../support/workflow-expression.js";
 
 interface Step {
   id?: string;
@@ -57,10 +58,12 @@ describe("release workflow", () => {
   it("guards every publishing job and runs the tests first", async () => {
     const wf = await workflow();
     for (const name of ["images", "release", "npm"]) {
-      expect(wf.jobs[name]?.if, name).toBe("vars.AGENTX_PUBLISH_ENABLED == 'true'");
+      // As the public repository sees it; the Cloud copy adds `github.repository == 'PrepLabsAI/Rovara' &&`, which keeps every publishing job off Cloud.
+      expect(conditionFor(wf.jobs[name]?.if, PUBLIC_REPOSITORY), name).toBe("vars.AGENTX_PUBLISH_ENABLED == 'true'");
+      if (wf.jobs[name]?.if?.includes("github.repository")) expect(conditionFor(wf.jobs[name]?.if, CLOUD_REPOSITORY), `${name} on Cloud`).toBe("false");
     }
     expect(wf.jobs.images?.needs).toBe("test");
-    expect(wf.jobs.test?.if).toBeUndefined();
+    expect(conditionFor(wf.jobs.test?.if, PUBLIC_REPOSITORY)).toBeUndefined();
   });
 
   it("the test job runs typecheck, lint, build, test and infra:synth", async () => {

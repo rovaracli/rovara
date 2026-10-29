@@ -34,7 +34,8 @@ import {
 import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCache, type Invocation, type Ledger } from "@agentx/gateway";
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";
-import { effectiveTaskOwner, inertName, ownerDisplayName } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, inertName, ownerDisplayName, tryEffectiveTaskOwner } from "../developer/task-records.js";
+import { personNameForText } from "../developer/requester-text.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
@@ -266,6 +267,8 @@ export interface AgentToolsDependencies {
   /** Extra or replacement label listers by connector type; the connector's own are built in. */
   labelListers?(run: AgentToolsRun): Readonly<Record<string, LabelLister>>;
   gate: AgentWriteGate;
+  /** C55: the login of the GitHub account a person linked, for a footer that cannot name them by an email address; absent: the footer says "a member". */
+  githubLoginOf?(developerId: string): Promise<string | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -471,8 +474,18 @@ export async function listAgentTools(deps: AgentToolsDependencies, run: AgentToo
 // ---------------------------------------------------------------------------------------------
 
 /** The footer a connector adds to the long text of a write: the person and the agent it is for. */
-export function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
-  return `Requested by ${inertName(ownerDisplayName(task))} via Rovara agent ${inertName(agentName)}`;
+export function attributionOf(task: DeveloperTaskRecord, agentName: string, githubLogin?: string): string {
+  // C55: never an email address (the display name can be one): the name without it, else the GitHub login, else the fixed label.
+  const who = personNameForText(ownerDisplayName(task), githubLogin) ?? UNNAMED_MEMBER;
+  return `Requested by ${inertName(who)} via Rovara agent ${inertName(agentName)}`;
+}
+
+/** The linked GitHub login of the task's owner, asked for only when their display name is an email address (the one case a footer needs it). */
+export async function ownerGithubLoginOf(deps: Pick<AgentToolsDependencies, "githubLoginOf">, task: DeveloperTaskRecord): Promise<string | undefined> {
+  const name = ownerDisplayName(task);
+  if (deps.githubLoginOf === undefined || personNameForText(name) !== undefined) return undefined;
+  const owner = tryEffectiveTaskOwner(task);
+  return owner === undefined ? undefined : deps.githubLoginOf(owner.developerId);
 }
 
 /** The label listers for this run: GitHub's, the connectors' own through the call path, and whatever the dependencies add or replace. */
@@ -570,10 +583,10 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   const toolRequest = { requestId: request.requestId, scope: request.scope, tool: request.tool, schemaHash: request.schemaHash, arguments: prepared.args };
   const executing = connector.type === "github" ? agentGitHubConnector(connector, deps, { orgId, tool: request.tool }) : connector;
   /** The call through the connector call path, with the connector's ledger: a repeated request id replays what the ledger holds, and nothing is sent twice. */
-  const callThrough = (options: { durable?: boolean } = {}) => callConnector({
+  const callThrough = async (options: { durable?: boolean } = {}) => callConnector({
     connector: executing, workspace: run.workspace, context: frame.context, catalogs: deps.catalogs, ledger, request: toolRequest,
     ...(options.durable === true ? { durable: true } : {}),
-    ...(connector.attribution ? { attribution: attributionOf(task, frame.agentName) } : {}),
+    ...(connector.attribution ? { attribution: attributionOf(task, frame.agentName, await ownerGithubLoginOf(deps, task)) } : {}),
   });
 
   /**

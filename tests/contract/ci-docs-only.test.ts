@@ -49,8 +49,8 @@ describe("the docs-only check (CI skips the heavy steps for a Markdown-only pull
   it("guards every heavy job with the check, so a manual run always runs them", async () => {
     const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as Workflow;
     const heavySteps = (job: string) => workflow.jobs[job]!.steps.filter((step) => step.run !== undefined).map((step) => step.name ?? step.run);
-    expect(heavySteps("checks")).toEqual(["npm ci", "npm run typecheck", "npm run typecheck:all", "npm run lint"]);
-    expect(heavySteps("test")).toEqual(["npm ci", "npm run build", "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"]);
+    expect(heavySteps("checks")).toEqual(["npm ci", "npm run typecheck", "Stricter type check (programs the change affects)", "Stricter type check (every program)", "npm run lint"]);
+    expect(heavySteps("test")).toEqual(["Free runner disk space", "npm ci", "npm run build", "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"]);
     expect(heavySteps("release")).toEqual(["npm ci", "npm run build", "npm run build:web", "npm run infra:synth", "Web builds are reproducible", "Release builds are reproducible"]);
     for (const job of ["checks", "test", "release"]) {
       expect(workflow.jobs[job]!.needs, job).toBe("scope");

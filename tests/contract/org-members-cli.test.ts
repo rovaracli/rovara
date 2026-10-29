@@ -57,6 +57,17 @@ describe("agentx org", () => {
     ].join("\n"));
   });
 
+  it("members lists names and roles alone for a plain member, whose list has no emails, join dates or sign-in methods", async () => {
+    const h = await cli(() => undefined, { members: [{ developerId: MAYA, name: "Maya Chen", role: "owner" }, { developerId: BEA, name: "Member 3fa9", role: "member" }] });
+    expect(await h.run(["org", "members"])).toBe(0);
+    expect(h.out.join("")).toBe([
+      `Members of your organization on staging (${URL_}):`,
+      `  Maya Chen  owner  ${MAYA}`,
+      `  Member 3fa9  member  ${BEA}`,
+      "",
+    ].join("\n"));
+  });
+
   it("role finds the person by email, sends a PUT with a request ID, and says the new role", async () => {
     const h = await cli((method, path) => (method === "PUT" && path === `/v1/app/org/members/${BEA}/role` ? Response.json({ developerId: BEA, role: "admin", requestId: "r" }) : undefined));
     expect(await h.run(["org", "role", "BEA@example.com", "admin"])).toBe(0);

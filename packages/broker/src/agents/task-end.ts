@@ -11,8 +11,9 @@
 // with it, so a call that was cut short is taken up again from the first handler not told. Handlers must still be safe to hear twice: a process can stop
 // between a handler returning and the record being written.
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { PER_TASK_BUDGET_USD, type OrgId, type PauseScope } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, type OrgId, type PauseScope, type SessionBinding } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 
 /** How a task ended. `creator_removed` is Plan 2's R60 outcome; `merged` and `closed` are a workflow task's, and `answered` is a Rovara Code task that answered a question needing no code change (a success, with no pull request). */
 export type TaskEndOutcome = "succeeded" | "failed" | "cancelled" | "creator_removed" | "merged" | "closed" | "answered";
@@ -26,6 +27,8 @@ export interface TaskEndEvent {
   finalReport?: string;
   branch?: string;
   pullRequests?: Array<{ repository: string; number: number; url: string }>;
+  /** The outside places the task's session follows (its Slack thread and its Linear issue), in this task's org; absent when it follows none (Plan 6 Task 20). */
+  bindings?: SessionBinding[];
   runLimitUsd: number;
   stopAtUsd?: number;
   spentUsd: number;
@@ -156,14 +159,18 @@ async function eventOf(deps: TaskEndDependencies, task: DeveloperTaskRecord, out
   }
   const pullRequests = (fresh.workflow?.pullRequests ?? []).flatMap((pullRequest) => (typeof pullRequest.url === "string"
     ? [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }] : []));
+  const orgId: OrgId = fresh.orgId ?? (task.orgId as OrgId);
+  // A read that fails is thrown: the end is recorded and tells its handlers again from the first one not told, so none is told a task that follows a Linear issue as if it followed none.
+  const bindings = await sessionBindingsOf(deps, orgId, fresh.sessionId ?? task.sessionId);
   return {
-    orgId: fresh.orgId ?? (task.orgId as OrgId),
+    orgId,
     taskId: task.taskId,
     ...(fresh.chain === undefined ? {} : { chain: fresh.chain }),
     outcome,
     ...(detail.finalReport === undefined ? {} : { finalReport: detail.finalReport }),
     ...(detail.branch === undefined ? {} : { branch: detail.branch }),
     ...(pullRequests.length === 0 ? {} : { pullRequests }),
+    ...(bindings.length === 0 ? {} : { bindings }),
     runLimitUsd,
     stopAtUsd: fresh.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, fresh.maxPerRunUsd),
     spentUsd,

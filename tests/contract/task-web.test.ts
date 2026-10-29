@@ -71,7 +71,8 @@ describe("read-only task page", () => {
     expect(csp).toContain(`style-src 'nonce-${nonce}'`);
     // The page may ask its own origin whether the task moved on, and nothing else.
     expect(csp).toContain("connect-src 'self'");
-    expect(csp).toContain("img-src 'none'");
+    expect(csp).toContain("img-src data:"); // only the empty data: page icon; no image can load from a network address
+    expect(csp).not.toMatch(/img-src[^;]*(https?:|\*|'self')/);
     expect(csp).toContain("form-action 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(answer.headers["cache-control"]).toContain("no-store");
@@ -1140,7 +1141,8 @@ describe("the task page and its API (slice 2)", () => {
     expect(csp).toContain("connect-src 'self'");
     expect(csp).not.toMatch(/connect-src[^;]*(https?:|\*)/);
     expect(csp).toContain("form-action 'none'");
-    expect(csp).toContain("img-src 'none'");
+    expect(csp).toContain("img-src data:"); // only the empty data: page icon; no image can load from a network address
+    expect(csp).not.toMatch(/img-src[^;]*(https?:|\*|'self')/);
     expect(csp).toContain("frame-ancestors 'none'");
     // Any POST to the page itself (not its API) is still refused.
     const web = createTaskWeb({ authenticateSession: async () => caller, getTaskDocumentView: async () => view });

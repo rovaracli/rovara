@@ -4,7 +4,7 @@ import { installationBindingCheck } from "../../../packages/broker/src/org/githu
 import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "../../../packages/broker/src/org/project-working-branch-provider.js";
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
-import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey, orgMetaKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
@@ -45,6 +45,12 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
+  if (command instanceof BatchGetCommand) {
+   const entries = Object.entries(command.input.RequestItems ?? {});
+   if (entries.length !== 1 || entries[0]![1].ConsistentRead !== true || (entries[0]![1].Keys?.length ?? 0) > 100) throw new Error("Unsupported fixture batch read.");
+   const [table, input] = entries[0]!;
+   return { Responses: { [table]: (input.Keys ?? []).flatMap(key => { if (typeof key.pk !== "string" || !key.pk.startsWith("DEVELOPER_NAME#") || key.sk !== "NAME") throw new Error("Unsupported fixture name key.");const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; }) } };
+  }
   if (command instanceof QueryCommand) {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
    if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");

@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -45,11 +46,33 @@ export interface StopWorkspaceProcessesOptions {
   selfPid?: number;
   uid?: number;
   rounds?: number;
+  /** Whether this process is inside the worker's container (see `runningInContainer`). */
+  inContainer?: () => boolean;
 }
 
 /** The scope this worker runs in, from its environment: the worker image says it is a container. */
-export function workspaceProcessScope(environment: NodeJS.ProcessEnv = process.env): WorkspaceProcessScope {
-  return environment.AGENTX_WORKER_PROCESS_SCOPE === "container" ? "container" : "workspace";
+export function workspaceProcessScope(environment: NodeJS.ProcessEnv = process.env, inContainer: () => boolean = runningInContainer): WorkspaceProcessScope {
+  if (environment.AGENTX_WORKER_PROCESS_SCOPE !== "container") return "workspace";
+  // The container scope stops every process of the worker's user. Set on a machine that is not the worker's container (a developer's Mac, say) it would stop all of that user's programs.
+  if (!inContainer()) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "AgentX is set to stop every process of its user, but it is not running in its container, so it stopped without stopping anything");
+  }
+  return "container";
+}
+
+/**
+ * Whether this process is inside a Docker container: Linux only, by Docker's marker file or by the host files Docker bind-mounts into a container from
+ * `<data root>/containers/<ID>/` (the same mounts workspace-containers.ts reads). Undefined files read as not in a container.
+ */
+export function runningInContainer(input?: { platform?: string; dockerEnvExists?: boolean; mountinfo?: string }): boolean {
+  const platform = input?.platform ?? process.platform;
+  if (platform !== "linux") return false;
+  if (input?.dockerEnvExists ?? existsSync("/.dockerenv")) return true;
+  let mountinfo = input?.mountinfo;
+  if (mountinfo === undefined) {
+    try { mountinfo = readFileSync("/proc/self/mountinfo", "utf8"); } catch { mountinfo = ""; }
+  }
+  return /\/containers\/[0-9a-f]{64}\/(?:resolv\.conf|hostname|hosts)\s/u.test(mountinfo);
 }
 
 /** The processes to stop: the worker's user's, not the worker or its ancestors, alive, and in scope. */
@@ -95,7 +118,7 @@ function ancestorsOf(processes: readonly ProcessEntry[], selfPid: number): Set<n
  * pushed.
  */
 export async function stopWorkspaceProcesses(options: StopWorkspaceProcessesOptions): Promise<{ stopped: number }> {
-  const scope = options.scope ?? workspaceProcessScope();
+  const scope = options.scope ?? workspaceProcessScope(process.env, options.inContainer);
   const list = options.listProcesses ?? listProcesses;
   const kill = options.kill ?? ((pid: number) => {
     try {
