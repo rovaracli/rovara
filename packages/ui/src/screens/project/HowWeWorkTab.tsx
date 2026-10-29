@@ -4,7 +4,7 @@ import { useBuilderApi } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
 import { useStageModels } from "../../api/stage-models.js";
-import { cardStages, referenceKind } from "../../api/stage-cards.js";
+import { cardStages, editBaseStage, referenceKind } from "../../api/stage-cards.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -65,7 +65,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   const ids = cardStages(stage.kind), found = models.data === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
   if (found.length === 0) return undefined;
   const reference = referenceStage(stage.kind);
-  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found[0]!)); }} />;
+  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found.find(entry => entry.stage === editBaseStage(ids)) ?? found[0]!)); }} />;
  };
  const modelsProp = (stage: (typeof data.stages)[number]) => { const rows = stageModelRows(stage);return rows === undefined ? {} : { models: rows }; };
  const setStage = (id: string, text: string) => { setSaved(false);setEdits(current => ({ ...current, stages: { ...current.stages, [id]: text } })); };

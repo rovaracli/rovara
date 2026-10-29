@@ -118,7 +118,7 @@ describe("editable model rows", () => {
  it("shows the picked-because line, the fixed words for each reason, and Cost unavailable", async () => {
   await open({ stages: { build: stageEntry("build", { effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_SELECTION" }) }), plan: stageEntry("plan", { effective: effective(OPUS, { decidedBy: "company", reason: "COMPANY_DEFAULT" }) }) } });
   await waitFor(() => expect(within(card("Build")).getByText("Picked because: Project model setting")).toBeTruthy());
-  expect(within(card("Plan")).getByText("Picked because: Company default")).toBeTruthy();
+  expect(within(card("Plan (and Understand)")).getByText("Picked because: Company default", { selector: "[data-stage='plan'] *" })).toBeTruthy();
   expect(within(card("Build")).getByText("Cost unavailable")).toBeTruthy();
  });
 
@@ -130,7 +130,7 @@ describe("editable model rows", () => {
   expect(within(build).queryByRole("switch")).toBeNull();
   expect(within(build).getByText("Opus 5.5")).toBeTruthy();
   expect(within(build).getByRole("link", { name: /company/iu }).getAttribute("href")).toBe("/app/admin/how-we-work");
-  expect(within(card("Plan")).getByRole("combobox", { name: "Model" })).toBeTruthy();
+  expect(within(card("Plan (and Understand)")).getByRole("combobox", { name: "Model" })).toBeTruthy();
  });
 
  it("says when a company lock stops the project's own choice from being used", async () => {
@@ -139,10 +139,25 @@ describe("editable model rows", () => {
   expect(within(card("Build")).queryByRole("combobox")).toBeNull();
  });
 
+ it("titles the Plan card for both stages, shows each stage's result on its own, and writes one value to the Plan step", async () => {
+  const f = await open({ stages: { understand: stageEntry("understand", { effective: effective(OPUS) }), plan: stageEntry("plan", { effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_SELECTION" }) }) } });
+  const plan = card("Plan (and Understand)");
+  await waitFor(() => expect(within(plan).getAllByRole("combobox", { name: "Model" })).toHaveLength(1));
+  expect(within(plan).getByText("Understand")).toBeTruthy();
+  expect(within(plan).getByText("Plan", { selector: "p" })).toBeTruthy();
+  expect(within(plan).getByText("Opus 5.5", { selector: "[data-stage='understand'] *" })).toBeTruthy();
+  expect(within(plan).getByText("Sonnet 4.6", { selector: "[data-stage='plan'] *" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Understand" })).toBeNull();
+  fireEvent.change(picker("Plan (and Understand)"), { target: { value: OPUS } });
+  const body = await saved(f);
+  expect(body.overlay.steps!.plan).toEqual({ model: opus });
+  expect(Object.keys(body.overlay.steps!)).not.toContain("understand");
+ });
+
  it("shows a stage that is not editable read only", async () => {
   await open({ stages: { plan: stageEntry("plan", { editable: false }) } });
-  await waitFor(() => expect(within(card("Plan")).getByText("Opus 5.5")).toBeTruthy());
-  expect(within(card("Plan")).queryByRole("combobox")).toBeNull();
+  await waitFor(() => expect(within(card("Plan (and Understand)")).getByText("Opus 5.5", { selector: "[data-stage='plan'] *" })).toBeTruthy());
+  expect(within(card("Plan (and Understand)")).queryByRole("combobox")).toBeNull();
   expect(within(card("Build")).getByRole("combobox", { name: "Model" })).toBeTruthy();
  });
 

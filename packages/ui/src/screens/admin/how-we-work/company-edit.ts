@@ -14,13 +14,13 @@ export function normalize(overrides: CompanyOverrides): CompanyOverrides {
 }
 export const sameOverrides = (a: CompanyOverrides, b: CompanyOverrides) => JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
 const entryOf = (overrides: CompanyOverrides, id: StageId): CompanyOverride | undefined => { const entry = overrides[id];return entry === undefined || isEmpty(entry) ? undefined : tidy(entry); };
-/** What a row shows: its first stage's entry. */
-export const rowEntry = (overrides: CompanyOverrides, row: CompanyRow): CompanyOverride | undefined => entryOf(overrides, row.stages[0]);
-/** A review row hosts two reviewers; when the saved settings differ between them the row says so, and a change to the row sets both the same. */
-export const rowSplit = (overrides: CompanyOverrides, row: CompanyRow): boolean => row.stages.length > 1 && JSON.stringify(entryOf(overrides, row.stages[0]) ?? null) !== JSON.stringify(entryOf(overrides, row.stages[1]!) ?? null);
+/** What a row shows: the entry of the stage that names its edit group (Plan, for Plan and Understand), else of its first stage. */
+export const rowEntry = (overrides: CompanyOverrides, row: CompanyRow): CompanyOverride | undefined => entryOf(overrides, row.base);
+/** A row can host several stages (two reviewers; Plan and Understand); when the saved settings differ between them the row says so, and a change to the row sets all of them the same. */
+export const rowSplit = (overrides: CompanyOverrides, row: CompanyRow): boolean => row.stages.some(id => JSON.stringify(entryOf(overrides, id) ?? null) !== JSON.stringify(rowEntry(overrides, row) ?? null));
 
 export interface RowPatch { model?: string; effort?: EffortChoice; vendor?: boolean; locked?: boolean }
-/** Applies one change to every stage of the row. A change to a split review row starts from its first reviewer's settings. */
+/** Applies one change to every stage of the row. A change to a split row starts from its base stage's settings. */
 export function patchRow(overrides: CompanyOverrides, row: CompanyRow, patch: RowPatch): CompanyOverrides {
  const base = rowEntry(overrides, row), next: CompanyOverrides = { ...overrides };
  let entry: CompanyOverride = base ?? { locked: false };

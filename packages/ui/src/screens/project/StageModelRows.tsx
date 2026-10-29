@@ -3,14 +3,15 @@ import { Select, type SelectOption } from "../../design/Select.js";
 import { Switch } from "../../design/Switch.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { modelKey, stageResult, type StageModelsStage, type ThinkingLevel } from "../../api/stage-models.js";
+import { editBaseStage } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
-import { COMPANY_PAGE, COST_TEXT, EFFORT_OPTIONS, REVIEWER_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
+import { COMPANY_PAGE, COST_TEXT, EFFORT_OPTIONS, STAGE_NAMES, candidateBlock, effortLabel, reasonLine, refusalText } from "./stage-model-text.js";
 import { DEFAULT_MODEL, baselineEffort, baselineModel, baselineVendor, stagesEditable, type EffortValue, type StageEdit } from "./how-we-work-models.js";
 const effortWords = (effort: ThinkingLevel | null): string => effort === null ? "Model default" : effortLabel(effort);
 
-/** The "Who does it" content of a stage card from the stage-models read: each stage's resolved result, and (when the person can edit and the stage is not locked) the model and effort pickers and the different-vendor toggle. A review card holds two reviewers' results and one picker. */
+/** The "Who does it" content of a stage card from the stage-models read: each stage's resolved result, and (when the person can edit and the stage is not locked) the model and effort pickers and the different-vendor toggle. A card can hold several stages' results (two reviewers; Understand with Plan) and one picker, which edits the stage that names the group. */
 export function StageModelRows({ stages, reference, kind, viewerOnly, edit, disabled, onChange }: { stages: readonly StageModelsStage[]; reference: "Build" | "Plan" | undefined; kind: string; viewerOnly: boolean; edit: StageEdit | undefined; disabled: boolean; onChange: (patch: StageEdit) => void }) {
- const primary = stages[0]!, locked = stages.some(stage => stage.locked || ("effective" in stage && stage.effective.locked)), editable = !viewerOnly && stagesEditable(stages) && !locked;
+ const primary = stages.find(stage => stage.stage === editBaseStage(stages.map(entry => entry.stage))) ?? stages[0]!, locked = stages.some(stage => stage.locked || ("effective" in stage && stage.effective.locked)), editable = !viewerOnly && stagesEditable(stages) && !locked;
  const labelOf = (model: string) => primary.candidates.find(candidate => modelKey(candidate.model) === model)?.label ?? stages.flatMap(stage => stage.candidates).find(candidate => modelKey(candidate.model) === model)?.label ?? model;
  const options: SelectOption[] = [{ value: DEFAULT_MODEL, label: "Rovara's default" }, ...(primary.candidatesState === "complete" ? primary.candidates.map(candidate => { const block = candidateBlock(candidate);return { value: modelKey(candidate.model), label: block === undefined ? candidate.label : candidate.label + ": " + block, disabled: block !== undefined }; }) : [])];
  const current = edit?.model ?? baselineModel(primary);
@@ -20,7 +21,7 @@ export function StageModelRows({ stages, reference, kind, viewerOnly, edit, disa
  const vendor = edit?.vendor ?? baselineVendor(primary), modelLabel = kind === "review" ? "Review (code and security)" : "Model";
  return <div className="rv-hww-models">
   {stages.map(stage => { const result = stageResult(stage);return <div key={stage.stage} className="rv-hww-result" data-stage={stage.stage}>
-   {stages.length > 1 && REVIEWER_NAMES[stage.stage] !== undefined && <p className="rv-muted">{REVIEWER_NAMES[stage.stage]}</p>}
+   {stages.length > 1 && STAGE_NAMES[stage.stage] !== undefined && <p className="rv-muted">{STAGE_NAMES[stage.stage]}</p>}
    {result.kind === "effective" ? <>
     <p><span className="rv-hww-text"><VisibleText text={labelOf(modelKey(result.model))} /></span> <HowWeWorkMarker mark={{ source: result.decidedBy, locked: result.locked, ...(result.locked ? { lockedBy: "company" } : {}) }} /> <span className="rv-muted">Effort: {effortWords(result.thinkingLevel)}</span></p>
     <p className="rv-muted">{"Picked because: " + reasonLine(result.reason)}</p>

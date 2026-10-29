@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { HOW_WE_WORK_UNUSED_STAGE_NOTE } from "@agentx/contracts/web";
 import { Card } from "../../design/Card.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { cardTitle } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
 import { stageRows, visibleRows, type Filter, type RowId, type StageRead, type ViewRead } from "./how-we-work-rows.js";
 export const stageDomId = (id: string) => "hww-stage-" + id.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -10,7 +11,7 @@ export const MODEL_NOTE = "Model choice per stage is coming; today models come f
 export function HowWeWorkCard({ stage, view, filter, showUnchanged, editor, action, models }: { stage: StageRead; view: ViewRead; filter: Filter; showUnchanged: boolean; editor?: ReactNode; action?: ReactNode; /** The model rows from the stage-models read; they replace the read-only model values of "Who does it". */ models?: ReactNode }) {
  const forced = new Set<RowId>(filter === "all" ? [...(stage.knows.note !== undefined || editor !== undefined ? ["knows" as const] : []), ...(models !== undefined ? ["who" as const] : [])] : []), rows = visibleRows(stageRows(stage, view), filter, showUnchanged, forced), id = stageDomId(stage.id);
  return <Card className="rv-hww-card" aria-labelledby={id + "-title"} id={id}>
-  <h3 id={id + "-title"} tabIndex={-1}><VisibleText text={stage.name} /></h3>
+  <h3 id={id + "-title"} tabIndex={-1}><VisibleText text={cardTitle(stage.kind, stage.name)} /></h3>
   {stage.kind === "pull_request" && <p className="rv-hww-note">{HOW_WE_WORK_UNUSED_STAGE_NOTE}</p>}
   {action}
   {rows.length === 0 ? <p className="rv-muted">Nothing here is changed or locked. Show unchanged settings to see everything.</p> : <dl className="rv-hww-rows">{rows.map(row => <div className="rv-hww-row" key={row.id}>

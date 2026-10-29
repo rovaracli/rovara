@@ -18,7 +18,9 @@ export const PREVIEW_FAILED = "Couldn't check which projects are affected. You c
 export const SAVED_RELOAD_FAILED = "Saved, but the page couldn't reload. Reload to see the latest.";
 export const SAVE_FAILED = "Couldn't save the company defaults. Try again.";
 export const DENIED = "You don't have permission to change the company defaults.";
-export const SPLIT = "Code review and security review have different settings today. Saving a change here sets both the same.";
+const SPLIT_TAIL = " have different settings today. Saving a change here sets both the same.";
+/** The note on a row whose stages differ, by the row's first stage. */
+export const SPLIT: Readonly<Record<string, string>> = { understand: "Plan and Understand" + SPLIT_TAIL, code_review: "Code review and security review" + SPLIT_TAIL };
 export const IMPACT_TEXT = { unchanged: "No change", changed: "Will change", blocked: "Will be blocked", unavailable: "Couldn't be checked" } as const;
 export const UNKNOWN_REASON = "This project couldn't be checked.";
 /** A refusal or reason code in its fixed sentence; any other code is the generic one. */

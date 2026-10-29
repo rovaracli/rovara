@@ -58,7 +58,7 @@ const effort = effortChoice(entry?.thinkingLevel), effortOptions = EFFORT_OPTION
   {row.reference !== undefined && <Switch label={"Different vendor than " + referenceTitle} checked={entry?.differentFrom?.level === "vendor"} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { vendor: checked }))} />}
   <Switch label="Lock this stage" checked={locked} disabled={disabled} onCheckedChange={checked => onChange(patchRow(overrides, row, { locked: checked }))} />
   {incomplete && <p role="status" className="rv-hww-company-hint">{T.CARD_INCOMPLETE}</p>}
-  {split && <p className="rv-muted">{T.SPLIT}</p>}
+  {split && <p className="rv-muted">{T.SPLIT[row.id]}</p>}
  </section>;
 }
 

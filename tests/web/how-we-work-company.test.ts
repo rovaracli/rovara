@@ -61,14 +61,15 @@ describe("the company cards", () => {
  it("shows a card per stage with its saved model, effort and lock, and reads the policy", async () => {
   const f = await open();
   expect(f.calls().filter(call => call === "GET " + POLICY)).toHaveLength(1);
-  for (const name of ["Understand", "Plan", "Plan check", "Build", "Review (code and security)", "Pull request"]) expect(card(name)).toBeTruthy();
+  for (const name of ["Plan (and Understand)", "Plan check", "Build", "Review (code and security)", "Pull request"]) expect(card(name)).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Understand" })).toBeNull();
   expect(card("Build").textContent).toContain("Model: " + COMPANY_BUILD);
   expect(effort("Build").value).toBe("medium");
   expect(effort("Plan check").value).toBe("low");
   expect(effort("Review (code and security)").value).toBe("null");
   expect(lock("Review (code and security)").getAttribute("aria-checked")).toBe("true");
   expect(lock("Build").getAttribute("aria-checked")).toBe("false");
-  expect(card("Plan").textContent).toContain("Model: Rovara's default");
+  expect(card("Plan (and Understand)").textContent).toContain("Model: Rovara's default");
   expect(within(card("Review (code and security)")).getByRole("switch", { name: "Different vendor than Build" }).getAttribute("aria-checked")).toBe("true");
   expect(within(card("Plan check")).getByRole("switch", { name: "Different vendor than Plan" })).toBeTruthy();
   expect(within(card("Build")).queryByRole("switch", { name: /Different vendor/ })).toBeNull();
@@ -108,10 +109,10 @@ describe("the company cards", () => {
 describe("locks need a complete tuple", () => {
  it("blocks saving a lock on a stage with no model, with a fixed message and no preview or save", async () => {
   const f = await open();
-  fireEvent.click(lock("Plan"));
-  expect(within(card("Plan")).getByText("To lock this stage, set its model, effort and, for a checking stage, the vendor rule first.")).toBeTruthy();
+  fireEvent.click(lock("Plan (and Understand)"));
+  expect(within(card("Plan (and Understand)")).getByText("To lock this stage, set its model, effort and, for a checking stage, the vendor rule first.")).toBeTruthy();
   await review();
-  expect((await screen.findByRole("alert")).textContent).toBe("A locked stage needs a model, an effort (or Model default) and, for a checking stage, a vendor rule. Check: Plan.");
+  expect((await screen.findByRole("alert")).textContent).toBe("A locked stage needs a model, an effort (or Model default) and, for a checking stage, a vendor rule. Check: Plan (and Understand).");
   expect(f.previews()).toHaveLength(0);
   expect(f.puts()).toHaveLength(0);
  });
@@ -357,8 +358,15 @@ describe("the company answers are lane C's contract shapes", () => {
   expect(ModelSelectionPolicyPendingSchema.safeParse(needsConfirmation("https://cell.example", REQUEST_ID, "2026-10-30T12:00:00.000Z")).success).toBe(true);
   expect(ModelSelectionPolicyPendingSchema.safeParse(needsConfirmation("https://cell.example", REQUEST_ID, { available: false, availableAt: null, reasonCode: "OTHER_ADMIN_EXISTS" })).success).toBe(true);
  });
- it("reads a 200 that lane C's applied answer has no extra fields for, and refuses a 200 for another request", async () => {
-  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 200, body: { ...applied(5, "22222222-2222-4222-8222-222222222222"), futureField: 1 } } : undefined });
+ it("accepts a 200 that differs from lane C's applied answer only by an extra field, so a newer server does not turn a save into a failure", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 200, body: { ...applied(5, (request.body as { requestId: string }).requestId), futureField: 1 } } : undefined });
+  fireEvent.click(lock("Review (code and security)"));
+  await save();
+  expect(await screen.findByText("Saved. New tasks use these defaults; running tasks keep theirs.")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+ });
+ it("refuses a 200 that answers another request, even when it is otherwise a valid applied answer", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 200, body: applied(5, "22222222-2222-4222-8222-222222222222") } : undefined });
   fireEvent.click(lock("Review (code and security)"));
   await save();
   expect((await screen.findByRole("alert")).textContent).toBe("Couldn't save the company defaults. Try again.");
@@ -389,7 +397,7 @@ describe("the company 202 and the model list", () => {
  });
  it("offers a model picker where the read lists models, with only verified ones selectable, and writes the choice", async () => {
   const f = await open({ policy: { ...companyPolicyRaw(), candidates: companyCandidates() } });
-  const model = within(card("Plan")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
+  const model = within(card("Plan (and Understand)")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
   expect(screen.queryByText("Pick models after the model list is available.")).toBeNull();
   const options = Object.fromEntries(Array.from(model.options).filter(option => option.value !== "").map(option => [option.value || option.textContent, option.disabled]));
   expect(options["openai/gpt-5-codex"]).toBe(true);
@@ -406,17 +414,17 @@ describe("a missing model list is unavailable, an empty one is an answer", () =>
   const { plan: _plan, ...rest } = companyCandidates();void _plan;
   await open({ policy: { ...companyPolicyRaw(), candidates: rest } });
   expect(screen.getByText("Pick models after the model list is available.")).toBeTruthy();
-  expect(within(card("Plan")).queryByRole("combobox", { name: "Model" })).toBeNull();
-  expect(card("Plan").textContent).toContain("Model: Rovara's default");
+  expect(within(card("Plan (and Understand)")).queryByRole("combobox", { name: "Model" })).toBeNull();
+  expect(card("Plan (and Understand)").textContent).toContain("Model: Rovara's default");
   expect(within(card("Build")).getByRole("combobox", { name: "Model" })).toBeTruthy();
  });
  it("shows a stage with an empty list as having no verified models (a picker with Rovara's default only), never as unavailable", async () => {
   await open({ policy: { ...companyPolicyRaw(), candidates: { ...companyCandidates(), plan: [] } } });
   expect(screen.queryByText("Pick models after the model list is available.")).toBeNull();
-  const model = within(card("Plan")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
+  const model = within(card("Plan (and Understand)")).getByRole<HTMLSelectElement>("combobox", { name: "Model" });
   expect(Array.from(model.options).filter(option => option.value !== "")).toEqual([]);
   expect(model.value).toBe("");
-  expect(within(card("Plan")).getByText("No verified models are listed for this stage yet.")).toBeTruthy();
+  expect(within(card("Plan (and Understand)")).getByText("No verified models are listed for this stage yet.")).toBeTruthy();
   expect(within(card("Build")).queryByText("No verified models are listed for this stage yet.")).toBeNull();
  });
 });
@@ -431,6 +439,30 @@ describe("a Review row whose reviewers differ", () => {
   const overrides = f.previews()[0]!.body as { stepOverrides: Record<string, { thinkingLevel: string; locked: boolean }> };
   expect(overrides.stepOverrides.code_review).toEqual(overrides.stepOverrides.security_review);
   expect(overrides.stepOverrides.code_review!.thinkingLevel).toBe("high");
+ });
+});
+
+describe("the Plan (and Understand) row", () => {
+ it("writes one value to both stages, and sends no Understand row of its own", async () => {
+  const f = await open();
+  fireEvent.change(effort("Plan (and Understand)"), { target: { value: "high" } });
+  await review();
+  await screen.findByText("This list may be incomplete.");
+  const sent = (f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides;
+  expect(sent.understand).toEqual({ thinkingLevel: "high", locked: false });
+  expect(sent.plan).toEqual(sent.understand);
+ });
+ it("reads its value from Plan and says so when Understand differs, then sets both the same", async () => {
+  const f = await open({ policy: companyPolicyRaw({ plan: { thinkingLevel: "low", locked: false }, understand: { thinkingLevel: "high", locked: false } }) });
+  expect(effort("Plan (and Understand)").value).toBe("low");
+  expect(within(card("Plan (and Understand)")).getByText(/Plan and Understand have different settings today/)).toBeTruthy();
+  expect(within(card("Review (code and security)")).queryByText(/different settings today/)).toBeNull();
+  fireEvent.change(effort("Plan (and Understand)"), { target: { value: "medium" } });
+  await review();
+  await screen.findByText("This list may be incomplete.");
+  const sent = (f.previews()[0]!.body as { stepOverrides: Record<string, { thinkingLevel: string }> }).stepOverrides;
+  expect(sent.plan!.thinkingLevel).toBe("medium");
+  expect(sent.understand).toEqual(sent.plan);
  });
 });
 

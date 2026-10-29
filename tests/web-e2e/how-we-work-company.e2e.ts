@@ -60,7 +60,7 @@ test("removing a lock needs another admin; a lone admin is told when they can co
 test("a lock on a stage with no model is blocked with a fixed message, using the keyboard", async ({ page }) => {
  await page.setViewportSize({ width: 1280, height: 900 });
  await open(page);
- const plan = page.getByRole("region", { name: "Plan", exact: true }).getByRole("switch", { name: "Lock this stage" });
+ const plan = page.getByRole("region", { name: "Plan (and Understand)", exact: true }).getByRole("switch", { name: "Lock this stage" });
  await plan.focus();await page.keyboard.press("Space");
  await expect(plan).toHaveAttribute("aria-checked", "true");
  await expect(page.getByText("To lock this stage, set its model, effort and, for a checking stage, the vendor rule first.")).toBeVisible();
