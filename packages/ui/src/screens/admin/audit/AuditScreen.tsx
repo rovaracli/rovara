@@ -66,7 +66,7 @@ function AuditView() {
  <div className="rv-audit-pagination"><Button disabled={page === 0 || records.isFetching} onClick={() => setPage(previous => Math.max(0, previous - 1))}>Previous page</Button><Button disabled={records.isFetching || records.isError || data.nextCursor === undefined} onClick={() => { if (data.nextCursor !== undefined && !records.isFetching && !records.isError) { setCursors(previous => [...previous.slice(0, page + 1), data.nextCursor!]);setPage(previous => previous + 1); } }}>Next page</Button></div>
  <p>{data.nextCursor === undefined ? "End of this returned range. New or unsealed records may still be absent." : "More records may follow. Use Next page to read them explicitly."}</p>
  </>}</ReadSection>
- <p>This view shows record metadata, not opened personal details. Recorded proof is metadata; this page has not verified hashes, seals or signatures. Exports open in a separate protected window.</p>
+ <p>This view shows record metadata, not opened personal details. Recorded proof is metadata; this page has not verified hashes, seals or signatures.</p>
  <AuditExportEntry availability={status.isSuccess ? status.data.headSeq === 0 ? "empty" : "ready" : "unavailable"} checkingStatus={status.isFetching} />
  <h2>What the ledger proves</h2>{AUDIT_LIMITS_COPY.split("\n\n").map(part => <p key={part}>{part}</p>)}
  </section>;

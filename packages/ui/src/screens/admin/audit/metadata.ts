@@ -2,4 +2,6 @@ export const AUDIT_LIMITS_COPY = "What this ledger proves: the records in this e
 export const GOVERNANCE_SENTENCE = "In governance mode, a privileged administrator could remove the sealed copies.";
 // Lane C3 reuses the existing protected native export page; no SPA export mutation.
 export const AUDIT_EXPORT_ENTRY_PATH = "/v1/app/audit/view?limit=1#export-form";
+/** The protected search export in a secure window is not built (deferred; owner decision 2026-10-29). Keep false until it ships: it hides the console's export entry and its promise. */
+export const AUDIT_PROTECTED_EXPORT_ENTRY_ENABLED = false as boolean;
 export const AUDIT_VERIFIER_EXTENDS_EXAMPLE = "rovara-audit-verify newer.json.gz --extends older.json.gz";
