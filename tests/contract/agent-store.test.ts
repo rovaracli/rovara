@@ -524,7 +524,7 @@ describe("archive, budget, owner, accountable and events", () => {
 
     await store.setBudget(ORG_A, "code-reviewer", { monthlyUsd: 12 }, fixtureActor(store, ORG_A, BOB).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, BOB) });
     expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toMatchObject({ pinnedVersion: currentBuiltinVersion("code-reviewer"), monthlyBudgetUsd: 12, updatedBy: BOB });
-    await store.setAccountable(ORG_A, "code-reviewer", { developerId: BOB }, ALICE);
+    await store.setAccountable(ORG_A, "code-reviewer", { developerId: BOB }, fixtureActor(store, ORG_A, ALICE, true).developerId, undefined, { actor: fixtureActor(store, ORG_A, ALICE, true) });
     expect((await store.getBuiltinSettings(ORG_A, "code-reviewer"))?.accountable).toEqual({ developerId: BOB });
   });
 

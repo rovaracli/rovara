@@ -366,7 +366,7 @@ describe("agent.owner_changed", () => {
     s.clock.now += 1000;
     await s.store.setAccountable(TEST_ORG, agent.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(s.db, TEST_ORG, ALICE) });
     s.clock.now += 1000;
-    await s.store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, ALICE);
+    await s.store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, fixtureActor(s.store, TEST_ORG, ALICE, true).developerId, undefined, { actor: fixtureActor(s.store, TEST_ORG, ALICE, true) });
     const events = s.capture!.recordedBy("agent.owner_changed");
     expect(events).toMatchObject([
       { target: { kind: "agent", id: agent.agentId }, facts: { field: "accountable" }, related: [BOB, ALICE] },

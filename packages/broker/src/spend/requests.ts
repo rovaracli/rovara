@@ -1293,6 +1293,12 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
     await expireOne(deps, record, "target_left");
     throw closed({ status: "EXPIRED", endedBecause: "target_left" });
   };
+  if (!forChain && record.agentId !== undefined && isBuiltinAgentId(record.agentId) && change.op === "set_accountable") {
+    const developerId = await member(change.accountable.developerId);
+    const role = await orgRoleOf(deps, record.orgId, developerId);
+    if (role !== "owner" && role !== "admin") throw agentXError("CONFIG_INVALID", "accountable: pick an org owner or admin for a built-in agent");
+    return { op: "set_accountable", accountable: { developerId } };
+  }
   // The agent or chain the change is about, and the rules for making someone its owner or accountable maintainer, which are the same for both.
   const agent = forChain ? await deps.chains?.get(record.orgId, record.chainId as string) : await deps.store.get(record.orgId, record.agentId as never);
   const accountableOf = (project: string, developerId: string) => (forChain ? requireChainAccountable(deps, record.orgId, project, developerId) : requireAccountable(deps, record.orgId, project, developerId));
@@ -1314,7 +1320,10 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
 async function requireSameOwner(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined): Promise<void> {
   if (record.forOwner === undefined || change === undefined || change.op === "confirm_move") return;
   // The agent or chain the request is about (Plan 4: a chain's budget counts in the same owner total).
-  const agent = record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId) : await deps.store.get(record.orgId, record.agentId as never);
+  const builtinAccountable = record.chainId === undefined && record.agentId !== undefined && isBuiltinAgentId(record.agentId) && change.op === "set_accountable";
+  const agent = record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId)
+    : builtinAccountable ? await deps.store.builtinBudgetSnapshot(record.orgId, record.agentId as never)
+      : await deps.store.get(record.orgId, record.agentId as never);
   const after = agent === undefined ? undefined
     : change.op === "set_accountable" ? withBudgetFields(agent, { accountable: change.accountable })
       : change.op === "set_owner" ? withBudgetFields(agent, { owner: change.owner, ...(change.accountable === undefined ? {} : { accountable: change.accountable }) })

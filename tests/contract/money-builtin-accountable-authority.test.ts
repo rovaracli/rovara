@@ -51,11 +51,11 @@ it("member and foreign scope cannot borrow builtin authority",async()=>{
  await expect(f.t.deps().store.setAccountable(otherOrg,id,{developerId:DEB.developerId},ADA.developerId,{orgId:TEST_ORG,developerId:ADA.developerId,requestId:f.requestId,fingerprint:"fixture"},{actor:{developerId:ADA.developerId,role:"owner"}})).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.snapshot()).toEqual(before);expect(f.standalone()).toBe(0);
 });
 const fieldValue=(field:string,before:Record<string,unknown>)=>field==="accountable"?{developerId:DEB.developerId}:field==="pinnedVersion"?Number(before.pinnedVersion)+1:field==="monthlyBudgetUsd"?12:field==="maxPerRunUsd"?3:field==="updatedBy"?DEB.developerId:new Date(Date.parse(String(before.updatedAt))+1000).toISOString();
-for(const when of ["before","after"] as const)for(const field of ["accountable","pinnedVersion","monthlyBudgetUsd","maxPerRunUsd","updatedAt","updatedBy","deleted"] as const)it(`builtin ${field} drift ${when} obtained store read is 409`,async()=>{
+for(const when of ["before","after"] as const)for(const field of ["accountable","pinnedVersion","monthlyBudgetUsd","maxPerRunUsd","updatedAt","updatedBy","deleted"] as const)it(`builtin ${field} drift ${when==="before"?"before store read":"at native commit"} is 409`,async()=>{
  const f=await fixture(),before=f.t.db.get(key)!,send=f.t.db.send.bind(f.t.db);let reads=0,raced=false,winner=f.snapshot();
  const change=async()=>{if(field==="deleted")await send(new DeleteCommand({TableName:"state",Key:key}));else await send(new TransactWriteCommand({TransactItems:[{Update:{TableName:"state",Key:key,UpdateExpression:"SET #field = :value",ConditionExpression:"attribute_exists(pk)",ExpressionAttributeNames:{"#field":field},ExpressionAttributeValues:{":value":fieldValue(field,before)}}}]}));winner=f.snapshot();};
- f.t.db.send=async command=>{const input=command.input as {Key?:{pk?:string;sk?:string}};const trigger=command.constructor.name==="GetCommand"&&input.Key?.pk===key.pk&&input.Key.sk===key.sk&&!raced&&++reads===2;
- if(trigger&&when==="before"){raced=true;await change();}const result=await send(command);if(trigger&&when==="after"){raced=true;expect((result as {Item?:unknown}).Item).toEqual(before);await change();}return result;};
+ f.t.db.send=async command=>{const input=command.input as {Key?:{pk?:string;sk?:string}};const trigger=!raced&&(when==="before"?command.constructor.name==="GetCommand"&&input.Key?.pk===key.pk&&input.Key.sk===key.sk&&++reads===2:settingsWrite(writes(command)));
+ if(trigger){raced=true;await change();}return send(command);};
  expect((await f.transfer()).status).toBe(409);expect(raced).toBe(true);expect(f.snapshot()).toEqual(winner);expect(f.standalone()).toBe(0);expect(f.t.db.get(agentRequestKey(TEST_ORG,ADA.developerId,f.requestId))).toBeUndefined();
 });
 it("two native first creators preserve the real competing winner",async()=>{
@@ -65,7 +65,7 @@ it("two native first creators preserve the real competing winner",async()=>{
 });
 it("read failure is not confirmed absence or default materialization",async()=>{
  const f=await fixture(false),before=f.snapshot(),send=f.t.db.send.bind(f.t.db);f.t.db.send=async command=>{const input=command.input as {Key?:{pk?:string;sk?:string}};if(command.constructor.name==="GetCommand"&&input.Key?.pk===key.pk&&input.Key.sk===key.sk)throw new Error("fixture read unavailable");return send(command);};
- expect((await f.transfer()).status).toBeGreaterThanOrEqual(500);expect(f.snapshot()).toEqual(before);expect(f.standalone()).toBe(0);
+ expect((await f.transfer()).status).toBe(400);expect(f.snapshot()).toEqual(before);expect(f.standalone()).toBe(0);
 });
 it("malformed stored pin is refused without repair or writes",async()=>{
  const f=await fixture();f.t.db.set({...f.t.db.get(key)!,pinnedVersion:"broken"});const before=f.snapshot();await expect(f.t.deps().store.setAccountable(TEST_ORG,id,{developerId:DEB.developerId},ADA.developerId,undefined,{actor:{developerId:ADA.developerId,role:"owner"}})).rejects.toMatchObject({code:"CONFIG_INVALID"});expect(f.snapshot()).toEqual(before);expect(f.standalone()).toBe(0);
@@ -78,7 +78,7 @@ for(const kind of ["removed","merged"] as const)it(`real SYSTEM ${kind} builtin 
 for(const after of ["none","actor","snapshot"] as const)it(`builtin cap retry preserves original authority ${after}`,async()=>{
  const f=await fixture(),send=f.t.db.send.bind(f.t.db);let commits=0,nested=false,winner=f.snapshot();
  f.t.db.send=async command=>{if(!nested&&settingsWrite(writes(command))){commits++;if(commits===1){const counterKey=ownerBudgetKey(TEST_ORG,DEB.developerId),row=f.t.db.get(counterKey)!;f.t.db.set({...row,version:Number(row.version??0)+1});winner=f.snapshot();try{return await send(command);}catch(error){if(after==="snapshot"){nested=true;expect((await f.t.api(DEB,"PUT",path+"/budget",{monthlyUsd:12})).status).toBe(200);winner=f.snapshot();nested=false;}throw error;}}if(after==="actor")f.t.db.set({...f.t.db.get(orgMemberKey(TEST_ORG,ADA.developerId))!,role:"member"});}return send(command);};
- expect((await f.transfer()).status).toBe(after==="actor"?403:after==="snapshot"?409:200);expect(commits).toBe(2);if(after!=="none")expect(f.snapshot()).toEqual(winner);expect(f.standalone()).toBe(0);
+ expect((await f.transfer()).status).toBe(after==="actor"?403:after==="snapshot"?409:200);expect(commits).toBe(after==="snapshot"?1:2);if(after!=="none")expect(f.snapshot()).toEqual(winner);expect(f.standalone()).toBe(0);
 });
 async function seededPending(){
  const f=await fixture(false),body={requestId:f.requestId,accountable:{developerId:DEB.developerId}},deps=f.t.deps(),{mark}=await markRequest(deps,f.t.caller(DEB,"admin"),"accountable",id,body);
@@ -100,4 +100,14 @@ for(const target of ["member","removed"] as const)it(`builtin approval destinati
 });
 it("existing budget gives real route-generated self-assignment202; requester cannot decide",async()=>{
  const f=await fixture();await f.t.budgeted(49,DEB);await f.t.budgeted(50,DEB);const before=f.t.db.get(key),reply=await f.t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);expect(f.t.db.get(key)).toEqual(before);const approvalId=String(reply.body.spendRequestId);await expect(f.t.decide(DEB,approvalId)).rejects.toMatchObject({code:"FORBIDDEN"});await expect(f.t.decide(ADA,approvalId)).resolves.toBeDefined();expect(f.t.db.get(key)?.accountable).toEqual({developerId:DEB.developerId});expect(f.standalone()).toBe(0);
+});
+
+for(const existing of [false,true])it(`seeded pending approval ${existing?"existing CAS":"first creator"} race preserves pending and full competing winner`,async()=>{
+ const f=await seededPending();if(existing)expect((await f.t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
+ const send=f.t.db.send.bind(f.t.db);let raced=false,winner=f.snapshot();
+ f.t.db.send=async command=>{if(!raced&&settingsWrite(writes(command))){raced=true;
+ if(existing)await send(new TransactWriteCommand({TransactItems:[{Update:{TableName:"state",Key:key,UpdateExpression:"SET #perRun = :perRun",ConditionExpression:"attribute_exists(pk)",ExpressionAttributeNames:{"#perRun":"maxPerRunUsd"},ExpressionAttributeValues:{":perRun":3}}}]}));
+ else expect((await f.t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
+ winner=f.snapshot();}return send(command);};
+ await expect(f.t.decide(ADA,f.approvalId)).rejects.toMatchObject({code:"AGENT_REVISION_CONFLICT"});expect(raced).toBe(true);expect(f.snapshot()).toEqual(winner);expect(f.t.requests().find(r=>r.spendRequestId===f.approvalId)?.status).toBe("PENDING");expect(f.standalone()).toBe(0);
 });

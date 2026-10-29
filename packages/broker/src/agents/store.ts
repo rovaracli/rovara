@@ -199,6 +199,8 @@ export interface BudgetWriteOptions {
   expectedMaxPerRunUsd?: number | null;
   /** Resource fields on which the route granted manage access; never from a client. */
   manageSnapshot?: BudgetSubject;
+  /** Original server-read builtin settings; null means confirmed absence. */
+  builtinSnapshot?: BuiltinSettings | null;
   /** Why Rovara itself moved this (Task 11): a member removed or merged. The agent's `owner_changed` event names it. */
   cause?: MoveCause;
   /**
@@ -784,19 +786,42 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<void> {
     const updatedAt = this.iso();
     if (isBuiltinAgentId(agentId)) {
-      const before = await this.ensureBuiltinSettings(orgId, agentId, by);
+      const actor = options.actor;
+      if ((request !== undefined && actor === undefined) ||
+        (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+        (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+        (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+      if (actor !== undefined && actor.role !== "owner" && actor.role !== "admin") throw budgetActorRefused();
+      const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
+      const existing = await this.getBuiltinSettings(orgId, agentId);
+      if (options.builtinSnapshot !== undefined && !sameJsonContent(existing ?? null, options.builtinSnapshot)) throw budgetConflict();
+      if (existing !== undefined && (!Number.isInteger(existing.pinnedVersion) || existing.pinnedVersion < 1 || typeof existing.updatedAt !== "string" || typeof existing.updatedBy !== "string")) throw coded("CONFIG_INVALID", "Built-in settings are invalid; repair them before changing the accountable person");
+      const before = existing ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt };
+      const written = { ...before, accountable, updatedBy: by, updatedAt };
       const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
       const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
       const audit = await this.audited(() => [accountableChangedEvent({
         orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
         ...(before.accountable === undefined ? {} : { previous: before.accountable.developerId }),
       })]);
-      await this.commit(...withOverride([
-        this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
+      const key = builtinSettingsKey(orgId, agentId);
+      const items = [
+        existing === undefined ? this.put(key, "BUILTIN_AGENT_SETTINGS", written) : this.update(key, {
+          set: { accountable, updatedBy: by, updatedAt },
+          when: (aliases) => {
+            const equal = (field: "pinnedVersion" | "maxPerRunUsd" | "updatedAt" | "updatedBy") => before[field] === undefined
+              ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(before[field])}`;
+            return `attribute_exists(${aliases.name("pk")}) AND ${budgetGuard(before)(aliases)} AND ${equal("pinnedVersion")} AND ${equal("maxPerRunUsd")} AND ${equal("updatedAt")} AND ${equal("updatedBy")}`;
+          },
+        }),
         ...totals.items,
         event.item,
         ...audit.items,
-      ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
+      ];
+      const actorStart = items.length;
+      await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+        [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+      ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
       await flushAuditEvents(this.input, audit.events);
       return;
     }

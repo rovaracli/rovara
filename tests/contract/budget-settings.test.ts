@@ -436,11 +436,11 @@ describe("the one monthly total of a person's agent budgets", () => {
     const { totalOf, store, capOf } = ownerSetup();
     await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(0);
-    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, DANA.developerId);
+    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, fixtureActor(store, TEST_ORG, DANA.developerId, true).developerId, undefined, { actor: fixtureActor(store, TEST_ORG, DANA.developerId, true) });
     expect(totalOf(DANA.developerId)).toBe(15);
     await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 25 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({ ownerCap: await capOf() }), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     expect(totalOf(DANA.developerId)).toBe(25);
-    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, DANA.developerId);
+    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: BOB }, fixtureActor(store, TEST_ORG, DANA.developerId, true).developerId, undefined, { actor: fixtureActor(store, TEST_ORG, DANA.developerId, true) });
     expect(totalOf(DANA.developerId)).toBe(0);
     expect(totalOf(BOB)).toBe(25);
   });
@@ -1088,7 +1088,7 @@ describe("a total that was never counted", () => {
 
   it("is built for a built-in's accountable person too", async () => {
     const { store, db, totalOf } = ownerSetup();
-    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, DANA.developerId);
+    await store.setAccountable(TEST_ORG, "ticket-triage", { developerId: DANA.developerId }, fixtureActor(store, TEST_ORG, DANA.developerId, true).developerId, undefined, { actor: fixtureActor(store, TEST_ORG, DANA.developerId, true) });
     await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 15 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });
     db.delete(ownerBudgetKey(TEST_ORG, DANA.developerId));
     await store.setBudget(TEST_ORG, "ticket-triage", { monthlyUsd: 4 }, fixtureActor(store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, DANA.developerId) });

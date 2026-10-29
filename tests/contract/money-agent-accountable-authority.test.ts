@@ -124,11 +124,11 @@ it("self-assignment over the cap asks approval and the requester cannot decide i
  const f=await fixture();await f.t.budgeted(50,DEB);await f.t.budgeted(50,DEB);const before=f.t.db.get(f.key),reply=await f.t.api(DEB,"PUT",f.path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);expect(f.t.db.get(f.key)).toEqual(before);
  const id=String(reply.body.spendRequestId);await expect(f.t.decide(DEB,id)).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.t.requests().find(r=>r.spendRequestId===id)?.status).toBe("PENDING");await f.t.decide(ADA,id);expect(f.t.db.get(f.key)?.accountable).toEqual({developerId:DEB.developerId});
 });
-for(const legacy of [false,true])it(`preserves unchanged built-in approval ${legacy?"legacy request without forOwner":"owner_moved refusal"}`,async()=>{
+for(const legacy of [false,true])it(`builtin approval ${legacy?"legacy request without forOwner":"reviewed M45 normal forOwner success"}`,async()=>{
  const t=await setup(),id="root-cause-analyst",path=`/v1/app/agents/${id}`;
  expect((await t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
  expect((await t.api(ADA,"PUT",path+"/budget",{monthlyUsd:30})).status).toBe(200);await t.budgeted(40,DEB);await t.budgeted(40,DEB);
  const reply=await t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);const requestId=String(reply.body.spendRequestId);
  if(legacy){const key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,...record}=t.db.get(key)!;void _forOwner;t.db.set(record);await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");}
- else {const before=await t.deps().store.getBuiltinSettings(TEST_ORG,id);await expect(t.decide(ADA,requestId)).rejects.toMatchObject({code:"APPROVAL_CLOSED"});expect(await t.deps().store.getBuiltinSettings(TEST_ORG,id)).toEqual(before);expect(t.requests().find(r=>r.spendRequestId===requestId)).toMatchObject({status:"EXPIRED",endedBecause:"owner_moved"});}
+ else {await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");}
 });

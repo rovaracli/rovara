@@ -1,7 +1,7 @@
 // M44 controller: chain accountable only, real HTTP and native atomic commit.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { chainKey, ownerBudgetKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { chainKey, spendRequestKey, ownerBudgetKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ADA, BEN, CARL, DEB, setup } from "../support/spend-world.js";
@@ -128,4 +128,19 @@ for(const after of ["none","actor","snapshot"] as const)it(`holdingCap retry ret
 it("self-assignment over the cap asks approval and the requester cannot decide it",async()=>{
  const f=await fixture();await f.t.budgeted(50,DEB);await f.t.budgeted(50,DEB);const before=f.t.db.get(f.key),reply=await f.t.api(DEB,"PUT",f.path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);expect(f.t.db.get(f.key)).toEqual(before);
  const id=String(reply.body.spendRequestId);await expect(f.decide(DEB,id)).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.t.requests().find(r=>r.spendRequestId===id)?.status).toBe("PENDING");await f.decide(ADA,id);expect(f.t.db.get(f.key)?.accountable).toEqual({developerId:DEB.developerId});
+});
+
+// M44 Minor 1 carried into the approved M45 implementation: direct compatibility controls.
+it("retains custom agent accountable approval alongside chain flow",async()=>{
+ const t=await setup();t.grantRole(OMAR,"maintainer");
+ const created=await t.api(BEN,"POST","/v1/app/agents",{name:"Accountable compatibility",owner:{kind:"project",project:"payments"},accountable:{developerId:BEN.developerId}});expect(created.status).toBe(201);
+ const id=(created.body.agent as {agentId:string}).agentId,path=`/v1/app/agents/${id}`;
+ expect((await t.api(ADA,"PUT",path+"/budget",{monthlyUsd:30})).status).toBe(200);await t.budgeted(40,DEB);await t.budgeted(40,DEB);t.grantRole(DEB,"maintainer");
+ const reply=await t.api(BEN,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);await t.decide(ADA,String(reply.body.spendRequestId));expect((await t.deps().store.get(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});
+});
+it("retains legacy builtin accountable approval without forOwner alongside chain flow",async()=>{
+ const t=await setup(),id="root-cause-analyst",path=`/v1/app/agents/${id}`;
+ expect((await t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);expect((await t.api(ADA,"PUT",path+"/budget",{monthlyUsd:30})).status).toBe(200);await t.budgeted(40,DEB);await t.budgeted(40,DEB);
+ const reply=await t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);const requestId=String(reply.body.spendRequestId),key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,...record}=t.db.get(key)!;void _forOwner;t.db.set(record);
+ await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");
 });
