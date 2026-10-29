@@ -216,10 +216,6 @@ const SPEND_REQUEST_FACTS = ["kind", "scopeKind", "amountCents", "newLimitCents"
  */
 const SPEND_REQUEST_DECIDED_FACTS = [...SPEND_REQUEST_FACTS, "approvedAmountCents", "appliedLimitCents", "topUpMonth"] as const;
 
-/** Lane C's digest-shaped fact keys for the two project model actions (kept apart from the playbook slice's count-shaped facts). */
-const PROJECT_MODEL_DIGEST_FACT_KEYS_MODELS = ["beforeModelIdsDigest", "afterModelIdsDigest", "beforeDefaultModelIdDigest", "afterDefaultModelIdDigest", "beforeCount", "afterCount", "definitionRevision"] as const;
-const PROJECT_MODEL_DIGEST_FACT_KEYS_SELECTION = ["beforeModelIdDigest", "afterModelIdDigest", "sourceSurface", "definitionRevision"] as const;
-
 /**
  * The facts each action may carry. Every value is a fixed-vocabulary word, a count, a sequence number, an amount
  * in cents or a flag: never a name, an email, a login, a repository or project name, a domain or a reason.
@@ -297,41 +293,16 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "audit.org_shred_scheduled": ["shredAfterDays"],
   // "How we work" playbook: one block, so a merge with another branch's additions stays easy. Counts, revisions and flags only;
   // `surface` is a fixed word (`slack`, `app`, `cli`) and `processKind` is `builtin` or `project_process`.
-  // Two fact shapes share these two actions after the lane C merge: the playbook slice's counts (revision, approvedCount, ...) and
-  // lane C's digest commitments (see ProjectModelsChangedAuditFactsSchema). The event schema keeps the shapes from mixing.
-  "project.models_changed": ["revision", "approvedCount", "defaultChanged", ...PROJECT_MODEL_DIGEST_FACT_KEYS_MODELS],
+  "project.models_changed": ["revision", "approvedCount", "defaultChanged"],
   "project.checks_changed": ["revision", "requiredCount", "optionalCount"],
   "project.e2e_policy_changed": ["revision", "screenshots", "traces", "video", "downloads"],
-  "project.model_selection_changed": ["surface", "cleared", ...PROJECT_MODEL_DIGEST_FACT_KEYS_SELECTION],
+  "project.model_selection_changed": ["surface", "cleared"],
   "project.roster_changed": ["added", "removed"],
   "process.published": ["version", "safety", "selfConfirmedSoleOwner"],
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
 };
-
-// Owner playbook model events use the existing bounded scalar verifier format, not raw model lists/text.
-// Identity digest: SHA256(canonical JSON {provider,modelId}); set digest: SHA256(canonical JSON of
-// sorted unique identity digests). Labels, check messages and provider errors never contribute facts.
-const ModelAuditDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
-const ModelAuditRevisionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-export const ProjectModelsChangedAuditFactsSchema = z.object({
-  beforeModelIdsDigest: ModelAuditDigestSchema,
-  afterModelIdsDigest: ModelAuditDigestSchema,
-  beforeDefaultModelIdDigest: ModelAuditDigestSchema.optional(),
-  afterDefaultModelIdDigest: ModelAuditDigestSchema.optional(),
-  beforeCount: z.number().int().nonnegative().max(16),
-  afterCount: z.number().int().nonnegative().max(16),
-  definitionRevision: ModelAuditRevisionSchema,
-}).strict();
-export type ProjectModelsChangedAuditFacts = z.infer<typeof ProjectModelsChangedAuditFactsSchema>;
-export const ProjectModelSelectionChangedAuditFactsSchema = z.object({
-  beforeModelIdDigest: ModelAuditDigestSchema.optional(),
-  afterModelIdDigest: ModelAuditDigestSchema.optional(),
-  sourceSurface: z.enum(["web", "slack", "cli", "api", "system"]),
-  definitionRevision: ModelAuditRevisionSchema,
-}).strict().refine(value => value.beforeModelIdDigest !== undefined || value.afterModelIdDigest !== undefined, "A selection change needs a before or after identity.");
-export type ProjectModelSelectionChangedAuditFacts = z.infer<typeof ProjectModelSelectionChangedAuditFactsSchema>;
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
 export function auditOperatorId(issuer: string, subject: string): string {
@@ -412,19 +383,6 @@ export const AuditEventInputSchema = z.object({
   proof: AuditProofSchema.optional(),
   details: z.array(AuditDetailPartSchema).max(AUDIT_DETAIL_PARTS_MAX).optional(),
 }).strict().superRefine((event, context) => {
-  if (event.action === "project.models_changed" || event.action === "project.model_selection_changed") {
-    if (event.target.kind !== "project") context.addIssue({ code: "custom", path: ["target"], message: "Project model events require a project target." });
-    if (event.facts === undefined) context.addIssue({ code: "custom", path: ["facts"], message: "Invalid project model audit facts." });
-    else {
-      // Digest-shaped facts (lane C) are validated strictly and take no free-text details; count-shaped facts (playbook slice) use the key list below.
-      const digestKeys: readonly string[] = event.action === "project.models_changed" ? PROJECT_MODEL_DIGEST_FACT_KEYS_MODELS : PROJECT_MODEL_DIGEST_FACT_KEYS_SELECTION;
-      if (Object.keys(event.facts).some((key) => digestKeys.includes(key))) {
-        const modelFacts = event.action === "project.models_changed" ? ProjectModelsChangedAuditFactsSchema : ProjectModelSelectionChangedAuditFactsSchema;
-        if (!modelFacts.safeParse(event.facts).success) context.addIssue({ code: "custom", path: ["facts"], message: "Invalid project model audit facts." });
-        if (event.details !== undefined) context.addIssue({ code: "custom", path: ["details"], message: "Project model digest events do not accept free-text details." });
-      }
-    }
-  }
   if (event.facts === undefined) return;
   const keys = Object.keys(event.facts);
   if (keys.length > AUDIT_MAX_FACTS) {

@@ -739,8 +739,6 @@ describe("I4: the builders", () => {
     ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "project_1", teamId: "T123", channelId: "C123" })],
     ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, occurrence, details, teamId: "T123" })],
     ["auditSlackTeamDisconnected", (occurrence) => builders.auditSlackTeamDisconnected({ ...base, occurrence, details, teamId: "T123" })],
-    ["auditProjectModelsDigestChanged", (occurrence) => builders.auditProjectModelsDigestChanged({ ...base, occurrence, projectName: "project_1", definitionRevision: 2, beforeModelIdsDigest: "a".repeat(64), afterModelIdsDigest: "b".repeat(64), beforeCount: 1, afterCount: 2 })],
-    ["auditProjectModelSelectionDigestChanged", (occurrence) => builders.auditProjectModelSelectionDigestChanged({ ...base, occurrence, projectName: "project_1", definitionRevision: 2, beforeModelIdDigest: "a".repeat(64), afterModelIdDigest: "b".repeat(64), sourceSurface: "slack" })],
     ["auditRead", (occurrence) => builders.auditRead({ ...base, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditStaffRead", (occurrence) => builders.auditStaffRead({ ...base, actor: { kind: "operator", id: `op_${"b".repeat(24)}` }, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
@@ -783,9 +781,7 @@ describe("I4: the builders", () => {
         const { details: kept, ...chain } = event;
         const outside = JSON.stringify(chain.target !== undefined && "name" in chain.target ? { ...chain, target: { kind: chain.target.kind } } : chain);
         for (const personal of PERSONAL) expect(outside, personal).not.toContain(personal);
-        // The digest-shaped project-model events intentionally prohibit free-text details. Keep the old builder contract unchanged.
-        if (name === "auditProjectModelsDigestChanged" || name === "auditProjectModelSelectionDigestChanged") expect(kept).toBeUndefined();
-        else expect(JSON.stringify(kept)).toContain("Jane Roe");
+        expect(JSON.stringify(kept)).toContain("Jane Roe");
       });
     });
   }

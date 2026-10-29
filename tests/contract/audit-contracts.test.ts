@@ -204,9 +204,7 @@ describe("the event catalog", () => {
 
   for (const [action, spec] of Object.entries(PLAYBOOK_FACTS)) {
     it(`${action} has exactly its fixed fact keys, takes them, and refuses an unknown one`, () => {
-      // The two project model actions also carry lane C's digest-shaped keys (see PROJECT_MODEL_DIGEST_FACT_KEYS_* in the contract).
-      const digestKeys = action === "project.models_changed" ? ["beforeModelIdsDigest", "afterModelIdsDigest", "beforeDefaultModelIdDigest", "afterDefaultModelIdDigest", "beforeCount", "afterCount", "definitionRevision"] : action === "project.model_selection_changed" ? ["beforeModelIdDigest", "afterModelIdDigest", "sourceSurface", "definitionRevision"] : [];
-      expect(AUDIT_FACT_KEYS[action as AuditAction]).toEqual([...spec.keys, ...digestKeys]);
+      expect(AUDIT_FACT_KEYS[action as AuditAction]).toEqual(spec.keys);
       const base = { action, target: spec.target };
       expect(AuditEventInputSchema.safeParse(event({ ...base, facts: spec.sample })).success).toBe(true);
       expect(AuditEventInputSchema.safeParse(event({ ...base, facts: { ...spec.sample, projectName: "web" } })).success).toBe(false);

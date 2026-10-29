@@ -9,7 +9,7 @@ import { checkChain, genesisHash, recordHash, type AuditRecordV1 } from "@rovara
 import { AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/contracts";
 import { appendOne, AUDIT_APPEND_MAX_RETRIES, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import { processAuditBatch, type AuditSqsEvent } from "../../packages/broker/src/audit/appender-handler.js";
-import { auditProjectModelsDigestChanged,auditProjectModelSelectionDigestChanged } from "../../packages/broker/src/audit/events.js";
+import { auditProjectModelsChanged,auditProjectModelSelectionChanged } from "../../packages/broker/src/audit/events.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeKms } from "../support/fake-kms.js";
@@ -650,9 +650,9 @@ it("appends and verifies the additive invite-revocation action and opaque invite
 });
 
 for(const action of ["models","selection"] as const)it(`pseudonymizes the name-keyed project ${action} event and seals its erasable name`,async()=>{
- const h=harness(),projectName="private-roadmap",base={orgId:ORG,actor:{kind:"member" as const,id:"dev_1"},occurredAt:"2026-10-20T11:59:00.000Z",occurrence:"project-revision-2",definitionRevision:2,projectName,projectId:projectName};
+ const h=harness(),projectName="private-roadmap",base={orgId:ORG,actor:{kind:"member" as const,id:"dev_1"},occurredAt:"2026-10-20T11:59:00.000Z",occurrence:"project-revision-2",projectName};
  // The old ID-shaped field is a hostile trap: the project name must never be persisted as an opaque id.
- const input=action==="models"?auditProjectModelsDigestChanged({...base,beforeModelIdsDigest:"a".repeat(64),afterModelIdsDigest:"b".repeat(64),beforeCount:1,afterCount:2}):auditProjectModelSelectionDigestChanged({...base,beforeModelIdDigest:"a".repeat(64),afterModelIdDigest:"b".repeat(64),sourceSurface:"slack"});
+ const input=action==="models"?auditProjectModelsChanged({...base,revision:2,approvedCount:2,defaultChanged:true}):auditProjectModelSelectionChanged({...base,surface:"slack",cleared:false});
  const {target,...outside}=input;expect(JSON.stringify(outside)).not.toContain(projectName);await appendOne(h.deps,input);const record=recordsOf(h.db)[0]!;expect(record.target).toEqual({kind:"project",id:await h.keyring.pseudonym(ORG,"project",projectName)});expect(JSON.stringify(record)).not.toContain(projectName);expect(JSON.stringify(h.logs)).not.toContain(projectName);expect(target).toEqual({kind:"project",name:projectName});
  const sealed=item(h.db,`AUDIT#${ORG}`,seqKey(1))!.sealedDetails as Array<{subject:string;iv:string;ciphertext:string}>;expect((await h.keyring.openDetails(ORG,1,sealed))[0]).toMatchObject({subject:"org",fields:{targetName:projectName}});
 });
