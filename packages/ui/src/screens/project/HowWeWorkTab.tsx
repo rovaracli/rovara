@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
-import { CARD_STAGES, DRAFT_STALE_CODE, REFERENCE_KIND, useStageModels } from "../../api/stage-models.js";
+import { CARD_STAGES, REFERENCE_KIND, useStageModels } from "../../api/stage-models.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -17,18 +17,20 @@ import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
 import { StageModelRows } from "./StageModelRows.js";
-import { DRAFT_CHANGED_TEXT } from "./stage-model-text.js";
+import { DRAFT_CHANGED_TEXT, EDITS_REMOVED_TEXT } from "./stage-model-text.js";
 import { applyModelEdits, mergeEdit, pruneEdits, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
 import { cleanRuleText, ruleTooLong } from "./rule-text.js";
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [{ value: "all", label: "All" }, { value: "changed", label: "Changed here" }, { value: "locked", label: "Locked" }];
 const NOT_IN_USE = "This project runs Rovara Code's defaults.";
+/** The draft moved on after the person chose a model: nothing is written. */
+class DraftChanged extends Error {}
 const LESS_SAFE_HINT = "Changing these instructions needs someone else who can approve changes in this project to confirm it.";
 /** The "How we work" tab: Rovara Code's stages as cards of six marked rows. A maintainer edits the team's rules (project-wide and per stage) as a draft of the project's process layer, then reviews and publishes it. */
 export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: boolean }) {
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
  const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState<"draft" | "removed" | false>(false);
- const [modelEdits, setModelEdits] = useState<ModelEdits>({}), [editRevision, setEditRevision] = useState<number>(), [discarded, setDiscarded] = useState(false);
+ const [modelEdits, setModelEdits] = useState<ModelEdits>({}), [editRevision, setEditRevision] = useState<number>(), [discarded, setDiscarded] = useState(false), [removed, setRemoved] = useState(false);
  const [choosing, setChoosing] = useState(false), [chooseError, setChooseError] = useState<string>(), [reviewRequest, setReviewRequest] = useState(0);
  const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured ?? data.process.draftLayer?.agentId;
  const draftKey = [...howWeWorkKey(project), "draft", layerId] as const;
@@ -39,12 +41,12 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (view.isPending) return <section aria-label="How we work"><Skeleton label="Loading how this project works" /></section>;
  if (view.isError || data === undefined) return <section aria-label="How we work"><p role="alert"><VisibleText text={failureText(view.error, "Couldn't load how this project works. Try again.")} /></p><Button onClick={() => { void view.refetch(); }}>Try again</Button></section>;
  /** Pending model edits only live as long as the read that allowed them: a draft that moved on, a stale-draft refusal, a lock, a stage that stopped being editable or a model that is no longer verified drops them (never written onto a newer revision). */
- const staleRead = models.error instanceof ApiError && models.error.code === DRAFT_STALE_CODE;
+ const staleRead = models.error instanceof ApiError && models.error.code === "DRAFT_STALE";
  if (Object.keys(modelEdits).length > 0) {
   if (editRevision !== draftRevision || staleRead) { setModelEdits({});setDiscarded(true); }
   else {
    const kept = pruneEdits(modelEdits, id => { const ids = CARD_STAGES[data.stages.find(stage => stage.id === id)?.kind ?? ""];return models.data === undefined || ids === undefined ? undefined : models.data.stages.filter(entry => ids.includes(entry.stage)); });
-   if (kept !== modelEdits) setModelEdits(kept);
+   if (kept !== modelEdits) { setModelEdits(kept);setRemoved(true); }
   }
  }
  const editableStages = data.stages.filter(stage => EDITABLE_KINDS.has(stage.kind));
@@ -62,13 +64,16 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   const ids = CARD_STAGES[stage.kind], found = models.data === undefined || ids === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
   if (found.length === 0) return undefined;
   const reference = referenceStage(stage.kind);
-  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found[0]!)); }} />;
+  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setDiscarded(false);setRemoved(false);setEditRevision(draftRevision);setModelEdits(current => mergeEdit(current, stage.id, patch, found[0]!)); }} />;
  };
  const modelsProp = (stage: (typeof data.stages)[number]) => { const rows = stageModelRows(stage);return rows === undefined ? {} : { models: rows }; };
  const setStage = (id: string, text: string) => { setSaved(false);setEdits(current => ({ ...current, stages: { ...current.stages, [id]: text } })); };
  /** Make sure the layer exists, read its draft, write `changes` into it. */
  async function write(changes: RuleEdits, choices: ModelEdits = {}) {
-  const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId), next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references), current.draft.revision);
+  const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId);
+  // Model choices were made against one draft revision; if someone else saved since, they are never written onto the newer draft.
+  if (Object.keys(choices).length > 0 && current.draft.revision !== editRevision) throw new DraftChanged();
+  const next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references), current.draft.revision);
   query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
   setEnsured(layer.agentId);
  }
@@ -77,10 +82,13 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   setSaving(true);setSaveError(undefined);setSaved(false);
   try {
    await write(patch, modelEdits);
-   setEdits({ stages: {} });setModelEdits({});setDiscarded(false);setSaved("draft");
+   setEdits({ stages: {} });setModelEdits({});setDiscarded(false);setRemoved(false);setSaved("draft");
   } catch (failure) {
-   setSaveError(failureText(failure, "Couldn't save the draft. Your edits are still here."));
-   if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
+   if (failure instanceof DraftChanged) { setModelEdits({});setDiscarded(true);void draft.refetch();void models.refetch(); }
+   else {
+    setSaveError(failureText(failure, "Couldn't save the draft. Your edits are still here."));
+    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
+   }
   } finally { setSaving(false); }
  }
  /** An old draft can hold rules on the pull request stage, which nothing uses and the server won't let a new publish add. Saves the draft without them (removal is allowed); other unsaved edits stay in their boxes. */
@@ -109,6 +117,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
   {(staleRead || discarded) && <section className="rv-project-section" aria-label="Draft changed"><p role="alert">{DRAFT_CHANGED_TEXT}</p><Button onClick={() => { setDiscarded(false);void draft.refetch();void models.refetch(); }}>Reload</Button></section>}
+  {removed && !staleRead && !discarded && <p role="status">{EDITS_REMOVED_TEXT}</p>}
   {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">
    <p>{NOT_IN_USE} A saved How we work version exists (version {savedVersion}).</p>
    {canEdit && <Button busy={choosing} onClick={() => { void chooseSaved(); }}>Use it</Button>}

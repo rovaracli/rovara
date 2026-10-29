@@ -35,7 +35,7 @@ test("an admin follows the link from AI models, reviews a change page by page, s
  await expect(page.getByText("Saved. New tasks use these defaults; running tasks keep theirs.")).toBeVisible();
  await expect(build.getByRole("combobox", { name: "Effort" })).toHaveValue("high");
  const put = (await sent(request)).find(item => item.method === "PUT" && item.path === "/v1/web/org/model-selection-policy");
- expect(put?.body).toMatchObject({ version: 1, expectedRevision: 4, stepOverrides: { build: { model: "anthropic/claude-sonnet-4-6", effort: "high", locked: false }, code_review: { locked: true }, security_review: { locked: true } } });
+ expect(put?.body).toMatchObject({ version: 1, expectedRevision: 4, stepOverrides: { build: { model: { provider: "anthropic", modelId: "claude-sonnet-4-6" }, thinkingLevel: "high", locked: false }, code_review: { locked: true }, security_review: { locked: true } } });
  expect(String(put?.body?.requestId)).toMatch(/^[0-9a-f-]{36}$/);
  await checkA11y(page, { theme: "light" });
 });

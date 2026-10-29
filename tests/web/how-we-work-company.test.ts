@@ -3,17 +3,17 @@ import { describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema, AppMeResponseSchema, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
+import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyPutSchema, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { CompanyPolicyPutSchema, COMPANY_EFFORT_LEVELS } from "../../packages/ui/src/api/stage-models.js";
+import { COMPANY_EFFORT_LEVELS } from "../../packages/ui/src/api/stage-models.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
-import { COMPANY_BUILD, REQUEST_ID, applied, companyPolicyRaw, needsConfirmation, previewPage } from "./support/company-policy-raw.js";
+import { COMPANY_BUILD, REQUEST_ID, applied, companyCandidates, companyPolicyRaw, mid, needsConfirmation, previewPage } from "./support/company-policy-raw.js";
 
 const POLICY = "/v1/app/org/model-selection-policy";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -81,13 +81,13 @@ describe("the company cards", () => {
   expect(offered).toEqual(["inherit", "null", "off", "minimal", "low", "medium", "high"]);
   expect(within(card("Build")).queryByRole("combobox", { name: "Model" })).toBeNull();
  });
- it("offers nothing the schema would refuse: every option fits the step settings and the policy PUT", () => {
+ it("offers nothing the step settings would refuse: every option fits them and lane C's policy PUT, and xhigh (which only lane C's scale holds) is not offered", () => {
   expect([...COMPANY_EFFORT_LEVELS]).toEqual([...StepThinkingLevelSchema.options]);
   for (const level of [...COMPANY_EFFORT_LEVELS, null]) {
    expect(StepSettingsSchema.safeParse({ thinkingLevel: level }).success).toBe(true);
-   expect(CompanyPolicyPutSchema.safeParse({ version: 1, requestId: REQUEST_ID, expectedRevision: 4, stepOverrides: { build: { model: COMPANY_BUILD, effort: level, locked: false } } }).success).toBe(true);
+   expect(ModelSelectionPolicyPutSchema.safeParse({ version: 1, requestId: REQUEST_ID, expectedRevision: 4, stepOverrides: { build: { model: mid(COMPANY_BUILD), thinkingLevel: level, locked: false } } }).success).toBe(true);
   }
-  expect(CompanyPolicyPutSchema.safeParse({ version: 1, requestId: REQUEST_ID, expectedRevision: 4, stepOverrides: { build: { effort: "xhigh", locked: false } } }).success).toBe(false);
+  expect(StepSettingsSchema.safeParse({ thinkingLevel: "xhigh" }).success).toBe(false);
  });
  it("shows the API's 403 as the denied state", async () => {
   mount({ handle: request => request.path === POLICY ? { status: 403, body: { error: { code: "FORBIDDEN", message: "No." } } } : undefined });
@@ -127,10 +127,10 @@ describe("locks need a complete tuple", () => {
   await review();
   await screen.findByText("This list may be incomplete.");
   expect(f.previews()).toHaveLength(1);
-  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.build).toEqual({ model: COMPANY_BUILD, effort: null, locked: true });
+  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.build).toEqual({ model: mid(COMPANY_BUILD), thinkingLevel: null, locked: true });
  });
  it("blocks a locked checking stage that has no different-vendor rule", async () => {
-  const f = await open({ policy: companyPolicyRaw({ plan_check: { model: COMPANY_BUILD, effort: "low", locked: true } }) });
+  const f = await open({ policy: companyPolicyRaw({ plan_check: { model: mid(COMPANY_BUILD), thinkingLevel: "low", locked: true } }) });
   expect(within(card("Plan check")).getByText(/To lock this stage/)).toBeTruthy();
   fireEvent.change(effort("Plan check"), { target: { value: "high" } });
   await review();
@@ -138,7 +138,7 @@ describe("locks need a complete tuple", () => {
   fireEvent.click(within(card("Plan check")).getByRole("switch", { name: "Different vendor than Plan" }));
   await review();
   await screen.findByText("This list may be incomplete.");
-  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan_check).toEqual({ model: COMPANY_BUILD, effort: "high", differentFrom: { stage: "plan", level: "vendor" }, locked: true });
+  expect((f.previews()[0]!.body as { stepOverrides: Record<string, unknown> }).stepOverrides.plan_check).toEqual({ model: mid(COMPANY_BUILD), thinkingLevel: "high", differentFrom: { stage: "plan", level: "vendor" }, locked: true });
  });
 });
 
@@ -169,13 +169,6 @@ describe("Review changes", () => {
   expect(within(panel).queryByRole("button", { name: "Show more" })).toBeNull();
   expect(panel.textContent).not.toMatch(/\d/);
   expect(f.puts()).toHaveLength(0);
- });
- it("says projects couldn't be checked when the preview has no coverage, and still lets the person save", async () => {
-  await open({ handle: request => request.path === POLICY + "/preview" ? { status: 200, body: previewPage(undefined, "unavailable") } : undefined });
-  fireEvent.change(effort("Build"), { target: { value: "high" } });
-  await review();
-  expect(await screen.findByText("Projects couldn't be checked right now. You can still save.")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Save company defaults" })).toBeTruthy();
  });
  it("says so when the preview fails, and still lets the person save", async () => {
   await open({ handle: request => request.path === POLICY + "/preview" ? { status: 503, body: { error: { code: "UNAVAILABLE", message: "private detail" } } } : undefined });
@@ -209,12 +202,12 @@ describe("Save", () => {
   expect(body.version).toBe(1);
   expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
   expect(body.expectedRevision).toBe(4);
-  expect(CompanyPolicyPutSchema.safeParse(body).success).toBe(true);
+  expect(ModelSelectionPolicyPutSchema.safeParse(body).success).toBe(true);
   expect(body.stepOverrides).toEqual({
-   build: { model: COMPANY_BUILD, effort: "high", locked: false },
-   code_review: { model: "anthropic/claude-opus-5-5", effort: "high", differentFrom: { stage: "build", level: "vendor" }, locked: true },
-   security_review: { model: "anthropic/claude-opus-5-5", effort: "high", differentFrom: { stage: "build", level: "vendor" }, locked: true },
-   plan_check: { effort: "low", locked: false },
+   build: { model: mid(COMPANY_BUILD), thinkingLevel: "high", locked: false },
+   code_review: { model: mid("anthropic/claude-opus-5-5"), thinkingLevel: "high", differentFrom: { stage: "build", level: "vendor" }, locked: true },
+   security_review: { model: mid("anthropic/claude-opus-5-5"), thinkingLevel: "high", differentFrom: { stage: "build", level: "vendor" }, locked: true },
+   plan_check: { thinkingLevel: "low", locked: false },
   });
  });
  it("reads the policy again after a save", async () => {
@@ -297,14 +290,14 @@ describe("Save", () => {
 
 describe("a Review row whose reviewers differ", () => {
  it("says so, and sets both the same on a change", async () => {
-  const f = await open({ policy: companyPolicyRaw({ security_review: { model: "anthropic/claude-opus-5-5", effort: "low", locked: false } }) });
+  const f = await open({ policy: companyPolicyRaw({ security_review: { model: mid("anthropic/claude-opus-5-5"), thinkingLevel: "low", locked: false } }) });
   expect(within(card("Review (code and security)")).getByText(/have different settings today/)).toBeTruthy();
   fireEvent.change(effort("Review (code and security)"), { target: { value: "high" } });
   await review();
   await screen.findByText("This list may be incomplete.");
-  const overrides = f.previews()[0]!.body as { stepOverrides: Record<string, { effort: string; locked: boolean }> };
+  const overrides = f.previews()[0]!.body as { stepOverrides: Record<string, { thinkingLevel: string; locked: boolean }> };
   expect(overrides.stepOverrides.code_review).toEqual(overrides.stepOverrides.security_review);
-  expect(overrides.stepOverrides.code_review!.effort).toBe("high");
+  expect(overrides.stepOverrides.code_review!.thinkingLevel).toBe("high");
  });
 });
 

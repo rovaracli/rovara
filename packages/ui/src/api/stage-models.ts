@@ -1,65 +1,56 @@
-// Temporary copy of lane C's C53 contract; replace with its export at integration.
-// The version-1 read of `GET /v1/app/projects/{p}/stage-models?draft=<rev>`. The page holds no model logic: it shows these answers and sends the project's choices through the existing draft save.
+// The How we work model pages' reads. The schemas are lane C's (G3 v1, `@agentx/contracts/web`); this file only reads, maps and names things for the UI. The page holds no model logic: it shows these answers and sends the choices through the existing saves.
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import { ProjectOverviewProjectSchema, StepThinkingLevelSchema, ThinkingLevelSchema } from "@agentx/contracts/web";
-export { ThinkingLevelSchema };
+import {
+ CompanyStageModelOverrideSchema, EffectiveStageModelSchema, ModelPolicyPreviewResponseReaderSchema, ModelSelectionPolicyResponseReaderSchema, ProjectOverviewProjectSchema,
+ STAGE_IDS, STAGE_MODEL_REFUSAL_CODES, StageIdSchema, StageModelCandidateSchema, StageModelsResponseReaderSchema, StepThinkingLevelSchema, ThinkingLevelSchema,
+ type ModelPolicyPreviewResponse, type ModelSelectionPolicyResponse, type StageId, type StageModelChoice, type StageModelRefusal, type StageModelRefusalCode, type StageModelRow, type StageModelsResponse,
+} from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
-import { safeAppPath } from "../text/links.js";
 import { createApiClient } from "./client.js";
 import { howWeWorkKey } from "./how-we-work.js";
 
-export const STAGE_IDS = ["plan", "plan_check", "build", "code_review", "security_review", "understand", "pull_request"] as const;
-export const StageIdSchema = z.enum(STAGE_IDS);
-export type StageId = z.infer<typeof StageIdSchema>;
+export { STAGE_IDS, StageIdSchema, ThinkingLevelSchema };
+export type { StageId };
 export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>;
-/** The refusal codes of the relay-2 table. */
-export const REFUSAL_CODES = ["MODEL_NOT_VERIFIED", "MODEL_STALE", "MODEL_FORBIDDEN", "MODEL_NOT_ALLOWED_IN_PROJECT", "STAGE_LOCKED", "DIFFERENT_FROM_UNSATISFIABLE", "LOCK_UNSATISFIABLE", "NO_VERIFIED_CANDIDATE", "POLICY_STALE", "NEEDS_CONFIRMATION"] as const;
-export const RefusalCodeSchema = z.enum(REFUSAL_CODES);
-export type RefusalCode = z.infer<typeof RefusalCodeSchema>;
-/** The code of the 409 a draft read gets when the revision it named is no longer the layer's (§9b: its own code, not POLICY_STALE). */
-export const DRAFT_STALE_CODE = "DRAFT_STALE";
-export const REASONS = ["PROJECT_CHOICE", "PROJECT_SELECTION", "PROJECT_DEFAULT", "COMPANY_DEFAULT", "COMPANY_LOCK", "BUILTIN_DEFAULT", "APPROVED_SAME_MODEL"] as const;
-export const ReasonSchema = z.enum(REASONS);
-export type Reason = z.infer<typeof ReasonSchema>;
+export type RefusalCode = StageModelRefusalCode;
+export const REFUSAL_CODES = STAGE_MODEL_REFUSAL_CODES;
+export const isRefusalCode = (code: string): code is RefusalCode => (REFUSAL_CODES as readonly string[]).includes(code);
+export type Reason = z.infer<typeof EffectiveStageModelSchema>["reason"];
+export const REASONS = EffectiveStageModelSchema.shape.reason.options;
+export const isReason = (reason: string): reason is Reason => (REASONS as readonly string[]).includes(reason);
+export type StageModels = StageModelsResponse;
+export type StageModelsStage = StageModelRow;
+export type StageCandidate = z.infer<typeof StageModelCandidateSchema>;
+export type StageChoice = StageModelChoice;
+export type EffectiveResult = z.infer<typeof EffectiveStageModelSchema>;
 
-const ModelSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._:@+/-]{1,256}$/u);
-const TimeSchema = z.string().min(1).max(64);
-const FixHrefSchema = z.string().max(300).refine(safeAppPath, "Not an app path");
-const LabelSchema = z.string().min(1).refine(value => Array.from(value).length <= 64, "Too long");
-const StageChoiceSchema = z.object({ model: ModelSchema.optional(), effort: ThinkingLevelSchema.nullable().optional(), differentFrom: z.object({ stage: StageIdSchema, level: z.enum(["model", "vendor"]) }).strict().optional() }).strict();
-const CandidateSchema = z.object({ model: ModelSchema, label: LabelSchema, provider: z.string().min(1).max(128), company: z.string().min(1).max(128), status: z.enum(["verified", "unverified", "stale", "denied"]), checkedAt: TimeSchema.optional(), blockedReason: RefusalCodeSchema.optional() }).strict();
-const ResultSchema = z.discriminatedUnion("kind", [
- z.object({ kind: z.literal("effective"), model: ModelSchema, sourceId: z.string().min(1).max(128), effort: ThinkingLevelSchema.nullable(), decidedBy: z.enum(["rovara", "company", "project"]), locked: z.boolean(), reason: ReasonSchema, checkedAt: TimeSchema, expiresAt: TimeSchema.optional() }).strict(),
- z.object({ kind: z.literal("refusal"), code: RefusalCodeSchema, fixHref: FixHrefSchema.optional() }).strict(),
- z.object({ kind: z.literal("not_applicable"), reason: z.literal("NO_MODEL_INVOCATION") }).strict(),
-]);
-const StageSchema = z.object({
- stage: StageIdSchema, projectChoice: StageChoiceSchema.nullable(), companyDefault: z.object({ choice: StageChoiceSchema.nullable(), locked: z.boolean() }).strict(), result: ResultSchema,
- candidates: z.array(CandidateSchema).max(30), candidatesState: z.enum(["complete", "unavailable"]), candidatesReason: z.string().max(64).optional(),
- editable: z.boolean(), notice: z.object({ code: z.literal("STAGE_LOCKED"), fixHref: FixHrefSchema }).strict().optional(),
-}).strict();
-export const StageModelsSchema = z.object({
- version: z.literal(1), checkedAt: TimeSchema, companyRevision: z.number().int().min(0), projectRevision: z.number().int().min(0),
- process: z.object({ agentId: z.string().min(1).max(64), version: z.number().int().min(1).optional(), draftRevision: z.number().int().min(0).optional(), digest: z.string().min(1).max(128) }).strict(),
- referenceMode: z.literal("prospective"), rankingVersion: z.string().min(1).max(32), stages: z.array(StageSchema).max(7),
-}).strict();
-export type StageModels = z.infer<typeof StageModelsSchema>;
-export type StageModelsStage = StageModels["stages"][number];
-export type StageCandidate = StageModelsStage["candidates"][number];
-export type StageChoice = z.infer<typeof StageChoiceSchema>;
-export const StageModelsReader = StageModelsSchema;
+/** A model as the page's pickers key it: `provider/modelId`. */
+export const modelKey = (model: { provider: string; modelId: string }): string => model.provider + "/" + model.modelId;
+export function modelOf(key: string): { provider: string; modelId: string } {
+ const at = key.indexOf("/");
+ return { provider: key.slice(0, at), modelId: key.slice(at + 1) };
+}
+/** One stage's answer under a single name, whichever of the three contract shapes it is. */
+export type StageResult = ({ kind: "effective" } & EffectiveResult) | ({ kind: "refusal" } & StageModelRefusal) | { kind: "not_applicable" };
+export function stageResult(row: StageModelRow): StageResult {
+ if ("effective" in row) return { kind: "effective", ...row.effective };
+ if ("refusal" in row) return { kind: "refusal", ...row.refusal };
+ return { kind: "not_applicable" };
+}
 
-/** Temporary copy of the stage-to-card mapping lane C exports: which stage ids of the read a How we work card (by its step kind) shows, in order. A review step hosts both reviewers. */
+/** Which stage ids of the read a How we work card (by its step kind) shows, in order. A review step hosts both reviewers. Lane C names no card mapping, so this stays local. */
 export const CARD_STAGES: Readonly<Record<string, readonly StageId[]>> = { plan: ["plan"], plan_critic: ["plan_check"], build: ["build"], review: ["code_review", "security_review"], pull_request: ["pull_request"] };
 /** The step kind a checking card is compared with ("Different vendor than Build" / "than Plan"). */
 export const REFERENCE_KIND: Readonly<Record<string, "plan" | "build">> = { plan_critic: "plan", review: "build" };
 
+/** The reader keeps fields and codes a newer server adds; every lookup of a code or reason in this UI goes through `isRefusalCode` / `isReason`, so a value this build does not know gets the generic words. */
+const readStageModels = { parse: (value: unknown): StageModelsResponse => StageModelsResponseReaderSchema.parse(value) as unknown as StageModelsResponse };
 /** Without a draft revision it reads the published process (what a viewer sees); with one, the process layer's draft. */
 export function getStageModels(host: AppHost, project: string, draftRevision?: number): Promise<StageModels> {
  const path = "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/stage-models" + (draftRevision === undefined ? "" : "?draft=" + String(draftRevision));
- return createApiClient(host).get(path, StageModelsReader);
+ return createApiClient(host).get(path, readStageModels);
 }
 export const stageModelsKey = (project: string, draftRevision?: number) => [...howWeWorkKey(project), "stage-models", draftRevision ?? "published"] as const;
 export function useStageModels(project: string, draftRevision: number | undefined, enabled: boolean) {
@@ -67,37 +58,27 @@ export function useStageModels(project: string, draftRevision: number | undefine
  return useQuery({ queryKey: key, enabled, placeholderData: keepPreviousData, queryFn: () => getStageModels(host, project, draftRevision) });
 }
 
-// ---- Company scope (C53 "Company GET / PUT /v1/app/org/model-selection-policy" and "Company affected-project preview"). Temporary until lane C's export. ----
-/** The effort levels the step settings schema accepts today; the company page offers only these (plus "Model default", null) until lane C widens the schema. */
+// ---- Company scope (lane C's policy read, write and preview). ----
+/** The effort levels the step settings schema accepts today; the company page and the project rows offer only these (plus "Model default", null) although lane C's scale also holds xhigh (ruled). */
 export const COMPANY_EFFORT_LEVELS = StepThinkingLevelSchema.options;
-const CompanyEffortSchema = StepThinkingLevelSchema;
-export const CompanyOverrideSchema = z.object({
- model: ModelSchema.optional(), effort: CompanyEffortSchema.nullable().optional(),
- differentFrom: z.object({ stage: StageIdSchema, level: z.enum(["model", "vendor"]) }).strict().optional(), locked: z.boolean(),
-}).strict();
-export type CompanyOverride = z.infer<typeof CompanyOverrideSchema>;
+export type CompanyOverride = z.infer<typeof CompanyStageModelOverrideSchema>;
 export type CompanyOverrides = Partial<Record<StageId, CompanyOverride>>;
-const OverridesSchema = z.partialRecord(StageIdSchema, CompanyOverrideSchema);
-export const CompanyPolicySchema = z.object({ version: z.literal(1), revision: z.number().int().min(0), rankingVersion: z.string().min(1).max(32), stepOverrides: OverridesSchema }).strict();
-export type CompanyPolicy = z.infer<typeof CompanyPolicySchema>;
-/** The PUT body: the full set of overrides, at most seven stages. */
-export const CompanyPolicyPutSchema = z.object({ version: z.literal(1), requestId: z.string().uuid(), expectedRevision: z.number().int().min(0), stepOverrides: OverridesSchema }).strict();
-export const CompanyPreviewBodySchema = z.object({ version: z.literal(1), expectedRevision: z.number().int().min(0), stepOverrides: OverridesSchema, cursor: z.string().min(1).max(2048).optional() }).strict();
-export type CompanyPreviewBody = z.infer<typeof CompanyPreviewBodySchema>;
+export type CompanyPolicy = ModelSelectionPolicyResponse & { candidates: Partial<Record<StageId, StageCandidate[]>> };
+export type CompanyPreview = ModelPolicyPreviewResponse;
+/** LOCAL ADDITION (not in lane C's schema; ruled by the controller): the company GET's per-stage `candidates`, the verified-model lists a company model picker offers. Read leniently and separately: a missing or unreadable list only means "no picker", never a failed read. */
+export const CompanyCandidatesSchema = z.object({ candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)) });
+export function readCompanyPolicy(body: unknown): CompanyPolicy {
+ const policy = ModelSelectionPolicyResponseReaderSchema.parse(body) as unknown as ModelSelectionPolicyResponse, extra = CompanyCandidatesSchema.safeParse(body);
+ return { ...policy, candidates: extra.success ? extra.data.candidates : {} };
+}
+export const CompanyPolicyReader = { parse: readCompanyPolicy };
+export const readCompanyPreview = { parse: (value: unknown): CompanyPreview => ModelPolicyPreviewResponseReaderSchema.parse(value) as unknown as CompanyPreview };
 export const IMPACTS = ["unchanged", "changed", "blocked", "unavailable"] as const;
-export const CompanyPreviewSchema = z.object({
- version: z.literal(1), checkedAt: TimeSchema, policyRevision: z.number().int().min(0), coverage: z.enum(["page", "unavailable"]),
- projects: z.array(z.object({ project: z.string().min(1).max(128), impact: z.enum(IMPACTS), reasonCodes: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u)).max(10) }).strict()).max(5),
- nextCursor: z.string().min(1).max(2048).optional(),
-}).strict();
-export type CompanyPreview = z.infer<typeof CompanyPreviewSchema>;
-export const CompanyAppliedSchema = z.object({ version: z.literal(1), status: z.literal("APPLIED"), revision: z.number().int().min(0), requestId: z.string().uuid() }).strict();
-/** 202. `soleOwner` is the owner's decision for a company with one admin (a 24-hour safety wait, then the requester may confirm); lane C's field name to be matched at integration. */
-export const CompanyNeedsConfirmationSchema = z.object({
- version: z.literal(1), status: z.literal("NEEDS_CONFIRMATION"), confirmationId: z.string().min(1).max(128), confirmUrl: z.string().min(1).max(2048).optional(),
- reasonCodes: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u)).max(20), requestId: z.string().uuid(), soleOwner: z.object({ availableAt: TimeSchema }).strict().optional(),
-}).strict();
-export type CompanyNeedsConfirmation = z.infer<typeof CompanyNeedsConfirmationSchema>;
+/** LOCAL ADDITION: the 200 answer of the policy PUT (lane C names none). */
+export const CompanyAppliedSchema = z.object({ version: z.literal(1), status: z.literal("APPLIED"), revision: z.number().int().min(0), requestId: z.uuid() }).strict();
+/** LOCAL ADDITION (ruled by the controller): the 202's sole-owner field. The self-confirm time is shown only when `available` is true. */
+export const SoleOwnerSchema = z.object({ available: z.boolean(), availableAt: z.string().min(1).max(64).nullable(), reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/u).optional() }).strict();
+export type SoleOwner = z.infer<typeof SoleOwnerSchema>;
 /** The stages the company page shows, in order; Review is one row that writes both reviewers. */
 export const COMPANY_ROWS = [
  { id: "understand", stages: ["understand"], title: "Understand", reference: undefined },

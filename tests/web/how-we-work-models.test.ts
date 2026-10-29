@@ -12,7 +12,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
 import { LAYER, draftBody, howWeWorkHost, type Handler } from "./support/how-we-work-fixture.js";
 import { StepThinkingLevelSchema } from "@agentx/contracts/web";
-import { OPUS, SONNET, candidates, effective, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
+import { OPUS, SONNET, candidates, effective, keyOf, mid, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
 
 const PATH = "/v1/app/projects/payments/stage-models";
 type Json = Record<string, unknown>;
@@ -71,7 +71,7 @@ describe("editable model rows", () => {
  });
 
  it("removes the model field from the saved draft for Rovara's default, and keeps the step's other settings", async () => {
-  const f = await open({ overlay: { steps: { build: { instructions: "Run the linter.", model: sonnet, thinkingLevel: "low" } } }, stages: { build: stageEntry("build", { projectChoice: { model: SONNET, effort: "low" }, result: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE" }) }) } });
+  const f = await open({ overlay: { steps: { build: { instructions: "Run the linter.", model: sonnet, thinkingLevel: "low" } } }, stages: { build: stageEntry("build", { projectChoice: { model: mid(SONNET), thinkingLevel: "low" }, effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE" }) }) } });
   await waitFor(() => expect(picker("Build").value).toBe(SONNET));
   fireEvent.change(picker("Build"), { target: { value: "__default" } });
   const body = await saved(f);
@@ -101,7 +101,7 @@ describe("editable model rows", () => {
  });
 
  it("has one Review picker that writes one value, and shows each reviewer's result on its own", async () => {
-  const f = await open({ stages: { code_review: stageEntry("code_review", { result: effective(OPUS) }), security_review: stageEntry("security_review", { result: effective(SONNET) }) } });
+  const f = await open({ stages: { code_review: stageEntry("code_review", { effective: effective(OPUS) }), security_review: stageEntry("security_review", { effective: effective(SONNET) }) } });
   const review = card("Review");
   await waitFor(() => expect(within(review).getAllByRole("combobox", { name: "Review (code and security)" })).toHaveLength(1));
   expect(within(review).getByText("Code review")).toBeTruthy();
@@ -115,14 +115,14 @@ describe("editable model rows", () => {
  });
 
  it("shows the picked-because line, the fixed words for each reason, and Cost unavailable", async () => {
-  await open({ stages: { build: stageEntry("build", { result: effective(SONNET, { decidedBy: "project", reason: "PROJECT_SELECTION" }) }), plan: stageEntry("plan", { result: effective(OPUS, { decidedBy: "company", reason: "COMPANY_DEFAULT" }) }) } });
+  await open({ stages: { build: stageEntry("build", { effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_SELECTION" }) }), plan: stageEntry("plan", { effective: effective(OPUS, { decidedBy: "company", reason: "COMPANY_DEFAULT" }) }) } });
   await waitFor(() => expect(within(card("Build")).getByText("Picked because: Project model setting")).toBeTruthy());
   expect(within(card("Plan")).getByText("Picked because: Company default")).toBeTruthy();
   expect(within(card("Build")).getByText("Cost unavailable")).toBeTruthy();
  });
 
  it("shows a locked stage read only with Locked by company and the link to the company page", async () => {
-  await open({ stages: { build: stageEntry("build", { companyDefault: { choice: { model: OPUS, effort: null }, locked: true }, result: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) } });
+  await open({ stages: { build: stageEntry("build", { locked: true, companyDefault: { model: mid(OPUS), thinkingLevel: null }, effective: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) } });
   const build = card("Build");
   await waitFor(() => expect(within(build).getAllByText("Locked by company").length).toBeGreaterThan(0));
   expect(within(build).queryByRole("combobox")).toBeNull();
@@ -133,7 +133,7 @@ describe("editable model rows", () => {
  });
 
  it("says when a company lock stops the project's own choice from being used", async () => {
-  await open({ stages: { build: stageEntry("build", { projectChoice: { model: SONNET }, companyDefault: { choice: { model: OPUS, effort: null }, locked: true }, result: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) } });
+  await open({ stages: { build: stageEntry("build", { projectChoice: { model: mid(SONNET) }, locked: true, companyDefault: { model: mid(OPUS), thinkingLevel: null }, effective: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) } });
   await waitFor(() => expect(within(card("Build")).getByText("Your project's choice (Sonnet 4.6) isn't used while the company locks this stage.")).toBeTruthy());
   expect(within(card("Build")).queryByRole("combobox")).toBeNull();
  });
@@ -146,14 +146,14 @@ describe("editable model rows", () => {
  });
 
  it("shows a refusal with the table's sentence and its fix link, and no model", async () => {
-  await open({ stages: { plan_check: stageEntry("plan_check", { result: { kind: "refusal", code: "NO_VERIFIED_CANDIDATE", fixHref: "/app/admin/connections" } }) } });
+  await open({ stages: { plan_check: stageEntry("plan_check", { refusal: { code: "NO_VERIFIED_CANDIDATE", fixHref: "/app/admin/connections" } }) } });
   const check = card("Plan check");
   await waitFor(() => expect(within(check).getByText("No verified model can run this stage.")).toBeTruthy());
   expect(within(check).getByRole("link", { name: /fix/iu }).getAttribute("href")).toBe("/app/admin/connections");
  });
 
  it("gives a viewer the published result only, with no controls and no draft read", async () => {
-  const f = await open({ canEdit: false, stages: { build: stageEntry("build", { result: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE" }) }) } });
+  const f = await open({ canEdit: false, stages: { build: stageEntry("build", { effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE" }) }) } });
   await waitFor(() => expect(within(card("Build")).getByText("Sonnet 4.6")).toBeTruthy());
   expect(within(card("Build")).getByText("Picked because: Set in this project")).toBeTruthy();
   expect(screen.queryByRole("combobox")).toBeNull();
@@ -188,7 +188,7 @@ describe("editable model rows", () => {
   await waitFor(() => expect(picker("Build")).toBeTruthy());
   fireEvent.change(picker("Build"), { target: { value: OPUS } });
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(false);
-  stages = { build: stageEntry("build", { companyDefault: { choice: { model: SONNET, effort: null }, locked: true }, result: effective(SONNET, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) };
+  stages = { build: stageEntry("build", { locked: true, companyDefault: { model: mid(SONNET), thinkingLevel: null }, effective: effective(SONNET, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }), notice: { code: "STAGE_LOCKED", fixHref: "/app/admin/how-we-work" } }) };
   await f.query.invalidateQueries();
   await waitFor(() => expect(within(card("Build")).queryByRole("combobox")).toBeNull());
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save draft" }).disabled).toBe(true);
@@ -208,7 +208,7 @@ describe("editable model rows", () => {
 
  it("drops a pending model edit when the chosen model is no longer verified, and keeps the other edits", async () => {
   let aged = false;
-  const f = await open({ read: () => stageModelsBody({ build: stageEntry("build", { candidates: candidates().map(candidate => aged && candidate.model === OPUS ? { ...candidate, status: "stale" } : candidate) }) }) });
+  const f = await open({ read: () => stageModelsBody({ build: stageEntry("build", { candidates: candidates().map(candidate => aged && keyOf(candidate.model) === OPUS ? { ...candidate, status: "stale" } : candidate) }) }) });
   await waitFor(() => expect(picker("Build")).toBeTruthy());
   fireEvent.change(picker("Build"), { target: { value: OPUS } });
   fireEvent.change(picker("Build", "Effort"), { target: { value: "low" } });
@@ -257,7 +257,7 @@ describe("editable model rows", () => {
  });
 
  it.each(["light", "dark"] as const)("passes axe in the %s theme", async theme => {
-  const f = await open({ theme, stages: { plan_check: stageEntry("plan_check", { result: { kind: "refusal", code: "LOCK_UNSATISFIABLE", fixHref: "/app/admin/how-we-work" } }) } });
+  const f = await open({ theme, stages: { plan_check: stageEntry("plan_check", { refusal: { code: "LOCK_UNSATISFIABLE", fixHref: "/app/admin/how-we-work" } }) } });
   await waitFor(() => expect(picker("Build")).toBeTruthy());
   await expectNoAxeViolations(f.container);
  });
