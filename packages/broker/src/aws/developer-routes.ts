@@ -1,4 +1,12 @@
 import { readSlackWorkspaceEvidence } from "../org/slack-workspace-evidence.js";
+import { WorkingBranchNameSchema } from "@agentx/contracts";
+import { projectWorkingBranchSaveHttp } from "../org/project-working-branch-save-http.js";
+import { readProjectWorkingBranchContextHttp } from "../org/project-working-branch-context.js";
+import { readProjectWorkingBranchHttp } from "../org/project-working-branch-http.js";
+import type { WorkingBranchReviewDependencies } from "../org/project-working-branch.js";
+import type { WorkingBranchListDependencies } from "../org/project-working-branch-list.js";
+import { readReviewedProjectRestoreAppPreview } from "../org/reviewed-project-restore-app.js";
+import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-archive-app.js";
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
@@ -125,7 +133,7 @@ import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
-import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
+import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { bindProjectChannel, unbindProjectChannel, type ProjectSlackChannelDependencies } from "../org/slack-binding.js";
@@ -296,6 +304,9 @@ export interface DeveloperRouteDependencies {
    * GitHub's view of it. Without it the route answers NOT_FOUND.
    */
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
+  /** Lane B: pinned, explicitly org-bound read-only branch provider; absent fails closed. */
+  projectWorkingBranches?: () => Required<Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">> & { finish: () => Promise<void> };
+  projectWorkingBranchPreview?: () => Required<Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">> & { finish: () => Promise<void> };
   /**
    * Plan 2, Task 18: pushes the approved domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Without it an approved change
    * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
@@ -919,7 +930,7 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
 type StoredProject = z.infer<typeof StoredProjectDefinitionSchema>;
 
 /** A project's latest revision as stored, with who registered it and when; undefined when it has none or the revision no longer parses. */
-async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<{ definition: StoredProject; registeredBy: string; registeredAt: string } | undefined> {
+async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<{ definition: StoredProject; registeredBy: string; registeredAt: string; workingBranchSelections?: unknown } | undefined> {
   const response = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
@@ -927,7 +938,7 @@ async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgI
     ScanIndexForward: false,
     Limit: 1,
     ConsistentRead: true,
-  })) as { Items?: Array<{ definition?: unknown; registeredBy?: unknown; registeredAt?: unknown }> };
+  })) as { Items?: Array<{ definition?: unknown; registeredBy?: unknown; registeredAt?: unknown; workingBranchSelections?: unknown }> };
   const item = response.Items?.[0];
   if (item === undefined) return undefined;
   const definition = StoredProjectDefinitionSchema.safeParse(item.definition);
@@ -935,7 +946,7 @@ async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgI
     logDeveloperEvent({ event: "developer.project_unreadable", project, reason: definition.error.issues[0]?.message ?? "invalid" });
     return undefined;
   }
-  return { definition: definition.data, registeredBy: typeof item.registeredBy === "string" ? item.registeredBy : "unknown", registeredAt: typeof item.registeredAt === "string" ? item.registeredAt : "" };
+  return { workingBranchSelections:item.workingBranchSelections, definition: definition.data, registeredBy: typeof item.registeredBy === "string" ? item.registeredBy : "unknown", registeredAt: typeof item.registeredAt === "string" ? item.registeredAt : "" };
 }
 
 /** GitHub's spelling of a repository, `owner/name`, from its URL; the repository's own name when the URL is no GitHub path. */
@@ -960,7 +971,7 @@ async function appProjectSummary(
     ...(meta?.description === undefined ? {} : { description: meta.description }),
     status: meta?.status ?? "active",
     latestRevision: definition.revision,
-    repositories: definition.repositories.map((repository) => ({ fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
     myRole: role,
     setup: await setupStateOf(setupCheckDepsOf(deps), meta, definition),
   };
@@ -1040,6 +1051,11 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
   const egress = await readEgressDomains(deps, caller.orgId, { kind: "project", project: name });
   return {
     ...await appProjectSummary(deps, name, role, record, meta),
+    ...(record.workingBranchSelections===undefined?{}:{savedWorkingBranches: (()=>{
+      const selections=z.record(AgentXNameSchema,z.object({branch:WorkingBranchNameSchema,commit:z.string().regex(/^[a-f0-9]{40}$/),installationId:z.number().int().positive(),repositoryId:z.number().int().positive()}).strict()).safeParse(record.workingBranchSelections);
+      if(!selections.success)throw agentXError("RUNTIME_UNAVAILABLE","Saved working branch settings could not be read.");
+      return Object.entries(selections.data).map(([repository,value])=>{const repo=definition.repositories.find(r=>r.name===repository);if(repo===undefined||repo.installationId!==value.installationId||repo.githubRepositoryId!==value.repositoryId)throw agentXError("RUNTIME_UNAVAILABLE","Saved working branch settings could not be read.");return{repository,fullName:repositoryFullName(repo),branch:value.branch,commit:value.commit};});
+    })()}),
     settings: {
       setupCommands: definition.setup.map(formatCommandLine),
       testCommands: definition.readiness.map(formatCommandLine),
@@ -2010,6 +2026,37 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+  }
+  const workingBranchContextRoute = /^\/v1\/app\/projects\/([^/]+)\/working-branches$/.exec(url.pathname);
+  if (request.method === "POST" && workingBranchContextRoute !== null) {
+    if(caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session for working branch settings.");
+    return projectWorkingBranchSaveHttp(deps,caller,workingBranchContextRoute[1]!,jsonBody(request));
+  }
+  const workingBranchStatusRoute = /^\/v1\/app\/projects\/([^/]+)\/working-branches\/requests\/([^/]+)$/.exec(url.pathname);
+  if(request.method === "GET" && workingBranchStatusRoute !== null)return projectWorkingBranchSaveHttp(deps,caller,workingBranchStatusRoute[1]!,undefined,workingBranchStatusRoute[2]);
+  if (request.method === "GET" && workingBranchContextRoute !== null) return readProjectWorkingBranchContextHttp(deps, caller, workingBranchContextRoute[1]!, url, request.headers);
+  // Lane B: read-only branch pages; all other method/path pairs fall through.
+  const workingBranchesRoute = /^\/v1\/app\/projects\/([^/]+)\/repositories\/([^/]+)\/branches$/.exec(url.pathname);
+  if (request.method === "GET" && workingBranchesRoute !== null) return readProjectWorkingBranchHttp(deps, caller, workingBranchesRoute[1]!, workingBranchesRoute[2]!, url, request.headers);
+  const workingBranchPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/repositories\/([^/]+)\/branches\/preview$/.exec(url.pathname);
+  if (request.method === "GET" && workingBranchPreviewRoute !== null) return readProjectWorkingBranchHttp(deps, caller, workingBranchPreviewRoute[1]!, workingBranchPreviewRoute[2]!, url, request.headers, true);
+  // Lane B reviewed archive: strict pinned preview + acknowledged write; legacy routes remain compatible.
+  const reviewedArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive-preview|reviewed-archive)$/.exec(url.pathname);
+  if (reviewedArchiveRoute !== null && ((request.method === "GET" && reviewedArchiveRoute[2] === "archive-preview") || (request.method === "POST" && reviewedArchiveRoute[2] === "reviewed-archive"))) {
+    let name: string;
+    try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
+    if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
+    if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
+  }
+  // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
+  const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
+  if (reviewedRestoreRoute !== null && ((request.method === "GET" && reviewedRestoreRoute[2] === "restore-preview") || (request.method === "POST" && reviewedRestoreRoute[2] === "reviewed-restore"))) {
+    let name: string;
+    try { name = decodeURIComponent(reviewedRestoreRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
+    if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
+    if (request.method === "GET") return readReviewedProjectRestoreAppPreview(deps, caller, name);
+    return restoreProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
   }
   const projectSlackChannelRoute = /^\/v1\/app\/projects\/([^/]+)\/slack-channel$/.exec(url.pathname);
   if (projectSlackChannelRoute !== null) {

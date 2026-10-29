@@ -347,3 +347,13 @@ async function writeDescription(deps: Pick<ProjectSettingsDependencies, "documen
     ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": project, ":active": "active", ":now": new Date().toISOString(), ":unknown": "unknown", ...(empty ? {} : { ":description": description.trim() }) },
   }));
 }
+
+// Lane B: internal read-only working-branch review; no route/save integration yet.
+export { readProjectWorkingBranchPreview, type WorkingBranchReviewDependencies } from "./project-working-branch.js";
+export { createWorkingBranchProvider, createWorkingBranchLister } from "./project-working-branch-provider.js";
+export { readProjectWorkingBranchPage, type WorkingBranchListDependencies } from "./project-working-branch-list.js";
+
+// Unexposed audited working-branch revision primitive. No HTTP/UI or consumer wiring.
+export { commitReviewedProjectWorkingBranch, type WorkingBranchSaveDependencies } from "./project-working-branch-save.js";
+// Lane B: unexposed cleanup prerequisite; company-close integration remains with lane A.
+export { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";

@@ -462,6 +462,23 @@ export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: 
   return build("audit.org_shred_scheduled", input, { kind: "org", id: input.orgId }, { shredAfterDays: input.shredAfterDays });
 }
 
+// Lane B: name-keyed project target is pseudonymized by the existing appender.
+export function auditProjectArchived(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
+ return build("project.archived", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
+}
+
+// Lane B: reviewed restore uses the same safe facts and name-keyed target handling.
+export function auditProjectRestored(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
+ return build("project.restored", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
+}
+
+// Unexposed working-branch save; repository/ref strings are erasable details, never facts.
+export function auditProjectWorkingBranchChanged(input: AuditBuilderBase & {projectName:string;fromRevision:number;toRevision:number;lifecycleRevision:number;installationId:number;repositoryId:number;requestId:string;previousConfigured:boolean}): AuditEventInput {
+ const identity = { installationId: String(input.installationId), repositoryId: String(input.repositoryId) };
+ const details = input.details === undefined || input.details.length === 0 ? [{ subject: "org", fields: identity }] : input.details.map((part, index) => index === 0 ? { ...part, fields: { ...part.fields, ...identity } } : part);
+ return build("project.working_branch_changed",{...input,details},{kind:"project",name:input.projectName},{fromRevision:input.fromRevision,toRevision:input.toRevision,lifecycleRevision:input.lifecycleRevision,requestId:input.requestId,previousConfigured:input.previousConfigured});
+}
+
 // "How we work" playbook ------------------------------------------------------------------------------------------------
 // One block, so a merge with another branch's additions stays easy. The project is a name-keyed target (pseudonymized by the
 // appender); a process is targeted by the process layer's agent id. Facts are counts, revisions, flags and fixed words.

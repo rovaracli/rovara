@@ -1,7 +1,7 @@
 import { createContext, createElement, useContext, type ReactNode } from "react";
 import type { RealtimeTokenResponse } from "@agentx/contracts/web";
 export type ApiMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
-export interface ApiRequest { method: ApiMethod; path: string; body?: unknown; headers?: Record<string, string> }
+export interface ApiRequest { method: ApiMethod; path: string; body?: unknown; headers?: Record<string, string>; retry?: "never" }
 export interface ApiResponse { status: number; body: unknown }
 export interface ApiTransport { request(input: ApiRequest): Promise<ApiResponse> }
 export interface RealtimeSocket {
