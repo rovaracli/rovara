@@ -10,6 +10,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
+import { howWeWorkView } from "./support/how-we-work-view.js";
 import { LAYER, draftBody, howWeWorkHost, type Handler } from "./support/how-we-work-fixture.js";
 import { StepThinkingLevelSchema } from "@agentx/contracts/web";
 import { OPUS, SONNET, candidates, effective, keyOf, mid, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
@@ -22,8 +23,8 @@ const stageModels = (body: (draft: string | null) => unknown): Handler => (_requ
  const answer = body(url.searchParams.get("draft"));
  return typeof answer === "object" && answer !== null && "status" in answer ? answer as { status: number; body: unknown } : { status: 200, body: answer };
 };
-function setup(options: { canEdit?: boolean; stages?: Record<string, Json>; read?: (draft: string | null) => unknown; handle?: Handler; overlay?: Record<string, unknown>; theme?: "light" | "dark" } = {}) {
- const cell = howWeWorkHost({ ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }), ...(options.overlay === undefined ? {} : { overlay: options.overlay }), handle: (request, url) => options.handle?.(request, url) ?? stageModels(options.read ?? (() => stageModelsBody(options.stages)))(request, url) }), query = createQueryClient();
+function setup(options: { canEdit?: boolean; stages?: Record<string, Json>; read?: (draft: string | null) => unknown; handle?: Handler; overlay?: Record<string, unknown>; theme?: "light" | "dark"; view?: unknown } = {}) {
+ const cell = howWeWorkHost({ ...(options.view === undefined ? {} : { view: options.view }), ...(options.canEdit === undefined ? {} : { canEdit: options.canEdit }), ...(options.overlay === undefined ? {} : { overlay: options.overlay }), handle: (request, url) => options.handle?.(request, url) ?? stageModels(options.read ?? (() => stageModelsBody(options.stages)))(request, url) }), query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...cell, ...ui, query };
 }
@@ -272,6 +273,16 @@ describe("editable model rows", () => {
   expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
   expect(puts(f)).toEqual([]);
   expect((screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Project rules" })).value).toBe("Be careful.");
+ });
+
+ it("writes the first model choices of a project that has no process layer yet (nothing to have moved)", async () => {
+  const f = await open({ view: howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code" }, rules: [] }), overlay: {} });
+  await waitFor(() => expect(picker("Build")).toBeTruthy());
+  fireEvent.change(picker("Build"), { target: { value: OPUS } });
+  const body = await saved(f);
+  expect(body.overlay.steps!.build).toEqual({ model: opus });
+  expect(screen.queryByText("This draft changed. Reload and try again.")).toBeNull();
+  expect(f.sent().map(request => request.method + " " + request.path)).toContain("POST /v1/app/projects/payments/playbook/process");
  });
 
  it("saves model choices when the draft is still at the revision they were made on", async () => {

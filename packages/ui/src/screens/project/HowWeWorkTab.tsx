@@ -72,7 +72,8 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  async function write(changes: RuleEdits, choices: ModelEdits = {}) {
   const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId);
   // Model choices were made against one draft revision; if someone else saved since, they are never written onto the newer draft.
-  if (Object.keys(choices).length > 0 && current.draft.revision !== editRevision) throw new DraftChanged();
+  // With no layer at edit time (editRevision undefined) the layer was just created, so there is no earlier revision to have moved.
+  if (Object.keys(choices).length > 0 && editRevision !== undefined && current.draft.revision !== editRevision) throw new DraftChanged();
   const next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references), current.draft.revision);
   query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
   setEnsured(layer.agentId);
