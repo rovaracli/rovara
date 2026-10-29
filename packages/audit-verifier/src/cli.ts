@@ -11,10 +11,12 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { parseBundle, statementHash, BundleParseError, type AuditBundleV1, type EpochStatementV1 } from "./bundle.js";
 import { canonicalJson } from "./canonical-json.js";
+import { parseSearchExport, type SearchExportV1 } from "./search-export.js";
+import { verifySearchExport, SEARCH_EXPORT_CLAIMS } from "./verify-search-export.js";
 import { verifyExtends } from "./extends.js";
 import { AUDIT_LIMITS_COPY } from "./limits-copy.js";
 import { defaultAnchors } from "./trust.js";
-import { verifyBundle, type BundleCheck, type BundleReport } from "./verify-bundle.js";
+import { verifyBundle, type BundleCheck } from "./verify-bundle.js";
 
 export type CliIo = { stdout: (text: string) => void; stderr: (text: string) => void };
 
@@ -65,7 +67,11 @@ function parseArgs(argv: readonly string[]): Args {
   return { bundle, ...(extendsPath === undefined ? {} : { extendsPath }), trust, json, openssl };
 }
 
-function readBundle(path: string, maxBytes: number): AuditBundleV1 {
+type AuditFile = AuditBundleV1 | SearchExportV1;
+const isSearch = (value: AuditFile): value is SearchExportV1 => value.format === "rovara-audit-search-export";
+const contextOf = (value: AuditFile): AuditBundleV1 => isSearch(value) ? value.context : value;
+
+function readBundle(path: string, maxBytes: number): AuditFile {
   let bytes: Buffer;
   try {
     // The size is checked before the file is read, for plain and gzip files alike.
@@ -90,6 +96,7 @@ function readBundle(path: string, maxBytes: number): AuditBundleV1 {
     throw new UsageError(`${path} is not valid JSON`);
   }
   try {
+    if (typeof parsed === "object" && parsed !== null && "format" in parsed && parsed.format === "rovara-audit-search-export") return parseSearchExport(parsed);
     return parseBundle(parsed);
   } catch (error) {
     if (error instanceof BundleParseError) throw new UsageError(`${path} is not a version 1 audit bundle: ${error.message}`);
@@ -176,6 +183,13 @@ function opensslLines(bundle: AuditBundleV1): string[] {
   return lines;
 }
 
+function terminalSafe(value: unknown): unknown {
+  if (typeof value === "string") return clean(value);
+  if (Array.isArray(value)) return value.map(terminalSafe);
+  if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, terminalSafe(item)]));
+  return value;
+}
+
 function checkLine(entry: BundleCheck): string {
   return `${entry.ok ? "ok  " : "FAIL"} ${entry.name}: ${clean(entry.detail)}`;
 }
@@ -191,26 +205,28 @@ export function runCli(argv: readonly string[], io: CliIo, options: { maxJsonByt
 
 function run(argv: readonly string[], io: CliIo, maxBytes: number): number {
   let args: Args;
-  let bundle: AuditBundleV1;
-  let older: AuditBundleV1 | undefined;
+  let input: AuditFile;
+  let olderInput: AuditFile | undefined;
   let anchors: Record<string, X509Certificate[]>;
   try {
     args = parseArgs(argv);
     anchors = loadAnchors(args.trust);
-    bundle = readBundle(args.bundle, maxBytes);
-    if (args.extendsPath !== undefined) older = readBundle(args.extendsPath, maxBytes);
+    input = readBundle(args.bundle, maxBytes);
+    if (args.extendsPath !== undefined) olderInput = readBundle(args.extendsPath, maxBytes);
   } catch (error) {
     if (error instanceof UsageError) {
-      io.stderr(`${error.message}\n${USAGE}\n`);
+      io.stderr(`${clean(error.message)}\n${USAGE}\n`);
       return 2;
     }
     throw error;
   }
 
-  const report: BundleReport = verifyBundle(bundle, { anchors });
+  const bundle = contextOf(input), older = olderInput === undefined ? undefined : contextOf(olderInput);
+  const searchMode = isSearch(input) || (olderInput !== undefined && isSearch(olderInput));
+  const report = isSearch(input) ? verifySearchExport(input, { anchors }) : verifyBundle(bundle, { anchors });
   const checks: BundleCheck[] = [...report.checks];
   if (older !== undefined) {
-    const olderReport = verifyBundle(older, { anchors });
+    const olderReport = olderInput !== undefined && isSearch(olderInput) ? verifySearchExport(olderInput, { anchors }) : verifyBundle(older, { anchors });
     checks.push({
       name: "olderExport",
       ok: olderReport.ok,
@@ -219,12 +235,14 @@ function run(argv: readonly string[], io: CliIo, maxBytes: number): number {
         : `the older export fails its own checks: ${olderReport.checks.filter((c) => !c.ok).map((c) => c.name).join(", ")}`,
     });
     const result = verifyExtends(bundle, older);
-    checks.push({ name: "extends", ok: result.ok, detail: result.detail });
+    checks.push({ name: searchMode ? "context continuity" : "extends", ok: result.ok, detail: result.detail });
   }
   const ok = checks.every((entry) => entry.ok);
 
   if (args.json) {
-    io.stdout(`${JSON.stringify({ ...report, ok, checks, limits: AUDIT_LIMITS_COPY }, null, 2)}\n`);
+    const output = { ...report, ok, checks, limits: AUDIT_LIMITS_COPY };
+    // New-format metadata is untrusted terminal input too. The legacy JSON branch stays byte-identical.
+    io.stdout(`${JSON.stringify(searchMode ? terminalSafe(output) : output, null, 2)}\n`);
     return ok ? 0 : 1;
   }
 
@@ -248,6 +266,7 @@ function run(argv: readonly string[], io: CliIo, maxBytes: number): number {
     out.push(`Tokens from ${label} were not checked: pass --trust ${label}=<pem file> with that authority's root certificate.`);
   }
   if (args.openssl) out.push(...opensslLines(bundle));
+  if (searchMode) out.push("", ...SEARCH_EXPORT_CLAIMS);
   out.push("", AUDIT_LIMITS_COPY);
   io.stdout(`${out.join("\n")}\n`);
   return ok ? 0 : 1;
