@@ -25,8 +25,6 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "invites", lazy: async () => ({ Component: (await import("./screens/admin/InvitesScreen.js")).InvitesScreen }) }, { path: "people", lazy: async () => ({ Component: (await import("./screens/admin/MembersScreen.js")).MembersScreen }) }, { path: "people/roles", lazy: async () => ({ Component: (await import("./screens/admin/RolesScreen.js")).RolesScreen }) }, // Lane B: read-only projects and agents.
  { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },
- { path: "agents", lazy: async () => ({ Component: (await import("./screens/admin/agents/AgentsScreen.js")).AgentsScreen }) },
- { path: "agents/:id/versions", lazy: async () => ({ Component: (await import("./screens/admin/agents/AgentVersionsScreen.js")).AgentVersionsScreen }) },
  { path: "*", element: <NotFound /> }] });
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });

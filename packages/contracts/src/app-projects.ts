@@ -44,7 +44,7 @@ export const AppProjectSummarySchema = z.object({
   description: z.string().optional(),
   status: ProjectStatusSchema,
   latestRevision: z.number().int().positive(),
-  repositories: z.array(z.object({ fullName: z.string(), defaultBranch: z.string() })),
+  repositories: z.array(z.object({ name: z.string().optional(), fullName: z.string(), defaultBranch: z.string() })),
   myRole: ProjectRoleSchema,
   setup: z.object({
     status: ProjectSetupStatusSchema,

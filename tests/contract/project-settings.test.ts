@@ -410,7 +410,7 @@ describe("repositories", () => {
         { name: "api", url: "https://github.com/Acme/api.git", path: "repo/api", defaultBranch: "trunk", credentialRef: "github-app" },
       ],
     });
-    expect((await h.detail()).repositories).toEqual([{ fullName: "acme/web", defaultBranch: "main" }, { fullName: "Acme/api", defaultBranch: "trunk" }]);
+    expect((await h.detail()).repositories).toEqual([{ name: "web", fullName: "acme/web", defaultBranch: "main" }, { name: "api", fullName: "Acme/api", defaultBranch: "trunk" }]);
   });
 
   it("refuses an added repository that is not connected with GITHUB_NOT_CONNECTED, and writes no revision", async () => {

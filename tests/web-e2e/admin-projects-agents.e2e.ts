@@ -12,7 +12,7 @@ test("inspects real persisted projects and versions using only reads",async({pag
 });
 for(const theme of ["light","dark"] as const)test(`checks B1 pages in ${theme}`,async({page})=>{
  for(const [path,table] of [["projects","Projects"],["projects/payments","Project people"]]){await page.goto("/app/admin/"+path);await expect(page.getByRole("table",{name:table!,exact:true})).toBeVisible();await checkA11y(page,{theme});}
- await page.screenshot({path:`.superpowers/sdd/codex/b1-versions-${theme}.png`});
+
 });
 test("refuses revoked and narrow-screen B1 routes",async({page,request})=>{
  await page.setViewportSize({width:390,height:844});await page.goto("/app/admin/projects");await expect(page.getByText("Open this on a larger screen to use it.",{exact:false})).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);
@@ -40,8 +40,8 @@ test("inspects working-branch pages and an exact ref through real cookie routes 
  const load=page.getByRole("button",{name:"Load branch page",exact:true});await load.focus();await page.keyboard.press("Enter");await expect(page.getByRole("table",{name:"Working branches on this page"})).toBeVisible();await expect(page.getByRole("button",{name:"Refresh branch page",exact:true})).toBeFocused();
  await page.getByRole("button",{name:"Next branch page"}).click();await expect(page.getByRole("button",{name:"Inspect feature/final",exact:true})).toBeVisible();const inspect=page.getByRole("button",{name:"Inspect feature/final",exact:true});await inspect.focus();await page.keyboard.press("Enter");await expect(page.getByText("c".repeat(40),{exact:true})).toBeVisible();await expect(inspect).toBeFocused();await expect(page.getByRole("button",{name:/Save|Apply branch|Start task/})).toHaveCount(0);await checkA11y(page,{theme:"light"});
  const evidence=await(await request.get("/__mock/admin-evidence")).json() as {providerCalls:{method:string;path:string}[];branchRates:{pk:string;count:number}[];audit:unknown[];projectReceipts:unknown[]};expect(evidence.providerCalls).toHaveLength(21);expect(evidence.providerCalls.filter(r=>r.method==="POST")).toHaveLength(3);expect(evidence.branchRates.find(r=>r.pk.includes("HOURLY"))?.count).toBe(9);expect(evidence.audit).toEqual([]);expect(evidence.projectReceipts).toEqual([]);
- const reads=await(await request.get("/__mock/requests")).json() as {method:string;path:string}[];expect(reads.filter(r=>r.path.startsWith("/v1/web/")).every(r=>r.method==="GET")).toBe(true);await page.screenshot({path:".superpowers/sdd/codex/b23-working-branch-inspection.png"});
- await page.getByRole("button",{name:"Close branch inspection"}).click();await expect(page.getByText("c".repeat(40),{exact:true})).toHaveCount(0);await expect(page.getByRole("button",{name:"Inspect working branches",exact:true})).toBeFocused();
+ const reads=await(await request.get("/__mock/requests")).json() as {method:string;path:string}[];expect(reads.filter(r=>r.path.startsWith("/v1/web/")).every(r=>r.method==="GET")).toBe(true);
+ await page.getByRole("button",{name:"Close branch inspection"}).focus();await page.keyboard.press("Enter");await expect(page.getByText("c".repeat(40),{exact:true})).toHaveCount(0);await expect(page.getByRole("button",{name:"Inspect working branches",exact:true})).toBeFocused();
 });
 test("removes working-branch inspection on a live role change and ignores a late preview",async({page,request})=>{
  await page.goto("/app/admin/projects/payments");await page.getByRole("button",{name:"Inspect working branches",exact:true}).click();await page.getByRole("combobox",{name:"Repository to inspect"}).waitFor();await page.getByRole("button",{name:"Load branch page",exact:true}).click();await page.getByRole("table",{name:"Working branches on this page"}).waitFor();

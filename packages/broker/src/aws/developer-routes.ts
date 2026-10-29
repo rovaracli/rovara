@@ -969,7 +969,7 @@ async function appProjectSummary(
     ...(meta?.description === undefined ? {} : { description: meta.description }),
     status: meta?.status ?? "active",
     latestRevision: definition.revision,
-    repositories: definition.repositories.map((repository) => ({ fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
     myRole: role,
     setup: await setupStateOf(setupCheckDepsOf(deps), meta, definition),
   };

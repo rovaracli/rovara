@@ -127,7 +127,7 @@ describe("GET /v1/app/projects", () => {
     const answer = await h.dev(OMAR, "GET", "/v1/app/projects");
     expect(answer.status).toBe(200);
     expect(AppProjectsResponseSchema.parse(answer.body)).toEqual({ projects: [{
-      name: "payments", status: "active", latestRevision: 1, repositories: [{ fullName: "example/demo", defaultBranch: "main" }],
+      name: "payments", status: "active", latestRevision: 1, repositories: [{ name: "demo", fullName: "example/demo", defaultBranch: "main" }],
       myRole: "maintainer", setup: { status: "unchecked" },
     }] });
   });
@@ -190,7 +190,7 @@ describe("GET /v1/app/projects/{name}", () => {
     const answer = await h.dev(OMAR, "GET", "/v1/app/projects/web");
     expect(answer.status).toBe(200);
     expect(AppProjectDetailSchema.parse(answer.body)).toEqual({
-      name: "web", description: "The website", status: "active", latestRevision: 1, repositories: [{ fullName: "Acme/web", defaultBranch: "trunk" }],
+      name: "web", description: "The website", status: "active", latestRevision: 1, repositories: [{ name: "web", fullName: "Acme/web", defaultBranch: "trunk" }],
       myRole: "maintainer", setup: { status: "unchecked" },
       settings: { setupCommands: ["npm ci"], testCommands: ["npm test -- --run"], devcontainer: null, allowedDomains: [] },
       createdAt: "2026-10-02T00:00:00.000Z", createdBy: { developerId: MAYA.developerId, name: MAYA.name },
