@@ -29,6 +29,7 @@ function MonthlyBase({ orgId, developerId, role }: { orgId: string; developerId:
  const error = read.error instanceof ApiError && read.error.status === 403 ? "Only current company owners and admins can view these budgets. No amounts are shown." : read.error instanceof ApiError && read.error.status === 429 ? "Too many budget checks. Wait a minute before retrying. No current amounts are shown." : "Couldn't check monthly base budgets. No current amounts are shown. Try again; an installation administrator may need to check the settings.";
  return <section aria-busy={locked}>
   <PageHeader focusOnMount title="Spending" description="Monthly base budget settings. Read only." actions={<Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh budgets</Button>} />
+  <p className="rv-admin-note">{"Read only. You can't change budgets on this page. Editing budgets isn't available in the admin console yet."}</p>
   <p className="rv-admin-note">Usage, top-ups and enforcement are not checked on this page. A monthly base is separate from a task stop.</p>
   {checking && <p role="status">Checking company access...</p>}{read.isFetching && read.data !== undefined && <p role="status">Checking monthly base budgets...</p>}
   {read.isPending ? <Skeleton label="Loading monthly base budgets" /> : read.isError ? <p role="alert">{error}</p> : read.data !== undefined ? <>
