@@ -21,4 +21,3 @@ export const GitBranchNameSchema = z
       context.addIssue({ code: "custom", message: "defaultBranch is not a safe Git branch name" });
     }
   });
-

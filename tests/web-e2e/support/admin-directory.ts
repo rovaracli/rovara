@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
-import { installationBindingCheck } from "../../../packages/broker/src/org/github-connection.js";
+import { installationBindingCheck, requireRepositoriesConnected } from "../../../packages/broker/src/org/github-connection.js";
 import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "../../../packages/broker/src/org/project-working-branch-provider.js";
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
@@ -37,6 +37,8 @@ export function createAdminDirectory() {
    if (part === "attribute_exists(pk)") return row !== undefined;
    if (part === "attribute_not_exists(closingAt)") return row?.closingAt === undefined;
    if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
+   if (["attribute_not_exists(acceptedAt)", "attribute_not_exists(revokedAt)", "attribute_not_exists(revision)"].includes(part)) return row?.[part.slice("attribute_not_exists(".length, -1)] === undefined;
+   if (part === "expiresAt > :now") return typeof row?.expiresAt === "string" && typeof values[":now"] === "string" && row.expiresAt > values[":now"];
    const absent = /^attribute_not_exists\((archiveRevision|orgId|#status|#s[0-9]+)\)$/.exec(part);
    if (absent) return row?.[names[absent[1]!] ?? absent[1]!] === undefined;
    const equal = /^([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(part);
@@ -47,12 +49,16 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
-  if (command instanceof BatchGetCommand) return { Responses: Object.fromEntries(Object.entries(command.input.RequestItems ?? {}).map(([table, request]) => {
-   const keys = request.Keys ?? [];
-   // Lane B: developer-name reads must be one bounded, strongly consistent batch; other batch reads are unchanged.
-   if (keys.some(key => typeof key.pk === "string" && key.pk.startsWith("DEVELOPER_NAME#")) && (request.ConsistentRead !== true || keys.length > 100)) throw new Error("Unsupported fixture batch read.");
-   return [table, keys.flatMap(key => { const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; })];
-  })) };
+  if (command instanceof BatchGetCommand) {
+   const Responses: Record<string, Row[]> = {};let count = 0;
+   for (const [table, request] of Object.entries(command.input.RequestItems ?? {})) {
+    const keys = request.Keys ?? [];count += keys.length;
+    if (count > 100 || request.ProjectionExpression !== undefined) throw new Error("Unsupported fixture batch read.");
+    if (keys.some(key => typeof key.pk === "string" && key.pk.startsWith("DEVELOPER_NAME#")) && request.ConsistentRead !== true) throw new Error("Unsupported fixture batch read.");
+    Responses[table] = keys.flatMap(key => { if (typeof key.pk !== "string" || typeof key.sk !== "string") throw new Error("Invalid fixture batch key.");const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; });
+   }
+   return { Responses };
+  }
   if (command instanceof QueryCommand) {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
    if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");
@@ -78,7 +84,7 @@ export function createAdminDirectory() {
   const checks = actions.map(action => {
    const write = action.Update ?? action.ConditionCheck ?? action.Put;
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
-   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", archiveUpdate, restoreUpdate, "SET latestRevision = :next"].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
+   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", "SET revokedAt = :at, revokedBy = :by, revision = :next", archiveUpdate, restoreUpdate, "SET latestRevision = :next"].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
    const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write ? write.UpdateExpression ?? "" : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
    for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
@@ -94,7 +100,13 @@ export function createAdminDirectory() {
     if (update.UpdateExpression === "SET latestRevision = :next") { if(row===undefined||!Number.isSafeInteger(values[":next"]))throw new Error("Invalid fixture catalog update.");put({...row,latestRevision:values[":next"]});continue; }
     if (update.UpdateExpression === archiveUpdate) { put({ ...update.Key, ...row, entityType: values[":type"], name: values[":name"], status: values[":archived"], archivedAt: values[":at"], archivedBy: values[":by"], archiveRevision: values[":next"], createdAt: row?.createdAt ?? values[":at"], createdBy: row?.createdBy ?? values[":unknown"] });continue; }
     if (update.UpdateExpression === restoreUpdate) { if (row === undefined) throw new Error("Missing restore fixture meta.");const next: Row = { ...row, status: values[":active"], archiveRevision: values[":next"] };delete next.archivedAt;delete next.archivedBy;put(next);continue; }
-    if (row === undefined || values[":role"] === undefined) throw new Error("Unsupported fixture update.");
+    if (row === undefined) throw new Error("Unsupported fixture update.");
+    if (update.UpdateExpression === "SET revokedAt = :at, revokedBy = :by, revision = :next") {
+     if (typeof values[":at"] !== "string" || typeof values[":by"] !== "string" || typeof values[":next"] !== "number") throw new Error("Invalid fixture revoke.");
+     put({ ...row, revokedAt: values[":at"], revokedBy: values[":by"], revision: values[":next"] });continue;
+    }
+    if (update.UpdateExpression !== "SET #role = :role" && update.UpdateExpression !== "SET #role = :role, roleUpdatedAt = :at") throw new Error("Unsupported fixture update expression.");
+    if (values[":role"] === undefined) throw new Error("Unsupported fixture update.");
     put({ ...row, role: values[":role"], ...(values[":at"] === undefined ? {} : { roleUpdatedAt: values[":at"] }) });
    }
   }
@@ -111,20 +123,21 @@ export function createAdminDirectory() {
   if(url.pathname.includes("/git/ref/heads/")){const branch=decodeURIComponent(url.pathname.split("/git/ref/heads/")[1]!);return Response.json({ref:`refs/heads/${branch}`,object:{type:"commit",sha:"c".repeat(40)}});}
   throw new Error("Unexpected synthetic provider path");
  })});
+ const checkRepositories: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> = (orgId, definition) => requireRepositoriesConnected({documentClient,tableName:"mock-state",cloud:true,app:github},orgId,definition);
  return {
   setRole,
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
-  async seedInvites() { const store = new OrgStore({ documentClient, tableName: "mock-state", now: Date.now });for (let i = 0; i < 26; i++) await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` });await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
+  async seedInvites() { let seedNow = Date.now() - 60_000;const store = new OrgStore({ documentClient, tableName: "mock-state", now: () => seedNow });for (let i = 0; i < 26; i++) { if (i === 20) seedNow += 60_000;await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` }); }await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },
   setName(name: string) { const key = { pk: `DEVELOPER#${"b".repeat(64)}`, sk: "META" };put({ ...rows.get(keyOf(key)), ...key, displayName: name }); },
-  evidence() { return { providerCalls, branchRates:[...rows.values()].filter(row=>String(row.pk).includes("WORKING_BRANCH")), members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST" || row.entityType === "REVIEWED_PROJECT_RESTORE_REQUEST"), sourceOrder:rows.get(keyOf(modelSourcesKey(FIXTURE_ORG))), sourceReceipts:[...rows.values()].filter(row=>String(row.pk).includes("SOURCE_ORDER_REVIEW")), audit }; },
+  evidence() { return { providerCalls, branchRates:[...rows.values()].filter(row=>String(row.pk).includes("WORKING_BRANCH")), inviteReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_REVOKE_REQUEST"), createReceipts: [...rows.values()].filter(row => row.entityType === "ORG_INVITE_CREATE_RECEIPT").map(row => ({ orgId: row.orgId, inviteId: row.inviteId, requestId: row.requestId, role: row.role })), members: [...rows.values()].filter(row => String(row.sk).startsWith("MEMBER#")), receipts: [...rows.values()].filter(row => String(row.pk).includes("ROLE_CHANGE")), projects: [...rows.values()].filter(row => row.entityType === "PROJECT_META"), projectReceipts: [...rows.values()].filter(row => row.entityType === "REVIEWED_PROJECT_ARCHIVE_REQUEST" || row.entityType === "REVIEWED_PROJECT_RESTORE_REQUEST"), sourceOrder:rows.get(keyOf(modelSourcesKey(FIXTURE_ORG))), sourceReceipts:[...rows.values()].filter(row=>String(row.pk).includes("SOURCE_ORDER_REVIEW")), audit }; },
   async request(base: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, path: string, body?: unknown, headers: Record<string,string|undefined> = {}) {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
    // Only source routes use this seam; unused agent collaborators stay absent and fail closed if reached.
    const sourceAgents = {documentClient,tableName:"mock-state",now:Date.now,modelSources:{store:new ModelSourceStore({documentClient,tableName:"mock-state",now:Date.now,chatgptSwitch:async()=>true,audit:runtime}),access:{async upsertSource(){throw new Error("No proxy writes in order fixture.");},async removeSource(){throw new Error("No proxy writes in order fixture.");},async checkSource(){throw new Error("No proxy checks in order fixture.");}},egress:{documentClient,tableName:"mock-state",now:()=>new Date()}}} as unknown as NonNullable<DeveloperRouteDependencies["agents"]>;
-   const deps = { ...base, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
+   const deps = { ...base, requireRepositoriesConnected: checkRepositories, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
    if (method === "GET" && (path.startsWith("/v1/app/agents") || path.startsWith("/v1/app/org/agent-guardrails"))) return readLaneBAgents(deps, caller, path);
    return routeDeveloperRequest(deps, { method, path, headers, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },

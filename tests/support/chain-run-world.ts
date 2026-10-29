@@ -1,3 +1,4 @@
+import { fixtureActor } from "./money-authority.js";
 // Plan 4 Task 6: a world for the chain runner's tests (and the tasks after it): two orgs on one FakeDynamoDb, the agent and chain stores, project roles,
 // and a recording stand-in for Plan 3's `startAgentRun` that keeps one task per request id, as the real one does. Nothing here is the runner: the tests
 // call `startChainRun`, `advanceChainRun`, `onStepTaskEnded` and the rest, and read the records through `world.run`, `world.attempts` and `world.events`.
@@ -172,7 +173,7 @@ export function setupWorld(options: WorldOptions = {}) {
     await chains.publish({
       orgId: ORG_A, chainId: created.chainId, expectedDraftRevision: created.draftRevision, pinned: checked.pinned, digest: chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by,
     });
-    if (extra.budgetUsd !== undefined) await chains.setBudget(ORG_A, created.chainId, extra.budgetUsd, by);
+    if (extra.budgetUsd !== undefined) await chains.setBudget(ORG_A, created.chainId, extra.budgetUsd, fixtureActor(chains, ORG_A, by).developerId, undefined, { ...({}), actor: fixtureActor(chains, ORG_A, by) });
     return (await chains.get(ORG_A, created.chainId))!;
   };
 

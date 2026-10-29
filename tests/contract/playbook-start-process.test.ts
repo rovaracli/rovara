@@ -1,6 +1,7 @@
 // "How we work" (S1): starting work runs the project's process. `startCodeIntent` asks `projectProcessOf` for the project and runs that agent instead of always running the built-in
 // Rovara Code; a pointer that no longer holds refuses the start with one message (never a quiet fall back to the built-in). Every start path goes through it, so the app route and the
 // Slack start are covered here; the setup draft keeps the built-in. The broker is built with `agents: {}` as the deployed handler is.
+import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
@@ -65,18 +66,18 @@ async function setup() {
 describe("starting work from the app", () => {
   it("keeps the org's Rovara Code max per run for a task the project's process layer runs: the lower of it and the layer's own (I1)", async () => {
     const t = await setup();
-    await t.store.setBudget(TEST_ORG, ROVARA_CODE_AGENT_ID, { maxPerRunUsd: 5 }, "test");
+    await t.store.setBudget(TEST_ORG, ROVARA_CODE_AGENT_ID, { maxPerRunUsd: 5 }, fixtureActor(t.store, TEST_ORG, "test", true).developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, "test", true) });
     const layer = await t.processLayer();
     t.point(layer);
     const first = await t.send();
     expect(first.status, JSON.stringify(first.body)).toBe(202);
     expect(t.meta((first.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 5, agent: { agentId: layer, builtin: false } });
     // The layer's own cap can only lower it.
-    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 2 }, "test");
+    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 2 }, fixtureActor(t.store, TEST_ORG, "test", true).developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, "test", true) });
     const lower = await t.send();
     expect(lower.status, JSON.stringify(lower.body)).toBe(202);
     expect(t.meta((lower.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 2 });
-    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 50 }, "test");
+    await t.store.setBudget(TEST_ORG, layer, { maxPerRunUsd: 50 }, fixtureActor(t.store, TEST_ORG, "test", true).developerId, undefined, { actor: fixtureActor(t.store, TEST_ORG, "test", true) });
     const higher = await t.send();
     expect(higher.status, JSON.stringify(higher.body)).toBe(202);
     expect(t.meta((higher.body.task as TaskView).taskId)).toMatchObject({ maxPerRunUsd: 5 });

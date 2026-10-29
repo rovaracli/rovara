@@ -14,7 +14,8 @@ function fixture(role = "owner") {
  const deps: DeveloperRouteDependencies = { tableName: "state", now: () => now, documentClient: db, orgs: store, developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) } };
  const caller: DeveloperCaller = { orgId: A, developerId: actor, orgRole: "owner", name: "Priya", amr: "cloud", sessionId: "fixture" };
  async function request(query = "", as = caller): Promise<{ status: number; body: { invites?: Array<Record<string, unknown>>; nextCursor?: string; coverage?: string; checkedAt?: string; code?: string } }> { const path = "/v1/app/org/invites" + query;try { return { status: 200, body: await routeDeveloperRequest(deps, { method: "GET", path, headers: {}, requestId: "invite-directory" }, new URL(path, "https://cell.example"), { caller: as, csrf: "" }) as { invites?: Array<Record<string, unknown>>; nextCursor?: string; coverage?: string; checkedAt?: string } }; }catch (e) { if (!(e instanceof AgentXError)) throw e;return { status: errorStatus(e.code), body: { code: e.code } }; } }
- async function invite(orgId = A, email?: string, ttlSeconds?: number, requestId?: string) { return store.createInvite({ orgId, createdBy: orgId === A ? actor : foreign, role: "member", ...(email === undefined ? {} : { email }), ...(ttlSeconds === undefined ? {} : { ttlSeconds }), ...(requestId === undefined ? {} : { requestId }) }); }
+ let seeded = 0;
+ async function invite(orgId = A, email?: string, ttlSeconds?: number, requestId?: string) { if (seeded > 0 && seeded % 20 === 0) now += 60000;seeded++;return store.createInvite({ orgId, createdBy: orgId === A ? actor : foreign, role: "member", ...(email === undefined ? {} : { email }), ...(ttlSeconds === undefined ? {} : { ttlSeconds }), ...(requestId === undefined ? {} : { requestId }) }); }
  return { db, deps, store, caller, request, invite, advance(ms: number) { now += ms; } };
 }
 it("atomically indexes each new invite with a public id independent of its token and hash", async () => {
@@ -29,7 +30,7 @@ for (const [role, allowed] of [["owner", true], ["admin", true], ["member", fals
 });
 it("returns masked pending metadata without tokens, hashes or raw email", async () => {
  const f = fixture(), { token } = await f.invite(A, "sensitive.person@example.test"), response = await f.request();expect(response.status).toBe(200);const serialized = JSON.stringify(response.body);expect(serialized.includes(token) || serialized.includes(hashOf(token)) || serialized.includes("sensitive.person")).toBe(false);
- expect(response.body.coverage).toBe("indexed_only");expect(response.body.checkedAt).toBe("2026-10-26T12:00:00.000Z");expect(response.body.invites?.[0]).toMatchObject({ role: "member", destination: { kind: "email", label: "***@example.test" } });expect(Object.keys(response.body.invites![0]!).sort()).toEqual(["createdAt", "createdBy", "destination", "expiresAt", "inviteId", "role"]);
+ expect(response.body.coverage).toBe("indexed_only");expect(response.body.checkedAt).toBe("2026-10-26T12:00:00.000Z");expect(response.body.invites?.[0]).toMatchObject({ role: "member", destination: { kind: "email", label: "***@example.test" } });expect(Object.keys(response.body.invites![0]!).sort()).toEqual(["createdAt", "createdBy", "destination", "expiresAt", "inviteId", "revision", "role"]);
 });
 it("never lists another org's invites or accepts its cursor", async () => {
  const f = fixture();await f.invite();await f.invite();const theirs = await f.invite(B);const first = await f.request("?limit=1");expect(first.status).toBe(200);expect(first.body.invites).toHaveLength(1);expect(JSON.stringify(first.body).includes(hashOf(theirs.token))).toBe(false);
@@ -99,4 +100,8 @@ it("classifies unusable entries without logging unparseable identifiers and surv
 it("identifies a corrupt reference by its scoped public key UUID rather than an invalid ID attribute", async () => {
  const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
  try { const f = fixture();await f.invite();const ref = f.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!;f.db.set({ ...ref, inviteId: "private-corrupt-value" });expect((await f.request()).status).toBe(200);const entry = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;expect(entry.inviteId).toBe(ref.inviteId);expect(JSON.stringify(entry).includes("private-corrupt-value")).toBe(false); }finally { warn.mockRestore(); }
+});
+
+it("projects canonical invite revisions and marks malformed revisions unavailable instead of inventing zero", async () => {
+ for (const revision of [undefined, 7, -1, 1.5, "7", Number.MAX_SAFE_INTEGER + 1]) { const f = fixture(), created = await f.invite(), key = orgInviteKey(hashOf(created.token));if (revision !== undefined) f.db.set({ ...f.db.get(key), revision });const page = await f.request();expect(page.status).toBe(200);if (revision === undefined || revision === 7) { expect(page.body.invites?.[0]?.revision).toBe(revision ?? 0);expect(page.body.coverage).toBe("indexed_only"); }else expect(page.body).toMatchObject({ invites: [], unavailableCount: 1, coverage: "indexed_only_partial" }); }
 });

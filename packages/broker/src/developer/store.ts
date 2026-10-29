@@ -714,6 +714,7 @@ export class DeveloperSignInStore {
               ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
             } },
             { Update: {
+              // Project AI commits pin method marks, not each identity mark. Every unlink must set #method atomically; review that fence if this changes.
               TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #unlinked = :at, #method = :at",
               ConditionExpression: "attribute_exists(pk)",
               ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },

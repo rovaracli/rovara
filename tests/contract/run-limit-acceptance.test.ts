@@ -1,3 +1,5 @@
+import { fixtureProject } from "../support/project-ai-source.js";
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 final fix wave (owner decision 3, option E): who can accept a run limit when a plan is approved.
 //   - the member pays: as it always was (up to the lead threshold; a maintainer up to the admin threshold; an admin any amount);
 //   - the project pays: the member who approves accepts up to the project's `memberAcceptRunLimitUpToUsd` (default: the org's lead threshold, $10 unless the org
@@ -32,13 +34,14 @@ const task = (limit: number, extra: Partial<DeveloperTaskRecord> = {}): Develope
 
 async function accepting(options: { role?: ProjectRole; setting?: number; policy?: Partial<ReturnType<typeof defaultSpendPolicy>> } = {}) {
   const db = new FakeDynamoDb();
+  fixtureProject(db, TEST_ORG, "payments");
   const members = new FakeProjectMembers();
   members.addProject(TEST_ORG, "payments");
   if (options.role !== undefined) members.grant(TEST_ORG, "payments", "dev", options.role);
-  if (options.policy !== undefined) await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), ...options.policy }, "admin");
+  if (options.policy !== undefined) await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), ...options.policy }, fixtureActor(deps(db), TEST_ORG, "admin").developerId, { ...({}), actor: fixtureActor(deps(db), TEST_ORG, "admin") });
   const setSetting = async (value: number | null) => {
     const current = await readProjectAi(deps(db), TEST_ORG, "payments");
-    await writeProjectAi(deps(db), TEST_ORG, "payments", applyProjectAiChange(current, { memberAcceptRunLimitUpToUsd: value }), "admin");
+    await writeProjectAi(deps(db), TEST_ORG, "payments", applyProjectAiChange(current, { memberAcceptRunLimitUpToUsd: value }), fixtureActor(deps(db), TEST_ORG, "admin").developerId, { ...({}), actor: fixtureActor(deps(db), TEST_ORG, "admin") });
   };
   if (options.setting !== undefined) await setSetting(options.setting);
   const accept = (orgRole: OrgRole, record: DeveloperTaskRecord) => acceptRunLimit({ ...deps(db), projectMembers: members }, { task: record, approver: { developerId: "dev", orgRole } });
@@ -136,7 +139,7 @@ describe("the project pays", () => {
       // The threshold is read at the acceptance, so lowering it after the setting was saved takes effect at once.
       const later = await accepting({ setting: 80 });
       expect(await later.accept("member", projectPays(80))).toMatchObject({ accepted: true });
-      await writeSpendPolicy(deps(later.db), TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 10, adminApprovalThresholdUsd: 40 }, "admin");
+      await writeSpendPolicy(deps(later.db), TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 10, adminApprovalThresholdUsd: 40 }, fixtureActor(deps(later.db), TEST_ORG, "admin").developerId, { ...({}), actor: fixtureActor(deps(later.db), TEST_ORG, "admin") });
       expect(await later.accept("member", projectPays(40))).toMatchObject({ accepted: true });
       expect(await later.accept("member", projectPays(41))).toMatchObject({ accepted: false, needs: "admin" });
     });

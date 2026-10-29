@@ -20,6 +20,8 @@ export interface AppHost {
  currentPath(): string;
  // RULING Q29: optional platform title bridge; shared screens never read document.title.
  setTitle?(title: string): void;
+ // Lane A: explicit clipboard delivery of an in-memory private invite link.
+ copyText?(text: string): Promise<void>;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
  signIn(this: void, returnPath: string, options?: { automatic?: boolean }): void;signOut(this: void): Promise<void>;

@@ -2,10 +2,15 @@
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
 // reads the limits, Task 32's requests raise them and Task 33's top-ups add to them.
+import { projectAiCallerCheck } from "./project-ai-identity.js";
+import { grantRoleOf } from "../developer/project-roles.js";
+import { projectAiLifecycleChecks } from "./project-ai-authority.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEFAULT_PLANNING_LIMIT_USD,
   ProjectAiSettingsSchema,
+  TaskStopProjectPolicySchema,
+  sameJsonContent,
   SpendPolicySchema,
   TRIAL_LIMITS_R49,
   agentKey,
@@ -18,6 +23,7 @@ import {
   orgSettingsKey,
   ownerBudgetKey,
   projectAiKey,
+  projectMemberKey,
   scopeKey,
   type AgentGuardrails,
   type BudgetScope,
@@ -25,10 +31,11 @@ import {
   type ProjectAiSettings,
   type SpendPolicy,
 } from "@agentx/contracts";
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { OwnerShare } from "./owner-total.js";
 import type { AgentRecord, BuiltinSettings, OwnerCap } from "../agents/store.js";
-import { commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { Aliases, commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { memberLimitOf, readBudgets, type OrgBudgetSettings } from "../org/budget.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
@@ -37,6 +44,8 @@ import { cleanUsd, readTopUp, withTopUp } from "./top-ups.js";
 
 /** What reading and writing the settings needs: the State table, and whether the install is a cloud one (it sets the placeholder budgets). */
 export interface SpendSettingsDependencies {
+  /** Native sign-in table selected by server wiring, never by the request. */
+  projectAiSignInTableName?: string;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   /** Where the org's plan is read: a trial org that never wrote a spend policy has R49's owner cap (Task 28's ruling). Without it no org is a trial. */
@@ -48,6 +57,15 @@ export interface SpendSettingsDependencies {
 }
 
 type Document = Record<string, unknown>;
+
+/** Every settings write needs server-bound identity, including internal calls without an HTTP receipt. */
+function settingsActorChecks(deps: SpendSettingsDependencies, orgId: OrgId, by: string, options: { actor?: BudgetActor; request?: RequestMark } = {}): TransactItem[] {
+  if ((options.actor === undefined) ||
+    (options.actor.developerId !== by) ||
+    (options.request !== undefined && (options.request.orgId !== orgId || options.request.developerId !== by))) throw budgetActorRefused();
+  return budgetActorChecks(deps.tableName, orgId, options.actor);
+}
+
 
 async function getItem(deps: SpendSettingsDependencies, key: { pk: string; sk: string }): Promise<Document | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Document };
@@ -68,10 +86,18 @@ const revisionOf = (item: Document): number | undefined => (typeof item["revisio
 
 /** A project's AI settings and their revision. A document that doesn't read is an error: falling back to the defaults would quietly undo what an admin set. */
 export async function readProjectAiWithRevision(deps: SpendSettingsDependencies, orgId: OrgId, project: string): Promise<StoredProjectAi> {
-  const item = await getItem(deps, projectAiKey(orgId, project));
+  return parseProjectAiWithRevision(await getItem(deps, projectAiKey(orgId, project)), project);
+}
+
+/** Shared canonical validation of a single already-read project settings snapshot. */
+export function parseProjectAiWithRevision(item: Document | undefined, project: string): StoredProjectAi {
   if (item === undefined) return { settings: defaultProjectAiSettings(), revision: 0 };
-  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd } = item;
+  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd, taskStopPolicy } = item;
+  if (Object.hasOwn(item, "taskStopPolicy") && !TaskStopProjectPolicySchema.safeParse(taskStopPolicy).success) {
+    throw agentXError("CONFIG_INVALID", `The per-task stop for project ${project} is invalid. Ask an org owner or admin to fix it before starting work.`);
+  }
   const parsed = ProjectAiSettingsSchema.safeParse({
+    ...(taskStopPolicy === undefined ? {} : { taskStopPolicy }),
     projectPays, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(sourceOrder === undefined ? {} : { sourceOrder }), ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }),
     ...(memberAcceptRunLimitUpToUsd === undefined ? {} : { memberAcceptRunLimitUpToUsd }),
   });
@@ -121,19 +147,51 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** The settings the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: ProjectAiSettings } = {},
+  options: { actor: BudgetActor; /** Legacy internal source option; this flow permits only the caller’s own identity. */ projectGrantDeveloperId?: string; expectedRevision?: number; request?: RequestMark; /** Optional audit comparison; preservation always reads the canonical settings. */ before?: ProjectAiSettings },
 ): Promise<StoredProjectAi> {
-  const expected = options.expectedRevision ?? (await readProjectAiWithRevision(deps, orgId, project)).revision;
+  const checks = settingsActorChecks(deps, orgId, by, options);
+  // A supplied audit "before" is not authority to discard newer money intent.
+  const current = await readProjectAiWithRevision(deps, orgId, project);
+  if (options.actor.role !== "owner" && options.actor.role !== "admin") {
+    const unchangedFields = (value: ProjectAiSettings) => {
+      const copy = { ...value }; delete copy.memberAcceptRunLimitUpToUsd; delete copy.taskStopPolicy; return copy;
+    };
+    if (!sameJsonContent(unchangedFields(settings), unchangedFields(current.settings))) throw budgetActorRefused();
+    if (options.projectGrantDeveloperId !== undefined && options.projectGrantDeveloperId !== by) throw budgetActorRefused();
+    checks.push(await projectAiCallerCheck(deps, by));
+    const key = projectMemberKey(orgId, by, project), grant = await getItem(deps, key);
+    if (grantRoleOf(grant) !== "maintainer") throw budgetActorRefused();
+    const aliases = new Aliases();
+    const condition = ["attribute_exists(pk)", ...["entityType", "ownerKey", "projectName", "grantId", "role", "projectRole", "grantedAt", "grantedBy"].map(field => grant?.[field] === undefined ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(grant[field])}`)].join(" AND ");
+    checks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } });
+  }
+  const lifecycle = await projectAiLifecycleChecks(deps, orgId, project);
+  const expected = options.expectedRevision ?? current.revision;
+  if (!Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER) {
+    throw agentXError("CONFIG_INVALID", "expectedRevision: cannot advance this settings revision");
+  }
+  if (current.revision !== expected) throw changedUnderYou(`${project}'s AI settings`);
+  if (settings.taskStopPolicy !== undefined) {
+    const candidate = TaskStopProjectPolicySchema.safeParse(settings.taskStopPolicy);
+    if (!candidate.success || !sameJsonContent(candidate.data, current.settings.taskStopPolicy)) {
+      throw agentXError("CONFIG_INVALID", "taskStopPolicy: changes require the reviewed task-stop policy writer");
+    }
+  }
+  const preserved: ProjectAiSettings = { ...settings };
+  delete preserved.taskStopPolicy;
+  if (current.settings.taskStopPolicy !== undefined) preserved.taskStopPolicy = current.settings.taskStopPolicy;
   const updatedAt = new Date(deps.now()).toISOString();
   // One `budget.changed` for each money limit that moved. The write commits once per revision, so the revision is each event's occurrence.
   const events = await tryAuditEvents(deps, async () => projectAiEvents({
-    orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: settings,
-    before: options.before ?? await settingsAt(expected, () => readProjectAiWithRevision(deps, orgId, project), (stored) => stored.settings),
+    orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: preserved,
+    before: options.before ?? current.settings,
   }));
-  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...settings, updatedBy: by, updatedAt }, expected);
-  await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings, revision: expected + 1 });
+  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
+  const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
+  const actorStart = items.length;
+  await commit(deps, [...items, ...checks, ...lifecycle], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : [...failed].some(index => index >= actorStart + checks.length && index < actorStart + checks.length + lifecycle.length) ? coded("PROJECT_REVISION_MISMATCH", "The project registration or status changed. Reload and review your settings again.") : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
   await flushAuditEvents(deps, events);
-  return { settings, revision: expected + 1 };
+  return { settings: preserved, revision: expected + 1 };
 }
 
 /** What a change to a project's AI settings names: a number, list or flag sets it, `null` clears it, and what is left out stays. */
@@ -157,6 +215,7 @@ export function applyProjectAiChange(current: ProjectAiSettings, change: Project
   }
   const memberAccepts = change.memberAcceptRunLimitUpToUsd === undefined ? current.memberAcceptRunLimitUpToUsd : change.memberAcceptRunLimitUpToUsd ?? undefined;
   const parsed = ProjectAiSettingsSchema.safeParse({
+    ...(current.taskStopPolicy === undefined ? {} : { taskStopPolicy: current.taskStopPolicy }),
     projectPays: change.projectPays ?? current.projectPays,
     ...(memberAccepts === undefined ? {} : { memberAcceptRunLimitUpToUsd: memberAccepts }),
     ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }),
@@ -214,8 +273,9 @@ export async function writeSpendPolicy(
   orgId: OrgId,
   policy: SpendPolicy,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy } = {},
+  options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy },
 ): Promise<StoredSpendPolicy> {
+  const checks = settingsActorChecks(deps, orgId, by, options);
   const now = deps.now ?? Date.now;
   const expected = options.expectedRevision ?? (await readSpendPolicyWithRevision(deps, orgId)).revision;
   const updatedAt = new Date(now()).toISOString();
@@ -225,7 +285,9 @@ export async function writeSpendPolicy(
     before: options.before ?? await settingsAt(expected, () => readSpendPolicyWithRevision(deps, orgId), (stored) => stored.policy),
   }));
   const item = putRevised({ ...deps, now }, orgSettingsKey(orgId, "SPEND_POLICY"), "ORG_SPEND_POLICY", { ...policy, updatedBy: by, updatedAt }, expected);
-  await commit({ ...deps, now }, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
+  const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
+  const actorStart = items.length;
+  await commit({ ...deps, now }, [...items, ...checks], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
   await flushAuditEvents(deps, events);
   return { policy, revision: expected + 1 };
 }

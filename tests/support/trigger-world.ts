@@ -1,3 +1,4 @@
+import { fixtureActor } from "./money-authority.js";
 // Plan 4 Task 18: a world for the tests of triggers. It is Task 8's gate world (two orgs on one FakeDynamoDb, the agent and chain stores, project roles, the real decide
 // page) with the trigger store, a hook reader, a scheduler that records what it was asked and the trigger code's own hooks wired onto the world's dependencies, as the
 // broker wires them. Nothing here is Plan 4's code: the tests call the routes and the lifecycle functions and read what they left.
@@ -122,12 +123,12 @@ export function setupTriggerWorld(options: WorldOptions = {}): TriggerWorld {
     const created = await w.agents.create({ orgId: ORG_A, name, owner: { kind: "member", developerId: owner }, overlay, createdBy: owner });
     await w.agents.publish({ orgId: ORG_A, agentId: created.agentId, expectedDraftRevision: created.draftRevision, digest: "d".repeat(64), by: owner });
     await addToRoster(w.deps, { orgId: ORG_A, project: "web", agentId: created.agentId, by: DANA });
-    if (options.budgetUsd !== undefined) await w.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: options.budgetUsd }, owner);
+    if (options.budgetUsd !== undefined) await w.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: options.budgetUsd }, fixtureActor(w.agents, ORG_A, owner).developerId, undefined, { ...({}), actor: fixtureActor(w.agents, ORG_A, owner) });
     return { agentId: created.agentId };
   };
   const builtinBudget: TriggerWorld["builtinBudget"] = async (agentId, usd = 20) => {
     await w.agents.ensureBuiltinSettings(ORG_A, agentId, DANA);
-    await w.agents.setBudget(ORG_A, agentId, { monthlyUsd: usd }, DANA);
+    await w.agents.setBudget(ORG_A, agentId, { monthlyUsd: usd }, fixtureActor(w.agents, ORG_A, DANA).developerId, undefined, { ...({}), actor: fixtureActor(w.agents, ORG_A, DANA) });
   };
   const hook: TriggerWorld["hook"] = (source, hookId = HOOK_A, over = {}) => hookReader.add({ orgId: ORG_A, hookId, project: "web", source, disabled: false, ...over });
   const connection: TriggerWorld["connection"] = (type, actorId = "vendor-user-1", identity = "service") => {

@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 34: run limits come from estimates. A workflow task starts with the planning limit, a task without a workflow with the TASK
 // estimate's run limit and an agent-step run with the AGENT estimate's; the plan that reaches review carries `runEstimate`; approving the
 // plan accepts the run limit by the approver's tier, or blocks the workflow and asks (through the injected `requestRunLimit`, which Task 32
@@ -141,7 +142,7 @@ describe("estimateRun", () => {
 
   it("uses the org's run limit multiplier", async () => {
     const db = new FakeDynamoDb();
-    await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), runLimitMultiplier: 3 }, "admin");
+    await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), runLimitMultiplier: 3 }, fixtureActor(deps(db), TEST_ORG, "admin").developerId, { ...({}), actor: fixtureActor(deps(db), TEST_ORG, "admin") });
     expect(await estimateOf(db, "FULL")).toMatchObject({ highUsd: 10, runLimitUsd: 30 });
   });
 
@@ -210,7 +211,7 @@ describe("acceptRunLimit", () => {
     members.addProject(TEST_ORG, "payments");
     if (options.role !== undefined) members.grant(TEST_ORG, "payments", "dev", options.role);
     if (options.broken === true) members.roleOf = async () => { throw new Error("unreachable"); };
-    if (options.policy !== undefined) await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), ...options.policy }, "admin");
+    if (options.policy !== undefined) await writeSpendPolicy(deps(db), TEST_ORG, { ...defaultSpendPolicy(), ...options.policy }, fixtureActor(deps(db), TEST_ORG, "admin").developerId, { ...({}), actor: fixtureActor(deps(db), TEST_ORG, "admin") });
     return (orgRole: OrgRole, limit: number) => acceptRunLimit({ ...deps(db), projectMembers: members }, { task: taskWith(limit), approver: { developerId: "dev", orgRole } });
   }
 

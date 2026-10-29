@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 20, review fixes: the run owner is read as whoever a merged developer became and is checked like the creator; one unreadable trigger no longer stops the hook's other
 // triggers; a trigger is not turned off for a fault of ours; a subject a trigger just started a run for is not started again for 30 minutes; the run is noted on the trigger even
 // when the activity item could not be written.
@@ -45,7 +46,7 @@ async function customAgent(v: TriggerWorld, owner: { member: string } | { projec
   });
   await v.agents.publish({ orgId: ORG_A, agentId: created.agentId, expectedDraftRevision: created.draftRevision, digest: "d".repeat(64), by });
   await addToRoster(v.deps, { orgId: ORG_A, project: "web", agentId: created.agentId, by: DANA });
-  await v.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: 20 }, by);
+  await v.agents.setBudget(ORG_A, created.agentId, { monthlyUsd: 20 }, fixtureActor(v.agents, ORG_A, by).developerId, undefined, { ...({}), actor: fixtureActor(v.agents, ORG_A, by) });
   return created;
 }
 

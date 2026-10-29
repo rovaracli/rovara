@@ -1,7 +1,7 @@
 import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
+import { OrgRoleSchema, OrgIdSchema } from "./org.js";
 import { DISPLAY_NAME_MAX_CODE_POINTS, containsEmailAddress, isReservedDisplayName } from "./display-name.js";
-import { OrgRoleSchema } from "./org.js";
 import { forwardReader } from "./session-views.js";
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
 export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
@@ -56,10 +56,19 @@ export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRo
 
 /** Pending indexed invites only. Historical unindexed invites may still exist; never return bearer material. */
 export const AppOrgInvitesResponseSchema = z.object({
- invites: z.array(z.object({ inviteId: z.string().uuid(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
+ invites: z.array(z.object({ inviteId: z.string().uuid(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
  unavailableCount: z.number().int().min(0).max(50).optional(), coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
 }).strict();
 export const AppOrgInvitesResponseReaderSchema = forwardReader(AppOrgInvitesResponseSchema);
+
+
+// Lane A: explicit canonical invite review/recovery; no destination, bearer or acceptor data.
+export const OrgInvitePublicIdSchema = z.string().uuid();
+export const AppOrgInviteStatusSchema = z.object({
+ orgId: OrgIdSchema, inviteId: OrgInvitePublicIdSchema,
+ revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), role: z.enum(["admin", "member"]),
+ status: z.enum(["pending", "accepted", "revoked", "expired"]), expiresAt: z.string().datetime(), checkedAt: z.string().datetime(), revokedAt: z.string().datetime().optional(),
+}).strict().superRefine((value, context) => { if ((value.status === "revoked") !== (value.revokedAt !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Invite status could not be verified." }); });
 /** Control characters and format characters (bidi controls, zero-width spaces, tag characters) other than ZWNJ and ZWJ, which scripts and emoji sequences need. */
 const NAME_UNSAFE = /(?![\u200C\u200D])[\p{Cc}\p{Cf}]/u;
 

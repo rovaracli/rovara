@@ -1,5 +1,6 @@
 // "How we work" H8: the general agent routes refuse a project's process layer. No share write (add, change, remove), no owner or accountable move by a person, and no other agent
 // built on it (create, draft save, base update). Rovara's own lifecycle moves still keep its accountable person current. An ordinary custom agent is unchanged throughout.
+import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, type AgentId } from "../../packages/contracts/src/index.js";
@@ -107,25 +108,25 @@ describe("moving a process layer's owner or accountable person", () => {
     const id = await layer(w);
     const before = (await w.store.get(ORG_A, id))!;
     const want = refusal(PROCESS_OWNER_MESSAGE);
-    expect(await failure(w.store.setOwner(ORG_A, id, { kind: "member", developerId: ARJUN }, MAX))).toEqual(want);
-    expect(await failure(w.store.setOwner(ORG_A, id, { kind: "project", project: "other" }, MAX, { developerId: ARJUN }))).toEqual(want);
-    expect(await failure(w.store.setAccountable(ORG_A, id, { developerId: ARJUN }, MAX))).toEqual(want);
+    expect(await failure(w.store.setOwner(ORG_A, id, { kind: "member", developerId: ARJUN }, fixtureActor(w.db, ORG_A, MAX).developerId, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) }))).toEqual(want);
+    expect(await failure(w.store.setOwner(ORG_A, id, { kind: "project", project: "other" }, fixtureActor(w.db, ORG_A, MAX).developerId, { developerId: ARJUN }, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) }))).toEqual(want);
+    expect(await failure(w.store.setAccountable(ORG_A, id, { developerId: ARJUN }, fixtureActor(w.db, ORG_A, MAX).developerId, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) }))).toEqual(want);
     expect(await w.store.get(ORG_A, id)).toEqual(before);
   });
 
   it("an ordinary custom agent still moves owner and accountable person", async () => {
     const w = world();
     const id = await ordinary(w);
-    await w.store.setAccountable(ORG_A, id, { developerId: OLA }, MAX);
+    await w.store.setAccountable(ORG_A, id, { developerId: OLA }, fixtureActor(w.db, ORG_A, MAX).developerId, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect((await w.store.get(ORG_A, id))?.accountable).toEqual({ developerId: OLA });
-    await w.store.setOwner(ORG_A, id, { kind: "member", developerId: ARJUN }, MAX);
+    await w.store.setOwner(ORG_A, id, { kind: "member", developerId: ARJUN }, fixtureActor(w.db, ORG_A, MAX).developerId, undefined, undefined, { actor: fixtureActor(w.db, ORG_A, MAX) });
     expect((await w.store.get(ORG_A, id))?.owner).toEqual({ kind: "member", developerId: ARJUN });
   });
 
   it("Rovara's own lifecycle move (a cause is given) still replaces a departed accountable person", async () => {
     const w = world();
     const id = await layer(w);
-    await w.store.setAccountable(ORG_A, id, { developerId: OLA }, "SYSTEM", undefined, { cause: { kind: "member_removed", developerId: MAX } });
+    await w.store.setAccountable(ORG_A, id, { developerId: OLA }, "system", undefined, { cause: { kind: "member_removed", developerId: MAX } });
     expect((await w.store.get(ORG_A, id))?.accountable).toEqual({ developerId: OLA });
   });
 });

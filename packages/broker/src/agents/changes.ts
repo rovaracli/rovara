@@ -1,3 +1,4 @@
+import { budgetActorRefused } from "./budget-authority.js";
 // Plan 3 Task 7: the changes to an agent that decide which recipe runs or who can use it (publish, rollback, adopting a built-in's
 // version, a company-wide share) and the approvals behind them. Each starts from the caller's request: a change that makes nothing
 // less safe applies at once; any other creates a pending change (approvals.ts) and applies nothing until a person confirms it on the
@@ -299,7 +300,7 @@ export async function updateGuardrails(
   const changes = lessSafeGuardrailChanges(current.guardrails, input.guardrails);
   if (changes.length === 0) {
     if (canonicalJson(current.guardrails) === canonicalJson(input.guardrails)) return { applied: true, value: current };
-    return { applied: true, value: await writeGuardrails(deps, caller.orgId, input.guardrails, caller.developerId, { expectedRevision: current.revision, ...(input.request === undefined ? {} : { request: input.request }) }) };
+    return { applied: true, value: await writeGuardrails(deps, caller.orgId, input.guardrails, caller.developerId, { actor: { developerId: caller.developerId, role: caller.orgRole }, expectedRevision: current.revision, ...(input.request === undefined ? {} : { request: input.request }) }) };
   }
   const subject: AgentChangeSubject = { kind: "guardrails", next: input.guardrails, expectedRevision: current.revision };
   return waitForPerson(deps, caller, input.requestId, subject, changes, await orgAdminApprovers(deps, caller.orgId));
@@ -407,7 +408,9 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
     if (canonicalJson(current.guardrails) === canonicalJson(subject.next)) return;
     throw stale("The company's agent guardrails changed after this was asked. Ask again.");
   }
-  await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision, widened: true });
+  const role = await orgRoleOf(deps, record.orgId, by);
+  if (role !== "owner" && role !== "admin") throw budgetActorRefused();
+  await writeGuardrails(deps, record.orgId, subject.next, by, { actor: { developerId: by, role }, expectedRevision: subject.expectedRevision, widened: true });
   await deps.triggerHooks?.recheckBuiltinTriggers(record.orgId);
 }
 

@@ -4,6 +4,8 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_DESCRIPTION_MAX,
@@ -30,6 +32,7 @@ import {
   orgScoped,
   overlayProblems,
   recipeProblems,
+  sameJsonContent,
   type AgentGuardrails,
   type AgentId,
   type AgentOrigin,
@@ -198,6 +201,14 @@ function checkProfile(name: string, description: string): void {
 
 /** What a write that changes whose total a budget is in can ask of the store (Task 28). */
 export interface BudgetWriteOptions {
+  /** Required on request-bearing/approval budget writes; never supplied by an HTTP body. */
+  actor?: BudgetActor;
+  /** The per-run value the request reviewed, null for confirmed absence. */
+  expectedMaxPerRunUsd?: number | null;
+  /** Resource fields on which the route granted manage access; never from a client. */
+  manageSnapshot?: BudgetSubject;
+  /** Original server-read builtin settings; null means confirmed absence. */
+  builtinSnapshot?: BuiltinSettings | null;
   /** Why Rovara itself moved this (Task 11): a member removed or merged. The agent's `owner_changed` event names it. */
   cause?: MoveCause;
   /**
@@ -310,6 +321,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   /** The version the org's own use of a built-in runs: its pin, or the default pin while it has no settings yet. */
   async pinnedBuiltinVersion(orgId: OrgId, agentId: AgentId): Promise<number> {
     return (await this.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? this.builtins.defaultPin(agentId);
+  }
+
+  /** Budget review reads the existing settings or a virtual default, without initializing a row. */
+  async builtinBudgetSnapshot(orgId: OrgId, agentId: AgentId, by = "system"): Promise<BuiltinSettings> {
+    this.requireBuiltin(agentId);
+    return await this.getBuiltinSettings(orgId, agentId) ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt: this.iso() };
   }
 
   /** Creates the org's settings for a built-in, pinned to its default pin (the newest release, except Rovara Code's), if it has none; returns them either way. */
@@ -682,7 +699,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by });
     const checks = options.checks;
     // The caller's checks come last, so their indexes start after the write's own items.
     await this.commit(
@@ -709,6 +726,15 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   async setBudget(orgId: OrgId, agentId: AgentId, budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord | BuiltinSettings> {
     checkAmount("monthlyUsd", budget.monthlyUsd);
     checkAmount("maxPerRunUsd", budget.maxPerRunUsd);
+    if (budget.maxPerRunUsd !== undefined && budget.maxPerRunUsd !== null && usdToWholeMicrodollars(budget.maxPerRunUsd) === undefined) {
+      throw coded("CONFIG_INVALID", "maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+    }
+    const actor = options.actor ?? options.overrideCap?.actor;
+    if (actor === undefined) throw budgetActorRefused();
+    if (actor !== undefined && (actor.developerId !== by || (request !== undefined && request.developerId !== actor.developerId))) throw budgetActorRefused();
+    if (options.actor !== undefined && options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== actor?.developerId || options.overrideCap.actor?.role !== actor?.role)) throw budgetActorRefused();
+    // Approval actor checks are generated once by withOverride, on this store's actual scope.
+    const actorChecks = actor === undefined || options.overrideCap !== undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const updatedAt = this.iso();
     const set: Item = {
       ...(typeof budget.monthlyUsd === "number" ? { monthlyBudgetUsd: budget.monthlyUsd } : {}),
@@ -719,14 +745,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const detail = { monthlyUsd: budget.monthlyUsd ?? undefined, maxPerRunUsd: budget.maxPerRunUsd ?? undefined, cleared: remove };
     let key: OrgKey;
     let current: AgentRecord | BuiltinSettings;
+    let createBuiltin = false;
     if (isBuiltinAgentId(agentId)) {
-      current = await this.ensureBuiltinSettings(orgId, agentId, by);
+      const existing = await this.getBuiltinSettings(orgId, agentId);
+      createBuiltin = existing === undefined;
+      current = existing ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt };
       key = builtinSettingsKey(orgId, agentId);
       set["updatedBy"] = by;
     } else {
       current = await this.require(orgId, agentId);
       key = agentKey(orgId, agentId, "META");
     }
+    if (options.expectedMaxPerRunUsd !== undefined && options.expectedMaxPerRunUsd !== (current.maxPerRunUsd ?? null)) throw budgetConflict();
     const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
     const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
@@ -737,12 +767,21 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId,
       before: { monthlyBudgetUsd: current.monthlyBudgetUsd, maxPerRunUsd: current.maxPerRunUsd }, after: { monthlyBudgetUsd, maxPerRunUsd },
     }));
-    await this.commit(...withOverride([
-      this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
+    const items = [
+      createBuiltin ? this.put(key, "BUILTIN_AGENT_SETTINGS", written) : this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: (aliases) => {
+        const field = aliases.name("maxPerRunUsd");
+        const perRun = current.maxPerRunUsd === undefined ? `attribute_not_exists(${field})` : `${field} = ${aliases.value(current.maxPerRunUsd)}`;
+        const manage = options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(aliases)}`;
+        return `${budgetGuard(current)(aliases)} AND ${perRun}${manage}`;
+      } }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, written);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }
@@ -752,10 +791,19 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * and whether the new owner's budget total allows it, is the route's check.
    */
   async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
+    const actor = options.actor;
+    if ((request !== undefined && actor === undefined) ||
+      (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+      (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+      (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and belongs to the whole company`);
     if (owner.kind === "project" && accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (owner.kind === "member" && accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const agent = await this.require(orgId, agentId);
+    // A different owner/accountable can invalidate the route's manage authority before this writer reads it.
+    const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
+    if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     requireNoOwnerMoveOnProcess(agent, options);
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
@@ -768,16 +816,20 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, from: agent.owner, to: owner,
       ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
     })]);
-    await this.commit(...withOverride([
+    const items = [
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
-        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}`,
+        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`,
       }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, moved);
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }
@@ -789,23 +841,54 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<void> {
     const updatedAt = this.iso();
     if (isBuiltinAgentId(agentId)) {
-      const before = await this.ensureBuiltinSettings(orgId, agentId, by);
+      const actor = options.actor;
+      if ((request !== undefined && actor === undefined) ||
+        (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+        (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+        (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+      if (actor !== undefined && actor.role !== "owner" && actor.role !== "admin") throw budgetActorRefused();
+      const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
+      const existing = await this.getBuiltinSettings(orgId, agentId);
+      if (options.builtinSnapshot !== undefined && !sameJsonContent(existing ?? null, options.builtinSnapshot)) throw budgetConflict();
+      if (existing !== undefined && (!Number.isInteger(existing.pinnedVersion) || existing.pinnedVersion < 1 || typeof existing.updatedAt !== "string" || typeof existing.updatedBy !== "string")) throw coded("CONFIG_INVALID", "Built-in settings are invalid; repair them before changing the accountable person");
+      const before = existing ?? { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt };
+      const written = { ...before, accountable, updatedBy: by, updatedAt };
       const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
       const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
       const audit = await this.audited(() => [accountableChangedEvent({
         orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
         ...(before.accountable === undefined ? {} : { previous: before.accountable.developerId }),
       })]);
-      await this.commit(...withOverride([
-        this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
+      const key = builtinSettingsKey(orgId, agentId);
+      const items = [
+        existing === undefined ? this.put(key, "BUILTIN_AGENT_SETTINGS", written) : this.update(key, {
+          set: { accountable, updatedBy: by, updatedAt },
+          when: (aliases) => {
+            const equal = (field: "pinnedVersion" | "maxPerRunUsd" | "updatedAt" | "updatedBy") => before[field] === undefined
+              ? `attribute_not_exists(${aliases.name(field)})` : `${aliases.name(field)} = ${aliases.value(before[field])}`;
+            return `attribute_exists(${aliases.name("pk")}) AND ${budgetGuard(before)(aliases)} AND ${equal("pinnedVersion")} AND ${equal("maxPerRunUsd")} AND ${equal("updatedAt")} AND ${equal("updatedBy")}`;
+          },
+        }),
         ...totals.items,
         event.item,
         ...audit.items,
-      ], totals.refuse, options), request, { accountable });
+      ];
+      const actorStart = items.length;
+      await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+        [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+      ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
       await flushAuditEvents(this.input, audit.events);
       return;
     }
+    const actor = options.actor;
+    if ((request !== undefined && actor === undefined) ||
+      (actor !== undefined && (actor.developerId !== by || options.overrideCap !== undefined)) ||
+      (request !== undefined && (request.orgId !== orgId || request.developerId !== actor?.developerId)) ||
+      (actor === undefined && options.overrideCap === undefined && (by !== "system" || options.cause === undefined))) throw budgetActorRefused();
+    const actorChecks = actor === undefined ? [] : budgetActorChecks(this.input.tableName, orgId, actor);
     const agent = await this.require(orgId, agentId);
+    const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
+    if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
     requireNoOwnerMoveOnProcess(agent, options);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
@@ -815,12 +898,16 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
       ...(agent.accountable === undefined ? {} : { previous: agent.accountable.developerId }),
     })]);
-    await this.commit(...withOverride([
-      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
+    const items = [
+      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}` }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, options), request, { accountable });
+    ];
+    const actorStart = items.length;
+    await this.commit(...withOverride([...items, ...actorChecks], (failed) => (
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed)
+    ), options, { tableName: this.input.tableName, orgId, by }), request, { accountable });
     await flushAuditEvents(this.input, audit.events);
   }
 
@@ -893,10 +980,16 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Returns the document as stored, with its new revision; that is also what a repeat of the request is answered with.
    */
   async putGuardrails(input: {
-    orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; request?: RequestMark;
+    orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; actor: BudgetActor; request?: RequestMark;
     /** Whether this write makes anything less safe, which a person confirmed; the audit event says so. Default: no. */
     widened?: boolean;
   }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
+    // Validate writes only: historical read/enforcement semantics remain unchanged.
+    if (usdToWholeMicrodollars(input.guardrails.maxPerRunCeilingUsd) === undefined) {
+      throw coded("CONFIG_INVALID", "maxPerRunCeilingUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+    }
+    if (input.actor === undefined || (input.actor.role !== "owner" && input.actor.role !== "admin") || input.actor.developerId !== input.by || (input.request !== undefined && (input.request.orgId !== input.orgId || input.request.developerId !== input.by))) throw budgetActorRefused();
+    const checks = budgetActorChecks(this.input.tableName, input.orgId, input.actor);
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };
     const aliases = new Aliases();
@@ -914,7 +1007,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         ...(expected === 0 ? {} : { ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values }),
       },
     };
-    await this.commit([item, ...audit.items], () => guardrailsConflict(), input.request, stored);
+    const items = [item, ...audit.items], actorStart = items.length;
+    await this.commit([...items, ...checks], failed => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : guardrailsConflict(), input.request, stored);
     await flushAuditEvents(this.input, audit.events);
     return stored;
   }

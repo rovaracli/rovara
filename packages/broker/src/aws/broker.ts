@@ -1035,8 +1035,8 @@ async function ensureInstallOrg(dependencies: AwsBrokerDependencies, orgId: OrgI
 }
 
 /**
- * Ruling R47: `PUT /v1/admin/org/budget`. The operator (admin pool) sets the monthly limits of the install's single org, which has
- * none until they do. A cloud install has no such org (its operators belong to none, ruling R6) and every org there sets its own.
+ * The existing R47 operator credential check remains authoritative on private installs.
+ * Budget snapshot/revision conditions apply; operators are not company members.
  */
 async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -1047,10 +1047,11 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   const orgs = orgStoreOf(dependencies);
   // The install's org is created on first use; an operator may set its budgets before anyone has signed in.
   await orgs.ensureOrg(orgId, brokerEnvironmentName(dependencies));
+  const operator = { kind: "operator" as const, id: auditOperatorId(identity.issuer, identity.subject) };
   const budget = await changeBudgets(
     { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
     // The chain names an operator by a pseudonymous id, never by their identity.
-    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString(), actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } },
+    { authority: { operator }, orgId, body, updatedBy: operator.id, at: new Date().toISOString(), actor: operator },
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
@@ -1235,6 +1236,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
     signInStore,
+    projectAiSignInTableName: developer.signInTableName,
     now: () => Date.now(),
     // The project AI settings and the spend policy are written by the routes themselves (Audit Task 19).
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),

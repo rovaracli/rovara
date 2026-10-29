@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 10: which agents work on a project (the roster), and how the agent a run uses is chosen and checked. The routes go through
 // the broker's handler; `resolveAgentForTask` and `resolveAgentForAutonomousRun` are called with the same dependencies the routes use.
 import { randomUUID } from "node:crypto";
@@ -101,7 +102,7 @@ async function setup(options: { builtins?: ConstructorParameters<typeof AgentSto
     return agentId;
   };
   const addToRoster = async (who: Developer, project: string, agentId: AgentId): Promise<Reply> => call(who, "PUT", `/v1/app/projects/${project}/agents/${agentId}`, {});
-  const setGuardrails = (changes: Partial<AgentGuardrails>) => writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), ...changes }, DANA.developerId, { expectedRevision: 0 });
+  const setGuardrails = (changes: Partial<AgentGuardrails>) => writeGuardrails(deps, TEST_ORG, { ...structuredClone(DEFAULT_AGENT_GUARDRAILS), ...changes }, fixtureActor(deps, TEST_ORG, DANA.developerId, true).developerId, { ...({ expectedRevision: 0 }), actor: fixtureActor(deps, TEST_ORG, DANA.developerId, true) });
   const rosterOf = async (who: Developer, project = "web") => {
     const listed = await call(who, "GET", `/v1/app/projects/${project}/agents`);
     expect(listed.status, JSON.stringify(listed.body)).toBe(200);

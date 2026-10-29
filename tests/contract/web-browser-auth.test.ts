@@ -1,7 +1,8 @@
+import { createInviteAdminApi } from "../../packages/ui/src/api/invite-admin.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey, projectMetaKey, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectRevisionKey, projectMetaKey, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
 import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
@@ -18,10 +19,10 @@ const CELL = "https://cell.example", SID = "11111111-1111-4111-8111-111111111111
 const COOKIE = `__Host-agentx_review_session=${SID}`;
 const PERSON = { userId: "U0WEB001", name: "Web member", email: "web-fixture@example.test" };
 const errorOf = (body: Record<string, unknown>) => body.error as { code: string; message: string };
-async function broker(extra: Record<string, unknown> = {}) {
+async function broker(extra: Record<string, unknown> = {}, webOrigin?: string) {
  const verify = vi.fn(async (authorization: string | undefined) => authorization === "Bearer test-only-bearer" ? { iss: CELL + "/v1/auth", aud: "agentx-developer", sub: WHO, sid: SID, amr: "cloud", env: "staging", org: TEST_ORG, org_role: "owner" } : {});
  const methods = { slack: false, oidc: false, cloud: true };
- const h = await createAdminBroker({ developer: { issuer: CELL + "/v1/auth", env: "staging", signInTableName: "signin", methods, verifyAccessToken: verify, channelMembers: async () => ({ ok: true, memberOf: [] }) }, extra });
+ const h = await createAdminBroker({ developer: { issuer: CELL + "/v1/auth", ...(webOrigin === undefined ? {} : { webOrigin }), env: "staging", signInTableName: "signin", methods, verifyAccessToken: verify, channelMembers: async () => ({ ok: true, memberOf: [] }) }, extra });
  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "owner" });
  h.db.set({ pk: `DEVELOPER#${WHO}`, sk: "META", developerId: WHO, displayName: "Web member", provider: "cloud" });
  h.db.set({ pk: `SESSION#${SID}`, sk: "META", sessionId: SID, developerId: WHO, amr: "cloud", startedAt: new Date(Date.now() - 60000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600 });
@@ -32,6 +33,26 @@ async function broker(extra: Record<string, unknown> = {}) {
  return { ...h, call, verify, methods };
 }
 describe("browser API boundary", () => {
+ it("shares create and revoke quotas across the real token and cookie request adapters", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-27T12:00:00Z"));
+  try {
+   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);
+   const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, token = { authorization: "Bearer test-only-bearer" };
+   for (let i = 0; i < 20; i++) expect((await h.call("POST", i % 2 === 0 ? "/v1/web/org/invites" : "/v1/app/org/invites", i % 2 === 0 ? headers : token, { requestId: randomUUID(), role: "member" })).status).toBe(200);
+   expect((await h.call("POST", "/v1/web/org/invites", headers, { requestId: randomUUID(), role: "member" })).status).toBe(429);
+   const ref = h.db.find(row => row.entityType === "ORG_INVITE_DIRECTORY")[0]!, body = { requestId: randomUUID(), expectedRevision: 0 }, path = `/org/invites/${String(ref.inviteId)}/revoke`;
+   for (let i = 0; i < 20; i++) expect((await h.call("POST", (i % 2 === 0 ? "/v1/web" : "/v1/app") + path, i % 2 === 0 ? headers : token, body)).status).toBe(200);
+   expect((await h.call("POST", "/v1/web" + path, headers, body)).status).toBe(429);expect(audit.flushed().filter(event => String(event.action) === "org.invite_revoked").length).toBe(1);
+  } finally { clock.mockRestore(); }
+ });
+ it("returns fixed accepted/revoked terminal codes through the real cookie error boundary", async () => {
+  for (const state of ["acceptedAt", "revokedAt"] as const) {
+   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+   expect((await h.call("POST", "/v1/web/org/invites", headers, { requestId: randomUUID(), role: "member", email: "private.person@example.test" })).status).toBe(200);
+   const invite = h.db.find(row => row.entityType === "ORG_INVITE")[0]!;h.db.set({ ...invite, [state]: new Date().toISOString() });const response = await h.call("POST", `/v1/web/org/invites/${String(invite.inviteId)}/revoke`, headers, { requestId: randomUUID(), expectedRevision: 0 });expect(response.status).toBe(409);expect(errorOf(response.body)).toEqual({ code: state === "acceptedAt" ? "INVITE_ALREADY_ACCEPTED" : "INVITE_ALREADY_REVOKED", message: state === "acceptedAt" ? "This invite has already been accepted." : "This invite has already been revoked." });
+  }
+ });
+
  it("revokes indexed invites through real cookie CSRF routes with atomic replay and live authority", async () => {
   const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit });audit.attach(h.db);
   const headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
@@ -250,6 +271,76 @@ it("runs reviewed cookie role writes with receipts and audit while preserving li
  expect(audit.recordedBy("member.role_changed")).toHaveLength(1);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
  for (const role of ["admin", "member"] as const) { seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const response = await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, { requestId: randomUUID(), role: "owner", expectedRole: "admin" });expect(response.status).toBe(403);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin"); }
 });
+
+it("uses the real cookie Origin and CSRF boundary for reviewed creation and safe receipt recovery", async () => {
+ const audit=capturingAuditDeps(),h=await broker({audit:audit.audit});audit.attach(h.db);const body={requestId:randomUUID(),role:"member",email:"private.person@example.test"},path="/v1/web/org/invites/reviewed",headers={cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)};
+ for(const bad of [{cookie:COOKIE,origin:CELL},{...headers,origin:"https://evil.example"}]){expect((await h.call("POST",path,bad,body)).status).toBe(403);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(0);}
+ const first=await h.call("POST",path,headers,body);expect(first.status).toBe(200);expect(typeof first.body.inviteUrl==="string").toBe(true);const replay=await h.call("POST",path,headers,body);expect(replay.status).toBe(200);expect(replay.body.inviteUrl).toBeUndefined();expect(replay.body.receipt).toEqual(first.body.receipt);const recovery=await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`);expect(recovery.status).toBe(200);expect(recovery.body.receipt).toEqual(first.body.receipt);expect(Object.keys(recovery.body).sort()).toEqual(["receipt","requestId"]);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);
+ seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",`/v1/web/org/invites/requests/${body.requestId}`)).status).toBe(403);expect((await h.call("POST",path,headers,body)).status).toBe(403);
+});
+
+it("delivers a configured cloud join link across origins through the real cookie route and console client",async()=>{const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,cloud:true},"https://join.example.test");audit.attach(h.db);const host=fakeHost(async r=>h.call(r.method,r.path.replace("/v1/app/","/v1/web/"),{cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)},r.body));const result=await createInviteAdminApi(host.host,TEST_ORG).create({requestId:randomUUID(),role:"member",email:"private.person@example.test"});expect(new URL(result.inviteUrl!).origin).toBe("https://join.example.test");expect(result.receipt.orgId).toBe(TEST_ORG);expect(h.db.find(row=>row.entityType==="ORG_INVITE").length).toBe(1);expect(audit.flushed().filter(event=>event.action==="org.invite_created").length).toBe(1);});
+
+it("reads only current-org monthly base settings through the real cookie boundary",async()=>{const h=await broker();const path="/v1/web/org/budget-settings";expect((await h.call("GET",path,{})).status).toBe(401);const first=await h.call("GET",path,{cookie:COOKIE});expect(first.status).toBe(200);expect(first.body.orgId).toBe(TEST_ORG);expect(first.body.coverage).toBe("monthly_base_settings_only");expect(first.body.usage).toBe("not_checked");seedMembership(h.db,WHO,{orgId:TEST_ORG,role:"member"});expect((await h.call("GET",path,{cookie:COOKIE})).status).toBe(403);});
+
+it("reads only the narrow company ceiling through real cookie auth and refuses live role loss", async () => {
+ const h = await broker(), path = "/v1/web/org/task-stop-ceiling";
+ expect((await h.call("GET", path, {})).status).toBe(401);
+ const first = await h.call("GET", path, { cookie: COOKIE });
+ expect(first.status).toBe(200);expect(first.body.orgId).toBe(TEST_ORG);
+ expect(first.body.ceilingMicrousd).toBe(100_000_000);expect(first.body.enforcement).toBe("not_connected");
+ expect(first.body.companyDefault).toBe("not_loaded");
+ seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+ expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
+
+
+it("reads configured company defaults through the real cookie boundary without inventing missing settings", async () => {
+  const h = await broker();
+  const path = "/v1/web/org/task-stop-policy";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(503);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.defaultStopMicrousd).toBe(10_000_000);
+  expect(shown.body.locks).toBe("not_loaded");
+  expect(shown.body.enforcement).toBe("not_connected");
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
+
+
+it("reads only a builtin agent's money layer through cookie auth without creating settings", async () => {
+  const h = await broker();
+  const path = "/v1/web/org/task-stop-policy/agents/rovara-code";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.sourceKind).toBe("builtin_absent");
+  expect(shown.body.agentOverride).toEqual({ kind: "inherit" });
+  expect(shown.body.calculation).toBe("unavailable");
+  expect(h.db.get({ pk: `ORG#${TEST_ORG}#BUILTIN_AGENTS`, sk: "rovara-code" })).toBeUndefined();
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
+
+it("reads a known project's source through cookie auth without initializing settings", async () => {
+  const h = await broker(), path = "/v1/web/org/task-stop-policy/projects/web";
+  expect((await h.call("GET", path, {})).status).toBe(401);
+  h.db.set({ pk: `ORG#${TEST_ORG}#SETTINGS`, sk: "TASK_STOP_POLICY", entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 1, defaultStopMicrousd: 10_000_000 } });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(503);
+  h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 1 });
+  const shown = await h.call("GET", path, { cookie: COOKIE });
+  expect(shown.status).toBe(200);
+  expect(shown.body.projectOverride).toEqual({ kind: "inherit" });
+  expect(shown.body.projectLifecycle).toBe("not_loaded");
+  expect(h.db.get(projectAiKey(TEST_ORG, "web"))).toBeUndefined();
+  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "member" });
+  expect((await h.call("GET", path, { cookie: COOKIE })).status).toBe(403);
+});
+
 it("requires a reviewed source-order body on real cookie routes before any mutation", async () => {
  const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };audit.attach(h.db);
  for (const body of [{ requestId: randomUUID(), order: ["rovara"] }, { requestId: randomUUID(), expectedRevision: null, order: ["rovara"] }, { requestId: randomUUID(), expectedRevision: -1, order: ["rovara"] }]) {

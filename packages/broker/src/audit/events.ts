@@ -462,6 +462,11 @@ export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: 
   return build("audit.org_shred_scheduled", input, { kind: "org", id: input.orgId }, { shredAfterDays: input.shredAfterDays });
 }
 
+/** `occurrence`: reviewed org/request/public UUID, never bearer material. */
+export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
+  return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
+}
+
 // Lane B: name-keyed project target is pseudonymized by the existing appender.
 export function auditProjectArchived(input: AuditBuilderBase & { projectName: string; fromRevision: number; toRevision: number; projectRevision: number; requestId: string }): AuditEventInput {
  return build("project.archived", input, { kind: "project", name: input.projectName }, { fromRevision: input.fromRevision, toRevision: input.toRevision, projectRevision: input.projectRevision, requestId: input.requestId });
@@ -526,9 +531,4 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
-}
-
-/** `occurrence`: reviewed org/request/public UUID, never bearer material. */
-export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
-  return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
 }

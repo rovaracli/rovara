@@ -3,6 +3,8 @@ import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/u
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
+ // Lane A: optional on hosts without clipboard support; never falls back to storage.
+ navigator?: Pick<Navigator, "clipboard">;
  innerWidth?: number;
  addEventListener?: (type: "resize", listener: () => void) => void;
  removeEventListener?: (type: "resize", listener: () => void) => void;
@@ -44,6 +46,8 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   return response;
  } };
  const host: AppHost = {
+  // Lane A: copy only on explicit UI invocation; sanitize platform failures.
+  async copyText(text) { try { if (win.navigator?.clipboard === undefined) throw new Error("Unavailable");await win.navigator.clipboard.writeText(text); } catch { throw new Error("Copying is unavailable. Try a browser that supports secure clipboard access."); } },
   kind: "web", origin: win.location.origin, transport, currentPath: () => win.location.pathname + win.location.search,
   async realtimeToken() { const result = await api.send("POST", "/v1/app/realtime/token", undefined, RealtimeTokenResponseReaderSchema);if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Live updates are temporarily unavailable.");return result.value; },
   setTitle(title) { win.document.title = title; },

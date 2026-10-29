@@ -172,7 +172,7 @@ describe("the event catalog", () => {
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
 
-  it("lists the target kinds: the original list plus invite, spend_policy, model_source, session and process", () => {
+  it("lists all target kinds including the opaque invite target", () => {
     expect([...AUDIT_TARGET_KINDS]).toEqual([
       "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",

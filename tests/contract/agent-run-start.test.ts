@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 15: a run starts from a frozen recipe. The person's start (the app route, the AI-tool route and the Slack start all go through
 // the developer task start) resolves the agent before any budget or workspace charge, then writes the task, the RECIPE snapshot, the AGENT_RUN
 // of an agent-step recipe, the agent's task index and the run's request item in the one start transaction. `startAgentRun` is the same start
@@ -424,7 +425,7 @@ describe("startAgentRun", () => {
 
   it("copies the agent's max per run from its settings onto the task and stops at the smaller of it and the run limit", async () => {
     const t = await setup();
-    await t.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 10 }, OMAR.developerId);
+    await t.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 10 }, fixtureActor(t.store, TEST_ORG, OMAR.developerId).developerId, undefined, { ...({}), actor: fixtureActor(t.store, TEST_ORG, OMAR.developerId) });
     const capped = await startAgentRun(t.starter(), t.request());
     expect(capped).toMatchObject({ runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: 10, paused: false });
     expect(t.meta(capped.taskId).maxPerRunUsd).toBe(10);

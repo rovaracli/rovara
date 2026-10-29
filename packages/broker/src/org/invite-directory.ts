@@ -8,7 +8,7 @@ import { takeRateAt } from "../developer/page-comments.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;
 const id = z.string().uuid(), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const referenceSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, entityType: z.literal("ORG_INVITE_DIRECTORY"), pk: z.string(), sk: z.string() });
-const canonicalSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, role: z.enum(["admin", "member"]), createdBy: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), email: z.string().max(254).email().optional(), acceptedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional() });
+const canonicalSchema = z.object({ orgId: OrgIdSchema, inviteId: id, tokenHash: hash, role: z.enum(["admin", "member"]), createdBy: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), email: z.string().max(254).email().optional(), acceptedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() });
 const cursorSchema = z.object({ orgId: OrgIdSchema, after: id }).strict();
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The invite directory is unavailable. Try again.");
 const invalid = () => agentXError("CONFIG_INVALID", "Refresh the invite directory and try again.");
@@ -52,7 +52,7 @@ export async function listOrganizationInvites(deps: Deps, caller: DeveloperCalle
     if (invite.orgId !== caller.orgId) return badEntry(row, "canonical_org_mismatch");
     if (invite.inviteId !== ref.inviteId || invite.tokenHash !== ref.tokenHash) return badEntry(row, "canonical_reference_mismatch");
     if (invite.revokedAt !== undefined || invite.acceptedAt !== undefined || Date.parse(invite.expiresAt) <= nowMs) return undefined;
-    return { inviteId: invite.inviteId, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, createdBy: invite.createdBy, destination: invite.email === undefined ? { kind: "link" as const } : { kind: "email" as const, label: `***@${invite.email.slice(invite.email.lastIndexOf("@") + 1)}` } };
+    return { inviteId: invite.inviteId, revision: invite.revision ?? 0, role: invite.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, createdBy: invite.createdBy, destination: invite.email === undefined ? { kind: "link" as const } : { kind: "email" as const, label: `***@${invite.email.slice(invite.email.lastIndexOf("@") + 1)}` } };
    }));for (const invite of batch) if (invite !== undefined) invites.push(invite);
   }
   let nextCursor: string | undefined;

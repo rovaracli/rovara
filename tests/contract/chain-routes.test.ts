@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
 import { randomUUID } from "node:crypto";
@@ -612,7 +613,7 @@ describe("a publish or rollback that makes something less safe", () => {
     expect(await rule(s.deps, record, s.asCaller(CARL))).toBe(false);
     expect(await rule(s.deps, record, { orgId: ORG_B, developerId: DANA.developerId, orgRole: "admin" })).toBe(false);
     // Read live: an owner who was handed the chain over to someone else no longer decides.
-    await s.chains.setOwner(TEST_ORG, s.chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    await s.chains.setOwner(TEST_ORG, s.chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(s.db, TEST_ORG, DANA.developerId) });
     expect(await rule(s.deps, record, s.asCaller(MAYA))).toBe(false);
     expect(await rule(s.deps, record, s.asCaller(EVE))).toBe(true);
   });
@@ -801,7 +802,7 @@ describe("what the routes and the confirmation handlers hold to", () => {
     const first = await s.dev(MAYA, "POST", "/v1/app/chains", body);
     expect(first.status).toBe(201);
     const chainId = (first.body.chain as { chainId: string }).chainId;
-    await s.chains.setOwner(TEST_ORG, chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    await s.chains.setOwner(TEST_ORG, chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(s.db, TEST_ORG, DANA.developerId) });
     const again = await s.dev(MAYA, "POST", "/v1/app/chains", body);
     expect(again.status).toBe(404);
     expect((again.body.error as { code: string }).code).toBe("NOT_FOUND");
@@ -1104,7 +1105,7 @@ describe("how the broker wires chains", () => {
     const deps = broker.createAgentRouteDependencies(h.brokerInput as never)!;
     expect(deps.chains).toBeInstanceOf(ChainStore);
     const chain = await deps.chains.create({ orgId: TEST_ORG, name: "Budgeted", owner: { kind: "member", developerId: MAYA.developerId }, definition: STARTER_CHAIN_DEFINITION, createdBy: MAYA.developerId });
-    await deps.chains.setBudget(TEST_ORG, chain.chainId, 12, MAYA.developerId);
+    await deps.chains.setBudget(TEST_ORG, chain.chainId, 12, fixtureActor(deps.chains, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(deps.chains, TEST_ORG, MAYA.developerId) });
     expect(h.db.get(ownerBudgetKey(TEST_ORG, MAYA.developerId))?.["totalUsd"]).toBe(12);
     h.db.delete(ownerBudgetKey(TEST_ORG, MAYA.developerId));
     expect(await deps.store.rebuildOwnerTotal(TEST_ORG, MAYA.developerId)).toBe(12);

@@ -1,3 +1,7 @@
+import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
+import { budgetDocumentFence } from "./budget-snapshot.js";
+import { inviteCreateBodyHash } from "./invite-creation.js";
+import { takeRateAt } from "../developer/page-comments.js";
 // packages/broker/src/org/store.ts
 // Multi-tenancy: orgs, membership, invites and the Slack team binding. A developer belongs to at
 // most one org (the developer pointer's `attribute_not_exists(pk)` condition enforces it), and an
@@ -9,6 +13,7 @@ import {
   MEMBER_GRANT_SK_PREFIX,
   AgentXError,
   AuditEventInputSchema,
+  InviteCreateReceiptSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
@@ -31,6 +36,7 @@ import {
   orgPk,
   orgRemovedKey,
   orgSettingsKey,
+  orgScoped,
   orgSlackTeamKey,
   budgetSyncedKey,
   slackTeamOrgKey,
@@ -271,12 +277,13 @@ export class OrgStore {
    * replay of the same request is refused with IDEMPOTENCY_CONFLICT: only the token's hash is stored, so the
    * first answer cannot be given again.
    */
-  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
+  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean }): Promise<{ token: string }> {
     try {
       const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
       const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
       if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
+      if (input.reviewed && (input.requestId === undefined || !InviteCreateReceiptSchema.shape.requestId.safeParse(input.requestId).success)) throw coded("CONFIG_INVALID", "Review a valid invite request.");
       const token = randomBytes(32).toString("base64url");
       const tokenHash = sha256Hex(token), inviteId = randomUUID();
       const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
@@ -307,8 +314,11 @@ export class OrgStore {
       const parsedEvent = AuditEventInputSchema.safeParse(auditOrgInviteCreated({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-created", input.orgId, inviteId), inviteId, role: input.role, targeted: input.email !== undefined }));
       if (!parsedEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
       const event = parsedEvent.data;
+      if (!await takeRateAt(this.input, { pk: orgScoped(input.orgId, "INVITE_CREATE_RATE"), sk: input.createdBy }, 20, 60_000)) throw coded("TOO_MANY_REQUESTS", "Too many invite creation attempts. Try again in a minute.");
       // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
       items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
+      // Lane A: durable safe outcome; the existing permanent request marker prevents re-creation.
+      if (input.reviewed && input.requestId !== undefined) items.push(this.put({ pk: orgScoped(input.orgId, "INVITE_CREATE_REVIEWED"), sk: input.requestId }, "ORG_INVITE_CREATE_RECEIPT", { orgId: input.orgId, requestId: input.requestId, inviteId, role: input.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, by: input.createdBy, action: "org.invite_created", bodyHash: inviteCreateBodyHash(input) }));
       await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
       await this.flush(event);
       return { token };
@@ -557,6 +567,8 @@ export class OrgStore {
         throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
       }
     }
+    // Mandatory before teardown/final close: failures retain closingAt so a fresh close resumes bounded cleanup.
+    await clearWorkingBranchSaveReceipts(this.input, orgId);
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
@@ -689,9 +701,10 @@ export class OrgStore {
       const item = await this.get(key);
       const seen = item?.memberOverrides;
       if (item === undefined || typeof seen !== "object" || seen === null || !Object.hasOwn(seen, developerId)) return;
+      const fence = budgetDocumentFence(item);
       const others = Object.fromEntries(Object.entries(seen).filter(([id]) => id !== developerId));
       // The limit is the member's own until now and the members' default after. The change is Rovara's (the system), recorded with the write that makes it.
-      // The settings' `updatedAt` is not bumped by this rewrite, so the time of the rewrite makes each one its own occurrence.
+      // The shared field snapshot and revision also protect concurrent company/default budget changes.
       const own = (seen as Record<string, unknown>)[developerId];
       const fallback = item.memberDefaultMonthlyUsd;
       const at = this.iso();
@@ -700,10 +713,10 @@ export class OrgStore {
         developerId, from: own, to: typeof fallback === "number" ? fallback : undefined,
       })]);
       try {
-        // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
+        // Refuse any changed money snapshot before rewriting the whole document; then re-read it once more.
         await auditTransact(
           { ...this.deps(), documentClient: this.input.documentClient },
-          { Put: { TableName: this.input.tableName, Item: { ...item, memberOverrides: others }, ConditionExpression: "memberOverrides = :seen", ExpressionAttributeValues: { ":seen": seen } } },
+          { Put: { TableName: this.input.tableName, Item: { ...item, memberOverrides: others, revision: fence.nextRevision, updatedBy: "system", updatedAt: at }, ...fence.condition } },
           events,
         );
         await flushAuditEvents(this.deps(), events);

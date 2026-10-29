@@ -1,5 +1,5 @@
 // Ruling R47: a private or single-org install's org has no monthly cap until an operator sets one; only a cloud install's orgs start
-// with the placeholder limits. The per-task cap and Continue still apply. The operator sets caps with PUT /v1/admin/org/budget.
+// with the placeholder limits. Per-task caps still apply; operators retain their existing private-install credential authority.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgSettingsKey, singleOrgIdForEnv } from "../../packages/contracts/src/index.js";
@@ -97,12 +97,15 @@ describe("PUT /v1/admin/org/budget", () => {
 
   const put = (handler: Parameters<typeof adminCall>[0], body: unknown, admin = true) => adminCall(handler, { method: "PUT", path: "/v1/admin/org/budget", body, admin });
 
+  it("operator PUT refuses excessive decimal precision before storage or proxy changes with readable copy",async()=>{const access=fakeModelAccess();const {handler,db}=await createAdminBroker({extra:{modelAccess:{access,proxyUrl:PROXY_URL}}});for(const body of [{orgMonthlyUsd:12.3456789},{memberDefaultMonthlyUsd:0.30000000000000004},{memberOverrides:{dev1:0.0000001}}]){const response=await put(handler,{requestId:randomUUID(),...body});expect(response.status).toBe(400);expect(JSON.stringify(response.body).includes("at most 6 decimal places")).toBe(true);expect(db.get(orgSettingsKey(INSTALL_ORG,"BUDGET"))).toBeUndefined();expect(access.upsertOrg).not.toHaveBeenCalled();expect(access.upsertMember).not.toHaveBeenCalled();}});
+
   it("lets an operator set the single org's caps, which then apply and reach the proxy", async () => {
     const access = fakeModelAccess();
     const { handler, db } = await createAdminBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
     const response = await put(handler, { requestId: randomUUID(), orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 });
     expect(response).toMatchObject({ status: 200, body: { budget: { orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, memberOverrides: {} } } });
-    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))).toMatchObject({ orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, updatedBy: "operator:admin-subject" });
+    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))).toMatchObject({ orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 });
+    expect(db.get(orgSettingsKey(INSTALL_ORG, "BUDGET"))?.updatedBy).toMatch(/^op_[0-9a-f]{24}$/);
     expect(access.upsertOrg).toHaveBeenCalledWith(INSTALL_ORG, 2000);
     // The caps now apply: a member at $149.80 has too little left for a task.
     access.setMemberSpent(INSTALL_ORG, "dev1", 149.8);

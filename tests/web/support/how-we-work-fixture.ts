@@ -1,7 +1,7 @@
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { agentProfile } from "./agent-fixture.js";
-import { fakeHost } from "./fake-host.js";
 import { meFixture } from "./fixtures.js";
+import { fakeHost } from "./fake-host.js";
 import { projectFixture } from "./project-fixture.js";
 import { LAYER, diffBody, draftBody, howWeWorkView } from "./how-we-work-view.js";
 export { LAYER, diffBody, draftBody, howWeWorkView };
@@ -12,6 +12,7 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
  const fake = fakeHost(async request => {
   const url = new URL(request.path, "https://cell.example"), custom = await options.handle?.(request, url);
   if (custom !== undefined) return custom;
+  if (url.pathname === "/v1/app/me") return { status: 200, body: meFixture() };
   if (url.pathname === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (url.pathname === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture({ you: { role: options.canEdit === false ? "viewer" : "maintainer", canStartWork: options.canEdit !== false, canEditSettings: options.canEdit !== false, canViewSpend: false } }) };
   if (url.pathname === "/v1/app/projects/payments/how-we-work") return { status: 200, body: state.view };
@@ -21,7 +22,6 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
   if (url.pathname === `/v1/app/agents/${LAYER}/diff`) return { status: 200, body: diffBody(url.searchParams.get("from") === "base" ? "base" : Number(url.searchParams.get("from")), ["Changes the build instructions"], [], url.searchParams.get("to") === "draft" ? "draft" : Number(url.searchParams.get("to"))) };
   if (url.pathname === `/v1/app/agents/${LAYER}/versions`) return { status: 200, body: { versions: [{ version: 2, current: true, publishedAt: "2026-10-26T12:00:00.000Z", publishedBy: "a".repeat(64), note: "Added build rules" }, { version: 1, publishedAt: "2026-10-25T12:00:00.000Z", note: "First rules", safety: "less_safe", lessSafe: ["Changes the instructions of the review step \"Review\""] }] } };
   // The member names read (useAgentMembers) now resolves the caller's identity first, so the cell must answer /me.
-  if (url.pathname === "/v1/app/me") return { status: 200, body: meFixture() };
   if (url.pathname === "/v1/app/org/members") return { status: 200, body: { members: [{ developerId: "a".repeat(64), name: "Priya", role: "admin" }] } };
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });

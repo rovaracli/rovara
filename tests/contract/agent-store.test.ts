@@ -1,3 +1,5 @@
+import { fixtureActor } from "../support/money-authority.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 // Plan 3 Task 6a: the agent store (records, name uniqueness, drafts, versions, pinned bases, events).
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
@@ -479,16 +481,16 @@ describe("archive, budget, owner, accountable and events", () => {
     await store.archive(ORG_A, c.agentId, ALICE);
     await store.archive(ORG_A, c.agentId, ALICE); // already archived: no write, no event
     await store.unarchive(ORG_A, c.agentId, BOB);
-    await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, ALICE);
-    await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE);
-    await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE);
+    await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
+    await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     await store.saveDraft({ orgId: ORG_A, agentId: b.agentId, overlay: scratch("B2"), expectedRevision: 1, by: ALICE });
     await publish(b.agentId);
     await store.updateBase({ orgId: ORG_A, agentId: c.agentId, expectedRevision: 1, by: ALICE });
     await store.ensureBuiltinSettings(ORG_A, "ticket-triage");
     release.ticketTriage = 2;
     await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: ALICE });
-    await store.setBudget(ORG_A, "ticket-triage", { monthlyUsd: 10 }, ALICE);
+    await store.setBudget(ORG_A, "ticket-triage", { monthlyUsd: 10 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
 
     expect(events(ORG_A, c.agentId).map((event) => event.kind)).toEqual(["created", "archived", "unarchived", "budget_changed", "owner_changed", "owner_changed", "base_updated"]);
     expect(events(ORG_A, b.agentId).map((event) => event.kind)).toEqual(["created", "published", "published"]);
@@ -512,34 +514,34 @@ describe("archive, budget, owner, accountable and events", () => {
   it("sets and clears budgets, on an agent's META or a built-in's org settings", async () => {
     const { db, store, make } = setup();
     const agent = await make("Budgeted", scratch("a"));
-    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 25, maxPerRunUsd: 4 }, ALICE);
+    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 25, maxPerRunUsd: 4 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     expect(await store.get(ORG_A, agent.agentId)).toMatchObject({ monthlyBudgetUsd: 25, maxPerRunUsd: 4 });
-    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: null }, ALICE);
+    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: null }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     const after = (await store.get(ORG_A, agent.agentId))!;
     expect(after.monthlyBudgetUsd).toBe(25);
     expect(after).not.toHaveProperty("maxPerRunUsd");
-    expect(await code(store.setBudget(ORG_A, agent.agentId, { monthlyUsd: -1 }, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(store.setBudget(ORG_A, agent.agentId, { monthlyUsd: -1 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
 
-    await store.setBudget(ORG_A, "code-reviewer", { monthlyUsd: 12 }, BOB);
+    await store.setBudget(ORG_A, "code-reviewer", { monthlyUsd: 12 }, fixtureActor(store, ORG_A, BOB).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, BOB) });
     expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toMatchObject({ pinnedVersion: currentBuiltinVersion("code-reviewer"), monthlyBudgetUsd: 12, updatedBy: BOB });
-    await store.setAccountable(ORG_A, "code-reviewer", { developerId: BOB }, ALICE);
+    await store.setAccountable(ORG_A, "code-reviewer", { developerId: BOB }, fixtureActor(store, ORG_A, ALICE, true).developerId, undefined, { actor: fixtureActor(store, ORG_A, ALICE, true) });
     expect((await store.getBuiltinSettings(ORG_A, "code-reviewer"))?.accountable).toEqual({ developerId: BOB });
   });
 
   it("changes the owner and the accountable maintainer under their rules", async () => {
     const { store, make } = setup();
     const member = await make("Mine", scratch("a"));
-    expect(await code(store.setAccountable(ORG_A, member.agentId, { developerId: BOB }, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(store.setAccountable(ORG_A, member.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
     const project: AgentOwner = { kind: "project", project: "web" };
-    expect(await code(store.setOwner(ORG_A, member.agentId, project, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
-    const moved = await store.setOwner(ORG_A, member.agentId, project, ALICE, { developerId: BOB });
+    expect(await code(store.setOwner(ORG_A, member.agentId, project, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const moved = await store.setOwner(ORG_A, member.agentId, project, ALICE, { developerId: BOB }, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(moved).toMatchObject({ owner: project, accountable: { developerId: BOB } });
-    await store.setAccountable(ORG_A, member.agentId, { developerId: ALICE }, BOB);
+    await store.setAccountable(ORG_A, member.agentId, { developerId: ALICE }, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     expect((await store.get(ORG_A, member.agentId))?.accountable).toEqual({ developerId: ALICE });
-    const back = await store.setOwner(ORG_A, member.agentId, { kind: "member", developerId: BOB }, ALICE);
+    const back = await store.setOwner(ORG_A, member.agentId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(back).not.toHaveProperty("accountable");
     expect(await store.get(ORG_A, member.agentId)).not.toHaveProperty("accountable");
-    expect(await code(store.setOwner(ORG_A, "rovara-code", MEMBER, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(store.setOwner(ORG_A, "rovara-code", MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(store.archive(ORG_A, "rovara-code", ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
@@ -604,4 +606,74 @@ describe("AgentStore request marks and the publish baseline (review fix round 1)
     await store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("z"), expectedRevision: 2, by: ALICE, request: mark("r1", "e".repeat(64)) });
     expect(await store.getRequest(ORG_A, ALICE, "r1")).toMatchObject({ fingerprint: "e".repeat(64), result: { revision: 3 } });
   });
+});
+
+
+describe("G1 legacy agent per-run precision compatibility", () => {
+  for (const maxPerRunUsd of [0.0000001, 0.1 + 0.2, 1.0000001, 1_000_000.000001, NaN, Infinity, -1, "1"] as const) {
+    it("refuses invalid incoming per-run precision before builtin initialization or events", async () => {
+      const { db, store } = setup();
+      const before = db.transactions().length;
+      const result = await code(store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: maxPerRunUsd as number }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) }));
+      expect(result).toMatchObject({ code: "CONFIG_INVALID" });
+      expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toBeUndefined();
+      expect(db.transactions().length).toBe(before);
+    });
+  }
+  it("retains exact representable numbers, explicit zero, null and omitted legacy semantics", async () => {
+    const { db, store, make } = setup(); const agent = await make("Exact money", scratch("a"));
+    for (const value of [0, .000001, 17.000001, 1_000_000]) {
+      await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: value }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+      expect(db.get(agentKey(ORG_A, agent.agentId, "META"))?.maxPerRunUsd).toBe(value);
+    }
+    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 12 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    expect(db.get(agentKey(ORG_A, agent.agentId, "META"))?.maxPerRunUsd).toBe(1_000_000);
+    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: null }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    expect(Object.hasOwn(db.get(agentKey(ORG_A, agent.agentId, "META"))!, "maxPerRunUsd")).toBe(false);
+  });
+  it("leaves historical sub-micro intent unchanged on an omitted patch and allows explicit correction", async () => {
+    const { db, store, make } = setup(); const agent = await make("Historical money", scratch("a")); const key = agentKey(ORG_A, agent.agentId, "META");
+    db.set({ ...db.get(key), maxPerRunUsd: .0000001 });
+    expect((await store.get(ORG_A, agent.agentId))?.maxPerRunUsd).toBe(.0000001);
+    await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 12 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    expect(db.get(key)?.maxPerRunUsd).toBe(.0000001);
+    await store.setBudget(ORG_A, agent.agentId, { maxPerRunUsd: .000001 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    expect(db.get(key)?.maxPerRunUsd).toBe(.000001);
+  });
+});
+
+
+for (const builtin of [false, true]) for (const initial of [undefined, 0, 1]) it(`fences a real concurrent per-run write and its audit on ${builtin ? "builtin" : "custom"} settings from ${String(initial)}`, async () => {
+  const f = setup(); const agentId = builtin ? "code-reviewer" : (await f.make("Racing money", scratch("a"))).agentId;
+  const capture = capturingAuditDeps({ db: f.db });
+  const store = new AgentStore({ documentClient: f.db, tableName: "state", now: () => START, audit: capture.audit });
+  await store.setBudget(ORG_A, agentId, { maxPerRunUsd: initial ?? null }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+  const before = capture.recorded().length, key = builtin ? builtinSettingsKey(ORG_A, "code-reviewer") : agentKey(ORG_A, agentId, "META");
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> };
+    if (!raced && input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+      raced = true; await store.setBudget(ORG_A, agentId, { maxPerRunUsd: 3 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    }
+    return send(command);
+  };
+  expect(await code(store.setBudget(ORG_A, agentId, { maxPerRunUsd: 2 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+  expect(raced).toBe(true); expect(f.db.get(key)?.maxPerRunUsd).toBe(3);
+  expect(capture.recorded().length).toBe(before + 1); expect(capture.pending()).toHaveLength(0);
+});
+
+it("conditionally creates a first builtin budget without overwriting a competing first writer", async () => {
+  const f = setup(), key = builtinSettingsKey(ORG_A, "code-reviewer"), capture = capturingAuditDeps({ db: f.db });
+  const store = new AgentStore({ documentClient: f.db, tableName: "state", now: () => START, audit: capture.audit });
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } } }> };
+    if (!raced && input.TransactItems?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk)) {
+      raced = true; await store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: 3 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
+    }
+    return send(command);
+  };
+  expect(await code(store.setBudget(ORG_A, "code-reviewer", { maxPerRunUsd: 2 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) }))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+  expect(raced).toBe(true); expect(f.db.get(key)?.maxPerRunUsd).toBe(3);
+  expect(capture.recorded()).toHaveLength(1); expect(capture.pending()).toHaveLength(0);
 });

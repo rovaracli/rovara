@@ -51,6 +51,33 @@ export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMe
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 
+// Lane A: canonical invite review/recovery, isolated from other admin lanes.
+export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
+export { OrgIdSchema } from "./org.js";
+
+// Lane A: safe reviewed invite creation receipts.
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema } from "./invite-creation.js";
+
+// Lane A: strict read-only monthly base budget settings.
+export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
+
+// Lane A G1: pure finite stop calculation and exact display; no runtime admission.
+export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
+export { formatUsdMicrodollars } from "./money-format.js";
+
+// Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
+export { TaskStopCeilingReadSchema, type TaskStopCeilingRead } from "./task-stop-ceiling.js";
+
+// Lane A G1: configured company default composed with the one existing ceiling.
+export { TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "./task-stop-company.js";
+
+// Lane A G1: exact default micros and the narrow existing-agent limit read.
+export { DEFAULT_MAX_PER_RUN_CEILING_MICROUSD } from "./spend.js";
+export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-agent.js";
+
+// Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
+export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
+
 // Lane B reviewed project archive boundary.
 export * from "./reviewed-project-archive.js";
 

@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Task 17: the Audit Ledger's hooks in Plan 1's own code. A pull request opened (reconcilePullRequest), a pull request
 // merged (reconcileTaskPullRequestFeedback) and a budget change (writeBudgets) each add their pending audit item to the
 // transaction that records the action, so the action and its audit item commit together or not at all.
@@ -577,9 +578,9 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
   it("records a change of the org's limit from 500 to 800 with the old and new figures in cents", async () => {
     const { db, capture, deps } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
-    await writeBudgets(deps, TEST_ORG, settings(800, 29), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(800, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(capture.recordedBy("budget.changed")).toEqual([{
-      eventId: auditEventId("budget.changed", auditOccurrence(AT, MAYA_ID, "org_monthly_limit", TEST_ORG)),
+      eventId: auditEventId("budget.changed", auditOccurrence("1", AT, MAYA_ID, "org_monthly_limit", TEST_ORG)),
       orgId: TEST_ORG,
       action: "budget.changed",
       actor: { kind: "member", id: MAYA_ID },
@@ -591,7 +592,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
 
   it("reads the cloud install's placeholder limits as the old figures of an org that never set any", async () => {
     const { capture, deps, stored } = setup({ cloud: true });
-    await writeBudgets(deps, TEST_ORG, settings(800, 40), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(800, 40), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(facts(capture.recordedBy("budget.changed"))).toEqual([
       { scopeKind: "org", field: "org_monthly_limit", fromCents: 50000, toCents: 80000 },
       { scopeKind: "org", field: "member_default_limit", fromCents: 2900, toCents: 4000 },
@@ -601,8 +602,8 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
 
   it("leaves out the figure of a limit that was or becomes unset", async () => {
     const { capture, deps } = setup();
-    await writeBudgets(deps, TEST_ORG, settings(1000, undefined), MAYA_ID, AT);
-    await writeBudgets(deps, TEST_ORG, settings(undefined, undefined), MAYA_ID, "2026-10-21T11:00:00.000Z");
+    await writeBudgets(deps, TEST_ORG, settings(1000, undefined), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
+    await writeBudgets(deps, TEST_ORG, settings(undefined, undefined), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T11:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(facts(capture.recordedBy("budget.changed"))).toEqual([
       { scopeKind: "org", field: "org_monthly_limit", toCents: 100000 },
       { scopeKind: "org", field: "org_monthly_limit", fromCents: 100000 },
@@ -612,7 +613,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
   it("records one event for each limit that changed, a member's included, and none for one that did not", async () => {
     const { db, capture, deps } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: { [MAYA_ID]: 100 } });
-    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [OMAR_ID]: 2000 }), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [OMAR_ID]: 2000 }), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     const events = capture.recordedBy("budget.changed");
     // Maya's override went away (she is back on the default $29), Omar's was added (from the default).
     expect(events.map((event) => ({ target: event.target, related: event.related, facts: event.facts }))).toEqual(expect.arrayContaining([
@@ -627,7 +628,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
   it("records nothing when nothing changed", async () => {
     const { db, capture, deps } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
-    await writeBudgets(deps, TEST_ORG, settings(500, 29), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(500, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(capture.recorded()).toEqual([]);
   });
 
@@ -635,30 +636,30 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     const { db, capture, deps, stored } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
     const mark = db.commandNames().length;
-    await writeBudgets(deps, TEST_ORG, settings(800, 29), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(800, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(db.commandNames().slice(mark).filter((name) => name === "TransactWriteCommand")).toHaveLength(1);
     expect(stored()).toMatchObject({ orgMonthlyUsd: 800 });
     // A cancelled transaction changes neither.
     db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     capture.queueDown();
     const before = capture.pendingItems().length;
-    await rejection(writeBudgets(deps, TEST_ORG, settings(900, 29), MAYA_ID, "2026-10-21T12:00:00.000Z"));
+    await rejection(writeBudgets(deps, TEST_ORG, settings(900, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T12:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) }));
     expect(stored()).toMatchObject({ orgMonthlyUsd: 800 });
     expect(capture.pendingItems()).toHaveLength(before);
   });
 
-  it("still surfaces a failed condition on the settings as the ConditionalCheckFailedException it always was", async () => {
+  it("classifies a lost settings condition as a reloadable revision conflict", async () => {
     const { db, deps } = setup();
     db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }] } });
-    const error = await rejection(writeBudgets(deps, TEST_ORG, settings(800, 29), MAYA_ID, AT));
-    expect(error.name).toBe("ConditionalCheckFailedException");
+    const error = await rejection(writeBudgets(deps, TEST_ORG, settings(800, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) }));
+    expect(error.code).toBe("CHANGE_STALE");
   });
 
-  it("writes the settings alone on an install with no ledger", async () => {
+  it("keeps the revision and actor transaction on an install with no ledger", async () => {
     const db = new FakeDynamoDb();
     const mark = db.commandNames().length;
-    await writeBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, settings(800, 29), MAYA_ID, AT);
-    expect(db.commandNames().slice(mark)).toEqual(["PutCommand"]);
+    await writeBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, settings(800, 29), fixtureActor({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, MAYA_ID, true) });
+    expect(db.commandNames().slice(mark)).toEqual(["GetCommand", "TransactWriteCommand"]);
     expect(await readBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG)).toMatchObject({ orgMonthlyUsd: 800 });
   });
 
@@ -667,7 +668,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     const capture = hangingAuditDeps();
     const { db, deps, stored } = setup({ capture });
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
-    const written = writeBudgets(deps, TEST_ORG, settings(800, 29), MAYA_ID, AT);
+    const written = writeBudgets(deps, TEST_ORG, settings(800, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
     await written;
     expect(stored()).toMatchObject({ orgMonthlyUsd: 800 });
@@ -678,11 +679,11 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     const { db, capture, deps } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: { [OMAR_ID]: 29 } });
     // Maya gets an override equal to the default; Omar's override equal to the default goes away: neither limit moves.
-    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 29 }), MAYA_ID, AT);
+    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 29 }), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(capture.recorded()).toEqual([]);
     // An override that does move the figure still records, to and from the default.
-    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 50 }), MAYA_ID, "2026-10-21T11:00:00.000Z");
-    await writeBudgets(deps, TEST_ORG, settings(500, 29), MAYA_ID, "2026-10-21T12:00:00.000Z");
+    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 50 }), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T11:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
+    await writeBudgets(deps, TEST_ORG, settings(500, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T12:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     expect(facts(capture.recordedBy("budget.changed"))).toEqual([
       { scopeKind: "member", field: "member_monthly_limit", fromCents: 2900, toCents: 5000 },
       { scopeKind: "member", field: "member_monthly_limit", fromCents: 5000, toCents: 2900 },
@@ -692,40 +693,40 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
   describe("a change that would record more events than one transaction holds is refused", () => {
     const overrides = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`dev${String(index).padStart(3, "0")}`, 100 + index]));
 
-    it("commits a change of exactly 98 events with all of them", async () => {
+    it("commits a change of exactly 96 events with all of them", async () => {
       const { db, capture, deps, stored } = setup();
       capture.queueDown();
       const mark = db.commandNames().length;
-      await writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(98)), MAYA_ID, AT);
-      expect(Object.keys(stored()!.memberOverrides as object)).toHaveLength(98);
-      expect(capture.pendingItems()).toHaveLength(98);
+      await writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(96)), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
+      expect(Object.keys(stored()!.memberOverrides as object)).toHaveLength(96);
+      expect(capture.pendingItems()).toHaveLength(96);
       expect(db.commandNames().slice(mark).filter((name) => name === "TransactWriteCommand")).toHaveLength(1);
     });
 
-    it("counts events and not overrides: an org limit and 97 overrides are 98 events", async () => {
+    it("counts events and not overrides: an org limit and 95 overrides are 96 events", async () => {
       const { capture, deps } = setup();
       capture.queueDown();
-      await writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(97)), MAYA_ID, AT);
-      expect(capture.pendingItems()).toHaveLength(98);
+      await writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(95)), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
+      expect(capture.pendingItems()).toHaveLength(96);
     });
 
-    it("refuses 99 events with CONFIG_INVALID, writing and recording nothing, and names no value", async () => {
+    it("refuses 97 events with CONFIG_INVALID, writing and recording nothing, and names no value", async () => {
       const { capture, deps, stored } = setup();
       capture.queueDown();
-      const error = await rejection(writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(99)), MAYA_ID, AT));
+      const error = await rejection(writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(97)), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) }));
       expect(error.code).toBe("CONFIG_INVALID");
       expect(error.message).not.toContain("dev0");
       expect(stored()).toBeUndefined();
       expect(capture.pendingItems()).toEqual([]);
       expect(capture.logs).toEqual([]);
-      // 1 org limit and 98 overrides are 99 events too.
-      expect((await rejection(writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(98)), MAYA_ID, AT))).code).toBe("CONFIG_INVALID");
+      // 1 org limit and 96 overrides are 97 events too.
+      expect((await rejection(writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(96)), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) }))).code).toBe("CONFIG_INVALID");
       expect(stored()).toBeUndefined();
     });
 
     it("lets a change of any size through on an install with no ledger", async () => {
       const db = new FakeDynamoDb();
-      await writeBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, settings(undefined, undefined, overrides(150)), MAYA_ID, AT);
+      await writeBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, settings(undefined, undefined, overrides(150)), fixtureActor({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, MAYA_ID, true) });
       expect(Object.keys(db.get(orgSettingsKey(TEST_ORG, "BUDGET"))!.memberOverrides as object)).toHaveLength(150);
     });
 
@@ -734,16 +735,16 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
       const access = fakeModelAccess();
       const orgs = { orgForDeveloper: async () => ({ orgId: TEST_ORG }), getOrg: async () => ({ plan: "team" }) };
       const deps = { documentClient: db, tableName: "state", access, audit: capture.audit, orgs } as unknown as Parameters<typeof changeBudgets>[0];
-      const refused = await rejection(changeBudgets(deps, { orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(99) }, updatedBy: MAYA_ID, at: AT }));
+      const refused = await rejection(changeBudgets(deps, { ...({ orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(97) }, updatedBy: MAYA_ID, at: AT }), updatedBy: fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) }));
       expect(refused.code).toBe("CONFIG_INVALID");
       expect(refused.message).not.toContain("dev0");
       expect(stored()).toBeUndefined();
       expect(access.upsertOrg).not.toHaveBeenCalled();
       expect(access.upsertMember).not.toHaveBeenCalled();
       expect(capture.recorded()).toEqual([]);
-      // 98 is changed as usual.
-      await changeBudgets(deps, { orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(98) }, updatedBy: MAYA_ID, at: AT });
-      expect(capture.recordedBy("budget.changed")).toHaveLength(98);
+      // 96 is changed as usual.
+      await changeBudgets(deps, { ...({ orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(96) }, updatedBy: MAYA_ID, at: AT }), updatedBy: fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
+      expect(capture.recordedBy("budget.changed")).toHaveLength(96);
     });
   });
 });

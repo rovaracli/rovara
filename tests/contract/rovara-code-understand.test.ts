@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 6 Task 4: the Understand step. A version 2 task reads the request and the code before it plans: it asks a few questions when the request is vague, chooses the Quick or
 // Full path (the request's own path wins), and moves on to the plan. Understand is a model step like any other, so it runs with the plan step's model, under the planning
 // limit, charged to the task's payer; its answer is untrusted and is bounded, schema-checked and redacted before it can drive anything.
@@ -659,7 +660,7 @@ describe("Understand runs as a model step: the plan step's model, the allowed mo
     const t = await world();
     const { taskId, workspaceId } = await t.start();
     const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
-    await t.store.putGuardrails({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }, { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId });
+    await t.store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }, { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }] }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(t.store, TEST_ORG, MAYA.developerId, true) });
     await t.finishPrepare(workspaceId);
     expect(t.operationOf(workspaceId, "UNDERSTAND")).toBeUndefined();
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND" });

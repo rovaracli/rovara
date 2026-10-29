@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // tests/contract/audit-ledger-suite.test.ts
 // Task 21 of the Audit Ledger plan: the isolation and failure suite. Everything runs end to end over the fakes: a hooked action
 // (Plan 1's `writeBudgets`, or the outbox primitives it is built from) commits its pending audit item with the action, the flush
@@ -254,7 +255,7 @@ function rig(options: { tsa?: boolean } = {}) {
     const before = committed.length;
     crashAfterCommit.next = how.crash === true ? 1 : 0;
     try {
-      await writeBudgets(budgetDeps, orgId, { orgMonthlyUsd: n, memberOverrides: {} }, "dev_1", iso(h.clock.now));
+      await writeBudgets(budgetDeps, orgId, { orgMonthlyUsd: n, memberOverrides: {} }, fixtureActor(h.db, orgId, "dev_1", true).developerId, iso(h.clock.now), { actor: { kind: "member", id: "dev_1" }, ...({}), authority: fixtureActor(h.db, orgId, "dev_1", true) });
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "ProcessDied") throw error;
     } finally {

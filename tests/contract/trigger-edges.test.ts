@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 18: what the first mutation pass found unpinned. Each test names the guard it holds: the store's conditions and indexes, the checks of `triggerProblems`, who may set,
 // move, delete and confirm a trigger, what binds a confirmation to the spec it was asked for, and who a trigger goes to when its owner leaves.
 import { afterEach, describe, expect, it } from "vitest";
@@ -314,7 +315,7 @@ describe("a change of kind, source or creator, and what a removal and a delete l
     const chain = await v.budgetedChain();
     const target = { kind: "chain" as const, chainId: chain.chainId };
     const off = await v.seed({ target, createdBy: DANA, enabled: false });
-    await v.chains.setBudget(ORG_A, chain.chainId, undefined, DANA);
+    await v.chains.setBudget(ORG_A, chain.chainId, undefined, fixtureActor(v.chains, ORG_A, DANA).developerId, undefined, { ...({}), actor: fixtureActor(v.chains, ORG_A, DANA) });
     expect(await recheckTriggersForTarget(v.routeDeps, ORG_A, target)).toEqual([]);
     expect(await v.notices(DANA)).toEqual([]);
     expect((await stored(v, off.triggerId)).revision).toBe(off.revision);

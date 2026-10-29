@@ -579,6 +579,14 @@ describe("budget routes", () => {
     expect(h.access.upsertOrg).not.toHaveBeenCalled();
   });
 
+  it("PUT /v1/dev/org/budget refuses sub-microdollar values before any settings write or proxy sync", async () => {
+    const h = await install();h.asAdmin();
+    for (const amount of [12.3456789, 0.30000000000000004, 0.0000001]) for (const body of [{orgMonthlyUsd:amount},{memberDefaultMonthlyUsd:amount},{memberOverrides:{[OMAR.developerId]:amount}}]) {
+      const response = await h.dev(MAYA,"PUT","/v1/dev/org/budget",{requestId:randomUUID(),...body});expect(response.status).toBe(400);expect(h.db.get(orgSettingsKey(TEST_ORG,"BUDGET"))).toBeUndefined();expect(h.access.upsertOrg).not.toHaveBeenCalled();expect(h.access.upsertMember).not.toHaveBeenCalled();
+    }
+  });
+  it("PUT /v1/dev/org/budget retains exact whole-microdollar fractions and explicit zero",async()=>{const h=await install();h.asAdmin();for(const amount of [0,0.000001,0.29,1.000001]){const response=await h.dev(MAYA,"PUT","/v1/dev/org/budget",{requestId:randomUUID(),orgMonthlyUsd:amount,memberDefaultMonthlyUsd:amount,memberOverrides:{[OMAR.developerId]:amount}});expect(response.status).toBe(200);expect(h.db.get(orgSettingsKey(TEST_ORG,"BUDGET"))?.orgMonthlyUsd).toBe(amount);}});
+
   it("PUT /v1/dev/org/budget writes the settings, then tells the proxy the org and the members it named", async () => {
     const h = await install();
     h.asAdmin();

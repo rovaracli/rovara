@@ -1,3 +1,4 @@
+import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 33: monthly requests and top-ups. A task stopped by a month's budget (a member's, a project's, an agent's, the org's, a testing allowance) is
 // listed under its scope (`pausedTasksKey`) and asks for a `month` top-up once per month, scope and requester. A member's, a project's, a testing allowance's
 // and the org's go to the org's owners and admins; an agent's to its owner while the new limit stays within the guardrail and the owner's whole effective
@@ -414,7 +415,7 @@ describe("fix round 1 (the Task 33 review)", () => {
     const { effectiveOwnerCap } = await import("../../packages/broker/src/spend/requests.js");
     const answer = await ownerBudgetRefusal(t.deps(), TEST_ORG, undefined, { owner: MAYA.developerId, usd: 15 }, (owner) => effectiveOwnerCap(t.deps(), TEST_ORG, owner));
     expect("ownerCap" in answer).toBe(true);
-    const write = await refusal(store.setBudget(TEST_ORG, third, { monthlyUsd: 15 }, MAYA.developerId, undefined, { ownerCap: (answer as { ownerCap: never }).ownerCap }));
+    const write = await refusal(store.setBudget(TEST_ORG, third, { monthlyUsd: 15 }, fixtureActor(t.db, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({ ownerCap: (answer as { ownerCap: never }).ownerCap }), actor: fixtureActor(t.db, TEST_ORG, MAYA.developerId) }));
     expect(raced).toBe(true);
     expect(write).toMatchObject({ code: "CONFIG_INVALID" });
     expect(topUp(t, { kind: "agent", agentId: first })).toBe(10);

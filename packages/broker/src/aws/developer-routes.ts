@@ -1,3 +1,15 @@
+// Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
+import { getTaskStopProject } from "../org/task-stop-project.js";
+// Lane A G1: existing agent money limit, no initialization or management.
+import { getTaskStopAgent } from "../org/task-stop-agent.js";
+// Lane A G1: configured company-default read, with no policy writer.
+import { getTaskStopCompany } from "../org/task-stop-company.js";
+// Lane A G1: narrow read of the existing company ceiling.
+import { getTaskStopCeiling } from "../org/task-stop-ceiling.js";
+// Lane A: read-only monthly base settings; no legacy proxy sync.
+import { getAdminBudgetSettings } from "../org/admin-budget-settings.js";
+import { createReviewedOrganizationInvite, getInviteCreationReceipt } from "../org/invite-creation.js";
+import { getOrganizationInviteStatus } from "../org/invite-status.js";
 import { readSlackWorkspaceEvidence } from "../org/slack-workspace-evidence.js";
 import { WorkingBranchNameSchema } from "@agentx/contracts";
 import { projectWorkingBranchSaveHttp } from "../org/project-working-branch-save-http.js";
@@ -2133,6 +2145,22 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  // Lane A G1: no policy write, default inference or paid-start permission.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-ceiling") return getTaskStopCeiling(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);
+  const taskStopAgentPath = /^\/v1\/app\/org\/task-stop-policy\/agents\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && taskStopAgentPath !== null) return getTaskStopAgent(deps, caller, taskStopAgentPath[1]!);
+  const taskStopProjectPath = /^\/v1\/app\/org\/task-stop-policy\/projects\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && taskStopProjectPath !== null) return getTaskStopProject(deps, caller, taskStopProjectPath[1]!);
+  // Lane A: current-org, live-role monthly settings projection.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/budget-settings") return getAdminBudgetSettings(deps, caller);
+  // Lane A: reviewed creation and actor-bound historical recovery, isolated from legacy onboarding.
+  if (request.method === "POST" && url.pathname === "/v1/app/org/invites/reviewed") return createReviewedOrganizationInvite(deps, caller, jsonBody(request));
+  const createReceipt = /^\/v1\/app\/org\/invites\/requests\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && createReceipt !== null) return getInviteCreationReceipt(deps, caller, createReceipt[1]!);
+  // Lane A: explicit canonical review/recovery for the invite write flow.
+  const inviteStatus = /^\/v1\/app\/org\/invites\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && inviteStatus !== null) return getOrganizationInviteStatus(deps, caller, inviteStatus[1]!);
   const revokeInvite = /^\/v1\/app\/org\/invites\/([^/]+)\/revoke$/.exec(url.pathname);
   if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
@@ -2491,7 +2519,7 @@ async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: D
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can change the organization's budgets");
   const budgets = budgetDependencies(deps);
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  const budget = await changeBudgets({ ...budgets, orgs: deps.orgs }, { orgId: caller.orgId, body, updatedBy: caller.developerId, at: new Date(deps.now()).toISOString() });
+  const budget = await changeBudgets({ ...budgets, orgs: deps.orgs }, { authority: { developerId: caller.developerId, role: caller.orgRole }, orgId: caller.orgId, body, updatedBy: caller.developerId, at: new Date(deps.now()).toISOString() });
   logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(budget.memberOverrides).length) });
   return { budget };
 }

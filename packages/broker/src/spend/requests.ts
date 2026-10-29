@@ -1,3 +1,4 @@
+import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 // Plan 3 Task 32: requests for more spend. A run that reached one of its own limits (its run limit, the agent's max per run, the planning limit) asks the person
 // who may raise it; an agent budget change that would take one person past the owner cap asks an org admin. A request is one record (`spendRequestKey`) with
 // the org's open index item, a global due item for the settlement run, and a slot per subject and kind, so a second pause asks for nothing new. Who may decide
@@ -1295,6 +1296,12 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
     await expireOne(deps, record, "target_left");
     throw closed({ status: "EXPIRED", endedBecause: "target_left" });
   };
+  if (!forChain && record.agentId !== undefined && isBuiltinAgentId(record.agentId) && change.op === "set_accountable") {
+    const developerId = await member(change.accountable.developerId);
+    const role = await orgRoleOf(deps, record.orgId, developerId);
+    if (role !== "owner" && role !== "admin") throw agentXError("CONFIG_INVALID", "accountable: pick an org owner or admin for a built-in agent");
+    return { op: "set_accountable", accountable: { developerId } };
+  }
   // The agent or chain the change is about, and the rules for making someone its owner or accountable maintainer, which are the same for both.
   const agent = forChain ? await deps.chains?.get(record.orgId, record.chainId as string) : await deps.store.get(record.orgId, record.agentId as never);
   const accountableOf = (project: string, developerId: string) => (forChain ? requireChainAccountable(deps, record.orgId, project, developerId) : requireAccountable(deps, record.orgId, project, developerId));
@@ -1316,7 +1323,10 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
 async function requireSameOwner(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined): Promise<void> {
   if (record.forOwner === undefined || change === undefined || change.op === "confirm_move") return;
   // The agent or chain the request is about (Plan 4: a chain's budget counts in the same owner total).
-  const agent = record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId) : await deps.store.get(record.orgId, record.agentId as never);
+  const builtinAccountable = record.chainId === undefined && record.agentId !== undefined && isBuiltinAgentId(record.agentId) && change.op === "set_accountable";
+  const agent = record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId)
+    : builtinAccountable ? await deps.store.builtinBudgetSnapshot(record.orgId, record.agentId as never)
+      : await deps.store.get(record.orgId, record.agentId as never);
   const after = agent === undefined ? undefined
     : change.op === "set_accountable" ? withBudgetFields(agent, { accountable: change.accountable })
       : change.op === "set_owner" ? withBudgetFields(agent, { owner: change.owner, ...(change.accountable === undefined ? {} : { accountable: change.accountable }) })
@@ -1329,11 +1339,17 @@ async function requireSameOwner(deps: SpendRequestDependencies, record: SpendReq
 }
 
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
-async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[]): Promise<void> {
+async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], decisionActor: BudgetActor): Promise<void> {
   const agentId = record.agentId as never;
-  const options = { overrideCap: { spendRequestId: record.spendRequestId, items, closed: () => closed({ status: "APPROVED" }) } };
+  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, spendRequestId: record.spendRequestId, items, closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
+    try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] })); }
+    catch (error) {
+      const failed = failedIndexes(error);
+      if (failed !== undefined && [...failed].some(index => index >= items.length)) throw budgetActorRefused();
+      throw error;
+    }
     return;
   }
   if (record.chainId !== undefined) {
@@ -1342,15 +1358,20 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
     const chainId = record.chainId;
     switch (change.op) {
       case "set_budget": await deps.chains.setBudget(record.orgId, chainId, change.budget.monthlyUsd === null ? undefined : change.budget.monthlyUsd, by, undefined, options); return;
-      case "set_owner": await deps.chains.setOwner(record.orgId, chainId, change.owner, by, change.accountable, undefined, options); return;
-      case "set_accountable": await deps.chains.setAccountable(record.orgId, chainId, change.accountable, by, undefined, options); return;
+      case "set_owner": await deps.chains.setOwner(record.orgId, chainId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap }); return;
+      case "set_accountable": await deps.chains.setAccountable(record.orgId, chainId, change.accountable, by, undefined, { overrideCap: options.overrideCap }); return;
       case "unarchive": await deps.chains.unarchive(record.orgId, chainId, by, undefined, options); return;
     }
   }
   switch (change.op) {
-    case "set_budget": await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, options); return;
-    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, options); return;
-    case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, options); return;
+    case "set_budget": {
+      if (change.budget.maxPerRunUsd !== undefined && change.expectedMaxPerRunUsd === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This pending budget request predates per-run snapshots. Deny this request, then submit a new budget change for review.");
+      await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, { ...options,
+        ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: decisionActor });
+      return;
+    }
+    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap }); return;
+    case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, { overrideCap: options.overrideCap }); return;
     case "unarchive": await deps.store.unarchive(record.orgId, agentId, by, undefined, options); return;
   }
 }
@@ -1414,12 +1435,17 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     await expireOne(deps, record, "task_closed");
     throw closed({ status: "EXPIRED", endedBecause: "task_closed" });
   };
-  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused });
-  if (record.kind === "owner_cap" && status === "APPROVED") {
-    const change = await recheckedChange(deps, caller, record);
-    await requireSameOwner(deps, record, change);
+  const survivorRole = decidedBy === caller.developerId ? caller.orgRole : await orgRoleOf(deps, caller.orgId, decidedBy);
+  if (survivorRole === undefined) throw budgetActorRefused();
+  const decisionActor: BudgetActor = { developerId: decidedBy, role: survivorRole,
+    ...(decidedBy === caller.developerId ? {} : { signedIn: { developerId: caller.developerId, role: caller.orgRole } }),
+  };
+  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused, actor: decisionActor });
+  if (record.kind === "owner_cap") {
+    const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
+    if (status === "APPROVED") await requireSameOwner(deps, record, change);
     try {
-      await applyOwnerCap(deps, record, change, decidedBy, ending);
+      await applyOwnerCap(deps, record, change, decidedBy, ending, decisionActor);
     } catch (error) {
       if (error instanceof AgentXError) throw error;
       await refused(error);
@@ -1465,10 +1491,15 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   const pauseOf = (current: DeveloperTaskRecord) => `${current.budgetPause?.scope.kind ?? ""}|${current.budgetPause?.firstDispatch?.operationId ?? ""}`;
   let planned = await plan(task);
   for (let attempt = 0; ; attempt += 1) {
+    const items = [...ending, ...(planned.change?.items ?? []), ...planned.extra];
+    const actorStart = items.length;
+    items.push(...budgetActorChecks(deps.tableName, record.orgId, decisionActor));
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...ending, ...(planned.change?.items ?? []), ...planned.extra] }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
       break;
     } catch (error) {
+      const failed = failedIndexes(error);
+      if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
       // Only the pause moved since it was read (the owner went on, another limit paused it): the approval is made again on the task as it is now, once (I-3).
       const now = attempt === 0 && task !== undefined && failedIndexes(error) !== undefined ? await readTask(deps, record.orgId, task.taskId) : undefined;
       if (task !== undefined && now !== undefined && now.closedAt === undefined && now.budgetUsd === task.budgetUsd && now.maxPerRunUsd === task.maxPerRunUsd && pauseOf(now) !== pauseOf(task)) {
@@ -1517,7 +1548,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
  * whose new limit the guardrail would clamp is refused: it could not take effect (I-4). Then every task the budget stopped goes on.
  */
 async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestRecord, approvers: SpendApprovers, decision: {
-  status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; mark: RequestMark; refused: (error: unknown) => Promise<never>;
+  actor: BudgetActor; status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; mark: RequestMark; refused: (error: unknown) => Promise<never>;
 }): Promise<{ spendRequest: Record<string, unknown>; rerouted?: boolean }> {
   const scope = record.scope;
   if (!isBudgetScope(scope)) throw notFound();
@@ -1579,10 +1610,13 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
       }
     }
   }
+  const actorStart = items.length;
+  items.push(...budgetActorChecks(deps.tableName, record.orgId, decision.actor));
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
   } catch (error) {
     const failed = failedIndexes(error);
+    if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
     if (failed !== undefined && held.some((index) => failed.has(index)) && !failed.has(0)) {
       return (await reroute(deps, record, decision.mark)).answer;
     }

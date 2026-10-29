@@ -1,6 +1,7 @@
 // Budget and approval placeholder constants for agents. Other tasks read these before the budget engine that
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
 import { z } from "zod";
+import { TaskStopProjectPolicySchema } from "./task-stop-project.js";
 import { ModelSourceIdSchema, type AgentId } from "./agent.js";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "./org-budget.js";
 import type { ChainId } from "./chains.js";
@@ -100,7 +101,9 @@ export const TESTING_ALLOWANCE_USD = 10;
 export const PER_TEST_CAP_USD = 2;
 
 export const DEFAULT_MAX_AGENT_MONTHLY_USD = 50;
-export const DEFAULT_MAX_PER_RUN_CEILING_USD = 100;
+// Canonical exact default; the legacy USD name is an alias, not another setting.
+export const DEFAULT_MAX_PER_RUN_CEILING_MICROUSD = 100_000_000;
+export const DEFAULT_MAX_PER_RUN_CEILING_USD = DEFAULT_MAX_PER_RUN_CEILING_MICROUSD / 1_000_000;
 export const DEFAULT_OWNER_AGENT_BUDGET_CAP_USD = 100;
 
 /** Estimates come from the last `ESTIMATE_HISTORY_SIZE` runs once there are `ESTIMATE_MIN_SAMPLES` of them. */
@@ -209,6 +212,8 @@ const PlanningLimit = z.number().finite().min(PLANNING_LIMIT_MIN_USD).max(PLANNI
 
 /** A project's AI settings: its own monthly budget, whether it pays for its tasks, the model sources it prefers and its planning limits. */
 export const ProjectAiSettingsSchema = z.object({
+  /** Preserved by ordinary settings changes; only a separately reviewed writer may change it. */
+  taskStopPolicy: TaskStopProjectPolicySchema.optional(),
   monthlyBudgetUsd: Amount.optional(),
   projectPays: z.boolean(),
   /** Absent: the project follows the org's order. */
@@ -295,7 +300,7 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
  * cap. `confirm_move` is Rovara's own move (a member merged, removed or no longer a project maintainer), which already applied: approving it only records that an admin saw it.
  */
 export type OwnerCapChange =
-  | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
+  | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }; /** Server-captured per-run value; null is confirmed absence. */ expectedMaxPerRunUsd?: number | null }
   | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }

@@ -42,7 +42,7 @@ describe("mayDecideSpendRequest", () => {
   it("is false once the request has been decided", async () => {
     const t = await setup();
     const request = await openRequest(t);
-    await decideSpendRequest(t.deps(), t.caller(ADA, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "DENY" });
+    await decideSpendRequest(t.deps(), t.caller(ADA, "owner"), request.spendRequestId, { requestId: randomUUID(), decision: "DENY" });
     expect(await mayDecideSpendRequest(t.deps(), asker(BEN), request.spendRequestId)).toBe(false);
     expect(await mayDecideSpendRequest(t.deps(), asker(ADA), request.spendRequestId)).toBe(false);
   });

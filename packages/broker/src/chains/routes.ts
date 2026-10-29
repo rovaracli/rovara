@@ -414,7 +414,7 @@ async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chain
   const { accountable: _before, ...kept } = chain; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
   const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
   const moved = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark,
-    (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, options));
+    (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (moved instanceof StatusReply) return moved;
   return { chain: chainView(moved, access) };
 }
@@ -428,7 +428,7 @@ async function putAccountable(deps: ChainRouteDependencies, caller: AgentCaller,
   if (chain.owner.kind !== "project") throw agentXError("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
   const accountable = await requireChainAccountable(deps, caller.orgId, chain.owner.project, input.accountable.developerId);
   const done = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { accountable }), { op: "set_accountable", accountable }, mark,
-    (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, options));
+    (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (done instanceof StatusReply) return done;
   return { accountable };
 }
@@ -447,7 +447,7 @@ async function putBudget(deps: ChainRouteDependencies, caller: AgentCaller, chai
   await requireChainBudgetAllowed(deps, caller.orgId, input.monthlyUsd);
   const monthlyUsd = input.monthlyUsd === null ? undefined : input.monthlyUsd;
   const written = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { monthlyBudgetUsd: monthlyUsd }), { op: "set_budget", budget: { monthlyUsd: input.monthlyUsd } }, mark,
-    (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, options));
+    (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, { ...options, manageSnapshot: chain, actor: { developerId: caller.developerId, role: caller.orgRole } }));
   if (written instanceof StatusReply) return written;
   // A chain whose budget is gone can't be started by an event or a schedule: the triggers that no longer qualify are turned off, and the answer says which.
   return { chain: chainView(written, access), disabledTriggers: await recheck(deps, chain) };

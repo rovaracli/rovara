@@ -1,3 +1,7 @@
+import { fixtureActor } from "../support/money-authority.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 3 Task 7: the app's agent routes (`/v1/app/agents*`), through the broker's handler with two orgs. Less-safe changes answer
 // 202 with a confirmation link and change nothing; deciding them is Task 21a's page (its tests cover the decide side).
 import { randomUUID } from "node:crypto";
@@ -16,7 +20,7 @@ import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../pac
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
-import { agentXError } from "@agentx/contracts";
+import { agentXError, orgMemberKey, developerOrgKey, builtinSettingsKey, orgMetaKey, agentKey, spendRequestKey, type SpendRequestRecord } from "@agentx/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1304,4 +1308,141 @@ it("returns the exact resolved recipes alongside their authorized diff",async()=
  const f=await setup(),id=await f.create(MAYA);await f.seed(id,SAFE);await f.saveDraft(MAYA,id,{...SAFE,instructions:"Check duplicate webhooks before implementation."});
  const answer=await f.call(MAYA,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`);expect(answer.status).toBe(200);expect(answer.body.comparison).toMatchObject({before:{instructions:[expect.objectContaining({text:SAFE.instructions})]},after:{instructions:[expect.objectContaining({text:"Check duplicate webhooks before implementation."})]}});
  expect((await f.call(EVE,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`)).status).toBe(404);
+});
+
+
+for (const maxPerRunUsd of [.0000001, .1 + .2, 1.0000001, -1, 1_000_000.000001]) it("refuses sub-micro per-run input before any request or owner-cap approval write", async () => {
+  const f = await setup(), id = await f.create(MAYA), before = f.db.transactions().length;
+  f.db.set({ ...f.db.get(agentGuardrailsKey(TEST_ORG)), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 1000 } });
+  const answer = await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd });
+  expect(answer.status).toBe(400);
+  expect((answer.body.error as { message: string }).message).toContain("maxPerRunUsd: must be a number from 0 to 1000000 with at most 6 decimal places");
+  expect(f.db.transactions().length).toBe(before);
+  expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(0);
+  expect((await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd: 500, maxPerRunUsd: .000001 })).status).toBe(202);
+  expect(f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap")).toHaveLength(1);
+});
+
+
+for (const change of ["demoted", "removed", "pointer revoked", "org closing"]) it(`refuses an admin ${change} in a real transaction just before the budget commit`, async () => {
+  const f = await setup(), key = builtinSettingsKey(TEST_ORG, "rovara-code");
+  await f.store.setBudget(TEST_ORG, "rovara-code", { maxPerRunUsd: 1 }, fixtureActor(f.store, TEST_ORG, DANA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(f.store, TEST_ORG, DANA.developerId) });
+  const count = f.db.find(row => row.kind === "budget_changed").length, originalOrg = f.db.get(orgMetaKey(TEST_ORG))!;
+  const send = f.db.send.bind(f.db); let demoted = false;
+  f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> };
+    if (!demoted && input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+      demoted = true;
+      const TransactItems = change === "demoted"
+        ? [orgMemberKey(TEST_ORG, DANA.developerId), developerOrgKey(DANA.developerId)].map(Key => ({ Update: { TableName: "state", Key, UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } }))
+        : change === "org closing" ? [{ Update: { TableName: "state", Key: orgMetaKey(TEST_ORG), UpdateExpression: "SET closingAt = :at", ExpressionAttributeValues: { ":at": "2026-10-28T01:00:00.000Z" } } }]
+          : [{ Delete: { TableName: "state", Key: change === "removed" ? orgMemberKey(TEST_ORG, DANA.developerId) : developerOrgKey(DANA.developerId) } }];
+      await send(new TransactWriteCommand({ TransactItems }));
+    }
+    return send(command);
+  };
+  const answer = await f.call(DANA, "PUT", "/v1/app/agents/rovara-code/budget", { maxPerRunUsd: 2 });
+  expect(demoted).toBe(true); expect(answer.status).toBe(403);
+  expect(f.db.get(key)?.maxPerRunUsd).toBe(1); expect(f.db.find(row => row.kind === "budget_changed").length).toBe(count);
+  f.db.set(originalOrg);
+  seedMembership(f.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
+  expect((await f.call(DANA, "PUT", "/v1/app/agents/rovara-code/budget", { maxPerRunUsd: 2 })).status).toBe(200);
+});
+
+
+async function budgetDecisionFixture() {
+  const f = await setup(), id = await f.create(MAYA);
+  f.db.set({ ...f.db.get(agentGuardrailsKey(TEST_ORG)), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 1000 } });
+  const capture = capturingAuditDeps({ db: f.db });
+  const deps = { projectMembers: f.members, documentClient: f.db, tableName: "state", now: Date.now, confirmOrigin: f.deps.confirmOrigin, signInStore: f.deps.signInStore, audit: capture.audit, store: new AgentStore({ documentClient: f.db, tableName: "state", now: Date.now, audit: capture.audit }) };
+  const decide = (request: SpendRequestRecord) => decideSpendRequest(deps, { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" }, request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
+  const pending = () => f.db.find(row => row.entityType === "SPEND_REQUEST" && row.kind === "owner_cap" && row.status === "PENDING")[0] as unknown as SpendRequestRecord;
+  const ask = async (monthlyUsd: number, maxPerRunUsd: number) => {
+    expect((await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { monthlyUsd, maxPerRunUsd })).status).toBe(202);
+    const request = pending(); expect(request).toBeDefined(); return request;
+  };
+  return { f, id, capture, deps, decide, pending, ask };
+}
+for (const withSnapshot of [false, true]) it(`keeps an invalid historical owner-cap change pending without money/audit writes (${withSnapshot ? "snapshot" : "legacy"})`, async () => {
+  const t = await budgetDecisionFixture();
+  const first = await t.ask(500, .000001);
+  await t.decide(first);
+  expect(t.f.db.get(spendRequestKey(TEST_ORG, first.spendRequestId))?.status).toBe("APPROVED");
+  expect(t.capture.recordedBy("budget.changed").length).toBeGreaterThan(0);
+  const request = await t.ask(600, .000002), key = spendRequestKey(TEST_ORG, request.spendRequestId);
+  const original = t.f.db.get(key)!;
+  const change = request.change as Extract<NonNullable<SpendRequestRecord["change"]>, { op: "set_budget" }>;
+  t.f.db.set({ ...original, change: { op: "set_budget", budget: { monthlyUsd: 600, maxPerRunUsd: .0000001 }, ...(withSnapshot ? { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd } : {}) } });
+  const before = t.f.db.get(agentKey(TEST_ORG, t.id, "META")), audited = t.capture.recorded().length;
+  const error = await t.decide(request).then(() => undefined, (failure: { code?: string; message?: string }) => failure);
+  expect(error?.code).toBe(withSnapshot ? "CONFIG_INVALID" : "AGENT_REVISION_CONFLICT");
+  if (!withSnapshot) expect(error?.message).toContain("Deny this request, then submit a new budget change for review.");
+  expect(t.f.db.get(key)?.status).toBe("PENDING");
+  expect(t.f.db.get(agentKey(TEST_ORG, t.id, "META"))).toEqual(before);
+  expect(t.capture.recorded().length).toBe(audited); expect(t.capture.pending()).toHaveLength(0);
+});
+it("does not apply a held per-run value over a newer committed per-run value", async () => {
+  const t = await budgetDecisionFixture();
+  await t.f.store.setBudget(TEST_ORG, t.id, { maxPerRunUsd: 1 }, fixtureActor(t.f.store, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(t.f.store, TEST_ORG, MAYA.developerId) });
+  const request = await t.ask(500, 2);
+  expect((await t.f.call(MAYA, "PUT", `/v1/app/agents/${t.id}/budget`, { maxPerRunUsd: 3 })).status).toBe(200);
+  const audited = t.capture.recorded().length;
+  const error = await t.decide(request).then(() => undefined, (failure: { code?: string }) => failure);
+  expect(error?.code).toBe("AGENT_REVISION_CONFLICT");
+  expect(t.f.db.get(agentKey(TEST_ORG, t.id, "META"))?.maxPerRunUsd).toBe(3);
+  expect(t.f.db.get(spendRequestKey(TEST_ORG, request.spendRequestId))?.status).toBe("PENDING");
+  expect(t.capture.recorded().length).toBe(audited);
+});
+it("refuses a deciding admin demoted immediately before the owner-cap budget transaction", async () => {
+  const t = await budgetDecisionFixture(), request = await t.ask(500, 2), key = agentKey(TEST_ORG, t.id, "META");
+  const before = t.f.db.get(key), audited = t.capture.recorded().length;
+  const send = t.f.db.send.bind(t.f.db); let demoted = false;
+  t.f.db.send = async command => {
+    const input = command.input as { TransactItems?: Array<{ Update?: { Key?: { pk?: string; sk?: string } } }> };
+    if (!demoted && input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk)) {
+      demoted = true;
+      await send(new TransactWriteCommand({ TransactItems: [orgMemberKey(TEST_ORG, DANA.developerId), developerOrgKey(DANA.developerId)].map(Key => ({ Update: { TableName: "state", Key, UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": "member" } } })) }));
+    }
+    return send(command);
+  };
+  const error = await t.decide(request).then(() => undefined, (failure: { code?: string }) => failure);
+  expect(demoted).toBe(true); expect(error?.code).toBe("FORBIDDEN");
+  expect(t.f.db.get(key)).toEqual(before); expect(t.f.db.get(spendRequestKey(TEST_ORG, request.spendRequestId))?.status).toBe("PENDING");
+  expect(t.capture.recorded().length).toBe(audited); expect(t.capture.pending()).toHaveLength(0);
+  seedMembership(t.f.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
+  await t.decide(request); expect(t.f.db.get(key)?.maxPerRunUsd).toBe(2);
+  expect(t.f.db.get(spendRequestKey(TEST_ORG, request.spendRequestId))?.status).toBe("APPROVED");
+});
+
+it("does not initialize builtin settings when actor removal wins the first-budget race", async () => {
+  const f = await setup(), key = builtinSettingsKey(TEST_ORG, "code-reviewer"), send = f.db.send.bind(f.db); let removed = false;
+  expect(f.db.get(key)).toBeUndefined();
+  f.db.send = async command => {
+    const input = command.input as { Item?: { pk?: string; sk?: string }; TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } }; Update?: { Key?: { pk?: string; sk?: string } } }> };
+    const touches = input.Item?.pk === key.pk && input.Item.sk === key.sk || input.TransactItems?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk || item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk);
+    if (!removed && touches) {
+      removed = true;
+      await send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: "state", Key: orgMemberKey(TEST_ORG, DANA.developerId) } }] }));
+    }
+    return send(command);
+  };
+  expect((await f.call(DANA, "PUT", "/v1/app/agents/code-reviewer/budget", { maxPerRunUsd: 2 })).status).toBe(403);
+  expect(removed).toBe(true); expect(f.db.get(key)).toBeUndefined();
+});
+
+it("refuses a budget write if ownership moves after manage access but before the store reread", async () => {
+  const f = await setup(), id = await f.create(MAYA), key = agentKey(TEST_ORG, id, "META");
+  await f.store.setBudget(TEST_ORG, id, { maxPerRunUsd: 1 }, fixtureActor(f.store, TEST_ORG, MAYA.developerId).developerId, undefined, { ...({}), actor: fixtureActor(f.store, TEST_ORG, MAYA.developerId) });
+  const count = f.db.find(row => row.kind === "budget_changed").length, send = f.db.send.bind(f.db); let moved = false;
+  f.db.send = async command => {
+    const result = await send(command), input = command.input as { Key?: { pk?: string; sk?: string } };
+    if (!moved && command.constructor.name === "GetCommand" && input.Key?.pk === key.pk && input.Key.sk === key.sk) {
+      moved = true; await f.store.setOwner(TEST_ORG, id, { kind: "member", developerId: EVE.developerId }, DANA.developerId, undefined, undefined, { actor: fixtureActor(f.store, TEST_ORG, DANA.developerId) });
+    }
+    return result;
+  };
+  const result = await f.call(MAYA, "PUT", `/v1/app/agents/${id}/budget`, { maxPerRunUsd: 2 });
+  expect(moved).toBe(true); expect(result.status).toBe(409);
+  expect(f.db.get(key)?.maxPerRunUsd).toBe(1); expect(f.db.get(key)?.owner).toEqual({ kind: "member", developerId: EVE.developerId });
+  expect(f.db.find(row => row.kind === "budget_changed").length).toBe(count);
 });
