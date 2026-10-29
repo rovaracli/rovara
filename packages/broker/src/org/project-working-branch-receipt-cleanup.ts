@@ -52,7 +52,12 @@ export async function clearWorkingBranchSaveReceipts(deps: Deps, value: unknown)
       ExpressionAttributeValues: { ":org": orgId, ":type": "REVIEWED_WORKING_BRANCH_REQUEST" } } }))];
     try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
     catch (error) {
-     if (error instanceof Error && error.name === "TransactionCanceledException") throw stale();
+     if (error instanceof Error && error.name === "TransactionCanceledException") {
+      const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
+      // Item zero is the org lifecycle fence; receipt conditions and conflicts do not prove authority changed.
+      const first = Array.isArray(reasons) ? reasons[0] as { Code?: unknown } | null | undefined : undefined;
+      if (first?.Code === "ConditionalCheckFailed") throw stale();
+     }
      throw unavailable();
     }
     deleted += keys.length;
