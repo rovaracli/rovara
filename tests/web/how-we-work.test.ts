@@ -134,7 +134,7 @@ describe("saving rules", () => {
   await screen.findByText("Draft saved. Review changes to publish it.");
   const writes = f.sent().slice(before);
   expect(writes.map(request => request.method + " " + request.path)).toEqual(["POST /v1/app/projects/payments/playbook/process", `PUT /v1/app/agents/${LAYER}/draft`]);
-  expect(f.calls().slice(-2)).toEqual([`GET /v1/app/agents/${LAYER}/draft`, `PUT /v1/app/agents/${LAYER}/draft`]);
+  expect(f.calls().filter(call => !call.endsWith("/stage-models")).slice(-2)).toEqual([`GET /v1/app/agents/${LAYER}/draft`, `PUT /v1/app/agents/${LAYER}/draft`]);
   expect(f.calls().lastIndexOf("POST /v1/app/projects/payments/playbook/process")).toBeLessThan(f.calls().lastIndexOf(`PUT /v1/app/agents/${LAYER}/draft`));
   expect(writes[1]!.body).toMatchObject({ overlay: { instructions: "Keep changes small. Add tests.", steps: { build: { instructions: "Run the linter." } } }, expectedRevision: 3 });
  });

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
+import { CARD_STAGES, DRAFT_STALE_CODE, REFERENCE_KIND, useStageModels } from "../../api/stage-models.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -15,6 +16,9 @@ import type { Overlay } from "../builder/draft-state.js";
 import { NewerRovaraCodeNotice } from "./NewerRovaraCodeNotice.js";
 import { ReviewChangesDialog } from "./ReviewChangesDialog.js";
 import { RuleField } from "./RuleField.js";
+import { StageModelRows } from "./StageModelRows.js";
+import { DRAFT_CHANGED_TEXT } from "./stage-model-text.js";
+import { applyModelEdits, mergeEdit, type ModelEdits, type StageEdit } from "./how-we-work-models.js";
 import { cleanRuleText, ruleTooLong } from "./rule-text.js";
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [{ value: "all", label: "All" }, { value: "changed", label: "Changed here" }, { value: "locked", label: "Locked" }];
 const NOT_IN_USE = "This project runs Rovara Code's defaults.";
@@ -24,10 +28,13 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  const view = useHowWeWork(project), how = useHowWeWorkApi(), builder = useBuilderApi(), query = useQueryClient();
  const [filter, setFilter] = useState<Filter>("all"), [showUnchanged, setShowUnchanged] = useState(false), [edits, setEdits] = useState<{ rules?: string; stages: Record<string, string> }>({ stages: {} });
  const [ensured, setEnsured] = useState<string>(), [saving, setSaving] = useState(false), [saveError, setSaveError] = useState<string>(), [saved, setSaved] = useState<"draft" | "removed" | false>(false);
+ const [modelEdits, setModelEdits] = useState<ModelEdits>({});
  const [choosing, setChoosing] = useState(false), [chooseError, setChooseError] = useState<string>(), [reviewRequest, setReviewRequest] = useState(0);
  const data = view.data, layerId = data === undefined ? undefined : data.process.kind === "project_process" ? data.process.agentId : ensured ?? data.process.draftLayer?.agentId;
  const draftKey = [...howWeWorkKey(project), "draft", layerId] as const;
  const draft = useQuery({ queryKey: draftKey, enabled: canEdit && layerId !== undefined, queryFn: () => builder.draft(layerId!) });
+ /** The stage models the cards show: the draft's when a maintainer is editing a layer (named by its revision), the published ones otherwise. If the read is not there, the cards keep their read-only model rows. */
+ const draftRevision = canEdit && layerId !== undefined ? draft.data?.draft.revision : undefined, models = useStageModels(project, draftRevision, !canEdit || layerId === undefined || (draft.data !== undefined && draftRevision !== undefined));
  const baseline = useMemo(() => draft.data === undefined ? EMPTY_RULES : ruleValues(draft.data.draft.overlay as Overlay), [draft.data]);
  if (view.isPending) return <section aria-label="How we work"><Skeleton label="Loading how this project works" /></section>;
  if (view.isError || data === undefined) return <section aria-label="How we work"><p role="alert"><VisibleText text={failureText(view.error, "Couldn't load how this project works. Try again.")} /></p><Button onClick={() => { void view.refetch(); }}>Try again</Button></section>;
@@ -38,11 +45,21 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (edits.rules !== undefined && cleanRuleText(edits.rules) !== baseline.rules) patch.rules = cleanRuleText(edits.rules);
  const changedStages = Object.entries(edits.stages).filter(([id, text]) => cleanRuleText(text) !== (baseline.stages[id] ?? ""));
  if (changedStages.length > 0) patch.stages = Object.fromEntries(changedStages.map(([id, text]) => [id, cleanRuleText(text)]));
- const dirty = patch.rules !== undefined || patch.stages !== undefined, tooLong = [rulesValue, ...editableStages.map(stage => stageValue(stage.id))].some(ruleTooLong);
+ const dirty = patch.rules !== undefined || patch.stages !== undefined || Object.keys(modelEdits).length > 0, tooLong = [rulesValue, ...editableStages.map(stage => stageValue(stage.id))].some(ruleTooLong);
+ /** The earlier step a checking card's "different vendor" toggle names: the Plan step for the plan check, the Build step for a review. */
+ const referenceStage = (kind: string) => { const wanted = REFERENCE_KIND[kind];return wanted === undefined ? undefined : data.stages.find(other => other.kind === wanted); };
+ const references = Object.fromEntries(data.stages.map(stage => [stage.id, referenceStage(stage.kind)?.id]));
+ const stageModelRows = (stage: (typeof data.stages)[number]) => {
+  const ids = CARD_STAGES[stage.kind], found = models.data === undefined || ids === undefined ? [] : ids.flatMap(id => models.data.stages.filter(entry => entry.stage === id));
+  if (found.length === 0) return undefined;
+  const reference = referenceStage(stage.kind);
+  return <StageModelRows stages={found} kind={stage.kind} reference={reference === undefined ? undefined : reference.kind === "plan" ? "Plan" : "Build"} viewerOnly={!canEdit} edit={modelEdits[stage.id]} disabled={saving} onChange={(patch: StageEdit) => { setSaved(false);setModelEdits(current => mergeEdit(current, stage.id, patch, found[0]!)); }} />;
+ };
+ const modelsProp = (stage: (typeof data.stages)[number]) => { const rows = stageModelRows(stage);return rows === undefined ? {} : { models: rows }; };
  const setStage = (id: string, text: string) => { setSaved(false);setEdits(current => ({ ...current, stages: { ...current.stages, [id]: text } })); };
  /** Make sure the layer exists, read its draft, write `changes` into it. */
- async function write(changes: RuleEdits) {
-  const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId), next = await builder.save(layer.agentId, applyRuleEdits(current.draft.overlay as Overlay, changes), current.draft.revision);
+ async function write(changes: RuleEdits, choices: ModelEdits = {}) {
+  const layer = await how.ensureProcess(project), current = await builder.draft(layer.agentId), next = await builder.save(layer.agentId, applyModelEdits(applyRuleEdits(current.draft.overlay as Overlay, changes), choices, references), current.draft.revision);
   query.setQueryData([...howWeWorkKey(project), "draft", layer.agentId], next);
   setEnsured(layer.agentId);
  }
@@ -50,8 +67,8 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   if (!dirty || tooLong || saving) return;
   setSaving(true);setSaveError(undefined);setSaved(false);
   try {
-   await write(patch);
-   setEdits({ stages: {} });setSaved("draft");
+   await write(patch, modelEdits);
+   setEdits({ stages: {} });setModelEdits({});setSaved("draft");
   } catch (failure) {
    setSaveError(failureText(failure, "Couldn't save the draft. Your edits are still here."));
    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
@@ -82,6 +99,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  return <section className="rv-hww" aria-label="How we work">
   {data.process.update !== undefined && <NewerRovaraCodeNotice update={data.process.update} agentId={layerId} canEdit={canEdit} disabled={dirty || saving || draft.data === undefined} onMoved={async () => { await query.invalidateQueries({ queryKey: howWeWorkKey(project) });setReviewRequest(count => count + 1); }} />}
   <p className="rv-muted">How Rovara Code works in this project, stage by stage. Every setting says where it comes from.</p>
+  {models.error instanceof ApiError && models.error.code === DRAFT_STALE_CODE && <section className="rv-project-section" aria-label="Draft changed"><p role="alert">{DRAFT_CHANGED_TEXT}</p><Button onClick={() => { void draft.refetch();void models.refetch(); }}>Reload</Button></section>}
   {savedVersion !== undefined && <section className="rv-project-section" aria-label="Saved version">
    <p>{NOT_IN_USE} A saved How we work version exists (version {savedVersion}).</p>
    {canEdit && <Button busy={choosing} onClick={() => { void chooseSaved(); }}>Use it</Button>}
@@ -95,7 +113,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
   {canEdit ? <section className="rv-hww-rules" aria-label="Project rules">
    <RuleField label="Project rules" hint="These apply to every stage that plans or builds. Reviewing stages only follow rules written for them." value={rulesValue} onChange={text => { setSaved(false);setEdits(current => ({ ...current, rules: text })); }} disabled={saving} />
   </section> : data.rules.length > 0 && <section className="rv-hww-rules" aria-label="Project rules"><h2>Project rules</h2><ul>{data.rules.map((rule, index) => <li key={index}><VisibleText text={rule.value} /></li>)}</ul></section>}
-  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} aria-label="Remove rules from the pull request stage" onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
+  <div className="rv-hww-cards">{data.stages.map(stage => <HowWeWorkCard key={stage.id} stage={stage} view={data} filter={filter} showUnchanged={showUnchanged} {...modelsProp(stage)} {...(canEdit && stage.id === UNUSED_STAGE_ID && (baseline.stages[stage.id] ?? "") !== "" ? { action: <Button busy={saving} aria-label="Remove rules from the pull request stage" onClick={() => { void removeUnusedStage(); }}>Remove</Button> } : {})} {...(canEdit && EDITABLE_KINDS.has(stage.kind) ? { editor: <RuleField label="Instructions for this stage" {...(REVIEWING_KINDS.has(stage.kind) ? { hint: LESS_SAFE_HINT } : {})} value={stageValue(stage.id)} onChange={text => setStage(stage.id, text)} disabled={saving} /> } : {})} />)}</div>
   {canEdit && <div className="rv-hww-actions">
    <Button variant="primary" busy={saving} disabled={!dirty || tooLong} onClick={() => { void save(); }}>Save draft</Button>
    <ReviewChangesDialog project={project} agentId={layerId ?? ""} from={published ?? "base"} revision={draft.data?.draft.revision ?? 0} disabled={layerId === undefined || draft.data === undefined || dirty} notInUse={savedVersion !== undefined} openRequest={reviewRequest} onPublished={refresh} />

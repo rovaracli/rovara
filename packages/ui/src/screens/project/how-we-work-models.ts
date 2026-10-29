@@ -1,0 +1,42 @@
+// "How we work": the project's model choices for a stage, as edits to the process layer's draft step settings (model, thinkingLevel, differentCompanyFrom). Nothing here decides which model is allowed or better:
+// the answers come from the stage-models read and the server checks what is saved.
+import type { Overlay } from "../builder/draft-state.js";
+import type { StageModelsStage, ThinkingLevel } from "../../api/stage-models.js";
+/** The picker's "Rovara's default": the project makes no choice and the model field is removed. */
+export const DEFAULT_MODEL = "__default";
+/** `inherit` removes the setting, `null` is "Model default" (no explicit level), else a level. */
+export type EffortValue = "inherit" | "null" | ThinkingLevel;
+export interface StageEdit { model?: string; effort?: EffortValue; vendor?: boolean }
+export type ModelEdits = Record<string, StageEdit>;
+export const baselineModel = (stage: StageModelsStage): string => stage.projectChoice?.model ?? DEFAULT_MODEL;
+export const baselineEffort = (stage: StageModelsStage): EffortValue => { const effort = stage.projectChoice?.effort;return effort === undefined ? "inherit" : effort === null ? "null" : effort; };
+export const baselineVendor = (stage: StageModelsStage): boolean => (stage.projectChoice?.differentFrom ?? stage.companyDefault.choice?.differentFrom)?.level === "vendor";
+/** The edits of one step after `patch`, leaving out anything equal to what the draft already holds. */
+export function mergeEdit(edits: ModelEdits, stepId: string, patch: StageEdit, base: StageModelsStage): ModelEdits {
+ const next: StageEdit = { ...edits[stepId], ...patch };
+ if (next.model === baselineModel(base)) delete next.model;
+ if (next.effort === baselineEffort(base)) delete next.effort;
+ if (next.vendor === baselineVendor(base)) delete next.vendor;
+ const rest = { ...edits };
+ if (Object.keys(next).length === 0) delete rest[stepId];else rest[stepId] = next;
+ return rest;
+}
+/** `provider/modelId` as the overlay stores it. */
+export function modelSelection(model: string): { provider: string; modelId: string } {
+ const at = model.indexOf("/");
+ return { provider: model.slice(0, at), modelId: model.slice(at + 1) };
+}
+/** The overlay with the edits written into the steps' settings. `references` gives, per step, the earlier step its "different vendor" toggle names. Fields not edited stay as they are. */
+export function applyModelEdits(overlay: Overlay, edits: ModelEdits, references: Readonly<Record<string, string | undefined>>): Overlay {
+ const steps: Record<string, Record<string, unknown>> = { ...(overlay.steps ?? {}) };
+ for (const [id, edit] of Object.entries(edits)) {
+  const settings: Record<string, unknown> = { ...steps[id] };
+  if (edit.model !== undefined) { if (edit.model === DEFAULT_MODEL) delete settings.model;else settings.model = modelSelection(edit.model); }
+  if (edit.effort !== undefined) { if (edit.effort === "inherit") delete settings.thinkingLevel;else settings.thinkingLevel = edit.effort === "null" ? null : edit.effort; }
+  if (edit.vendor !== undefined) { const reference = references[id];if (edit.vendor && reference !== undefined) settings.differentCompanyFrom = reference;else if (!edit.vendor) settings.differentCompanyFrom = null; }
+  if (Object.keys(settings).length === 0) delete steps[id];else steps[id] = settings;
+ }
+ const next: Overlay = { ...overlay };
+ if (Object.keys(steps).length > 0) next.steps = steps;else delete next.steps;
+ return next;
+}
