@@ -1,6 +1,7 @@
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { agentProfile } from "./agent-fixture.js";
 import { fakeHost } from "./fake-host.js";
+import { meFixture } from "./fixtures.js";
 import { projectFixture } from "./project-fixture.js";
 import { LAYER, diffBody, draftBody, howWeWorkView } from "./how-we-work-view.js";
 export { LAYER, diffBody, draftBody, howWeWorkView };
@@ -19,6 +20,8 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
   if (url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "PUT") { const body = request.body as { overlay: Record<string, unknown> };state.overlay = body.overlay;state.revision += 1;return { status: 200, body: draftBody(state.overlay, state.revision) }; }
   if (url.pathname === `/v1/app/agents/${LAYER}/diff`) return { status: 200, body: diffBody(url.searchParams.get("from") === "base" ? "base" : Number(url.searchParams.get("from")), ["Changes the build instructions"], [], url.searchParams.get("to") === "draft" ? "draft" : Number(url.searchParams.get("to"))) };
   if (url.pathname === `/v1/app/agents/${LAYER}/versions`) return { status: 200, body: { versions: [{ version: 2, current: true, publishedAt: "2026-10-26T12:00:00.000Z", publishedBy: "a".repeat(64), note: "Added build rules" }, { version: 1, publishedAt: "2026-10-25T12:00:00.000Z", note: "First rules", safety: "less_safe", lessSafe: ["Changes the instructions of the review step \"Review\""] }] } };
+  // The member names read (useAgentMembers) now resolves the caller's identity first, so the cell must answer /me.
+  if (url.pathname === "/v1/app/me") return { status: 200, body: meFixture() };
   if (url.pathname === "/v1/app/org/members") return { status: 200, body: { members: [{ developerId: "a".repeat(64), name: "Priya", role: "admin" }] } };
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
