@@ -13,7 +13,7 @@ export function requireNoNewPullRequestInstructionsForProcess(agent: { purpose?:
   if (agent.purpose === "process" && text !== "" && text !== pullRequestText(previous)) throw agentXError("CONFIG_INVALID", PROCESS_PULL_REQUEST_MESSAGE);
 }
 
-/** The same check for a publish: the draft is compared with the version that runs now (none for a first publish). */
+/** The same check for a publish, and for a rollback (the target's overlay as `draft`): it is compared with the version that runs now (none for a first publish). */
 export async function requireNoNewPullRequestInstructionsToPublish(
   store: { getVersion(orgId: OrgId, agentId: AgentId, version: number): Promise<{ overlay: RecipeOverlay } | undefined> },
   agent: { orgId: OrgId; agentId: AgentId; purpose?: string | undefined; currentVersion?: number | undefined }, draft: Pick<RecipeOverlay, "steps">,

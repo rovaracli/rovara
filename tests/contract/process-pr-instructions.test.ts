@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "../../packages/contracts/src/index.js";
 import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
-import { publishDraft, resolveRecipe } from "../../packages/broker/src/agents/changes.js";
+import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
@@ -154,5 +154,69 @@ describe("the agent routes", () => {
     expect(await put(id, 1)).toEqual(refused);
     expect((await w.store.getDraft(ORG_A, id))!.overlay.steps).toBeUndefined();
     expect(await put(mine.agentId, 1)).toBeUndefined();
+  });
+});
+
+describe("rolling a process layer back", () => {
+  /** Version 1 and version 2 published; `older` is then stored into version 1 as earlier code could have written it, and `newer` into version 2. Version 2 is current. */
+  async function twoVersions(w: MergeWorld, older: RecipeOverlay, newer: RecipeOverlay): Promise<AgentId> {
+    const id = await layer(w);
+    const first = (await w.store.get(ORG_A, id))!;
+    await publishDraft(w.deps, callerOf(w, MAX), first, { requestId: randomUUID(), expectedRevision: first.draftRevision });
+    const edited = await save(w, id, { instructions: "Keep it small." }, first.draftRevision);
+    const second = (await w.store.get(ORG_A, id))!;
+    await publishDraft(w.deps, callerOf(w, MAX), second, { requestId: randomUUID(), expectedRevision: edited.revision });
+    w.db.set({ ...w.db.get(agentKey(ORG_A, id, agentVersionSk(1)))!, overlay: older });
+    w.db.set({ ...w.db.get(agentKey(ORG_A, id, agentVersionSk(2)))!, overlay: newer });
+    return id;
+  }
+  const roll = async (w: MergeWorld, id: AgentId) => rollbackAgent(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, id))!, { requestId: randomUUID(), version: 1 });
+
+  it("refuses going back to a version that has pull request stage instructions the running one does not, in the fixed words", async () => {
+    const w = world();
+    const id = await twoVersions(w, pr("Old text."), { instructions: "Keep it small." });
+    expect((await w.store.get(ORG_A, id))?.currentVersion).toBe(2);
+    expect(await failure(roll(w, id))).toEqual(refused);
+    expect((await w.store.get(ORG_A, id))?.currentVersion).toBe(2);
+  });
+
+  it("refuses it in the store too, so a confirmed rollback can't bring the text back", async () => {
+    const w = world();
+    const id = await twoVersions(w, pr("Old text."), { instructions: "Keep it small." });
+    expect(await failure(w.store.rollback({ orgId: ORG_A, agentId: id, version: 1, expectedCurrentVersion: 2, by: MAX }))).toEqual(refused);
+    expect((await w.store.get(ORG_A, id))?.currentVersion).toBe(2);
+  });
+
+  it("refuses before a person is asked, for a rollback that would otherwise wait for one", async () => {
+    const w = world();
+    // Reviewer instructions are a less-safe change: without the refusal the rollback would wait for a second person.
+    const id = await twoVersions(w, { steps: { pull_request: { instructions: "Old text." }, review: { instructions: "Check the tests." } } }, { instructions: "Keep it small." });
+    expect(await failure(roll(w, id))).toEqual(refused);
+  });
+
+  it("refuses a different text, and allows going back to the same text, and to a version without any", async () => {
+    const w = world();
+    const id = await twoVersions(w, pr("Old text."), pr("Newer text."));
+    expect(await failure(roll(w, id))).toEqual(refused);
+    const same = world();
+    const sameId = await twoVersions(same, pr("Old text."), pr("Old text."));
+    expect(await failure(roll(same, sameId))).toBeUndefined();
+    expect((await same.store.get(ORG_A, sameId))?.currentVersion).toBe(1);
+    const none = world();
+    const noneId = await twoVersions(none, { instructions: "Keep it small." }, pr("Old text."));
+    expect(await failure(roll(none, noneId))).toBeUndefined();
+    expect((await none.store.get(ORG_A, noneId))?.currentVersion).toBe(1);
+  });
+
+  it("an ordinary agent rolls back to a version with pull request stage instructions", async () => {
+    const w = world();
+    const mine = await ordinary(w, "helper", pr("Old text."));
+    await publishDraft(w.deps, callerOf(w, MAX), mine, { requestId: randomUUID(), expectedRevision: mine.draftRevision });
+    const edited = await save(w, mine.agentId, { instructions: "Keep it small." }, mine.draftRevision);
+    const second = (await w.store.get(ORG_A, mine.agentId))!;
+    await publishDraft(w.deps, callerOf(w, MAX), second, { requestId: randomUUID(), expectedRevision: edited.revision });
+    const result = await rollbackAgent(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, mine.agentId))!, { requestId: randomUUID(), version: 1 });
+    expect(result.applied).toBe(true);
+    expect((await w.store.get(ORG_A, mine.agentId))?.currentVersion).toBe(1);
   });
 });

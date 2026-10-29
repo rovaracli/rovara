@@ -226,6 +226,7 @@ export async function rollbackAgent(
   // Refused now, not when it is confirmed: a process layer only runs versions that build on Rovara Code.
   requireRovaraCodeBaseForProcess(agent, stored.extends);
   requireNoSkillsForProcess(agent, stored.overlay);
+  await requireNoNewPullRequestInstructionsToPublish(deps.store, agent, stored.overlay);
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
