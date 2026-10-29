@@ -91,6 +91,11 @@ export const HowWeWorkViewSchema = z
          * project was set back to the built-in, or the first version's playbook write was lost). The project does not run that version.
          */
         draftLayer: z.object({ agentId: z.string().min(1).max(HOW_WE_WORK_LINE_MAX), draftRevision: z.number().int().min(0), currentVersion: z.number().int().min(1).optional() }).strict().optional(),
+        /**
+         * Set when the project runs a process layer built on an older Rovara Code than the one the company has adopted (R2): the version the layer's running version builds on, and the one
+         * the company adopted. Moving to it is an ordinary reviewed change to the layer's draft; running tasks keep their version.
+         */
+        update: z.object({ from: z.number().int().min(1), to: z.number().int().min(1) }).strict().optional(),
       })
       .strict(),
     stages: z.array(HowWeWorkStageSchema).max(HOW_WE_WORK_STAGES_MAX),
