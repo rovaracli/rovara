@@ -37,6 +37,7 @@ import {
   type ApprovalDependencies,
 } from "../agents/approvals.js";
 import { resolveMember, sameMember } from "../agents/lifecycle.js";
+import { isRovaraCodeAgent } from "../agents/rovara-code-task.js";
 import { moveTaskApprovalsToOwner } from "../agents/approvals-movers.js";
 import { failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -162,7 +163,7 @@ async function admitTaker(deps: SessionTakeOverDependencies, session: AgentSessi
   try {
     await deps.admitPayer({
       orgId: session.orgId, project: session.project, payer: { kind: "member", developerId: taker },
-      agentId: agent?.agentId ?? "rovara-code", agentName: agent?.name ?? "Rovara Code", path: agent === undefined || agent.agentId === "rovara-code" ? "TASK" : "AGENT",
+      agentId: agent?.agentId ?? "rovara-code", agentName: agent?.name ?? "Rovara Code", path: agent === undefined || isRovaraCodeAgent(agent) ? "TASK" : "AGENT",
     });
   } catch (error) {
     if (error instanceof Error && (error as { code?: string }).code === "MODEL_PROXY_UNAVAILABLE") throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't check the budget just now. Try again in a moment.");

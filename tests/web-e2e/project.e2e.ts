@@ -13,3 +13,10 @@ test("starting a shared workflow preserves project context and reaches the retur
  const sent = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: unknown }>;
  const starts = sent.filter(item => item.method === "POST" && item.path.endsWith("/runs"));expect(starts).toHaveLength(1);expect(starts[0]?.body).toMatchObject({ project: "payments", input: { text: "Investigate duplicate refunds" } });
 });
+test("describing the work in the project's start box runs Rovara Code and opens its session", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "project" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);await page.setViewportSize({ width: 360, height: 800 });await page.goto("/app/projects/payments");
+ const box = page.getByRole("textbox", { name: "What do you need?" });await expect(page.getByText("Runs: this project's process")).toBeVisible();await box.fill("Fix the duplicate refunds");await expect(page.getByText("25 / 4000")).toBeVisible();await checkA11y(page, { theme: "dark" });
+ await box.press("Control+Enter");await expect(page).toHaveURL(/\/s\/ses_bbbbbbbbbbbbbbbbbbbb$/u);await expect(page.getByRole("heading", { name: "Fix duplicate refunds", exact: true })).toBeVisible();
+ const sent = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: unknown }>;
+ const starts = sent.filter(item => item.method === "POST" && item.path.endsWith("/code"));expect(starts).toHaveLength(1);expect(starts[0]?.body).toMatchObject({ input: { text: "Fix the duplicate refunds" } });
+});

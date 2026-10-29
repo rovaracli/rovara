@@ -3,8 +3,9 @@
 // access or money: the project role and `requireNewWorkAllowed` are `startTask`'s, the payer is `resolvePayer`'s (a person named as the payer must still be allowed to start work
 // on the project), and the budget floor and the planning limit are `admitWork`'s and `startingLimitUsd`'s. This file only says what kind of start it is.
 import {
+  AgentXError,
   CodeIntentRequestSchema,
-  ROVARA_CODE_AGENT_ID,
+  PROCESS_START_REFUSED_MESSAGE,
   SessionIdSchema,
   agentXError,
   sessionLink,
@@ -17,6 +18,7 @@ import { startAgentRun, type AgentRunRequest, type AgentRunStarter } from "../ag
 import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { PayerFacts } from "../spend/payer.js";
+import type { ProjectProcess } from "../playbook/project-process.js";
 import { CHANGE_ANYWAY_UNAVAILABLE, FOLLOW_UP_UNAVAILABLE_MESSAGE } from "./change-anyway.js";
 
 /** What `startCodeIntent` needs from the developer API, built for one caller (see `codeIntentDependenciesOf`). */
@@ -27,6 +29,8 @@ export interface CodeIntentDependencies {
   startPlainTask(caller: DeveloperCaller, body: unknown, thread?: { teamId: string; channelId: string; threadTs: string }): Promise<{ task: DeveloperTaskView }>;
   /** The person's own task, as the view a client reads; another person's or another org's is `TASK_NOT_FOUND`. */
   ownedTask(caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskView>;
+  /** "How we work": the process the project runs (the built-in Rovara Code unless its playbook points at a process layer). `PROCESS_UNAVAILABLE` when the pointer no longer holds. */
+  projectProcess(orgId: OrgId, project: string): Promise<ProjectProcess>;
   /** The origin session links are made from (the cell's own). */
   origin: string;
   /** Whether `taskId` is a task a follow-up may follow for this caller: in their org, its session visible to them, and ended Answered. Without it no follow-up starts (fail closed). */
@@ -82,9 +86,17 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
     ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
   };
   if (deps.starter === undefined) return startWithoutAgents(deps, caller, request);
+  // The project's way of working decides which agent runs. A pointer that no longer holds stops the start (`PROCESS_UNAVAILABLE`); it never runs the built-in instead.
+  // Only the id is named: the run pins the agent's current published version as it starts, which the task records. (Naming the version too would move the request's
+  // fingerprint with every publish and make a repeat of a start already made a conflict.)
+  const process = await deps.projectProcess(orgId, request.project).catch((error: unknown) => {
+    // The same code, in words for the person starting work (the playbook's own words are for the person changing it).
+    if (error instanceof AgentXError && error.code === "PROCESS_UNAVAILABLE") throw agentXError("PROCESS_UNAVAILABLE", PROCESS_START_REFUSED_MESSAGE);
+    throw error;
+  });
   const payerFacts = payerFactsOf(request, caller);
   const run: AgentRunRequest = {
-    requestId: request.requestId, orgId, project: request.project, agent: { agentId: ROVARA_CODE_AGENT_ID }, input: request.input, origin: request.source,
+    requestId: request.requestId, orgId, project: request.project, agent: { agentId: process.agentId }, input: request.input, origin: request.source,
     owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId }, caller,
     ...(payerFacts === undefined ? {} : { payerFacts }),
     codeIntent: intent,

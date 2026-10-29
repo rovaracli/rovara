@@ -24,6 +24,7 @@ import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, share
 import {
   confirmUrlFor,
   createPendingChange,
+  registerApprovalDecisionGuard,
   registerApprovalSubjectHandler,
   registerApproverRule,
   type AgentChangeSubject,
@@ -33,6 +34,15 @@ import {
 } from "./approvals.js";
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
+import { registerPlaybookApprovals } from "../playbook/process-switch-approval.js";
+import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
+import { lessSafeChangesFor } from "../playbook/process-less-safe.js";
+import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
+import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
+import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
+import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
+import { requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
@@ -167,13 +177,25 @@ export async function publishDraft(
   if (draft === undefined || draft.revision !== input.expectedRevision || agent.draftRevision !== input.expectedRevision) {
     throw agentXError("AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again.");
   }
+  // A process layer's draft cannot reorder the stages, whatever got it stored.
+  requireNoSequenceForProcess(agent, draft.overlay);
+  // Nor can it add skills.
+  requireNoSkillsForProcess(agent, draft.overlay);
+  // Nor can it add or change pull request stage rules, which nothing reads.
+  await requireNoNewPullRequestInstructionsToPublish(deps.store, agent, draft.overlay);
+  // And it builds on Rovara Code.
+  requireRovaraCodeBaseForProcess(agent, draft.extends);
   const next = await resolveRecipe(deps, agent.orgId, agent.agentId, "draft");
   const digest = recipeDigest(next);
   // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
-  if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) return { applied: true, value: running };
+  if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
+    // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt });
+    return { applied: true, value: running };
+  }
   await requireWithinGuardrails(deps, agent.orgId, next);
-  const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
+  const changes = lessSafeChangesFor(agent, await runningNow(deps, agent, draft.extends), next, { firstPublish: agent.currentVersion === undefined });
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
     const version = await deps.store.publish({
@@ -181,6 +203,7 @@ export async function publishDraft(
       skillDigests: skillDigestsOf(next),
       ...(input.note === undefined ? {} : { note: input.note }), ...(input.request === undefined ? {} : { request: input.request }),
     });
+    await pointPlaybookAtFirstVersion(deps, agent, version.version, caller.developerId);
     return { applied: true, value: version };
   }
   requireActiveForConfirmation(agent);
@@ -198,11 +221,15 @@ export async function rollbackAgent(
 ): Promise<ChangeResult<AgentRecord>> {
   if (agent.currentVersion === undefined) throw agentXError("CONFIG_INVALID", `${agent.name} has no published version to roll back from`);
   if (input.version === agent.currentVersion) throw agentXError("CONFIG_INVALID", `version: ${String(input.version)} is already the current version`);
-  if (await deps.store.getVersion(agent.orgId, agent.agentId, input.version) === undefined) throw agentXError("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
+  const stored = await deps.store.getVersion(agent.orgId, agent.agentId, input.version);
+  if (stored === undefined) throw agentXError("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
+  // Refused now, not when it is confirmed: a process layer only runs versions that build on Rovara Code.
+  requireRovaraCodeBaseForProcess(agent, stored.extends);
+  requireNoSkillsForProcess(agent, stored.overlay);
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
-  const changes = lessSafeChanges(current, target);
+  const changes = lessSafeChangesFor(agent, current, target, { firstPublish: false });
   if (changes.length === 0) {
     return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
   }
@@ -244,6 +271,7 @@ export async function shareAgent(
   deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; shares: unknown; request?: RequestMark },
 ): Promise<ChangeResult<AgentShare[]>> {
   // Refused now, not when it is confirmed: a change nobody could apply is not worth asking a person about.
+  requireNoSharesOnProcess(agent);
   const shares = await checkShares(deps, agent.orgId, caller.developerId, input.shares);
   const wantedCompany = shares.find((share) => share.principal.kind === "org");
   const storedCompany = (await deps.store.listShares(agent.orgId, agent.agentId)).find((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
@@ -300,9 +328,16 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   const agent = await liveAgent(deps, record, subject.agentId);
   const draft = await deps.store.getDraft(record.orgId, subject.agentId);
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
+  requireRovaraCodeBaseForProcess(agent, draft.extends);
+  requireNoSkillsForProcess(agent, draft.overlay);
+  await requireNoNewPullRequestInstructionsToPublish(deps.store, agent, draft.overlay);
   if (agent.currentVersion !== subject.expectedCurrentVersion) {
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
-    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) return;
+    const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
+    if (landed !== undefined && landed.digest === subject.digest) {
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt });
+      return;
+    }
     throw stale("The published version changed after this was asked. Publish again.");
   }
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
@@ -310,11 +345,12 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
   // The guardrails may have tightened since this was asked.
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
-  await deps.store.publish({
+  const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
-    skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe",
+    skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe", selfConfirmedSoleOwner: await confirmedBySoleOwner(deps, agent, record, by),
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
+  await pointPlaybookAtFirstVersion(deps, agent, published.version, by);
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
@@ -330,7 +366,7 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
-  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
+  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe" });
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
@@ -390,6 +426,8 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
 export function registerAgentApprovals(): void {
   registerApproverRule("agent_publish", managesAgent);
   registerApproverRule("agent_manager", managesAgent);
+  // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).
+  registerApprovalDecisionGuard("process_self_confirm", processSelfConfirmGuard({ candidatesOf: async (deps, agent) => { const spec = await agentApprovers(deps, agent, "agent_publish"); return spec.kind === "rule" ? spec.candidates : spec.ids; }, mayDecide: managesAgent }));
   // Read now, never from the caller's session: a person demoted since they signed in can't decide (R68).
   registerApproverRule("org_admin", async (deps, record, caller) => {
     if (caller.orgId !== record.orgId) return false;
@@ -401,4 +439,5 @@ export function registerAgentApprovals(): void {
   registerApprovalSubjectHandler("builtin_adopt", confirmAdopt);
   registerApprovalSubjectHandler("agent_share", confirmShare);
   registerApprovalSubjectHandler("guardrails", confirmGuardrails);
+  registerPlaybookApprovals();
 }

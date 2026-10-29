@@ -112,7 +112,9 @@ async function requireTarget(deps: Deps, caller: AgentCaller, target: TriggerTar
     await requireChainAccess(chainAccessOf(deps), caller, target.chainId, wanted);
     return;
   }
-  await requireAgentAccess(deps, caller, target.agentId, wanted);
+  const { agent } = await requireAgentAccess(deps, caller, target.agentId, wanted);
+  // A project's process layer is never started by a trigger: it reads as an agent that is not there.
+  if ("owner" in agent && agent.purpose === "process") throw agentXError("NOT_FOUND", "no agent has that ID");
 }
 
 /** What the caller holds on the project: its role, or a 404 for a project they have no role on (which also is how another org's project reads). */

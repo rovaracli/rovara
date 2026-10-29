@@ -163,6 +163,16 @@ export const AUDIT_ACTIONS = [
   "audit.staff_read",
   "audit.subject_erased",
   "audit.org_shred_scheduled",
+  // "How we work" playbook: one block, so a merge with another branch's additions stays easy.
+  "project.models_changed",
+  "project.checks_changed",
+  "project.e2e_policy_changed",
+  "project.model_selection_changed",
+  "project.roster_changed",
+  "process.published",
+  "process.rolled_back",
+  "playbook.default_process_changed",
+  "company.change_applied_to_project",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -190,6 +200,7 @@ export const AUDIT_TARGET_KINDS = [
   "audit",
   "spend_policy",
   "model_source",
+  "process",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -275,6 +286,17 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "audit.staff_read": ["fromSeq", "toSeq", "count", "via"],
   "audit.subject_erased": [],
   "audit.org_shred_scheduled": ["shredAfterDays"],
+  // "How we work" playbook: one block, so a merge with another branch's additions stays easy. Counts, revisions and flags only;
+  // `surface` is a fixed word (`slack`, `app`, `cli`) and `processKind` is `builtin` or `project_process`.
+  "project.models_changed": ["revision", "approvedCount", "defaultChanged"],
+  "project.checks_changed": ["revision", "requiredCount", "optionalCount"],
+  "project.e2e_policy_changed": ["revision", "screenshots", "traces", "video", "downloads"],
+  "project.model_selection_changed": ["surface", "cleared"],
+  "project.roster_changed": ["added", "removed"],
+  "process.published": ["version", "safety", "selfConfirmedSoleOwner"],
+  "process.rolled_back": ["fromVersion", "toVersion", "safety"],
+  "playbook.default_process_changed": ["revision", "processKind"],
+  "company.change_applied_to_project": ["changeRevision", "settingCount"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

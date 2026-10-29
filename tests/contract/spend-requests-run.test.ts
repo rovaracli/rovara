@@ -13,7 +13,7 @@ import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../p
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
-  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
+  DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
   modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
 } from "@agentx/contracts";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -342,6 +342,36 @@ describe("a max-per-run pause", () => {
     expect(request).toMatchObject({ approverRole: "agent_owner", approverIds: [BEN.developerId] });
     expect(await refusal(t.decide(CARL, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
     await t.decide(BEN, request.spendRequestId);
+  });
+
+  it("a project process layer's task is routed like the built-in Rovara Code's: org owners and admins decide, never the owning project's maintainers (I1)", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(TRIAGE, { by: BEN, name: "Process layer", owner: { kind: "project", project: "payments" }, accountable: BEN });
+    const run = await t.runOf(agentId);
+    // The task record of a process layer carries the mark (`TaskAgentRef.process`); the layer is owned by the project, so its maintainers (Ben) would otherwise be asked.
+    await t.set(run.taskId, "SET #agent = :agent, maxPerRunUsd = :max", { ":agent": { ...(t.meta(run.taskId).agent as Record<string, unknown>), process: true }, ":max": 4 }, { "#agent": "agent" });
+    await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
+    const request = t.requestOf(run.taskId, "max_per_run")[0]!;
+    expect(request).toMatchObject({ approverRole: "org_admin" });
+    expect(request.approverIds).not.toContain(BEN.developerId);
+    expect(request.approverIds).toContain(DEB.developerId);
+    expect((await spendApprovers(t.deps(), request)).ids).toEqual(request.approverIds);
+    expect(await refusal(t.decide(BEN, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+    expect(t.meta(run.taskId).budgetPause).toBeDefined();
+    await t.decide(DEB, request.spendRequestId);
+    expect(t.meta(run.taskId).budgetPause).toBeUndefined();
+  });
+
+  it("the built-in Rovara Code's max-per-run request still goes to org owners and admins (unchanged)", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(TRIAGE, { by: BEN, name: "Stand-in", owner: { kind: "project", project: "payments" }, accountable: BEN });
+    const run = await t.runOf(agentId);
+    await t.set(run.taskId, "SET #agent = :agent, maxPerRunUsd = :max", { ":agent": { agentId: ROVARA_CODE_AGENT_ID, name: "Rovara Code", version: 1, builtin: true }, ":max": 4 }, { "#agent": "agent" });
+    await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
+    const request = t.requestOf(run.taskId, "max_per_run")[0]!;
+    expect(request).toMatchObject({ approverRole: "org_admin" });
+    expect(request.approverIds).not.toContain(BEN.developerId);
+    expect(await refusal(t.decide(BEN, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
   });
 });
 

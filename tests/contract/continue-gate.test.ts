@@ -133,6 +133,20 @@ describe("a coding agent's max-per-run pause is not skipped by a retry or a send
     expect(snapshot(t, run.taskId, run.workspaceId, request.spendRequestId)).toEqual(before);
   });
 
+  it("a process-layer task keeps R38 like a Rovara Code task: the run-limit pause that gates an agent's run does not gate it", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(CODING);
+    const run = await t.runOf(agentId);
+    await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await t.pauseAndEnd(run, { kind: "task", taskId: run.taskId });
+    const task = t.meta(run.taskId) as unknown as Parameters<typeof pausedTaskGate>[2];
+    // Control: as an ordinary agent's run it is gated (a raise to $21 is a maintainer's to decide).
+    const ordinary = await pausedTaskGate(t.deps(), t.caller(MAYA), task);
+    expect(ordinary).toMatchObject({ allowed: false });
+    const layer = { ...task, agent: { ...task.agent!, builtin: false, process: true as const } };
+    expect(await pausedTaskGate(t.deps(), t.caller(MAYA), layer)).toEqual({ allowed: true });
+  });
+
   it("a person who may decide the open request still goes on: the payer's retry of a pause within the payer's threshold resets the window and withdraws the request", async () => {
     const t = await setup();
     const agentId = await t.agentOf(CODING);

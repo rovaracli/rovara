@@ -7,6 +7,8 @@ export function createSessionActions(host: AppHost) {
  return {
   // Owner decision 2026-10-27: from the app (a browser session) a press merges at once and answers 200; a server that still asks for a confirmation answers 202 with its link. `risk` is the level the dialog showed.
   merge: (id: string, requestId: string, risk?: "low" | "medium" | "high") => api.send("POST", path(id) + "/merge", { requestId, ...(risk === undefined ? {} : { risk }) }, MergeDoneReaderSchema),
+  // Understand's questions: `round` and `revision` are the ones the page read, so a stale form is refused by the server (INTENT_NOT_WAITING) rather than answered late.
+  answer: (id: string, body: { requestId: string; round: number; revision: number; answers: Array<{ questionId: string; optionId?: string; text?: string }> }) => api.send("POST", path(id) + "/answers", body, SessionResponseReaderSchema),
   follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
   unfollow: (id: string) => api.send("DELETE", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
   stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string) => control(id, "take-over"),

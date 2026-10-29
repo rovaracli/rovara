@@ -64,6 +64,7 @@ import {
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
+import { requireNotCurrentProcess } from "../playbook/process-in-use.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
@@ -567,11 +568,12 @@ async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agent
 
 async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
   const input = parseBody(RequestOnlySchema, body);
-  const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  const guard = archive && "owner" in agent ? await requireNotCurrentProcess(deps, agent) : undefined;
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) {
-    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark);
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark, guard === undefined ? undefined : { checks: guard });
     // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
     await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
     return { agent: customView(archived, access) };
@@ -768,7 +770,7 @@ async function deleteRosterAgent(deps: AgentRouteDependencies, caller: AgentCall
   await checkRosterChange(deps, caller, project, { remove: agentId });
   const { mark, replay } = await markRequest(deps, caller, "roster-remove", `${project}/${agentId}`, input);
   if (replay !== undefined) return replay.result as Shown;
-  const removed = await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark });
+  const removed = await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, by: caller.developerId, request: mark });
   return withDisabled({ removed }, removed ? await recheck(deps, caller.orgId, agentId) : []);
 }
 

@@ -22,6 +22,7 @@ import {
   type SessionView,
   type WorkOrigin,
 } from "@agentx/contracts";
+import { isRovaraCodeTask } from "../agents/rovara-code-task.js";
 import { RUN_RECORD_MEMORY_DAYS } from "../agents/runs.js";
 import { paymentOfTask } from "../spend/payer.js";
 import { failedIndexes, strip, type TransactItem } from "../agents/table-writes.js";
@@ -83,7 +84,7 @@ async function admitCurrentPayer(deps: SessionReadDependencies, session: AgentSe
   const { payer, agentId } = paymentOfTask(task);
   try {
     await deps.admitPayer({
-      orgId: session.orgId, project: session.project, payer, agentId, agentName: task.agent?.name ?? session.agent?.name ?? "Rovara Code", path: task.agent === undefined || agentId === "rovara-code" ? "TASK" : "AGENT",
+      orgId: session.orgId, project: session.project, payer, agentId, agentName: task.agent?.name ?? session.agent?.name ?? "Rovara Code", path: isRovaraCodeTask(task) ? "TASK" : "AGENT",
     });
   } catch (error) {
     if (error instanceof Error && (error as { code?: string }).code === "MODEL_PROXY_UNAVAILABLE") throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't check the budget just now. Try again in a moment.");
