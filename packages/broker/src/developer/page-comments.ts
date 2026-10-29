@@ -227,7 +227,9 @@ export async function takeRateAt(
   limit: number,
   windowMs: number,
   access?: { task: DeveloperTaskRecord; peopleRevision?: number },
+  units = 1,
 ): Promise<boolean> {
+  if (!Number.isSafeInteger(units) || units < 1 || units > limit) return false;
   const window = Math.floor(deps.now() / windowMs) * windowMs;
   const write = async (Update: Record<string, unknown>): Promise<void> => {
     if (access === undefined) {
@@ -243,7 +245,7 @@ export async function takeRateAt(
       await write({
         TableName: deps.tableName, Key, UpdateExpression: "SET #count = #count + :one",
         ConditionExpression: "windowStart = :window AND #count < :limit",
-        ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":one": 1, ":window": window, ":limit": limit },
+        ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":one": units, ":window": window, ":limit": limit - units + 1 },
       });
       return true;
     } catch (error) {
@@ -256,7 +258,7 @@ export async function takeRateAt(
     await write({
       TableName: deps.tableName, Key, UpdateExpression: "SET entityType = :type, windowStart = :window, #count = :one",
       ConditionExpression: "attribute_not_exists(windowStart) OR windowStart < :window",
-      ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":type": "TASK_RATE", ":window": window, ":one": 1 },
+      ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":type": "TASK_RATE", ":window": window, ":one": units },
     });
     return true;
   } catch (error) {

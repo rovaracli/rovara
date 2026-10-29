@@ -181,3 +181,12 @@ export * from "./test-proof.js";
 export * from "./org-slack-workspace-evidence.js";
 
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
+
+// Lane B reviewed project archive boundary.
+export * from "./reviewed-project-archive.js";
+
+// Lane B reviewed restore boundary.
+export * from "./reviewed-project-restore.js";
+
+// Lane B: browser-safe project-scoped working-branch page data.
+export * from "./app-working-branches.js";

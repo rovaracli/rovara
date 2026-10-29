@@ -17,3 +17,16 @@
 .rv-admin-role-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
 
 .rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:default}
+
+/* Lane B: read-only inspection links meet touch target sizing. */
+.rv-admin-b1-link{display:inline-flex;align-items:center;min-height:44px;margin-right:var(--rv-space-4)}
+
+/* Lane B: a readable consequential-change review, using existing theme tokens. */
+.rv-admin-archive-review{display:grid;gap:var(--rv-space-3)}
+.rv-admin-archive-review p,.rv-admin-archive-review label{overflow-wrap:anywhere}
+.rv-admin-archive-review label{display:flex;align-items:flex-start;gap:var(--rv-space-2);min-height:44px}
+
+/* Lane B: read-only branch inspection uses shared theme and wrapping rules. */
+.rv-admin-branch-inspection{display:grid;gap:var(--rv-space-3)}
+.rv-admin-branch-inspection p,.rv-admin-branch-inspection code{overflow-wrap:anywhere}
+.rv-admin-branch-inspection label{display:flex;gap:var(--rv-space-3);align-items:center;flex-wrap:wrap}

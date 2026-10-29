@@ -698,6 +698,9 @@ describe("I4: the builders", () => {
     ["auditOrgRenamed", (occurrence) => builders.auditOrgRenamed({ ...base, occurrence, details })],
     ["auditOrgInviteCreated", (occurrence) => builders.auditOrgInviteCreated({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member", targeted: true })],
     ["auditOrgInviteRevoked", (occurrence) => builders.auditOrgInviteRevoked({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member" })],
+    ["auditProjectRestored", (occurrence) => builders.auditProjectRestored({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
+    ["auditProjectArchived", (occurrence) => builders.auditProjectArchived({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 0, toRevision: 1, projectRevision: 3, requestId: "22222222-2222-4222-8222-222222222222" })],
+    ["auditProjectWorkingBranchChanged", (occurrence) => builders.auditProjectWorkingBranchChanged({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 1, toRevision: 2, lifecycleRevision: 3, installationId: 11, repositoryId: 22, requestId: "22222222-2222-4222-8222-222222222222", previousConfigured: false })],
     // Call sites: developer/store.ts setChosenDisplayName; org/slack-binding.ts bind and unbind; aws/broker.ts connectSlackTeam and disconnectSlackTeam (operator actor).
     ["auditMemberRenamed", (occurrence) => builders.auditMemberRenamed({ ...base, occurrence, details, memberId: "dev_1" })],
     ["auditSlackChannelBound", (occurrence) => builders.auditSlackChannelBound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],

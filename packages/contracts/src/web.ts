@@ -77,6 +77,15 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 
 // Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
+
+// Lane B reviewed project archive boundary.
+export * from "./reviewed-project-archive.js";
+
+// Lane B reviewed restore boundary.
+export * from "./reviewed-project-restore.js";
+
+// Lane B: browser-safe project-scoped working-branch page data.
+export * from "./app-working-branches.js";
 export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";
 
 // "How we work": the project playbook and its effective view (the How we work tab).

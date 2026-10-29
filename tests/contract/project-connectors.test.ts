@@ -2126,3 +2126,5 @@ describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () =>
     await s.fakeLinear.close();
   });
 });
+
+it("refuses the connectors registerRevision path with a fixed409 when latest has working branch selections",async()=>{const s=await install(),id=await s.connection({type:"linear",label:"Team Linear",access:"read"}),key=projectRevisionKey(TEST_ORG,"web",1),before=s.h.db.get(key)!;s.h.db.set({...before,workingBranchSelections:{web:{branch:"release/current"}}});const result=await s.put(MIA,"linear",linear(id));expect(result.status,JSON.stringify(result.body)).toBe(409);expect(result.body.error).toMatchObject({code:"PROJECT_REVISION_MISMATCH",message:STALE});expect(s.revision(2)).toBeUndefined();expect(s.h.db.get(key)?.workingBranchSelections).toEqual({web:{branch:"release/current"}});});

@@ -1,3 +1,7 @@
+import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-working-branch-save.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey } from "@agentx/contracts";
+import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createCandidateManifest, workflowRequestId } from "../../packages/contracts/src/task-workflow-node.js";
@@ -1235,7 +1239,7 @@ describe("native developer task workflow", () => {
       body: JSON.stringify({ credentialRef: "github-app", repositoryUrl: "https://github.com/example/demo.git", access: "push" }),
       requestContext: { requestId: randomUUID(), http: { method: "POST" } } });
     expect(credentialResponse.statusCode).not.toBe(200);
-    expect(JSON.parse(credentialResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN" } });
+    expect(JSON.parse(credentialResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN", reason: "settingsChanged" } });
     expect(exchange).not.toHaveBeenCalled();
 
     const metadataResponse = await harness.handler({ version: "2.0", rawPath: `/v1/internal/workspaces/${workspaceId}/operations/${publish.id}/pull-request`, rawQueryString: "",
@@ -1244,7 +1248,50 @@ describe("native developer task workflow", () => {
         baseBranch: publish.publication.baseBranch, commit: "d".repeat(40), title: publish.publication.title }),
       requestContext: { requestId: randomUUID(), http: { method: "POST" } } });
     expect(metadataResponse.statusCode).not.toBe(200);
-    expect(JSON.parse(metadataResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN" } });
+    expect(JSON.parse(metadataResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN", reason: "settingsChanged" } });
+    expect(github.getBranchHead).not.toHaveBeenCalled();
+    expect(github.reconcilePullRequest).not.toHaveBeenCalled();
+    expect(taskWorkflow(harness, taskId).stage).toBe("PULL_REQUEST");
+  });
+
+  it("B32 actual branch save invalidates admitted publication with settingsChanged", async () => {
+    const github = pullRequestGateway("b".repeat(40));
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: github } });
+    const initialKey=projectRevisionKey(TEST_ORG,"payments",1),initial=harness.db.get(initialKey)!;
+    const definition=initial.definition as {repositories:Record<string,unknown>[]};
+    harness.db.set({...initial,definition:{...definition,repositories:definition.repositories.map(r=>({...r,installationId:11,githubRepositoryId:22}))}});
+    const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
+    await finishImplementation();
+    await passReviews(harness, workspaceId, candidate);
+    const publish = operations(harness, workspaceId).find((item) => item.kind === "publish") as { id: string; publication: Record<string, unknown> };
+    const invocation = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === publish.id)[0]!.invocation as { callbackCapability: string; payload: { repositoryGrant: string } };
+    const exchange = vi.spyOn(harness.brokerInput.repositoryGrants, "exchange");
+
+    // A newly registered current revision changes project material after this exact publication was admitted.
+    const by="c".repeat(64),org=harness.db.get(orgMetaKey(TEST_ORG));
+    harness.db.set({...org,...orgMetaKey(TEST_ORG),orgId:TEST_ORG});
+    harness.db.set({...orgMemberKey(TEST_ORG,by),orgId:TEST_ORG,developerId:by,role:"owner"});
+    harness.db.set({...developerOrgKey(by),orgId:TEST_ORG,role:"owner"});
+    harness.db.set({...githubInstallationKey(11),orgId:TEST_ORG,status:"active"});
+    const audit=capturingAuditDeps({db:harness.db});
+    const result=await commitReviewedProjectWorkingBranch({documentClient:audit.audit.documentClient,tableName:"state",now:Date.now,audit:audit.audit,workingBranchSession:()=>({checkRepository:async()=>({installationId:11,repositoryId:22}),resolveBranch:async()=>({installationId:11,repositoryId:22,fullName:"example/demo",branch:"release/current",commit:"c".repeat(40)}),finish:async()=>undefined})},{orgId:TEST_ORG,developerId:by,orgRole:"owner",sessionId:"fixture"} as DeveloperCaller,"payments",{requestId:randomUUID(),expectedOrgId:TEST_ORG,expectedRevision:0,expectedProjectRevision:1,repository:"demo",branch:"release/current",expectedCommit:"c".repeat(40)});
+    expect(result.receipt.projectRevision).toBe(2);expect(audit.recordedBy("project.working_branch_changed")).toHaveLength(1);
+
+    const credentialResponse = await harness.handler({ version: "2.0", rawPath: `/v1/internal/workspaces/${workspaceId}/operations/${publish.id}/repository-credentials`, rawQueryString: "",
+      headers: { "x-agentx-repository-grant": invocation.payload.repositoryGrant },
+      body: JSON.stringify({ credentialRef: "github-app", repositoryUrl: "https://github.com/example/demo.git", access: "push" }),
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } } });
+    expect(credentialResponse.statusCode).not.toBe(200);
+    expect(JSON.parse(credentialResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN", reason: "settingsChanged" } });
+    expect(exchange).not.toHaveBeenCalled();
+
+    const metadataResponse = await harness.handler({ version: "2.0", rawPath: `/v1/internal/workspaces/${workspaceId}/operations/${publish.id}/pull-request`, rawQueryString: "",
+      headers: { "x-agentx-callback-capability": invocation.callbackCapability },
+      body: JSON.stringify({ repository: publish.publication.repository, repositoryUrl: publish.publication.repositoryUrl, headBranch: publish.publication.headBranch,
+        baseBranch: publish.publication.baseBranch, commit: "d".repeat(40), title: publish.publication.title }),
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } } });
+    expect(metadataResponse.statusCode).not.toBe(200);
+    expect(JSON.parse(metadataResponse.body)).toMatchObject({ error: { code: "CALLBACK_FORBIDDEN", reason: "settingsChanged" } });
     expect(github.getBranchHead).not.toHaveBeenCalled();
     expect(github.reconcilePullRequest).not.toHaveBeenCalled();
     expect(taskWorkflow(harness, taskId).stage).toBe("PULL_REQUEST");

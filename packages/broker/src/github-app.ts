@@ -1,5 +1,5 @@
 import { createHash, createSign } from "node:crypto";
-import { PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { GitBranchNameSchema, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
@@ -1627,6 +1627,153 @@ export class GitHubAppCredentialProvider {
     return treeSha;
   }
 
+  /** One page of chooser suggestions, never authority for a save/start or a complete snapshot. */
+  async listWorkingBranches(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope, page = 1): Promise<WorkingBranchPage> {
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1_000) throw workingBranchInvalid();
+    const input = workingBranchInput(repositoryUrl, expected, scope);
+    return this.workingBranchList(input, page);
+  }
+
+  private async workingBranchList(input: WorkingBranchInput, page: number, lookup?: () => Promise<{ id: number; login: string }>): Promise<WorkingBranchPage> {
+    try {
+      const check = this.options.requireInstallationBound;
+      if (check === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection unavailable.");
+      const connected = async () => {
+        const current = await (lookup === undefined ? this.lookedUp(input, true) : lookup());
+        if (current.id !== input.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection changed.");
+        await check(input.orgId, current.id, { owner: input.owner, name: input.name });
+      };
+      await connected();
+      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, lookup !== undefined, { installationId: input.installationId });
+      const read = (path: string) => this.fetchImplementation(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" });
+      const repository = await read("");
+      if (repository.status !== 200) throw workingBranchUnavailable();
+      const identity = feedbackRecord(await workingBranchPageJson(repository));
+      if (identity.id !== input.repositoryId || typeof identity.full_name !== "string" || identity.full_name.toLowerCase() !== `${input.owner}/${input.name}`.toLowerCase()) throw workingBranchUnavailable();
+      // Never follow Link URLs or paginate automatically. Only this local integer selects the page.
+      const response = await read(`/branches?per_page=100&page=${String(page)}`);
+      if (response.status !== 200) throw workingBranchUnavailable();
+      const rows = await workingBranchPageJson(response);
+      if (!Array.isArray(rows) || rows.length > 100) throw workingBranchUnavailable();
+      const branches: string[] = [], seen = new Set<string>();
+      let omittedUnsupported = false;
+      for (const raw of rows) {
+        const row = feedbackRecord(raw), commit = feedbackRecord(row.commit);
+        if (typeof row.name !== "string" || row.name.length === 0 || seen.has(row.name) || typeof commit.sha !== "string" || !/^[a-f0-9]{40}$/.test(commit.sha)) throw workingBranchUnavailable();
+        seen.add(row.name);
+        if (!GitBranchNameSchema.safeParse(row.name).success || row.name === "HEAD" || row.name.startsWith("refs/")) { omittedUnsupported = true; continue; }
+        branches.push(row.name);
+      }
+      // Empty and filtered pages must also survive a fresh connection/binding check.
+      await connected();
+      return { branches, page, mayHaveMore: rows.length === 100, omittedUnsupported };
+    } catch (error) {
+      if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before listing its working branches.");
+      throw workingBranchUnavailable();
+    }
+  }
+
+  /** Unexposed working-branch reader: org-only, immutable pins required, no default fallback. */
+  async readWorkingBranchRepository(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope): Promise<{ installationId: number; repositoryId: number }> {
+    const input = workingBranchInput(repositoryUrl, expected, scope);
+    return this.workingBranchRead(input);
+  }
+
+  async readWorkingBranch(repositoryUrl: string, branch: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope): Promise<{ installationId: number; repositoryId: number; fullName: string; branch: string; commit: string } | undefined> {
+    const parsed = GitBranchNameSchema.safeParse(branch);
+    if (!parsed.success || branch === "HEAD" || branch.startsWith("refs/")) throw workingBranchInvalid();
+    const input = workingBranchInput(repositoryUrl, expected, scope);
+    const result = await this.workingBranchRead(input, branch);
+    if (result.commit === undefined) return undefined;
+    return { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
+  }
+
+  /** Isolated exact-preview/list read session: no cross-request/org cache; finish rechecks fresh installation identity. */
+  createWorkingBranchPreviewSession() {
+    const scoped = new GitHubAppCredentialProvider(this.options);
+    scoped.tokenCache = new Map();
+    let locked: WorkingBranchInput | undefined, initial: Promise<{ id: number; login: string }> | undefined, closed = false;
+    const prepare = (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+      if (closed) throw workingBranchUnavailable();
+      const input = workingBranchInput(url, expected, scope);
+      if (locked !== undefined && JSON.stringify(locked) !== JSON.stringify(input)) throw workingBranchInvalid();
+      locked ??= input;
+      return input;
+    };
+    const lookup = () => {
+      if (closed || locked === undefined) throw workingBranchUnavailable();
+      return initial ??= scoped.lookedUp(locked, true);
+    };
+    return {
+      readWorkingBranchRepository: async (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+        const input = prepare(url, expected, scope);
+        const result = await scoped.workingBranchRead(input, undefined, lookup);
+        return { installationId: result.installationId, repositoryId: result.repositoryId };
+      },
+      readWorkingBranch: async (url: string, branch: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope) => {
+        if (!GitBranchNameSchema.safeParse(branch).success || branch === "HEAD" || branch.startsWith("refs/")) throw workingBranchInvalid();
+        const input = prepare(url, expected, scope), result = await scoped.workingBranchRead(input, branch, lookup);
+        return result.commit === undefined ? undefined : { installationId: input.installationId, repositoryId: input.repositoryId, fullName: `${input.owner}/${input.name}`, branch, commit: result.commit };
+      },
+      listWorkingBranches: async (url: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope, page = 1) => {
+        if (!Number.isSafeInteger(page) || page < 1 || page > 1_000) throw workingBranchInvalid();
+        const input = prepare(url, expected, scope);
+        return scoped.workingBranchList(input, page, lookup);
+      },
+      finish: async (operation: "list" | "preview" = "preview") => {
+        if (closed) throw workingBranchUnavailable();
+        closed = true;
+        try {
+          if (locked === undefined) return;
+          const current = await scoped.lookedUp(locked, true), check = scoped.options.requireInstallationBound;
+          if (current.id !== locked.installationId) throw agentXError("GITHUB_NOT_CONNECTED", operation === "list" ? "Reconnect this project's repository before listing working branches." : "Reconnect this project's repository before reviewing its working branch.");
+          if (check === undefined) throw workingBranchUnavailable();
+          await check(locked.orgId, current.id, { owner: locked.owner, name: locked.name });
+        } catch (error) {
+          if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", operation === "list" ? "Reconnect this project's repository before listing working branches." : "Reconnect this project's repository before reviewing its working branch.");
+          throw workingBranchUnavailable();
+        }
+        finally { scoped.tokenCache?.clear(); scoped.installations.clear(); locked = undefined; initial = undefined; }
+      },
+    };
+  }
+
+  private async workingBranchRead(input: WorkingBranchInput, branch?: string, lookup?: () => Promise<{ id: number; login: string }>): Promise<{ installationId: number; repositoryId: number; commit?: string }> {
+    try {
+      // Unlike older private-install APIs, this optional reader requires an explicit org policy.
+      const check = this.options.requireInstallationBound;
+      if (check === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection unavailable.");
+      const connected = async () => {
+        const current = await (lookup === undefined ? this.lookedUp(input, true) : lookup());
+        if (current.id !== input.installationId) throw agentXError("GITHUB_NOT_CONNECTED", "Repository connection changed.");
+        await check(input.orgId, current.id, { owner: input.owner, name: input.name });
+      };
+      await connected();
+      const token = await this.createInstallationToken(input, { contents: "read" }, { orgId: input.orgId }, lookup !== undefined, { installationId: input.installationId });
+      const read = (path: string) => this.fetchImplementation(`https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.name)}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" });
+      const repository = await read("");
+      if (repository.status !== 200) throw workingBranchUnavailable();
+      const identity = feedbackRecord(await repository.json());
+      if (identity.id !== input.repositoryId || typeof identity.full_name !== "string" || identity.full_name.toLowerCase() !== `${input.owner}/${input.name}`.toLowerCase()) throw workingBranchUnavailable();
+      let commit: string | undefined;
+      if (branch !== undefined) {
+        const response = await read(`/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
+        if (response.status !== 404) {
+          if (response.status !== 200) throw workingBranchUnavailable();
+          const ref = feedbackRecord(await response.json()), object = feedbackRecord(ref.object);
+          if (ref.ref !== `refs/heads/${branch}` || object.type !== "commit" || typeof object.sha !== "string" || !/^[a-f0-9]{40}$/.test(object.sha)) throw workingBranchUnavailable();
+          commit = object.sha;
+        }
+      }
+      // Point-in-time checks, not an atomic external revocation or admission fence.
+      await connected();
+      return { installationId: input.installationId, repositoryId: input.repositoryId, ...(commit === undefined ? {} : { commit }) };
+    } catch (error) {
+      if (isAgentXError(error) && error.code === "GITHUB_NOT_CONNECTED") throw agentXError("GITHUB_NOT_CONNECTED", "Reconnect this project's repository before reviewing its working branch.");
+      throw workingBranchUnavailable();
+    }
+  }
+
   /**
    * The installation that covers a repository, as GitHub says (cached by owner as `installed` caches it; a failed lookup is not cached;
    * `fresh` asks GitHub again); undefined when the App is not installed there. Reads no org's binding: callers hand the result to `requireInstallationBound`.
@@ -2320,4 +2467,34 @@ function base64urlJson(value: unknown): string {
 
 function isAgentXError(error: unknown): error is AgentXError {
   return error instanceof Error && error.name === "AgentXError";
+}
+
+interface WorkingBranchInput extends InstalledRepository { orgId: OrgId; repositoryId: number }
+const workingBranchInvalid = () => agentXError("CONFIG_INVALID", "Review a valid pinned repository branch before continuing.");
+const workingBranchUnavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The working branch could not be checked. Try again.");
+function workingBranchInput(repositoryUrl: string, expected: { installationId: number; repositoryId: number }, scope: GitHubTokenScope): WorkingBranchInput {
+  if (!scope || typeof scope !== "object" || !("orgId" in scope) || "system" in scope || !OrgIdSchema.safeParse(scope.orgId).success || !expected || !Number.isSafeInteger(expected.installationId) || expected.installationId < 1 || !Number.isSafeInteger(expected.repositoryId) || expected.repositoryId < 1) throw workingBranchInvalid();
+  let repository: { owner: string; name: string };
+  try { repository = parseGitHubRepository(repositoryUrl); } catch { throw workingBranchInvalid(); }
+  return { ...repository, orgId: scope.orgId, installationId: expected.installationId, repositoryId: expected.repositoryId };
+}
+
+export interface WorkingBranchPage { branches: string[]; page: number; mayHaveMore: boolean; omittedUnsupported: boolean }
+/** Bound both metadata and list bodies independently of content-length or unknown provider fields. */
+async function workingBranchPageJson(response: Response): Promise<unknown> {
+  if (response.body === null) throw workingBranchUnavailable();
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      const chunk: unknown = next.value;
+      if (!(chunk instanceof Uint8Array)) throw workingBranchUnavailable();
+      bytes += chunk.byteLength;
+      if (bytes > 524_288) { await reader.cancel(); throw workingBranchUnavailable(); }
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } finally { reader.releaseLock(); }
 }

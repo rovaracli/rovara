@@ -106,7 +106,8 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
   const answer = {
     project: {
       name, ...(page.description === undefined ? {} : { description: page.description }), status: page.status, ...(page.latestRevision === undefined ? {} : { latestRevision: page.latestRevision }),
-      repositories: page.repositories,
+      // The summary now carries the repository's registered name (lane B); the overview contract is unchanged and shows only these two fields.
+      repositories: page.repositories.map(({ fullName, defaultBranch }) => ({ fullName, defaultBranch })),
       setup: {
         status: page.setup.status, ...(page.setup.checkedRevision === undefined ? {} : { checkedRevision: page.setup.checkedRevision }),
         ...(page.setup.checkedAt === undefined ? {} : { checkedAt: page.setup.checkedAt }), ...(page.setup.failedStep === undefined ? {} : { failedStep: page.setup.failedStep }),

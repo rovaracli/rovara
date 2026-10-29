@@ -12,27 +12,8 @@ import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
-export const GitBranchNameSchema = z
-  .string()
-  .min(1)
-  .max(255)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, "defaultBranch contains unsupported characters")
-  .superRefine((value, context) => {
-    const segments = value.split("/");
-    if (
-      value === "@" ||
-      value.endsWith(".") ||
-      value.endsWith("/") ||
-      value.includes("..") ||
-      value.includes("//") ||
-      value.includes("@{") ||
-      segments.some(
-        (segment) => segment.startsWith(".") || segment === ".." || segment.endsWith(".lock"),
-      )
-    ) {
-      context.addIssue({ code: "custom", message: "defaultBranch is not a safe Git branch name" });
-    }
-  });
+import { GitBranchNameSchema } from "./git-branch.js";
+export { GitBranchNameSchema } from "./git-branch.js";
 
 const HttpsOrLoopbackUrlSchema = z.string().url().superRefine((value, context) => {
   const url = new URL(value);
