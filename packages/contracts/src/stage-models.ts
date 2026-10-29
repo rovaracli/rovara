@@ -1,6 +1,8 @@
 // G3 v1: the How we work UI reads server decisions; it never selects or classifies models.
 import { z } from "zod";
-import { ModelIdentifierSchema, ThinkingLevelSchema } from "./models.js";
+import { ModelIdentifierSchema } from "./models.js";
+import { StepThinkingLevelSchema as ThinkingLevelSchema } from "./agent-recipe.js";
+import { NeedsConfirmationSchema } from "./session-views.js";
 import { forwardReader } from "./forward-reader.js";
 
 export const STAGE_IDS = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"] as const;
@@ -69,7 +71,7 @@ export const StageModelsResponseSchema = z.object({
 export type StageModelsResponse = z.infer<typeof StageModelsResponseSchema>;
 export const StageModelsResponseReaderSchema = forwardReader(StageModelsResponseSchema);
 export const StageModelsQuerySchema = z.object({ draft: Revision.optional() }).strict();
-export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema }).strict();
+export const ModelSelectionPolicyResponseSchema = z.object({ version: z.literal(1), revision: Revision, rankingVersion: z.literal("g3-v1"), stepOverrides: StageModelOverridesSchema, candidates: z.partialRecord(StageIdSchema, z.array(StageModelCandidateSchema).max(23)).optional() }).strict();
 export const ModelSelectionPolicyPutSchema = z.object({ version: z.literal(1), requestId: z.uuid(), expectedRevision: Revision, stepOverrides: StageModelOverridesSchema }).strict();
 export type ModelSelectionPolicyResponse = z.infer<typeof ModelSelectionPolicyResponseSchema>;
 export type ModelSelectionPolicyPut = z.infer<typeof ModelSelectionPolicyPutSchema>;
@@ -86,3 +88,33 @@ export const ModelPolicyPreviewResponseReaderSchema = forwardReader(ModelPolicyP
 export const ModelFallbackSchema = z.object({ stage: StageIdSchema, used: Line, wanted: Line.nullable(), reasonCode: ModelFallbackReasonCodeSchema }).strict();
 export type ModelFallback = z.infer<typeof ModelFallbackSchema>;
 export const ModelFallbacksSchema = z.array(ModelFallbackSchema).max(64);
+
+/** Stage editing uses the existing recipe scale; xhigh is NOT a v1.1 stage setting. */
+export const STAGE_MODEL_THINKING_LEVELS = ThinkingLevelSchema.options;
+export const ModelSelectionPolicyAppliedSchema = z.object({ status:z.literal("APPLIED"),revision:Revision,requestId:z.uuid() }).strict();
+export const ModelSelectionPolicyPendingSchema = NeedsConfirmationSchema.extend({ requestId:z.uuid().optional(),confirmationId:z.string().min(1).max(200).optional() }).strict();
+export type ModelSelectionPolicyApplied = z.infer<typeof ModelSelectionPolicyAppliedSchema>;
+export type ModelSelectionPolicyPending = z.infer<typeof ModelSelectionPolicyPendingSchema>;
+export const ModelSelectionPolicyAppliedReaderSchema = forwardReader(ModelSelectionPolicyAppliedSchema);
+export const ModelSelectionPolicyPendingReaderSchema = forwardReader(ModelSelectionPolicyPendingSchema);
+export const STAGE_OPERATION_MAPPING = {
+ UNDERSTAND:{stages:["understand"],stepKind:"plan"},
+ SETUP_DRAFT:{stages:["plan"],stepKind:"plan"},
+ PLAN:{stages:["plan"],stepKind:"plan"},
+ PLAN_CRITIQUE:{stages:["plan_check"],stepKind:"plan_critic"},
+ IMPLEMENT:{stages:["build"],stepKind:"build"},
+ REVIEW:{stages:["code_review","security_review"],stepKind:"review"},
+ CHECKS:{stages:[],stepKind:"check"},
+ FEEDBACK_REVIEW:{stages:["pull_request"],stepKind:"pull_request"},
+} as const;
+export const STAGE_EDIT_GROUPS = [["understand"],["plan"],["plan_check"],["build"],["code_review","security_review"],["pull_request"]] as const;
+/** Metadata only: eligibility, lock state, validation and model decisions remain server-owned. */
+export const STAGE_EDIT_RULES = {
+ understand:{stepKind:"plan",editGroup:"plan",reviewerSlot:null},
+ plan:{stepKind:"plan",editGroup:"plan",reviewerSlot:null},
+ plan_check:{stepKind:"plan_critic",editGroup:"plan_check",reviewerSlot:null},
+ build:{stepKind:"build",editGroup:"build",reviewerSlot:null},
+ code_review:{stepKind:"review",editGroup:"review",reviewerSlot:"code"},
+ security_review:{stepKind:"review",editGroup:"review",reviewerSlot:"security"},
+ pull_request:{stepKind:"pull_request",editGroup:"pull_request",reviewerSlot:null},
+} as const;
