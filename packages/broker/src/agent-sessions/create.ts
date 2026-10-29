@@ -91,10 +91,10 @@ function startedText(input: TaskSessionInput, owner: string, starter: string | u
  * list it for its owner (and for a different member who started it), its project, the live wall and the sweep. Each is written only if absent.
  * The task's own record carries the `sessionId` (the caller writes that).
  */
-export function createTaskSessionItems(table: TableInput, input: TaskSessionInput): TransactItem[] {
+/** The header record a new task session starts with, its first leg alongside. */
+function taskSessionHeader(input: TaskSessionInput): { record: AgentSessionRecord; leg: SessionLeg } {
   const owner = cleanSessionName(input.owner.name) ?? "Someone";
   const agentName = cleanSessionName(input.agent.name) ?? input.agent.agentId;
-  const starterName = input.startedByName === undefined ? undefined : cleanSessionName(input.startedByName);
   const title = sessionTitle(input.title);
   const subject = { kind: "task" as const, taskId: input.taskId };
   const where = { kind: "cloud" as const };
@@ -106,6 +106,15 @@ export function createTaskSessionItems(table: TableInput, input: TaskSessionInpu
     startedBy: input.startedBy, origin: input.origin, payer: input.payer, followerCount: 0, summary, summaryRevision: 1, revision: 1,
     createdAt: input.now, updatedAt: input.now,
   } satisfies Record<string, unknown>);
+  return { record, leg };
+}
+
+export function createTaskSessionItems(table: TableInput, input: TaskSessionInput): TransactItem[] {
+  const owner = cleanSessionName(input.owner.name) ?? "Someone";
+  const agentName = cleanSessionName(input.agent.name) ?? input.agent.agentId;
+  const starterName = input.startedByName === undefined ? undefined : cleanSessionName(input.startedByName);
+  const { record, leg } = taskSessionHeader(input);
+  const title = record.title;
   const { orgId, sessionId } = record;
   const startedByOwner = input.startedBy.kind === "member" && input.startedBy.developerId === input.owner.developerId;
   const event: SessionEvent = {
@@ -304,6 +313,26 @@ export function lazySessionId(taskId: string): string {
   return `ses_${sha256(`task-session\n${taskId}`).slice(0, 20)}`;
 }
 
+/** What a lazy creation would write for a task, or undefined when the task lacks what a session needs (the same facts `ensureTaskSession` rests on). */
+function lazyTaskSessionInput(task: LazySessionTask, input: { ownerName: string; title: string }): TaskSessionInput | undefined {
+  const startedBy = sessionStarterFor({ trigger: undefined, startedBy: task.startedBy, chain: task.chain });
+  if (startedBy === undefined || task.orgId === undefined || task.agent === undefined || task.origin === undefined) return undefined;
+  return {
+    orgId: task.orgId, sessionId: lazySessionId(task.taskId), taskId: task.taskId, project: task.project, agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version },
+    title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
+    payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
+  };
+}
+
+/**
+ * The session `ensureTaskSession` would make for a task, without writing anything: for judging what a person may do with it before it exists (a take-over asked of a task that
+ * has no session yet). Undefined when the task could not get one.
+ */
+export function lazyTaskSessionRecord(task: LazySessionTask, input: { ownerName: string; title: string }): AgentSessionRecord | undefined {
+  const sessionInput = lazyTaskSessionInput(task, input);
+  return sessionInput === undefined ? undefined : taskSessionHeader(sessionInput).record;
+}
+
 /**
  * Gives a task started before sessions its session, the first time it is read (a ruling of 2026-10-22: no sweep). One transaction writes the session
  * items and names the session on the task, conditioned on the task having none and belonging to this org, so a repeat or a racing read finds the
@@ -319,16 +348,12 @@ export async function ensureTaskSession(
 ): Promise<string | undefined> {
   try {
     if (task.sessionId !== undefined) return task.sessionId;
-    const startedBy = sessionStarterFor({ trigger: undefined, startedBy: task.startedBy, chain: task.chain });
-    if (startedBy === undefined || task.orgId === undefined || task.agent === undefined || task.origin === undefined) return undefined;
-    const sessionId = lazySessionId(task.taskId);
+    const sessionInput = lazyTaskSessionInput(task, input);
+    if (sessionInput === undefined || task.orgId === undefined) return undefined;
+    const sessionId = sessionInput.sessionId;
     const key = { pk: `DEVTASK#${task.taskId}`, sk: "META" };
     const items: TransactItem[] = [
-      ...createTaskSessionItems(table, {
-        orgId: task.orgId, sessionId, taskId: task.taskId, project: task.project, agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version },
-        title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
-        payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
-      }),
+      ...createTaskSessionItems(table, sessionInput),
       // A thread maps to one shared task, so this binding cannot meet another session's; if it ever were refused, the whole creation would fail on every read until fixed.
       ...threadBindingItems(table, task.orgId, sessionId, task.share, task.createdAt),
       {

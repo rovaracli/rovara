@@ -1,4 +1,4 @@
-import { serverPageCss } from "@agentx/design-tokens";
+import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
 import { SessionIdSchema } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
@@ -137,7 +137,7 @@ const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-
 const HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+  "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
@@ -162,7 +162,7 @@ const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
 
 function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string): HttpResult {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>`
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>${SERVER_PAGE_ICON}`
     + (refreshTo === undefined ? "" : `<meta http-equiv="refresh" content="0;url=${escape(refreshTo)}">`)
     + `<style>${serverPageCss()}h1{line-height:1.2;margin:0 0 1.5rem}.rv-wordmark{font-weight:650;margin:0 0 1.5rem}.rv-server-card{padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}p{overflow-wrap:anywhere}a.method{display:flex;align-items:center;min-height:44px;margin:1rem 0;padding:.75rem 1rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-decoration:none;color:var(--rv-accent-text)}</style></head>`
     + `<body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`

@@ -49,3 +49,42 @@ async function sendBindingRequest(
   if (parsedBody === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "control plane returned an invalid response");
   return parsedBody;
 }
+
+/** Release 0.4.17: an operator connects a Slack workspace to one org (`PUT /v1/admin/slack/teams/{teamId}`). */
+export async function connectSlackTeam(
+  input: { controlPlaneUrl: string; accessToken: string; teamId: string; orgId: string },
+  fetchImplementation: typeof fetch = fetch,
+): Promise<unknown> {
+  const teamId = SlackTeamIdSchema.parse(input.teamId);
+  const response = await fetchImplementation(`${input.controlPlaneUrl.replace(/\/$/, "")}/v1/admin/slack/teams/${teamId}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${input.accessToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ orgId: input.orgId }),
+  });
+  const { ok, status, body: parsedBody } = await readJsonResponse(response);
+  if (!ok) {
+    const message = parsedBody === undefined ? `HTTP ${status}` : (serverError(parsedBody).message ?? `HTTP ${status}`);
+    throw agentXError("RUNTIME_UNAVAILABLE", `Slack workspace connection failed: ${message}`);
+  }
+  if (parsedBody === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "control plane returned an invalid response");
+  return parsedBody;
+}
+
+/** Release 0.4.17: an operator releases a Slack workspace from its org (`DELETE /v1/admin/slack/teams/{teamId}`). */
+export async function disconnectSlackTeam(
+  input: { controlPlaneUrl: string; accessToken: string; teamId: string },
+  fetchImplementation: typeof fetch = fetch,
+): Promise<unknown> {
+  const teamId = SlackTeamIdSchema.parse(input.teamId);
+  const response = await fetchImplementation(`${input.controlPlaneUrl.replace(/\/$/, "")}/v1/admin/slack/teams/${teamId}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${input.accessToken}` },
+  });
+  const { ok, status, body: parsedBody } = await readJsonResponse(response);
+  if (!ok) {
+    const message = parsedBody === undefined ? `HTTP ${status}` : (serverError(parsedBody).message ?? `HTTP ${status}`);
+    throw agentXError("RUNTIME_UNAVAILABLE", `Slack workspace disconnection failed: ${message}`);
+  }
+  if (parsedBody === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "control plane returned an invalid response");
+  return parsedBody;
+}

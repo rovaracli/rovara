@@ -68,6 +68,12 @@ function stoppableCli(behaviour: {
 }
 
 /** A fake `devcontainer` CLI: `up` succeeds, and `exec` answers with `execResult`. */
+/** The per-start suffix of the mask volumes' names in the `up` call's arguments. */
+function maskToken(calls: readonly string[][]): string {
+  const mount = calls[0]!.find((arg) => arg.startsWith("type=volume,source=agentx-mask-agentx-"))!;
+  return /source=agentx-mask-agentx-([0-9a-f]{12}),/u.exec(mount)![1]!;
+}
+
 function fakeCli(execResult: (args: readonly string[]) => DevcontainerProcess = () => ({ exitCode: 0, stdout: "", stderr: "" })) {
   const calls: string[][] = [];
   const options: Array<Parameters<DevcontainerCli["run"]>[1]> = [];
@@ -357,10 +363,10 @@ describe("the devcontainer CLI seam", () => {
       expect(calls).toEqual([[
         "up", "--workspace-folder", target.workspaceFolder, "--config", target.configPath, "--frozen-lockfile",
         "--mount", `type=bind,source=${target.rootPath},target=${target.rootPath}`,
-        // The worker's own state is hidden too (task 25 fix round 1): created if missing, then masked.
-        "--mount", `type=volume,source=agentx-mask-agentx,target=${join(target.rootPath, ".agentx")}`,
-        "--mount", `type=volume,source=agentx-mask-agent-sessions,target=${join(target.rootPath, "agent-sessions")}`,
-        "--mount", `type=volume,source=agentx-docker-data-mask,target=${join(target.rootPath, ".docker")}`,
+        // The worker's own state is hidden too: created if missing, then masked.
+        "--mount", `type=volume,source=agentx-mask-agentx-${maskToken(calls)},target=${join(target.rootPath, ".agentx")}`,
+        "--mount", `type=volume,source=agentx-mask-agent-sessions-${maskToken(calls)},target=${join(target.rootPath, "agent-sessions")}`,
+        "--mount", `type=volume,source=agentx-docker-data-mask-${maskToken(calls)},target=${join(target.rootPath, ".docker")}`,
         "--log-format", "json",
       ]]);
       expect(removed).toEqual([]);
@@ -385,6 +391,35 @@ describe("the devcontainer CLI seam", () => {
         message: expect.stringContaining("the worker's own folders of the workspace (.agentx, agent-sessions, .agentx-runtime) visible inside it") as unknown,
       });
       expect(removed).toEqual(["id-1", "id-2"]);
+    });
+
+    it("refuses a full configuration whose Dockerfile or context sits outside the repository, whichever spelling the CLI reads", async () => {
+      const target = await workspaceWith('{ "image": "node:22" }');
+      for (const [configuration, setting] of [
+        [{ dockerFile: "../../../Dockerfile", build: { dockerfile: "Dockerfile" } }, "build.dockerfile outside the repository folder"],
+        [{ dockerFile: "Dockerfile", context: "../../..", build: { context: "." } }, "build.context outside the repository folder"],
+      ] as const) {
+        const { cli, calls } = dockerCli([], { configuration, mergedConfiguration: {} });
+        await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(setting) as unknown });
+        expect(calls).toEqual([]);
+      }
+    });
+
+    it("keeps a local feature inside the repository's .devcontainer folder, whether or not a link leads out of it", async () => {
+      const target = await workspaceWith('{ "image": "node:22" }');
+      const folder = join(target.workspaceFolder, ".devcontainer");
+      await mkdir(join(folder, "local-feature"));
+      const outside = await mkdtemp(join(tmpdir(), "agentx-dc-feature-"));
+      await symlink(outside, join(folder, "linked-feature"));
+      const featuresFor = (resolvedFilePath: string) => ({ featureSets: [{ sourceInformation: { type: "file-path", resolvedFilePath, userFeatureId: "./feature" }, features: [{ version: "1" }] }] });
+      const { cli, calls } = dockerCli([() => ordinary], { configuration: {}, mergedConfiguration: {}, featuresConfiguration: featuresFor(join(folder, "local-feature")) });
+      await expect(ensureDevcontainer(cli, target)).resolves.toMatchObject({ containerId: "id-1" });
+      expect(calls).toHaveLength(1);
+      for (const path of [join(folder, "linked-feature"), outside, join(target.workspaceFolder, "elsewhere")]) {
+        const refused = dockerCli([], { configuration: {}, mergedConfiguration: {}, featuresConfiguration: featuresFor(path) });
+        await expect(ensureDevcontainer(refused.cli, target), path).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("local feature") as unknown });
+        expect(refused.calls).toEqual([]);
+      }
     });
 
     it("removes and refuses a container a feature or the image's metadata made privileged", async () => {

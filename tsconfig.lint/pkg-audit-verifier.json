@@ -1,0 +1,6 @@
+{
+  "extends": "./base.json",
+  "include": [
+    "../packages/audit-verifier/**/*.ts"
+  ]
+}

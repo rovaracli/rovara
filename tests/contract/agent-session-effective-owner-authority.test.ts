@@ -120,6 +120,25 @@ describe("a task's owner as it is read for its list, its index rows and its why 
     expect(entries[0]).toMatchObject({ text: "Retry failed payments", author: PRIYA.name });
     expect(entries.slice(1).every((entry) => entry.author === SAM.name)).toBe(true);
   });
+
+  // C60 (v0412 final rehearsal): the plan's Why section credited the request to "alice@example.com" when the sign-in provider had no name for the requester and used their address. The plan is read by
+  // others, so it names a person as every other text Rovara writes for others does (C55): the display name without an address, else their linked GitHub login, else "the task owner".
+  it("never credits the request to an email address: the display name, else the linked GitHub login, else the task owner (C60)", async () => {
+    const fixture = pageTask();
+    const record = taken(fixture);
+    const withRequest = { ...record, developerName: "priya@example.com", requestText: "Retry failed payments", threadNotesFedThrough: "2026-10-22T10:30:00.000Z",
+      currentOwner: { ...record.currentOwner!, name: "sam@example.com" } };
+    fixture.db.set({ pk: `DEVTASK#${fixture.taskId}`, sk: "NOTE#1695500000.000200", entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, taskId: fixture.taskId, slackUserId: SAM.slackUserId, isOwner: true,
+      teamId: "T0PAGE001", channelId: "C0PAGE001", threadTs: "1695500000.000100", messageTs: "1695500000.000200", eventId: "Ev1", text: "Please use the new endpoint", truncated: false, receivedAt: "2026-10-22T10:20:00.000Z", workflowRevision: 1 });
+    const none = await planWhyEntries(fixture.deps, withRequest, []);
+    expect(none.map((entry) => entry.author)).toEqual(["the task owner", "the task owner"]);
+    const linked = await planWhyEntries(fixture.deps, withRequest, [], async (id) => ({ [PRIYA.developerId]: "priya-gh", [SAM.developerId]: "sam-gh" })[id]);
+    expect(linked.map((entry) => entry.author)).toEqual(["priya-gh", "sam-gh"]);
+    // A display name that has an address beside a name keeps the name.
+    const named = await planWhyEntries(fixture.deps, { ...withRequest, developerName: "Priya Rao <priya@example.com>" }, []);
+    expect(named[0]!.author).toBe("Priya Rao");
+    expect(JSON.stringify([none, linked, named])).not.toContain("@");
+  });
 });
 
 describe("the owner functions applied to a task's decisions", () => {

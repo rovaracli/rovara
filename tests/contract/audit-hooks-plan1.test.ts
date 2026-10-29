@@ -23,7 +23,8 @@ import { tryAuditEvent } from "../../packages/broker/src/audit/outbox.js";
 import { changeBudgets, writeBudgets, readBudgets, type OrgBudgetSettings } from "../../packages/broker/src/org/budget.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 import { capturingAuditDeps, hangingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -289,7 +290,7 @@ describe("a merge the webhook finds records pull_request.merged", () => {
   /** A workflow task whose draft pull request #42 is open and waiting for its merge. */
   async function waitingForMerge(capture: AuditCapture) {
     const gh = gateway();
-    const h = await createDeveloperTaskBroker({ audit: capture, brokerExtra: { githubPullRequests: gh } });
+    const h = await createSingleAnswerPlanBroker({ audit: capture, brokerExtra: { githubPullRequests: gh } });
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };
@@ -488,7 +489,7 @@ describe("a save that records landed fix pushes and merges together", () => {
       })),
       getCommitParents: vi.fn(async () => [H1]),
     };
-    const h = await createDeveloperTaskBroker({ audit: capture, register: false, brokerExtra: { githubPullRequests: gateway } });
+    const h = await createSingleAnswerPlanBroker({ audit: capture, register: false, brokerExtra: { githubPullRequests: gateway } });
     await registerSlackProject(h.handler, { extraRepositories: repositories.slice(1).map((name) => ({ name, url: `https://github.com/example/${name}.git`, path: `repo/${name}`, defaultBranch: "main", credentialRef: "github-app" })) });
     const first = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: H1, treeSha: T1 })));
     const fix = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: H2, treeSha: T2 })));
@@ -752,7 +753,7 @@ describe("the budget routes record the change", () => {
   it("PUT /v1/dev/org/budget by an admin records budget.changed from 500 to 800 with the admin as actor", async () => {
     const capture = capturingAuditDeps();
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ audit: capture, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    const h = await createSingleAnswerPlanBroker({ audit: capture, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: "admin" });
     const response = await h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), orgMonthlyUsd: 800 });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -768,7 +769,7 @@ describe("the budget routes record the change", () => {
   it("refuses a member before any event is made", async () => {
     const capture = capturingAuditDeps();
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ audit: capture, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    const h = await createSingleAnswerPlanBroker({ audit: capture, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     expect((await h.dev(OMAR, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), orgMonthlyUsd: 10 })).status).toBe(403);
     expect(capture.recorded()).toEqual([]);
   });

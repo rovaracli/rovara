@@ -1,4 +1,5 @@
 import { createAdminDirectory } from "./admin-directory.js";
+import { CodeIntentBodySchema } from "@agentx/contracts";
 import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
@@ -6,7 +7,9 @@ import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedRespo
 import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
+import { understandSession } from "../../web/support/understand-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
+import { SERVER_PAGE_ICON } from "@agentx/design-tokens";
 import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
@@ -24,6 +27,7 @@ import { BROWSER_RETURN_TO } from "../../../packages/broker/src/developer/server
 import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
+import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { mockCellOrigin, mockCellPort } from "./port.js";
 const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls");
 mkdirSync(directory, { recursive: true });
@@ -51,14 +55,14 @@ const deps: DeveloperRouteDependencies = {
  return {};
  } },
  developer: { issuer: origin + "/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "mock-signin", verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
- orgs: { renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: current.name === "admin" ? adminDirectory.roleOf(id) : current.me.developer.orgRole } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
+ orgs: { bindSlackTeam: unavailable, renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: current.name === "admin" ? adminDirectory.roleOf(id) : current.me.developer.orgRole } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
 };
 const handler = createAppHandler({ appDirectory: resolve("packages/web/dist/app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);resetHowWeWork();adminMemberName = "Maya";adminDirectory = createAdminDirectory();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
@@ -77,17 +81,20 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
  const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
  }
- if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title></head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
- if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title></head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
+ if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title>'+SERVER_PAGE_ICON+'</head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
+ if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title>'+SERVER_PAGE_ICON+'</head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
  if (url.pathname === "/v1/auth/browser/authorize") {
  if (refusedSignIn) { response.writeHead(303, { location: "/app/signed-out?reason=removed" });response.end();return; }
  const path = url.searchParams.get("return_to") ?? "/app";const target = BROWSER_RETURN_TO.test(path) ? path : "/app";
- response.writeHead(200, { ...CONFIRM_PAGE_HEADERS });response.end(`<!doctype html><html lang="en"><head><title>Mock sign in</title></head><body><main><h1>Sign in to the mock cell</h1><form method="post" action="/v1/auth/browser/callback"><input type="hidden" name="return_to" value="${target.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"><button>Sign in</button></form></main></body></html>`);return;
+ response.writeHead(200, { ...CONFIRM_PAGE_HEADERS });response.end(`<!doctype html><html lang="en"><head><title>Mock sign in</title>${SERVER_PAGE_ICON}</head><body><main><h1>Sign in to the mock cell</h1><form method="post" action="/v1/auth/browser/callback"><input type="hidden" name="return_to" value="${target.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"><button>Sign in</button></form></main></body></html>`);return;
  }
  if (url.pathname === "/v1/auth/browser/callback" && method === "POST") {
  let body = "";for await (const chunk of request) body += String(chunk);const path = new URLSearchParams(body).get("return_to") ?? "/app";revoked = false;expired = false;
  response.writeHead(303, { location: path === "/app/welcome?joined=1" ? "/__mock/join-done" : BROWSER_RETURN_TO.test(path) ? path : "/app", "set-cookie": `__Host-agentx_review_session=${FIXTURE_SESSION}; Path=/; Secure; HttpOnly; SameSite=Strict` });response.end();return;
  }
+ // Stands in for GitHub's install page. Playwright's WebKit refuses to fulfil a stubbed request with a 3xx status, so the test serves this
+ // 200 page (through route.fetch, from this cell) and the page itself moves on to the cell's 303 below.
+ if (url.pathname === "/__mock/github-landing") { response.writeHead(200,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});response.end('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GitHub install</title><meta http-equiv="refresh" content="0;url='+origin+'/__mock/github-install"></head><body></body></html>');return; }
  if (url.pathname === "/__mock/github-install") { onboardingConnected=true;response.writeHead(303,{location:"/app/onboard?github=connected"});response.end();return; }
  if (url.pathname.startsWith("/v1/app/approve/")) {
  try { requireDecideNavigation({ method, path: url.pathname, headers }); } catch { response.writeHead(403, CONFIRM_PAGE_HEADERS);response.end("Open this approval from its link.");return; }
@@ -147,6 +154,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, AppProjectsResponseSchema.parse({ projects: ["payments", "checkout"].map(name => ({ name, status: "active", latestRevision: 1, repositories: [], myRole: "contributor", setup: { status: "ready" } })) }));return; }
  }
  if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
+ if (current.project !== undefined && current.project.project.name === "payments" && await howWeWorkMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
+ const code = /^\/v1\/web\/projects\/([^/]+)\/code$/.exec(url.pathname);
+ if (current.project !== undefined && current.session !== undefined && code !== null && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
+  const input = CodeIntentBodySchema.parse(JSON.parse(body));
+  if (code[1] !== current.project.project.name) { json(404, { error: { code: "PROJECT_NOT_FOUND", message: "Not found." } });return; }
+  evidence.body = input;json(202, { task: taskFixture({ sessionId: current.session.sessionId }), sessionId: current.session.sessionId, sessionUrl: origin + "/s/" + current.session.sessionId });return;
+ }
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
   let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
@@ -175,6 +190,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
  if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }
+ // Understand's questions (playbook S3): answers are taken against the revision the page read; a workflow that moved on is INTENT_NOT_WAITING, as the broker answers.
+ if (url.pathname === path + "/answers" && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 12000) throw new Error("Mock body limit."); }
+  const input = JSON.parse(body) as { revision?: number; round?: number };evidence.body = input;
+  if (input.revision !== session.revision || input.round !== 1) { json(409, { error: { code: "INTENT_NOT_WAITING", message: "This task isn't waiting for answers." } });return; }
+  current.session = understandSession({ waiting: false, revision: session.revision + 1 });json(200, { session: current.session });return;
+ }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
  if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
  if ((url.pathname === path + "/messages" && method === "POST") || (url.pathname === path + "/shares" && method === "PUT")) {

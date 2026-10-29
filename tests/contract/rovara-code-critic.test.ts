@@ -14,18 +14,21 @@ import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packag
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
-import { criticCapabilityTier, criticModelFor, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
+import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
+import { agentSessionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 beforeAll(async () => {
   await loadSlackBroker();
@@ -442,7 +445,7 @@ const critiqueAnswer = (verdict: "ok" | "revise", points: Array<{ id: string; se
 
 async function world(options: { proxy?: boolean; models?: { default: ModelIdentifier; approved: ModelIdentifier[] } } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
-  const h = await createDeveloperTaskBroker({
+  const h = await createSingleAnswerPlanBroker({
     register: options.models === undefined,
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
@@ -512,6 +515,8 @@ describe("a version 2 plan goes to the plan check", () => {
     const [check] = t.byMode(workspaceId, "PLAN_CRITIQUE");
     expect(check).toMatchObject({ kind: "task", programStepId: "plan_critic" });
     expect(t.invocationOf(check!.id)?.payload.workflowMode).toBe("PLAN_CRITIQUE");
+    // A5: the worker reads the plan check's rule files from the task's base commit, so the broker sends it.
+    expect((t.invocationOf(check!.id)?.payload as { workflowBase?: unknown }).workflowBase).toEqual(PREPARED.result.preparedBase);
     // The row that made it due went with the start.
     expect(t.dispatchRows(taskId)).toEqual([]);
   });
@@ -556,7 +561,7 @@ describe("a version 2 plan goes to the plan check", () => {
 
   it("is not made for a version 1 task, whose plan goes to the person as it always did", async () => {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     const reply = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
@@ -652,7 +657,7 @@ describe("the plan check's result", () => {
     expect(record.workflow.decisions).toEqual([]);
     expect(record.budgetPause).toBeUndefined();
     const text = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!.text;
-    expect(text).toContain("This plan was not checked by a second model.");
+    expect(text).toContain("Plan check unavailable: this plan was not checked by a second model.");
   };
 
   it("an answer with no readable block passes the plan to the person, unchecked, with no critique", async () => {
@@ -1179,7 +1184,7 @@ describe("what people read about the plan check", () => {
     const text = workflowMessage({ taskId: TASK_ID, workflow: stopped, project: "payments" })!.text;
     expect(text).toContain("The plan check stopped at the planning limit.");
     const unchecked = closePlanCritique(running, { expectedRevision: running.revision, status: "done", now: LATER });
-    expect(workflowMessage({ taskId: TASK_ID, workflow: unchecked, project: "payments" })!.text).toContain("This plan was not checked by a second model.");
+    expect(workflowMessage({ taskId: TASK_ID, workflow: unchecked, project: "payments" })!.text).toContain("Plan check unavailable: this plan was not checked by a second model.");
   });
 
   it("a version 1 plan-ready message is unchanged: no critique lines", () => {
@@ -1198,3 +1203,324 @@ describe("what people read about the plan check", () => {
 });
 
 void MAYA;
+
+// ---- staging 0.4.10, bug A: the account can't use the model the check was given
+
+describe("criticModelFor: models the account could not use (staging 0.4.10)", () => {
+  const FABLE = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-fable-5-1" };
+  const FABLE_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-fable-5" };
+  const OPUS_5_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5-5" };
+  const SONNET_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-5" };
+  const PLANNER = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+  const sources = [FABLE, FABLE_5, OPUS_5_5, SONNET_5];
+
+  it("skips a model that already failed and takes the next-ranked one, one attempt each", () => {
+    expect(chosenModel(choose({ planModel: PLANNER, sources }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
+    // After a model fails, the next try is another capability tier (staging 0.4.11): a second model of the tier that just failed is likely to fail the same way.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    // Only when every other tier has failed does a tier that failed once get another model.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+  });
+
+  it("staging 0.4.11: after the account refused fable-5-1, fable-5, opus-5-5 and opus-5, a model the account can serve is the next choice", () => {
+    const OPUS_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5" };
+    const SONNET_4_6 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+    const HAIKU_4_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" };
+    const catalog = [FABLE, FABLE_5, OPUS_5_5, OPUS_5, SONNET_4_6, HAIKU_4_5];
+    expect(chosenModel(choose({ planModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-5" }, sources: catalog, unusable: [FABLE, FABLE_5, OPUS_5_5, OPUS_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    // And the walk from the start reaches it in three tries, not five.
+    expect(chosenModel(choose({ planModel: PLANNER, sources: catalog.filter((model) => model !== SONNET_4_6), unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect(chosenModel(choose({ planModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-5" }, sources: catalog, unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+  });
+
+  it("the last try is the model that wrote the plan, which this account just proved it can serve", () => {
+    const last = choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5], lastAttempt: true });
+    expect(chosenModel(last)).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    expect(last).toMatchObject({ sameModelAsPlanner: true });
+    // Not when the company forbids it: policy still holds on the last try.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5], lastAttempt: true, guardrails: { ...GUARDRAILS, forbiddenModels: [PLANNER] } }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    // Not when it already failed as a check, and not on an earlier try.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, PLANNER], lastAttempt: true }))).not.toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+  });
+
+  it("counts a failed model by its canonical name, so the same model reached another way is not tried again", () => {
+    const viaAnthropic = { provider: "anthropic", modelId: "claude-fable-5-1" };
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: [FABLE, FABLE_5], unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+  });
+
+  it("says the check is unavailable when every model the project may use has failed, and does not refuse", () => {
+    expect(choose({ planModel: PLANNER, sources, unusable: sources })).toEqual({ unavailable: true });
+  });
+
+  it("is still a refusal, not an unavailable check, when the policy leaves no model (nothing failed)", () => {
+    expect(choose({ planModel: PLANNER, sources: [FABLE], guardrails: { ...GUARDRAILS, forbiddenModels: [FABLE] } })).toHaveProperty("refuse");
+  });
+
+  it("takes the company's fallback when its chosen model failed, and says unavailable when that failed too", () => {
+    const step = stepOf({ model: FABLE, fallbackModel: OPUS_5_5 });
+    expect(chosenModel(choose({ step, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(choose({ step, sources, unusable: [FABLE, OPUS_5_5] })).toEqual({ unavailable: true });
+    expect(choose({ step: stepOf({ model: FABLE }), sources, unusable: [FABLE] })).toEqual({ unavailable: true });
+  });
+});
+
+describe("criticModelFor across providers (staging 0.4.10): nothing here assumes Bedrock", () => {
+  const ANTHROPIC_OPUS = { provider: "anthropic", modelId: "claude-opus-5-5" };
+  const OPENAI_GPT = { provider: "openai", modelId: "gpt-5.5" };
+  const OPENROUTER_SONNET = { provider: "openrouter", modelId: "anthropic/claude-sonnet-5" };
+  const OPENROUTER_FABLE = { provider: "openrouter", modelId: "anthropic/claude-fable-5.1" };
+  const mix = [OPENROUTER_SONNET, OPENAI_GPT, ANTHROPIC_OPUS, OPENROUTER_FABLE];
+  const PLANNER = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+
+  it("ranks across the providers an org connected, and takes the next one when a provider refuses a model", () => {
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix }))).toBe("openrouter/anthropic/claude-fable-5.1");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE] }))).toBe("anthropic/claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE, ANTHROPIC_OPUS] }))).toBe("openai/gpt-5.5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [OPENROUTER_FABLE, ANTHROPIC_OPUS, OPENAI_GPT] }))).toBe("openrouter/anthropic/claude-sonnet-5");
+    expect(choose({ planModel: PLANNER, sources: mix, unusable: mix })).toEqual({ unavailable: true });
+  });
+
+  it("with only OpenAI and OpenRouter connected, no Anthropic-direct or Bedrock model is ever offered", () => {
+    const offered = [OPENAI_GPT, OPENROUTER_SONNET];
+    expect(chosenModel(choose({ planModel: PLANNER, sources: offered }))).toBe("openai/gpt-5.5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: offered, unusable: [OPENAI_GPT] }))).toBe("openrouter/anthropic/claude-sonnet-5");
+  });
+
+  it("counts a model refused on one provider as refused on another route to the same model", () => {
+    const direct = { provider: "anthropic", modelId: "claude-fable-5-1" };
+    expect(chosenModel(choose({ planModel: PLANNER, sources: mix, unusable: [direct] }))).toBe("anthropic/claude-opus-5-5");
+  });
+});
+
+// C84: the plan check reads the base commit's rule files through the verified copy of the base's objects. When that fails, the worker's one fixed reason stops the check visibly
+// (unlike the other ways a check can end, which let the plan go on unchecked): the owner sees it and chooses Retry plan check. It is not a model failure, so the model-retry
+// path does not take it, and nothing starts the check again by itself.
+describe("a plan check whose base rule files could not be verified (C84)", () => {
+  const UNVERIFIED_ERROR = `CONFIG_INVALID: ${WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE}`;
+
+  it("is not read as a model the account can't use", () => {
+    expect(criticModelUnusable(UNVERIFIED_ERROR)).toBe(false);
+    expect(criticModelUnusable(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE)).toBe(false);
+  });
+
+  it("blocks the plan check with the fixed reason, shown to the owner with Retry plan check, and does not pass the plan on unchecked", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
+    expect(record.workflow.critique).toBeUndefined();
+    const message = workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!;
+    expect(message.text).toContain("The plan check stopped before it finished.");
+    expect(message.text).toContain("couldn't verify the base rule files");
+    expect(JSON.stringify(message)).toContain("agentx_workflow_retry_plan_check");
+  });
+
+  it("starts no second check, by the model-retry path or by a sweep: one check ran, and the plan waits for the owner", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.dispatchRows(taskId)).toEqual([]);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
+  });
+
+  it("shows on the task view as a blocked plan step with the fixed reason, and the session needs a person", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: UNVERIFIED_ERROR });
+    const task = (await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { workflow: { stage: string; state: string; blockReason?: string } };
+    // The task view shows the plan check as part of the plan step.
+    expect(task.workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified });
+    expect(taskPageStep(t.meta(taskId).workflow as never, false)).toBe("Coding plan");
+    const sessionId = String(t.meta(taskId).sessionId);
+    await refreshSessionSummary({ documentClient: t.h.db, tableName: "state", now: Date.now, log: () => undefined }, TEST_ORG, sessionId);
+    expect((t.h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as { summary: { status: string } }).summary).toMatchObject({ status: "needs_person" });
+  });
+
+  it("words the reason for the plan check and Understand as a step that did not run, apart from the review's wording", () => {
+    expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toBe("AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.");
+    expect(WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified).toContain(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
+  });
+});
+
+// Programs earlier work left running could not be stopped before the plan check read anything: like the rule-files stop, it is visible, not a model failure, and not started again by itself.
+describe("a plan check that could not first stop the programs earlier work left running", () => {
+  const LEFTOVER_ERROR = `RUNTIME_UNAVAILABLE: AgentX ${WORKFLOW_LEFTOVER_PROCESSES_MESSAGE}, so it did not read the workspace`;
+
+  it("is not read as a model the account can't use", () => {
+    expect(criticModelUnusable(LEFTOVER_ERROR)).toBe(false);
+  });
+
+  it("blocks the plan check with the fixed reason, does not pass the plan on unchecked, and starts no second check", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "FAILED", { error: LEFTOVER_ERROR });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    await t.h.handler({ source: "agentx.workflow-dispatch-recovery" });
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.leftoverProcesses });
+    expect(record.workflow.critique).toBeUndefined();
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.dispatchRows(taskId)).toEqual([]);
+  });
+});
+
+describe("criticModelUnusable: which failures say the model can't serve this account", () => {
+  it("reads the worker's sentence for a refused key, a missing model or an unclassified failure, and the broker's own refusal", () => {
+    for (const error of [
+      "RUNTIME_UNAVAILABLE: the model call failed: unknown attempt 1; retry the step",
+      "RUNTIME_UNAVAILABLE: the model call failed: key-rejected AccessDeniedException HTTP 403 attempt 1; check the model key and its permissions, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: model-not-found ResourceNotFoundException attempt 1; check the model setting, then retry",
+      "MODEL_NOT_ALLOWED: no AI source serves it",
+      "CONFIG_INVALID: model us.anthropic.claude-fable-5-1 is not available on this install",
+    ]) expect(criticModelUnusable(error), error).toBe(true);
+  });
+
+  it("reads every provider's refusal alike: Anthropic or OpenAI 401/403/404, OpenRouter's 402 and its refused request for a model with no endpoint", () => {
+    for (const error of [
+      "RUNTIME_UNAVAILABLE: the model call failed: key-rejected authentication_error HTTP 401 attempt 1; check the model key and its permissions, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: key-rejected HTTP 403 attempt 1; check the model key and its permissions, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: model-not-found not_found_error HTTP 404 attempt 1; check the model setting, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: model-not-found model_not_found HTTP 404 attempt 1; check the model setting, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited HTTP 402 attempt 1; add credits to the model account, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: request-rejected HTTP 400 attempt 1; check the model settings, then retry",
+    ]) expect(criticModelUnusable(error), error).toBe(true);
+    expect(criticModelUnusable("RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited HTTP 429 attempt 1; wait, then retry")).toBe(false);
+  });
+
+  it("does not read a rate limit, an outage, a budget stop, a stop or no error at all as a model the account can't use", () => {
+    for (const error of [
+      "RUNTIME_UNAVAILABLE: the model call failed: limit-or-rate-limited ThrottlingException attempt 2; wait, then retry",
+      "RUNTIME_UNAVAILABLE: the model call failed: provider-outage InternalServerException attempt 4; retry the step",
+      BUDGET_EXHAUSTED_FAILURE_MESSAGE, "the plan check produced no answer", undefined,
+    ]) expect(criticModelUnusable(error), String(error)).toBe(false);
+  });
+});
+
+describe("a plan check whose model the account can't use (staging 0.4.10, bug A)", () => {
+  const DENIED = "RUNTIME_UNAVAILABLE: the model call failed: unknown attempt 1; retry the step";
+  const failCheck = (t: Awaited<ReturnType<typeof world>>, workspaceId: string, index: number, error = DENIED) =>
+    t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[index]!.id), "FAILED", { error });
+  const modelOf = (t: Awaited<ReturnType<typeof world>>, workspaceId: string, index: number) => (t.byMode(workspaceId, "PLAN_CRITIQUE")[index]!.model as { modelId: string }).modelId;
+  const taskStatus = async (t: Awaited<ReturnType<typeof world>>, taskId: string) => ((await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { status: string; failure?: unknown });
+  const sessionSummary = async (t: Awaited<ReturnType<typeof world>>, taskId: string) => {
+    const sessionId = String(t.meta(taskId).sessionId);
+    await refreshSessionSummary({ documentClient: t.h.db, tableName: "state", now: Date.now, log: () => undefined }, TEST_ORG, sessionId);
+    return (t.h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as { summary: { status: string } }).summary;
+  };
+
+  it("tries the next-ranked model when the first is refused, and the second one's answer is the check", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    expect(modelOf(t, workspaceId, 0)).toBe("us.anthropic.claude-fable-5-1");
+    await failCheck(t, workspaceId, 0);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
+    expect(modelOf(t, workspaceId, 1)).toBe("us.anthropic.claude-opus-5-5");
+    await t.finishCritique(workspaceId, critiqueAnswer("ok", [{ id: "p1", severity: "note", text: "Name the test file." }]));
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done" } });
+    expect(record.workflow.critique!.critiques[0]!.model).toMatchObject({ modelId: "us.anthropic.claude-opus-5-5" });
+  });
+
+  it("staging 0.4.11: an account that refuses the newest fable and opus models still gets a plan check, from the first model it can serve", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const refused = /fable|opus/u;
+    let attempts = 0;
+    while (refused.test(modelOf(t, workspaceId, attempts))) {
+      await failCheck(t, workspaceId, attempts);
+      attempts += 1;
+      expect(attempts, "a model this account can serve was never reached").toBeLessThan(CRITIC_MODEL_ATTEMPTS_MAX);
+    }
+    expect(modelOf(t, workspaceId, attempts)).toMatch(/sonnet|haiku/u);
+    expect(attempts).toBeLessThanOrEqual(3);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok", [{ id: "p1", severity: "note", text: "Name the test file." }]));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done" } });
+    expect(t.meta(taskId).workflow.critique!.critiques).toHaveLength(1);
+  });
+
+  it("when every other model is refused, the last try is the model that wrote the plan", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const planner = t.invocationOf(t.byMode(workspaceId, "PLAN").at(-1)!.id)!.payload.model!.modelId;
+    for (let attempt = 0; attempt < CRITIC_MODEL_ATTEMPTS_MAX - 1; attempt += 1) {
+      // A refusal for every model but the planner's.
+      if (modelOf(t, workspaceId, attempt) === planner) break;
+      await failCheck(t, workspaceId, attempt);
+    }
+    const tries = t.byMode(workspaceId, "PLAN_CRITIQUE").length;
+    expect(modelOf(t, workspaceId, tries - 1)).toBe(planner);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", sameModelAsPlanner: true } });
+  });
+
+  it("each model is tried once and at most CRITIC_MODEL_ATTEMPTS_MAX are: then the plan goes to the person with the visible note, and the check never fails the task", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    for (let attempt = 0; attempt < CRITIC_MODEL_ATTEMPTS_MAX; attempt += 1) {
+      expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(attempt + 1);
+      await failCheck(t, workspaceId, attempt);
+    }
+    const models = t.byMode(workspaceId, "PLAN_CRITIQUE").map((_, index) => modelOf(t, workspaceId, index));
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(CRITIC_MODEL_ATTEMPTS_MAX);
+    expect(new Set(models).size).toBe(CRITIC_MODEL_ATTEMPTS_MAX);
+    const record = t.meta(taskId);
+    expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [], revisions: 0 } });
+    expect(record.workflow.blockReason).toBeUndefined();
+    expect(workflowMessage({ taskId, workflow: record.workflow as never, project: "payments" })!.text).toContain("Plan check unavailable");
+  });
+
+  it("the task and the session agree while the plan waits at review: neither reads failed", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await failCheck(t, workspaceId, 0);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    const task = await taskStatus(t, taskId);
+    expect(task.status).not.toBe("FAILED");
+    expect(task.failure).toBeUndefined();
+    expect(await sessionSummary(t, taskId)).toMatchObject({ status: "needs_person" });
+    // ... also when every model failed and the check was skipped.
+    const other = await world();
+    const second = await other.planned();
+    for (let attempt = 0; attempt < CRITIC_MODEL_ATTEMPTS_MAX; attempt += 1) await failCheck(other, second.workspaceId, attempt);
+    const skipped = await taskStatus(other, second.taskId);
+    expect(skipped.status).not.toBe("FAILED");
+    expect(skipped.failure).toBeUndefined();
+    expect(await sessionSummary(other, second.taskId)).toMatchObject({ status: "needs_person" });
+  });
+
+  it("a failure that is not about the model (an outage, a stop) passes the plan on at once, with no second try", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await failCheck(t, workspaceId, 0, "RUNTIME_UNAVAILABLE: the model call failed: provider-outage InternalServerException attempt 4; retry the step");
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", critiques: [] } });
+  });
+
+  it("a person's stop still reads stopped: only a failed check is left out of the task's status", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await t.h.finish(workspaceId, String(t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!.id), "CANCELLED", { error: "stopped" });
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
+    expect((await taskStatus(t, taskId)).status).toBe("CANCELLED");
+  });
+
+  it("a model the account refused for one plan check is not tried again by the revision's check (the revised plan is checked on the next model)", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    await failCheck(t, workspaceId, 0);
+    await t.finishCritique(workspaceId, critiqueAnswer("revise", [{ id: "p1", severity: "blocking", text: "No limit on retries." }]));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", state: "RUNNING" });
+    await t.finishPlanning(workspaceId, REVISED_PLAN);
+    const checks = t.byMode(workspaceId, "PLAN_CRITIQUE");
+    expect(checks).toHaveLength(3);
+    expect(modelOf(t, workspaceId, 2)).not.toBe("us.anthropic.claude-fable-5-1");
+  });
+});

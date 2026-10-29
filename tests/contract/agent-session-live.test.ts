@@ -3,7 +3,7 @@
 // and a fixed number of reads however many tiles there are. `SessionTileSchema` is the list's tile; the Live wall's is `LiveTileSchema`, read with `LiveResponseReaderSchema`.
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, orgMemberKey, projectMemberKey,
@@ -20,6 +20,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { projectorWorld, workflow } from "../support/agent-session-projector-world.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
@@ -644,13 +645,14 @@ describe("the session record decides, and the tile only narrows what is read", (
     expect(logs.filter((entry) => entry.event === "agent_session.live_session_unreadable")).toHaveLength(2);
   });
 
+  // Release 0.4.18: one more batch than before, for the page's owners' chosen names (still fixed, whatever the number of sessions).
   it("reads nothing about sessions the filter cannot keep: Needs me, Failed and a project read one small batch among 300 sessions", async () => {
     const w = world();
     for (let index = 0; index < 299; index += 1) w.seed({});
     const mine = w.seed({ status: "needs_person", needs: [ARJUN], pending: 0, lastRunFailed: true });
     expect(await w.ids(ARJUN, { filter: "needs_me" })).toEqual([mine.sessionId]);
-    expect(await batches(w, () => w.live(ARJUN, { filter: "needs_me" }))).toBeLessThanOrEqual(3);
-    expect(await batches(w, () => w.live(ARJUN, { filter: "failed" }))).toBeLessThanOrEqual(3);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "needs_me" }))).toBeLessThanOrEqual(4);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "failed" }))).toBeLessThanOrEqual(4);
     expect(await batches(w, () => w.live(ARJUN, { filter: "all", project: "api" }))).toBeLessThanOrEqual(1);
     expect(await batches(w, () => w.live(ARJUN, { filter: "all", limit: "10" }))).toBeLessThanOrEqual(8);
   });
@@ -660,7 +662,7 @@ describe("the session record decides, and the tile only narrows what is read", (
     const open = w.seed({});
     for (let index = 0; index < 150; index += 1) w.seed({ status: "succeeded", endedAgoHours: 1 });
     expect(await w.ids(PRIYA)).toEqual([open.sessionId]);
-    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(3);
+    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(4);
   });
 
   it("closes a session made late for a task that had already ended: once the sweep has looked, it is off the wall (Task 5 hand-off)", async () => {
@@ -682,7 +684,7 @@ describe("the session record decides, and the tile only narrows what is read", (
       w.db.set({ ...liveSessionKey(ORG_A, id), entityType: "LIVE_SESSION", orgId: ORG_B, sessionId: id, kind: "task", project: "web", createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z" });
     }
     expect(await w.ids(PRIYA)).toEqual([good.sessionId]);
-    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(3);
+    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(4);
   });
 
   it("ignores a share row and a presence row that name another org, even in this org's partitions", async () => {
@@ -805,4 +807,19 @@ it("lets navigation count all 300 visible open sessions through the same visibil
  w.db.send = async command => { if (command instanceof QueryCommand && command.input.ExpressionAttributeValues?.[":pk"] === liveSessionKey(ORG_A, "ses_00000000000000000000").pk) indexReads++;return original(command); };
  expect(await navigationLive(w.deps(), w.caller(PRIYA))).toHaveLength(300);expect(indexReads).toBe(1);
  expect(await navigationLive(w.deps(), w.caller(BO, ORG_B))).toEqual([]);
+});
+
+it("shows the owner's chosen name on every tile of a session started before the rename, with one BatchGetItem for the page (release 0.4.18)", async () => {
+  const w = world();
+  for (let i = 0; i < 3; i++) w.seed({ owner: PRIYA });
+  const sent: unknown[] = [];
+  const send = (command: never) => { sent.push(command); return w.db.send(command); };
+  const placeholder = await liveSessions(w.deps({ documentClient: { send } }), w.caller(PRIYA), { filter: "mine" });
+  expect(placeholder.tiles.map((tile) => tile.owner.name)).toEqual(["Priya", "Priya", "Priya"]);
+  w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, name: "Priya R", chosenAt: "2026-10-27T09:00:00.000Z" });
+  sent.length = 0;
+  const answer = await liveSessions(w.deps({ documentClient: { send } }), w.caller(PRIYA), { filter: "mine" });
+  expect(answer.tiles.map((tile) => tile.owner)).toEqual([PRIYA, PRIYA, PRIYA].map((developerId) => ({ developerId, name: "Priya R" })));
+  expect(sent.filter((command) => command instanceof BatchGetCommand && JSON.stringify(command.input).includes("DEVELOPER_NAME#"))).toHaveLength(1);
+  expect(sent.filter((command) => command instanceof GetCommand && String((command.input.Key as { pk: string }).pk).startsWith("DEVELOPER_NAME#"))).toEqual([]);
 });

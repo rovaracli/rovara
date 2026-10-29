@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { availableParallelism } from "node:os";
-import { resolve } from "node:path";
+import { availableParallelism, totalmem } from "node:os";
+import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
-import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
+import { containerBashOperations, runContainerCommand, type ContainerCommandOptions, type ContainerExec } from "./devcontainer.js";
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
@@ -49,6 +50,39 @@ export const TASK_SANDBOX_PIDS_LIMIT = "4096";
 export function sandboxCpuLimit(hostCpus: number): string | undefined {
   return Number.isInteger(hostCpus) && hostCpus > 1 ? String(hostCpus - 1) : undefined;
 }
+const MIB = 1024 * 1024;
+/** What the worker and the Docker daemon keep of the host's memory: the larger of 1.5 GiB and 20% of it. */
+const SANDBOX_MEMORY_RESERVE_MIB = 1536;
+const SANDBOX_MEMORY_RESERVE_SHARE = 0.2;
+/** The least a sandbox is given, on a host too small to keep the full reserve. */
+const SANDBOX_MEMORY_FLOOR_MIB = 1024;
+
+/**
+ * The memory limit of a sandbox on a host with `hostMemoryBytes`: the host's memory less a reserve for the worker and the Docker daemon (the larger of
+ * 1.5 GiB and 20%), and never under 1 GiB. A runaway build then meets its own limit instead of the host's, where the kernel could stop the worker.
+ * The value is whole MiB in Docker's own notation, and is used for the swap limit too. Nothing for a size that is not a positive number.
+ */
+export function sandboxMemoryLimit(hostMemoryBytes: number): string | undefined {
+  if (!Number.isFinite(hostMemoryBytes) || hostMemoryBytes <= 0) return undefined;
+  const hostMib = hostMemoryBytes / MIB;
+  const limit = Math.floor(hostMib - Math.max(SANDBOX_MEMORY_RESERVE_MIB, hostMib * SANDBOX_MEMORY_RESERVE_SHARE));
+  return `${String(Math.max(SANDBOX_MEMORY_FLOOR_MIB, limit))}m`;
+}
+
+/**
+ * The worker image's ENV that is the worker's own and not the customer's: the sandbox starts from that image (Bug F). NODE_ENV=production
+ * is for the worker process, and in a customer's commands it makes `npm ci` skip the devDependencies, so `npm test` cannot find vitest.
+ * Every sandbox command (project setup and readiness, AgentX's checks, the agent's shell) runs without it, except a project command
+ * whose own `env` sets it. The image's other ENV (PORT, AGENTX_WORKSPACE_ROOT, AGENTX_WORKER_PROCESS_SCOPE) is left as it is.
+ */
+export const SANDBOX_UNSET_ENVIRONMENT: readonly string[] = ["NODE_ENV"];
+/**
+ * Where the sandbox's commands keep Python packages installed with `pip install --user` (what `pip install --break-system-packages` does for the non-root sandbox user), under the
+ * workspace root and outside every repository. Without it they went to the container's own HOME, which is gone with the container: setup ran in one throw-away container and the
+ * agent, the checks and the next send-back each got a new one from the image, with no `pytest` or `ruff` in it (Bug K). Node needs nothing like it: `npm ci` writes `node_modules`
+ * into the repository. The folder holds a `.gitignore` of `*`, so a repository at the workspace root never sees it as a change.
+ */
+export const SANDBOX_PYTHON_USER_BASE_DIRECTORY = ".agentx-python";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -128,6 +162,16 @@ export interface TaskSandboxRunInput {
   maskedPaths: readonly string[];
   /** The host's CPU count, which sets the sandbox's CPU limit (sandboxCpuLimit). Default: this machine's, which is the host's. */
   hostCpus?: number;
+  /**
+   * The host's memory in bytes, which sets the sandbox's memory limit (sandboxMemoryLimit). Default: this machine's total (os.totalmem), which is the
+   * host's even in the worker's container: it reads the kernel's figure, not the container's limit. A worker started with a limit of its own does not shrink it.
+   */
+  hostMemoryBytes?: number;
+}
+
+function memoryArgs(hostMemoryBytes: number): string[] {
+  const limit = sandboxMemoryLimit(hostMemoryBytes);
+  return limit === undefined ? [] : ["--memory", limit, "--memory-swap", limit];
 }
 
 /** The `docker run` arguments of a sandbox (R56). The workspace is the only mount, at its own path. */
@@ -141,6 +185,8 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
     ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),
+    // Memory too, with swap at the same size so swap does not carry a runaway past the limit.
+    ...memoryArgs(input.hostMemoryBytes ?? totalmem()),
     "--pids-limit", TASK_SANDBOX_PIDS_LIMIT,
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
@@ -194,9 +240,15 @@ export class TaskSandbox {
     return this.starting;
   }
 
+  /** What every customer command in the sandbox starts without (NODE_ENV, Bug F) and with (the Python user site, Bug K), unless the command sets it itself. */
+  private commandOptions(): ContainerCommandOptions {
+    const base = join(resolve(this.options.rootPath), SANDBOX_PYTHON_USER_BASE_DIRECTORY);
+    return { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT, defaultEnvironment: { PYTHONUSERBASE: base }, pathPrefix: [join(base, "bin")] };
+  }
+
   /** The agent's shell in the sandbox. */
   bashOperations(): BashOperations {
-    return containerBashOperations(this.exec);
+    return containerBashOperations(this.exec, this.commandOptions());
   }
 
   /** Where the agent's file tools run for this sandbox: as the sandbox's user, with the workspace as the only reachable root. */
@@ -209,7 +261,7 @@ export class TaskSandbox {
 
   /** A project command (setup, readiness) in the sandbox. */
   runCommand(command: ProjectCommand, signal?: AbortSignal): Promise<CommandResult> {
-    return runContainerCommand(this.exec, this.options.rootPath, command, signal);
+    return runContainerCommand(this.exec, this.options.rootPath, command, signal, this.commandOptions());
   }
 
   /** Removes the container. Safe to call again, and when nothing started. */
@@ -250,8 +302,28 @@ export class TaskSandbox {
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-5).join(" ").slice(0, 800);
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not start the task sandbox${result.timedOut === true ? " (timed out)" : ""}: ${detail || `exit ${String(result.exitCode)}`}`);
     }
+    await this.prepareUserBase(root);
     // A write the file tools' helper was killed in leaves a `.agentx-file-ops-*` file; an earlier task's must not reach this one's snapshots.
     await fileOpsExec(this.fileOpsTarget(), { root, op: "sweep", path: root }).catch(() => undefined);
+  }
+
+  /**
+   * The Python user site's folder, made before the first command: a real directory with a `.gitignore` of `*`. A link or file a task left at its name is removed (the link
+   * itself, never its target), as the worker's state directories are (workspace-state.ts). A folder that cannot be made is logged, not fatal: pip makes it, without the `.gitignore`.
+   */
+  private async prepareUserBase(root: string): Promise<void> {
+    const path = join(root, SANDBOX_PYTHON_USER_BASE_DIRECTORY);
+    try {
+      const found = await lstat(path).catch((error: unknown) => {
+        if ((error as { code?: unknown }).code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (found !== undefined && (found.isSymbolicLink() || !found.isDirectory())) await rm(path, { force: true });
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, ".gitignore"), "*\n", { flag: "wx" }).catch(() => undefined);
+    } catch (error) {
+      (this.options.log ?? logEvent)({ event: "task-sandbox.python-user-base.failed", taskId: this.options.taskId, reason: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) });
+    }
   }
 
   /**

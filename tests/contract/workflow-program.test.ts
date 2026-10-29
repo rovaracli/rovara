@@ -2,7 +2,8 @@
 // path is untouched.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_TEAM } from "../support/slack-broker.js";
@@ -391,7 +392,7 @@ describe("the broker following a program", () => {
 
   /** A task with a program whose plan was approved: its first coding step is dispatched. */
   async function startedWith(program: WorkflowProgram) {
-    const harness = await createDeveloperTaskBroker();
+    const harness = await createSingleAnswerPlanBroker();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((started.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> };

@@ -7,7 +7,7 @@
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
 import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, agentXError, sessionLink,
+  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
   type SessionLevel,
 } from "@agentx/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
@@ -26,7 +26,7 @@ const UNEXPECTED = `AgentX answered with something unexpected; try again, or upg
  * A server's web address, only when it is plainly an https address on the control plane's own origin (the environment's URL) with no user name or
  * password in it. This is where a person is told to sign in or decide, so a link to another host, port or `host@evil` address is never printed.
  */
-function safeUrl(value: unknown, origin: string): string | undefined {
+export function safeUrl(value: unknown, origin: string): string | undefined {
   if (typeof value !== "string" || value.length > URL_MAX || !SAFE_URL.test(value)) return undefined;
   try {
     const url = new URL(value);
@@ -59,7 +59,7 @@ const nameOf = (value: unknown): string => str((value as Body | undefined)?.name
  * printed; an answer without one is an unexpected answer, not a confirmation.
  */
 function confirmationOf(answer: { env: string; url: string; body: Body }): AppResult {
-  const parsed = NeedsConfirmationSchema.safeParse(answer.body);
+  const parsed = NeedsConfirmationReaderSchema.safeParse(answer.body);
   if (!parsed.success || safeUrl(parsed.data.confirmUrl, answer.url) === undefined) {
     throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   }
@@ -195,6 +195,168 @@ export async function sessionShare(deps: DeveloperSessionDeps, env: string | und
   if (answer.status === 202 || answer.body.status === "NEEDS_CONFIRMATION") return confirmationOf(answer);
   if (answer.body.share === undefined) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   return result(answer, answer.body, `Shared with ${who} (${LEVEL_WORDS[level]}).\n${linkOf(answer.url, id)}\n`);
+}
+
+// ---- linking a session to a Linear issue
+
+const LINEAR_KEY = /^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u;
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** A Linear issue as a person types it: its key (ENG-142) or its link. The control plane checks it again; this only keeps an obvious mistake from being sent. */
+const isLinearIssue = (text: string): boolean => LINEAR_KEY.test(text) || (text.length <= URL_MAX && /^https:\/\/linear\.app\/[^\s]+$/u.test(text));
+
+/** The session a person named: a session ID, or a task ID, whose session is asked for. */
+async function sessionOfRef(deps: DeveloperSessionDeps, env: string | undefined, ref: string): Promise<string> {
+  if (SessionIdSchema.safeParse(ref).success) return ref;
+  if (!TASK_ID.test(ref)) throw agentXError("CONFIG_INVALID", "give a session ID (ses_...) from agentx sessions, or a task ID");
+  const answer = await appRequest(deps, env, `/v1/dev/tasks/${seg(ref)}`);
+  const sessionId = (answer.body.task as Body | undefined)?.sessionId;
+  if (typeof sessionId !== "string" || !SessionIdSchema.safeParse(sessionId).success) throw agentXError("CONFIG_INVALID", "that task has no session, so there is nothing to link; start the work from the app or the CLI to get a session");
+  return sessionId;
+}
+
+/**
+ * `session link <task-or-session> --linear <KEY|URL> [--replace]` links a Rovara Code session to a Linear issue; `--unlink` lets it go. The pull request Rovara opens (or next updates) then says
+ * `Fixes <KEY>`, which Linear's own GitHub integration closes the issue on when it merges. Needs "can edit" on the session; the control plane decides, and its refusal is printed as it wrote it.
+ */
+export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { linear?: string; unlink?: boolean; replace?: boolean }): Promise<AppResult> {
+  const linear = input.linear?.trim();
+  if ((linear === undefined) === (input.unlink !== true)) throw agentXError("CONFIG_INVALID", "give one of --linear <KEY|link> and --unlink");
+  if (linear !== undefined && !isLinearIssue(linear)) throw agentXError("CONFIG_INVALID", "--linear takes an issue key like TEAM-123, or the issue's linear.app link");
+  if (input.replace === true && linear === undefined) throw agentXError("CONFIG_INVALID", "--replace goes with --linear");
+  const id = await sessionOfRef(deps, env, ref);
+  const answer = linear === undefined
+    ? await appRequest(deps, env, sessionPath(id, "/bindings/linear"), { method: "DELETE" })
+    : await appRequest(deps, env, sessionPath(id, "/bindings"), { method: "POST", body: { linear, ...(input.replace === true ? { replace: true } : {}) } });
+  const view = (answer.body.session ?? {}) as Body;
+  const issue = list(view.bindings).find((binding) => binding.kind === "linear_issue");
+  const issueUrl = typeof issue?.url === "string" && /^https:\/\/linear\.app\/[^\s]+$/u.test(issue.url) ? issue.url : undefined;
+  const key = issueUrl === undefined ? undefined : /\/issue\/([A-Za-z0-9-]+)$/u.exec(issueUrl)?.[1];
+  const what = linear === undefined ? "Unlinked the Linear issue from this session." : `Linked this session to Linear issue ${key ?? clean(linear)}.`;
+  // What became of the pull request's description, as the server says it: the promise of a Fixes line only where it will be there, and its note (clean) where the person has to act.
+  const description = (answer.body.pullRequest ?? {}) as Body;
+  const carries = linear !== undefined && (description.description === "updated" || description.description === "next_update");
+  const note = [
+    ...(carries ? [`Its pull request description will say Fixes ${key ?? clean(linear)}, so Linear's GitHub integration closes the issue when it merges.`] : []),
+    ...(typeof description.note === "string" && description.note.trim() !== "" ? [clean(description.note)] : []),
+  ];
+  return result(answer, answer.body, `${[what, ...note, linkOf(answer.url, id, view.link)].join("\n")}\n`);
+}
+
+// ---- Rovara Code's questions (Plan 6 Task 5, with the Task 25 slice)
+
+interface AskedQuestion { id: string; text: string; options: Array<{ id: string; label: string }>; recommended?: string }
+
+/** The round and the questions a task waits on, from its view; undefined when it is not waiting for answers. The questions are a model's words: they are made safe for a terminal where they are printed. */
+function askedQuestions(task: Body): { round: number; questions: AskedQuestion[] } | undefined {
+  const workflow = (task.workflow ?? {}) as Body;
+  const intent = (workflow.intent ?? {}) as Body;
+  const assessment = (intent.assessment ?? {}) as Body;
+  if (workflow.stage !== "UNDERSTAND" || workflow.state !== "WAITING" || assessment.kind !== "questions" || typeof intent.rounds !== "number") return undefined;
+  const questions = list(assessment.questions).flatMap((question): AskedQuestion[] => (typeof question.id === "string" && typeof question.text === "string" ? [{
+    id: question.id, text: question.text,
+    options: list(question.options).flatMap((option) => (typeof option.id === "string" && typeof option.label === "string" ? [{ id: option.id, label: option.label }] : [])),
+    ...(typeof question.recommended === "string" ? { recommended: question.recommended } : {}),
+  }] : []));
+  return questions.length === 0 ? undefined : { round: intent.rounds, questions };
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/**
+ * `session answer <task-or-session> [--q1 <option|text> [--q2 ...]]` answers the questions Rovara Code asked before it plans, on the route the app uses
+ * (`POST /v1/app/sessions/{id}/answers`): the person needs "can use" on the session, and the control plane decides every refusal and prints it as it wrote it. An answer that names an option (its
+ * letter or its words) picks it; anything else is the person's own words ("your call" leaves the question to Rovara). With no answer given the command only shows the questions and how to answer them.
+ * `answers[0]` is the answer to question 1.
+ */
+export async function sessionAnswer(
+  deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { answers: ReadonlyArray<string | undefined> },
+): Promise<AppResult> {
+  const id = await sessionOfRef(deps, env, ref);
+  const read = await appRequest(deps, env, sessionPath(id), { headers: { [TASK_VIEW_HEADER]: TASK_VIEW_VERSION } });
+  const view = (read.body.session ?? {}) as Body;
+  const body = (view.body ?? {}) as Body;
+  if (body.kind !== "task") throw agentXError("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  const asked = askedQuestions((body.task ?? {}) as Body);
+  if (asked === undefined) throw agentXError("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  const { round, questions } = asked;
+  const given = input.answers.flatMap((answer, index) => (answer === undefined ? [] : [{ index, answer }]));
+  const beyond = given.find((entry) => entry.index >= questions.length);
+  if (beyond !== undefined) throw agentXError("CONFIG_INVALID", `This task asks ${plural(questions.length, "question", "questions")}, so there is no --q${beyond.index + 1}.`);
+  if (given.length === 0) {
+    const flags = questions.map((question, index) => `--q${index + 1} <${[...question.options.map((option) => option.id), "your own words"].join("|")}>`).join(" ");
+    const lines = [
+      `Rovara has ${plural(questions.length, "question", "questions")} before it plans ${clean(str(view.title, "this task"))}:`,
+      ...questions.flatMap((question, index) => [
+        `  ${index + 1}. ${clean(question.text)}`,
+        ...question.options.map((option) => `     ${clean(option.id)}) ${clean(option.label)}${question.recommended === option.id ? " (recommended)" : ""}`),
+      ]),
+      `Answer them all: agentx session answer ${id} ${flags}`,
+      `Say "${YOUR_CALL_WORDS}" for any you don't mind.`,
+      linkOf(read.url, id, view.link),
+    ];
+    return result(read, { round, questions, link: linkOf(read.url, id, view.link) }, `${lines.join("\n")}\n`);
+  }
+  const answers = given.map(({ index, answer }) => {
+    const question = questions[index]!;
+    const said = answer.trim().toLowerCase();
+    const option = question.options.find((candidate) => candidate.id.toLowerCase() === said || candidate.label.trim().toLowerCase() === said);
+    return option === undefined ? { questionId: question.id, text: answer } : { questionId: question.id, optionId: option.id };
+  });
+  const sent = await appRequest(deps, env, sessionPath(id, "/answers"), { method: "POST", body: { requestId: randomUUID(), round, answers } });
+  const after = (sent.body.session ?? {}) as Body;
+  return result(sent, sent.body, `${[`Answered. Rovara is planning again with your ${plural(answers.length, "answer", "answers")}.`, linkOf(sent.url, id, after.link ?? view.link)].join("\n")}\n`);
+}
+
+// ---- Merge (Plan 6 Task 19, with the Task 25 slice)
+
+const shortHead = (sha: unknown): string => (typeof sha === "string" && /^[0-9a-f]{40}$/u.test(sha) ? sha.slice(0, 7) : "unknown");
+const ciWords: Record<string, string> = { passing: "passing", failing: "failing", pending: "still running", none: "none to wait for" };
+const branchWords: Record<string, string> = { up_to_date: "up to date", behind: "behind its base", conflicted: "conflicts with its base", unknown: "not read yet" };
+
+/** One pull request's line: what merge tracking last read from GitHub, in words. */
+function mergeLine(item: Body): string {
+  const approval = (item.approval ?? {}) as Body;
+  const review = item.review === "approved" && typeof approval.login === "string" ? `approved by ${clean(approval.login)}`
+    : item.review === "changes_requested" ? "changes requested"
+      : item.review === "requested" ? "review requested" : "not reviewed";
+  const state = item.state === "merged" ? "merged" : item.state === "closed" ? "closed" : item.draft === true ? "draft" : "open";
+  return `  ${str(item.repositoryId)} #${str(item.number)}  ${state}  head ${shortHead(item.headSha)}  checks ${ciWords[str(item.ci)] ?? "unknown"}  ${review}  branch ${branchWords[str(item.branch)] ?? "not read yet"}`;
+}
+
+/**
+ * `session merge <task-or-session> [--yes]` presses Rovara's Merge button for a Rovara Code task. It shows what merge tracking last read (each pull request's head, checks and who approved
+ * it) and whether Merge may be pressed now, asks (unless `--yes`), then presses. The press answers `202` with the link where the person confirms it on the confirmation page, and only that
+ * confirmation merges: the command prints the link and exits 0, and never signs in again. A refusal (`409 MERGE_NOT_READY`) is printed in the words the control plane wrote, and nothing is sent when the
+ * task view already says Merge is not allowed. No AI tool does any of this (Plan 6: a person always presses Merge).
+ */
+export async function sessionMerge(
+  deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { confirm: (question: string) => Promise<boolean> },
+): Promise<AppResult> {
+  const id = await sessionOfRef(deps, env, ref);
+  const read = await appRequest(deps, env, sessionPath(id), { headers: { [TASK_VIEW_HEADER]: TASK_VIEW_VERSION } });
+  const view = (read.body.session ?? {}) as Body;
+  const body = (view.body ?? {}) as Body;
+  if (body.kind !== "task") throw agentXError("CONFIG_INVALID", "Only a task's pull requests are merged from Rovara.");
+  const task = (body.task ?? {}) as Body;
+  const tracked = list(task.mergeTracking);
+  // Read tolerantly: a field a newer control plane adds to `merge` does not stop the press (the control plane decides it).
+  const given = (task.merge ?? {}) as Body;
+  const merge = typeof given.ready === "boolean" ? { ready: given.ready, ...(typeof given.message === "string" && given.message !== "" ? { message: given.message } : {}) } : undefined;
+  const lines = [`Merge ${str(view.title, "(no title)")}`, `  ${linkOf(read.url, id, view.link)}`, ...tracked.map(mergeLine)];
+  if (merge !== undefined && !merge.ready) {
+    // Nothing is sent: the control plane would refuse the press with these same words, from the same tracking.
+    throw agentXError("MERGE_NOT_READY", clean(merge.message ?? "This pull request is not ready to merge."));
+  }
+  const open = tracked.filter((item) => item.state !== "merged");
+  const verdict = merge?.ready === true ? "Ready to merge." : "Rovara has not read this task's pull requests yet; the press will say if it is not ready.";
+  const question = [...lines, verdict, `Press Merge${open.length === 0 ? "" : ` for ${open.map((item) => `${str(item.repositoryId)} #${str(item.number)}`).join(", ")}`}? You confirm it in your browser next.`].join("\n");
+  if (!await input.confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not press Merge; nothing changed");
+  const answer = await appRequest(deps, env, sessionPath(id, "/merge"), { method: "POST", body: { requestId: randomUUID() } });
+  if (answer.status !== 202) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
+  const confirmation = confirmationOf(answer);
+  return result(answer, { ...confirmation.data, ...(merge === undefined ? {} : { merge }), pullRequests: tracked.map((item) => ({ repositoryId: item.repositoryId, number: item.number, headSha: item.headSha, ci: item.ci, review: item.review })) },
+    `${[...lines, verdict, confirmation.text.trimEnd()].join("\n")}\n`);
 }
 
 // ---- Home

@@ -264,8 +264,13 @@ export function requireDecideNavigation(request: DecideRequest): void {
     if (["cors", "same-origin", "no-cors"].includes(request.headers["sec-fetch-mode"] ?? "")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
     return;
   }
-  if (request.headers["sec-fetch-dest"] !== "document" || request.headers["sec-fetch-mode"] !== "navigate"
-    || (request.method === "POST" && request.headers["sec-fetch-user"] !== "?1")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+  if (request.headers["sec-fetch-dest"] !== "document" || request.headers["sec-fetch-mode"] !== "navigate") throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+  if (request.method === "POST") {
+    // Safari never sends Sec-Fetch-User, so a missing header is accepted, but only from a same-origin document navigation; any other value
+    // (including ?0) is refused. The CSRF field, the cell's Origin, the session cookie and its single use are checked after this.
+    const user = request.headers["sec-fetch-user"];
+    if (request.headers["sec-fetch-site"] !== "same-origin" || (user !== undefined && user !== "?1")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+  }
 }
 export interface DecideAuthority {
   orgId: OrgId; developerId: string; approvalId: string;

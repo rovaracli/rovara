@@ -854,6 +854,15 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(w.calls.cancels).toHaveLength(1);
   });
 
+  it("moves a task that runs the project's process layer like a Rovara Code task: the layer is Rovara Code with the project's rules, not an agent-step run", async () => {
+    const w = world();
+    const layer = w.inCloud();
+    w.db.set({ ...w.taskOf(layer.taskId)!, agent: { agentId: "agt_pppppppppppppppppppp", name: "web process", version: 1, builtin: false, process: true, digest: "d".repeat(64) } });
+    const deviceId = await w.mac(PRIYA);
+    await expect(w.move(PRIYA, layer.sessionId, w.toMac(deviceId))).resolves.toMatchObject({ headSha: SHA_PUSHED });
+    expect(w.meta(layer.sessionId)).toMatchObject({ kind: "local" });
+  });
+
   it("refuses an agent-step run, which stays in the cloud, and a session that is already on a Mac", async () => {
     const w = world();
     const agent = w.inCloud({ agent: true });

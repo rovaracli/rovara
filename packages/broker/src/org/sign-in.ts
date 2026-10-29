@@ -7,6 +7,7 @@
 // (Task 22) is a cloud sign-in route for all of this: it accepts invites and creates an org like `cloud`.
 import { agentXError, normalizeEmail, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { OrgStore } from "./store.js";
+import { defaultTeamName } from "../developer/person-name.js";
 
 export interface ResolveOrgOnSignInDependencies {
   orgs: Pick<OrgStore, "orgForDeveloper" | "createOrgWithOwner" | "addMember" | "acceptInvite" | "peekInvite" | "ensureOrg" | "isBanned">;
@@ -156,7 +157,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
   if (cloud) {
     try {
       const orgId = await indexing((email) => orgs.createOrgWithOwner({
-        name: `${input.displayName}'s team`, developerId: input.developerId, ...(email === undefined ? {} : { email }),
+        name: defaultTeamName(input.displayName, input.developerId), developerId: input.developerId, ...(email === undefined ? {} : { email }),
       }));
       return withInviteError({ orgId, role: "owner" }, inviteError);
     } catch (error) {

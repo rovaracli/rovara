@@ -10,14 +10,15 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
+  AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, ROVARA_CODE_AGENT_ID, spendCounterKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed } from "../chains/access.js";
 import { roleOnProject } from "../agents/roster.js";
+import { isRovaraCodeTask } from "../agents/rovara-code-task.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem, withBudgetFields } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -421,7 +422,9 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     else found = await admins(deps, orgId);
   } else if (request.kind === "max_per_run") {
     const task = await readTask(deps, orgId, request.taskId);
-    const agentId = task?.agent?.agentId;
+    // A project's process layer is Rovara Code with the project's rules on top, and its tasks are held to the org's Rovara Code max per run (`runLimits`): the request to raise it
+    // goes where the built-in's does (the org's owners and admins), never to the layer's owner, the project's maintainers.
+    const agentId = task?.agent?.process === true ? ROVARA_CODE_AGENT_ID : task?.agent?.agentId;
     if (task === undefined || agentId === undefined) return admins(deps, orgId);
     const ceiling = (await readGuardrails(deps, orgId)).maxPerRunCeilingUsd;
     found = newLimitFor(request, amountUsd) <= ceiling ? await agentOwners(deps, orgId, agentId) : await admins(deps, orgId);
@@ -1970,7 +1973,7 @@ export async function pausedTaskGate(
   const pause = task.budgetPause;
   const kind = pause === undefined || pause.firstDispatch !== undefined ? undefined : REQUEST_KIND_OF_PAUSE[pause.scope.kind];
   if (pause === undefined || kind === undefined || task.orgId === undefined) return { allowed: true };
-  const withAgent = task.agent !== undefined && !(task.agent.builtin && task.agent.agentId === ROVARA_CODE_AGENT_ID);
+  const withAgent = !isRovaraCodeTask(task);
   if (kind !== "max_per_run" && !withAgent) return { allowed: true };
   const orgId = task.orgId;
   const open = await openRequestFor(deps, orgId, `TASK#${task.taskId}`, kind);

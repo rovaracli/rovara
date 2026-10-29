@@ -1,13 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { CLOUD_REPOSITORY, PUBLIC_REPOSITORY, conditionFor } from "../support/workflow-expression.js";
+import type { Program } from "../../scripts/typecheck-programs.js";
 import {
   compareToBaseline,
   formatBaseline,
   githubAnnotations,
   interpretTscRun,
   lowerBaseline,
+  mergeErrors,
+  mergeProgramRuns,
+  parseArguments,
   parseBaseline,
+  parseTscErrors,
   parseTscOutput,
   runRatchet,
   tscArguments,
@@ -123,12 +129,12 @@ describe("judging a tsc run, so a crash or config error never passes as zero err
     if (!run.ok) expect(run.reason).not.toMatch(/out of memory/);
   });
 
-  it("runs tsc with an 8 GB heap (more than the 6 GB npm run lint gives ESLint: the merged tree needs it), so the whole lint project fits", () => {
-    expect(tscArguments("/repo/node_modules/typescript/bin/tsc")).toEqual([
-      "--max-old-space-size=8192",
+  it("runs each program's tsc with the default-sized 4 GB heap: no program needs the 8 GB the single lint project did", () => {
+    expect(tscArguments("/repo/node_modules/typescript/bin/tsc", "tsconfig.lint/tests-unit.json")).toEqual([
+      "--max-old-space-size=4096",
       "/repo/node_modules/typescript/bin/tsc",
       "-p",
-      "tsconfig.lint.json",
+      "tsconfig.lint/tests-unit.json",
       "--noEmit",
       "--pretty",
       "false",
@@ -262,80 +268,162 @@ describe("the command itself", () => {
       written,
       github: false,
       readBaseline: () => baselineText,
-      runTsc: () => ({ status: 2, signal: null, stdout: "", stderr: "", ...run }),
+      runChecks: async () => mergeProgramRuns([{ program: { name: "sample", config: "tsconfig.lint/sample.json", files: program }, run: { status: 2, signal: null, stdout: "", stderr: "", seconds: 0, ...run } }]),
       listProgram: () => ({ ok: true, files: program }),
       writeBaseline: (text) => { written.push(text); },
     };
   }
 
-  it("check exits 0 when counts match", () => {
+  it("check exits 0 when counts match", async () => {
     const d = deps({ stdout: errors({ "tests/sample/a.test.ts": 2, "scripts/sample/b.ts": 1 }) });
-    expect(runRatchet("check", d).code).toBe(0);
+    expect((await runRatchet("check", d)).code).toBe(0);
     expect(d.written).toEqual([]);
   });
 
-  it("check exits 1 when a count goes up", () => {
-    const result = runRatchet("check", deps({ stdout: errors({ "tests/sample/a.test.ts": 3, "scripts/sample/b.ts": 1 }) }));
+  it("check exits 1 when a count goes up", async () => {
+    const result = await runRatchet("check", deps({ stdout: errors({ "tests/sample/a.test.ts": 3, "scripts/sample/b.ts": 1 }) }));
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("tests/sample/a.test.ts: 2 -> 3");
   });
 
-  it("check exits 1 when tsc exits 0 with no output but the baseline files are no longer checked", () => {
-    const result = runRatchet("check", deps({ status: 0 }, ["packages/x.ts"]));
+  it("check exits 1 when tsc exits 0 with no output but the baseline files are no longer checked", async () => {
+    const result = await runRatchet("check", deps({ status: 0 }, ["packages/x.ts"]));
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("tests/sample/a.test.ts is in the baseline but is no longer type-checked");
   });
 
-  it("check exits 1 when tsc crashes, whatever the baseline says", () => {
-    const result = runRatchet("check", deps({ status: 1, stdout: "", stderr: "RangeError: Maximum call stack size exceeded\n" }));
+  it("check exits 1 when tsc crashes, whatever the baseline says", async () => {
+    const result = await runRatchet("check", deps({ status: 1, stdout: "", stderr: "RangeError: Maximum call stack size exceeded\n" }));
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("did not run cleanly");
   });
 
-  it("check exits 1 when the program's file list cannot be read", () => {
+  it("check exits 1 when the program's file list cannot be read", async () => {
     const d = { ...deps({ stdout: errors({ "tests/sample/a.test.ts": 2, "scripts/sample/b.ts": 1 }) }), listProgram: () => ({ ok: false as const, reason: "noCheck is set" }) };
-    const result = runRatchet("check", d);
+    const result = await runRatchet("check", d);
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("noCheck is set");
   });
 
-  it("check prints GitHub annotations only when running on GitHub Actions", () => {
+  it("check prints GitHub annotations only when running on GitHub Actions", async () => {
     const stdout = errors({ "tests/sample/a.test.ts": 1, "scripts/sample/b.ts": 1 });
-    expect(runRatchet("check", deps({ stdout })).out.join("\n")).not.toContain("::warning");
-    expect(runRatchet("check", { ...deps({ stdout }), github: true }).out.join("\n")).toContain("::warning file=tests/typecheck-baseline.json::tests/sample/a.test.ts");
+    expect((await runRatchet("check", deps({ stdout }))).out.join("\n")).not.toContain("::warning");
+    expect((await runRatchet("check", { ...deps({ stdout }), github: true })).out.join("\n")).toContain("::warning file=tests/typecheck-baseline.json::tests/sample/a.test.ts");
   });
 
-  it("check hints at building first only when tsc reports missing modules", () => {
+  it("check hints at building first only when tsc reports missing modules", async () => {
     const missing = "tests/sample/new.test.ts(1,1): error TS2307: Cannot find module '@agentx/sample'.\n" + errors({ "tests/sample/a.test.ts": 2, "scripts/sample/b.ts": 1 });
-    expect(runRatchet("check", deps({ stdout: missing })).err.join("\n")).toContain("npm run typecheck");
-    const plain = runRatchet("check", deps({ stdout: errors({ "tests/sample/a.test.ts": 3, "scripts/sample/b.ts": 1 }) }));
+    expect((await runRatchet("check", deps({ stdout: missing }))).err.join("\n")).toContain("npm run typecheck");
+    const plain = await runRatchet("check", deps({ stdout: errors({ "tests/sample/a.test.ts": 3, "scripts/sample/b.ts": 1 }) }));
     expect(plain.err.join("\n")).not.toContain("missing-module");
   });
 
-  it("update writes the lowered baseline and exits 0", () => {
+  it("update writes the lowered baseline and exits 0", async () => {
     const d = deps({ stdout: errors({ "tests/sample/a.test.ts": 1 }) });
-    expect(runRatchet("update", d).code).toBe(0);
+    expect((await runRatchet("update", d)).code).toBe(0);
     expect(d.written).toEqual([formatBaseline({ "tests/sample/a.test.ts": 1 })]);
   });
 
-  it("update refuses to raise a count and writes nothing", () => {
+  it("update refuses to raise a count and writes nothing", async () => {
     const d = deps({ stdout: errors({ "tests/sample/a.test.ts": 3, "scripts/sample/b.ts": 1 }) });
-    expect(runRatchet("update", d).code).toBe(1);
+    expect((await runRatchet("update", d)).code).toBe(1);
     expect(d.written).toEqual([]);
   });
 
-  it("update refuses to drop a file that is no longer checked and writes nothing", () => {
+  it("update refuses to drop a file that is no longer checked and writes nothing", async () => {
     const d = deps({ stdout: errors({ "tests/sample/a.test.ts": 2 }) }, ["tests/sample/a.test.ts"]);
-    const result = runRatchet("update", d);
+    const result = await runRatchet("update", d);
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("scripts/sample/b.ts is in the baseline but is no longer type-checked");
     expect(d.written).toEqual([]);
   });
 
-  it("update writes nothing when tsc crashes", () => {
+  it("update writes nothing when tsc crashes", async () => {
     const d = deps({ status: 1, stdout: "" });
-    expect(runRatchet("update", d).code).toBe(1);
+    expect((await runRatchet("update", d)).code).toBe(1);
     expect(d.written).toEqual([]);
+  });
+});
+
+describe("merging several programs", () => {
+  const stamp = (line: number, code = "TS2322"): string => `(${line},1): error ${code}: Bad.`;
+
+  it("counts an error once however many programs report it", () => {
+    const shared = { "tests/support/x.ts": [stamp(3)] };
+    expect(mergeErrors([shared, shared, { "tests/a.test.ts": [stamp(1)], ...shared }])).toEqual({ "tests/support/x.ts": 1, "tests/a.test.ts": 1 });
+  });
+
+  it("keeps different errors in the same file that different programs report", () => {
+    expect(mergeErrors([{ "tests/support/x.ts": [stamp(3)] }, { "tests/support/x.ts": [stamp(9)] }])).toEqual({ "tests/support/x.ts": 2 });
+  });
+
+  it("keeps two identical errors that one program reports", () => {
+    expect(mergeErrors([{ "a.ts": [stamp(3), stamp(3)] }, { "a.ts": [stamp(3)] }])).toEqual({ "a.ts": 2 });
+  });
+
+  it("parses keys that tell positions and codes apart", () => {
+    const { errors } = parseTscErrors("a.ts(1,2): error TS2322: Bad.\n  more\na.ts(1,2): error TS2345: Worse.\n");
+    expect(errors["a.ts"]).toEqual(["(1,2): error TS2322: Bad.", "(1,2): error TS2345: Worse."]);
+  });
+
+  const run = (stdout: string, extra: Partial<TscRun> = {}) => ({ status: 2, signal: null, stdout, stderr: "", seconds: 0, ...extra });
+  const program = (name: string): Program => ({ name, config: `tsconfig.lint/${name}.json`, files: [] });
+
+  it("fails the whole check when any one program crashes, naming it", () => {
+    const merged = mergeProgramRuns([
+      { program: program("one"), run: run("a.ts(1,1): error TS2322: Bad.\n") },
+      { program: program("two"), run: run("", { status: null, signal: "SIGABRT" }) },
+    ]);
+    expect(merged.run.ok).toBe(false);
+    if (!merged.run.ok) expect(merged.run.reason).toMatch(/^tsconfig\.lint\/two\.json: tsc was stopped by SIGABRT/);
+  });
+
+  it("merges the programs' errors into one count per file", () => {
+    const line = "a.ts(1,1): error TS2322: Bad.\n";
+    const merged = mergeProgramRuns([{ program: program("one"), run: run(line) }, { program: program("two"), run: run(line + "b.ts(2,2): error TS2322: Bad.\n") }]);
+    expect(merged.run).toEqual({ ok: true, counts: { "a.ts": 1, "b.ts": 1 } });
+  });
+
+  it("compares a partial run only against the files it checked", () => {
+    const baseline = { "tests/a.test.ts": 2, "tests/b.test.ts": 1 };
+    const scope = new Set(["tests/a.test.ts"]);
+    expect(compareToBaseline(baseline, { "tests/a.test.ts": 2 }, scope).lowered).toEqual([]);
+    expect(compareToBaseline(baseline, { "tests/a.test.ts": 1 }, scope).lowered).toEqual([{ file: "tests/a.test.ts", baseline: 2, current: 1 }]);
+    // A file outside the scope that the programs still report, at its baseline count, is neither raised nor lowered.
+    expect(compareToBaseline(baseline, { "tests/a.test.ts": 2, "tests/b.test.ts": 1 }, scope).pass).toBe(true);
+    // ...but a new error in it is caught.
+    expect(compareToBaseline(baseline, { "tests/a.test.ts": 2, "tests/b.test.ts": 2 }, scope).pass).toBe(false);
+  });
+
+  it("refuses to lower the baseline from a partial run", async () => {
+    const result = await runRatchet("update", {
+      github: false,
+      readBaseline: () => formatBaseline({ "a.ts": 1 }),
+      runChecks: async () => ({ run: { ok: true, counts: {} }, stdout: "" }),
+      listProgram: () => ({ ok: true, files: ["a.ts"] }),
+      scope: new Set(["a.ts"]),
+      writeBaseline: () => { throw new Error("must not write"); },
+    });
+    expect(result.code).toBe(1);
+  });
+});
+
+describe("command-line options", () => {
+  it("defaults to every program with a job count from the CPU count", () => {
+    expect(parseArguments(["check"], 8)).toEqual({ mode: "check", changed: false, base: "HEAD", only: [], jobs: 4, stats: false, list: false });
+    expect(parseArguments(["check"], 4)).toMatchObject({ jobs: 2 });
+    expect(parseArguments(["check"], 1)).toMatchObject({ jobs: 1 });
+  });
+
+  it("reads --changed with --base, --only, --jobs, --stats and --list", () => {
+    expect(parseArguments(["check", "--changed", "--base", "origin/main", "--only", "a,b", "--only", "c", "--jobs", "3", "--stats", "--list"], 8))
+      .toEqual({ mode: "check", changed: true, base: "origin/main", only: ["a", "b", "c"], jobs: 3, stats: true, list: true });
+  });
+
+  it("rejects anything else, a --base with no --changed, and a missing mode", () => {
+    for (const argv of [[], ["fix"], ["check", "--nope"], ["check", "--jobs", "0"], ["check", "--base"], ["check", "--base", "main"], ["check", "--only"]]) {
+      expect(typeof parseArguments(argv, 8), argv.join(" ")).toBe("string");
+    }
   });
 });
 
@@ -375,15 +463,26 @@ describe("wiring", () => {
   it("has npm scripts that build first, then check, and one that lowers the baseline", async () => {
     const pkg = JSON.parse(await readFile("package.json", "utf8")) as { scripts: Record<string, string> };
     expect(pkg.scripts["typecheck:all"]).toBe("tsc -b --pretty false && node scripts/typecheck-baseline.ts check");
+    expect(pkg.scripts["typecheck:changed"]).toBe("tsc -b --pretty false && node scripts/typecheck-baseline.ts check --changed");
     expect(pkg.scripts["typecheck:baseline"]).toBe("tsc -b --pretty false && node scripts/typecheck-baseline.ts update");
   });
 
-  it("runs the ratchet in CI right after the typecheck, behind the docs-only check", async () => {
+  it("runs the ratchet in CI right after the typecheck, behind the docs-only check: changed programs on a pull request, every program otherwise", async () => {
     const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as Workflow;
     const checks = workflow.jobs.checks!;
     const typecheck = checks.steps.findIndex((step) => step.run === "npm run typecheck");
-    const ratchet = checks.steps.findIndex((step) => step.run === "npm run typecheck:all");
-    expect(ratchet).toBe(typecheck + 1);
+    const onPullRequest = checks.steps[typecheck + 1]!;
+    const otherwise = checks.steps[typecheck + 2]!;
+    expect(onPullRequest.run).toBe("npm run typecheck:changed -- --base HEAD^1");
+    // The public repository: changed programs on a pull request, every program otherwise.
+    expect(conditionFor(onPullRequest.if, PUBLIC_REPOSITORY)).toBe("github.event_name == 'pull_request'");
+    expect(otherwise.run).toBe("npm run typecheck:all");
+    expect(conditionFor(otherwise.if, PUBLIC_REPOSITORY)).toBe("github.event_name != 'pull_request'");
+    // Cloud (its copy of the file guards both steps): every run, pull request or not, checks every program, and the changed-only step never runs there.
+    if (onPullRequest.if?.includes("github.repository")) {
+      expect(conditionFor(onPullRequest.if, CLOUD_REPOSITORY)).toBe("false");
+      expect(conditionFor(otherwise.if, CLOUD_REPOSITORY)).toBeUndefined();
+    }
     expect(checks.if).toBe("needs.scope.outputs.docs_only != 'true'");
   });
 

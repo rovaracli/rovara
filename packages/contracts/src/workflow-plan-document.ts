@@ -4,7 +4,8 @@ import { canonicalJson, sortKeys } from "./canonical-json.js";
 import { redactText } from "./redaction.js";
 import { WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck } from "./task-workflow.js";
 import { type WorkflowCheckProposal } from "./task-workflow-node.js";
-import { extractProposedChecks, hasControlCharacter, isNotChangingReference, lastFencedBlock, notChangingReference, proposedCheckTextIssues } from "./workflow-proposed-checks.js";
+import { builtinFileCheckOf } from "./workflow-check-input.js";
+import { WorkflowCheckExpectOnBaseSchema, extractProposedChecks, hasControlCharacter, isNotChangingReference, lastFencedBlock, notChangingReference, proposedCheckProblem, proposedCheckTextIssues, replaceLastFencedBlock } from "./workflow-proposed-checks.js";
 import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema, type E2EApplicationPlanIntent } from "./e2e-application.js";
 import type { E2EFeaturePlanIntent } from "./e2e-node.js";
@@ -46,11 +47,19 @@ export interface PlanDocument {
   /** Optional strict ordered work breakdown for coding plans only. */
   workBreakdown?: TaskGraphV1 | undefined;
   /** Coding plans only. The validated checks the owner's approval covers, and the claims each proves. */
-  checks?: { proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]> };
+  checks?: {
+    proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]>;
+    /** Rovara Code version 2: the project's own checks, which always run. The Checks section lists them beside the proposed ones, so a check the plan didn't need to propose is not missing from it. */
+    alsoRun?: WorkflowCheck[] | undefined;
+    /** What the planner predicted each proposed check does on the unchanged code; a check with no prediction is not listed. */
+    expectOnBase?: Record<string, "pass" | "fail">;
+  };
   /** Untrusted feature E2E intent, approved only as part of the canonical workflow artifact. */
   e2e?: WorkflowFeatureE2EIntent | undefined;
   /** Rovara Code version 2: the request needs no code change. The answer is a model's words (plain text, bounded); the owner closes the task as answered or asks for the change anyway. */
   noChangeNeeded?: NoChangeNeeded | undefined;
+  /** Coding plans only. The claims (or `nc<N>` Not changing entries) each E2E scenario proves; kept outside `e2e` so the E2E intent digest does not move. */
+  scenarioProves?: Record<string, string[]> | undefined;
 }
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -152,12 +161,22 @@ const DecisionSchema = z.object({
   recommended: OptionIdSchema,
 }).strict();
 
+/** The most project checks a version 2 plan lists in its Checks section (a task runs at most 64 checks). */
+const PROJECT_CHECKS_LISTED_MAX = 64;
+
 const StoredChecksSchema = z.object({
   proposed: z.array(WorkflowCheckSchema).max(WORKFLOW_PROPOSED_CHECKS_MAX),
   noneReason: z.string().min(1).max(300).optional(),
   proposalNote: z.string().min(1).max(200).optional(),
   proves: z.record(z.string().max(64), z.array(z.string().min(1).max(60)).max(PLAN_CLAIMS_MAX)),
+  alsoRun: z.array(WorkflowCheckSchema).max(PROJECT_CHECKS_LISTED_MAX).optional(),
+  expectOnBase: z.record(z.string().max(64), WorkflowCheckExpectOnBaseSchema).optional(),
 }).strict();
+
+/** The most scenarios an E2E intent holds, so the most entries `scenarioProves` may have. */
+const SCENARIO_PROVES_MAX_SCENARIOS = 32;
+const ScenarioProvesSchema = z.record(z.string().min(1).max(120), z.array(z.string().min(1).max(60)).max(PLAN_CLAIMS_MAX + 10))
+  .refine((value) => Object.keys(value).length <= SCENARIO_PROVES_MAX_SCENARIOS, { error: `has more than ${SCENARIO_PROVES_MAX_SCENARIOS} scenarios` });
 
 const planBodyShape = {
   schemaVersion: z.literal(1),
@@ -170,6 +189,7 @@ const planBodyShape = {
   workBreakdown: TaskGraphV1Schema.optional(),
   e2e: E2EFeaturePlanIntentAnySchema.optional(),
   noChangeNeeded: NoChangeNeededSchema.optional(),
+  scenarioProves: ScenarioProvesSchema.optional(),
 };
 
 /** The document as the planner writes it: everything but `checks`, which is read separately. */
@@ -290,15 +310,29 @@ function treeIssues(plan: PlanDocument, retired: ReadonlySet<string> | undefined
   return issues;
 }
 
+/** Plain-English problems in `scenarioProves`: every key must be a scenario of the plan's E2E intent and every entry a claim or Not changing entry of the plan. */
+function scenarioProvesIssues(plan: PlanDocument): string[] {
+  if (plan.scenarioProves === undefined) return [];
+  const claimIds = new Set(planClaimIds(plan));
+  const scenarioIds = new Set((plan.e2e?.scenarios ?? []).map((scenario) => scenario.scenarioId));
+  return Object.entries(plan.scenarioProves).flatMap(([scenarioId, proves]) => [
+    ...(scenarioIds.has(scenarioId) ? [] : [`scenarioProves: ${shortLabel(scenarioId)} is not one of the E2E scenarios`]),
+    ...proves.filter((id) => !claimIds.has(id) && !isNotChangingReference(id, plan.notChanging.length)).map((id) => `scenarioProves: scenario ${shortLabel(scenarioId)} proves claim ${shortLabel(id)}, which the plan does not have`),
+  ]);
+}
+
 /** Plain-English problems in a stored plan's checks: every proof must name a proposed check and a claim of the plan. */
 function checksIssues(plan: PlanDocument): string[] {
   if (plan.checks === undefined) return [];
   const claimIds = new Set(planClaimIds(plan));
   const proposedIds = new Set(plan.checks.proposed.map((check) => check.id));
-  return Object.entries(plan.checks.proves).flatMap(([checkId, proves]) => [
+  return [
+    ...Object.keys(plan.checks.expectOnBase ?? {}).filter((checkId) => !proposedIds.has(checkId)).map((checkId) => `check ${shortLabel(checkId)}: it has an expected result on the unchanged code but is not one of the proposed checks`),
+    ...Object.entries(plan.checks.proves).flatMap(([checkId, proves]) => [
     ...(proposedIds.has(checkId) ? [] : [`check ${shortLabel(checkId)}: it proves claims but is not one of the proposed checks`]),
     ...proves.filter((id) => !claimIds.has(id) && !isNotChangingReference(id, plan.notChanging.length)).map((id) => `check ${shortLabel(checkId)}: it proves claim ${shortLabel(id)}, which the plan does not have`),
-  ]);
+    ]),
+  ];
 }
 
 /** The ID or position of the entry at `raw[...path]`, for naming it in an error. */
@@ -395,7 +429,8 @@ function capErrors(errors: string[]): string[] {
  */
 export function parsePlanDocument(answer: string, input: {
   kind: PlanDocumentKind;
-  checks?: { repositoryPaths: string[]; required: WorkflowCheck[]; optionalCount?: number };
+  /** `listRequired` (Rovara Code version 2): the plan's Checks section also lists the project's required checks, which always run. */
+  checks?: { repositoryPaths: string[]; required: WorkflowCheck[]; optionalCount?: number; listRequired?: boolean };
   retiredClaimIds?: ReadonlySet<string>;
 }): PlanParseResult {
   const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
@@ -428,13 +463,17 @@ export function parsePlanDocument(answer: string, input: {
   if (!parsed.success) return { ok: false, errors: capErrors([...errors, ...zodIssueMessages(body, parsed.error)]) };
   const plan: PlanDocument = parsed.data;
   errors.push(...treeIssues(plan, input.retiredClaimIds));
+  if (Object.hasOwn(json, "scenarioProves") && input.kind !== "plan") errors.push("the plan: scenarioProves belongs only in the coding plan");
+  else errors.push(...scenarioProvesIssues(plan));
   if (errors.length > 0) return { ok: false, errors: capErrors(errors) };
 
   if (input.kind !== "plan" || input.checks === undefined) return { ok: true, plan };
-  const { proves, ...proposal } = extractProposedChecks(Object.hasOwn(json, "checks") ? rawChecks : { checks: [] }, {
-    ...input.checks, allowProves: true, claimIds: new Set(planClaimIds(plan)), notChangingCount: plan.notChanging.length,
+  const { listRequired, ...proposing } = input.checks;
+  const { proves, expectOnBase, ...proposal } = extractProposedChecks(Object.hasOwn(json, "checks") ? rawChecks : { checks: [] }, {
+    ...proposing, allowProves: true, claimIds: new Set(planClaimIds(plan)), notChangingCount: plan.notChanging.length,
   });
-  return { ok: true, plan: { ...plan, checks: { ...proposal, proves } }, proposal };
+  const alsoRun = listRequired === true && input.checks.required.length > 0 ? { alsoRun: input.checks.required.slice(0, PROJECT_CHECKS_LISTED_MAX) } : {};
+  return { ok: true, plan: { ...plan, checks: { ...proposal, proves, ...(expectOnBase === undefined ? {} : { expectOnBase }), ...alsoRun } }, proposal };
 }
 
 /** Reads a stored plan document back (the JSON `canonicalPlanJson` wrote); undefined when it is not a valid plan document. */
@@ -448,7 +487,7 @@ export function readCanonicalPlan(json: string): PlanDocument | undefined {
   if (!isRecord(raw) || rawClaimDepth(raw["claims"]) > PLAN_CLAIM_DEPTH_MAX) return undefined;
   const parsed = PlanDocumentSchema.safeParse(raw);
   if (!parsed.success) return undefined;
-  return treeIssues(parsed.data, undefined).length === 0 && checksIssues(parsed.data).length === 0 ? parsed.data : undefined;
+  return treeIssues(parsed.data, undefined).length === 0 && checksIssues(parsed.data).length === 0 && scenarioProvesIssues(parsed.data).length === 0 ? parsed.data : undefined;
 }
 
 export function planClaimCount(plan: PlanDocument): number {
@@ -532,6 +571,42 @@ export function planAnswerProposesChecks(answer: string): boolean {
   }
 }
 
+/** A check read from a repository's CI configuration, in the form a plan proposes it. */
+export interface CiCheckInput { label: string; cwd: string; executable: string; args: readonly string[]; timeoutSeconds?: number }
+
+/**
+ * A planner's answer with the checks the repository's CI requires added to its `checks` member (Rovara Code version 2). The planner's own checks come first and keep their labels and claims;
+ * a CI check that runs the same command in the same folder is not repeated, one the rules for a proposed check would refuse is left out (a refused check would make every check unreadable),
+ * and the member never holds more than the most a plan may propose. An answer with nothing to add, or one that can't be read, is returned exactly as it was.
+ */
+export function withCiChecks(answer: string, ci: readonly CiCheckInput[]): string {
+  if (ci.length === 0) return answer;
+  const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
+  if (typeof block !== "string") return answer;
+  let json: unknown;
+  try {
+    json = JSON.parse(block);
+  } catch {
+    return answer;
+  }
+  if (!isRecord(json)) return answer;
+  const raw = json["checks"];
+  if (raw !== undefined && !(isRecord(raw) && Array.isArray(raw["checks"]))) return answer;
+  const existing: unknown[] = raw === undefined ? [] : (raw as { checks: unknown[] }).checks;
+  const same = (entry: unknown, check: CiCheckInput): boolean => isRecord(entry) && entry["cwd"] === check.cwd && entry["executable"] === check.executable
+    && Array.isArray(entry["args"]) && entry["args"].length === check.args.length && check.args.every((arg, index) => (entry["args"] as unknown[])[index] === arg);
+  const added: Array<Record<string, unknown>> = [];
+  for (const check of ci) {
+    if (existing.length + added.length >= WORKFLOW_PROPOSED_CHECKS_MAX) break;
+    const entry = { label: check.label, cwd: check.cwd, executable: check.executable, args: [...check.args], ...(check.timeoutSeconds === undefined ? {} : { timeoutSeconds: check.timeoutSeconds }) };
+    if (proposedCheckProblem(entry) !== undefined || existing.some((other) => same(other, check)) || added.some((other) => same(other, check))) continue;
+    added.push({ ...entry, proves: [] });
+  }
+  if (added.length === 0) return answer;
+  const merged = { ...json, checks: { ...raw, checks: [...existing, ...added], none_reason: null } };
+  return replaceLastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING, JSON.stringify(merged, null, 2));
+}
+
 const SUMMARY_LINE_MAX_CHARS = 160;
 const KIND_TITLES: Record<PlanDocumentKind, string> = { requirements: "Requirements", design: "Design", plan: "Coding plan" };
 
@@ -582,6 +657,18 @@ function inlineCode(value: string): string {
   const longest = longestBacktickRun(value);
   const fence = "`".repeat(longest + 1);
   return longest > 0 ? `${fence} ${value} ${fence}` : `${fence}${value}${fence}`;
+}
+
+/**
+ * A proposed check's command as the Markdown copy shows it. A built-in file check (AgentX wrote its `sh -c` script) reads as
+ * what it does, never as the script; any other command shows its program and arguments and the folder it runs in.
+ */
+export function plainCheckCommand(command: { cwd: string; executable: string; args: readonly string[] }): string {
+  const builtin = builtinFileCheckOf(command);
+  if (builtin !== undefined) {
+    return `the file ${inlineCode(line(builtin.path))} ${builtin.kind === "file-contains" ? "contains" : "does not contain"} ${inlineCode(line(builtin.text))} in ${inlineCode(line(command.cwd))}`;
+  }
+  return `${inlineCode(line([command.executable, ...command.args].join(" ")))} in ${inlineCode(line(command.cwd))}`;
 }
 
 /** The words that describe a flow, schema or state machine: the Markdown copy's evidence line, and the text next to its diagram. */
@@ -753,6 +840,21 @@ export function planDocumentMarkdown(plan: PlanDocument, input: {
     }
     for (const delta of plan.e2e.semanticExportDeltas) out.push(`- Proposed export delta ${inlineCode(line(delta.operationId))}: ${inlineCode(line(canonicalJson(delta)))}`);
   }
+  // The checks come right after the E2E intent, ahead of the decisions and lists, so a copy cut short keeps them.
+  const checks = plan.checks;
+  const projectChecks = checks?.alsoRun ?? [];
+  if (checks !== undefined && (checks.proposed.length > 0 || projectChecks.length > 0)) {
+    out.push("## Checks");
+    for (const check of checks.proposed) {
+      const proves = checks.proves[check.id] ?? [];
+      out.push(`- ${line(check.label)}: ${plainCheckCommand(check.command)}${proves.length === 0 ? "" : ` — proves ${proves.map(provedItem).join(", ")}`}`);
+    }
+    for (const check of projectChecks) {
+      out.push(`- ${line(check.label)}: ${plainCheckCommand(check.command)} (a project check; it always runs)`);
+    }
+  } else if (checks?.noneReason !== undefined) {
+    out.push("## Checks", `- None apply: ${line(checks.noneReason)}`);
+  }
   if (plan.decisions.length > 0) {
     out.push("## Decisions");
     if (input.answers === "recommended") out.push("The owner approved AgentX's recommended answer to every decision; treat each as decided.");
@@ -771,17 +873,6 @@ export function planDocumentMarkdown(plan: PlanDocument, input: {
   }
   out.push("## Not changing", ...plan.notChanging.map((entry) => `- ${line(entry)}`));
   out.push("## Risks", ...plan.risks.map((entry) => `- ${line(entry)}`));
-  const checks = plan.checks;
-  if (checks !== undefined && checks.proposed.length > 0) {
-    out.push("## Checks");
-    for (const check of checks.proposed) {
-      const proves = checks.proves[check.id] ?? [];
-      const command = line([check.command.executable, ...check.command.args].join(" "));
-      out.push(`- ${line(check.label)}: ${inlineCode(command)} in ${inlineCode(line(check.command.cwd))}${proves.length === 0 ? "" : ` — proves ${proves.map(provedItem).join(", ")}`}`);
-    }
-  } else if (checks?.noneReason !== undefined) {
-    out.push("## Checks", `- None apply: ${line(checks.noneReason)}`);
-  }
   out.push(...ownerCommentLines(owner?.comments ?? []));
   return `${out.join("\n")}\n`;
 }

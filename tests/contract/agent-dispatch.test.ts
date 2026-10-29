@@ -23,7 +23,7 @@ import type { ChatGptConnectionView } from "../../packages/contracts/src/index.j
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 
@@ -368,7 +368,7 @@ async function setup(options: SetupOptions = {}) {
     markStatus: async () => undefined,
     refreshModels: async () => undefined,
   } as unknown as ChatGptConnections;
-  const h = await createDeveloperTaskBroker({ register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE }, ...(chatgpt === undefined ? {} : { chatgpt }) } });
+  const h = await createSingleAnswerPlanBroker({ register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE }, ...(chatgpt === undefined ? {} : { chatgpt }) } });
   await registerSlackProject(h.handler, options.models === false ? {} : { models: PROJECT_MODELS });
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
   const call = async (method: string, path: string, body?: Record<string, unknown>) => {
@@ -786,6 +786,7 @@ describe("a worker that does not know the new fields", () => {
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
     const deliverEc2 = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined,
+      planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-10-21T12:00:00.000Z"),
       workerFeatures: async () => features,

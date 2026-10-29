@@ -380,7 +380,11 @@ export interface RequireOptions extends SessionAccessOptions {
  * with what is needed and whom to ask; no level is `NOT_FOUND`.
  */
 export async function requireSessionLevel(deps: SessionAccessDependencies, caller: SessionCaller, sessionId: string, needed: SessionLevel, action: string, options: RequireOptions = {}): Promise<SessionAccess> {
-  const access = await resolveSessionAccess(deps, caller, sessionId, options);
+  return requireLevelOf(await resolveSessionAccess(deps, caller, sessionId, options), needed, action, options);
+}
+
+/** `requireSessionLevel`'s judgement of an access already worked out (for a session that exists, or one judged before it is made). */
+export function requireLevelOf(access: SessionAccess, needed: SessionLevel, action: string, options: RequireOptions = {}): SessionAccess {
   if (!access.owner && access.projectRole === "viewer" && (needed !== "view" || options.comment === true)) {
     throw agentXError("SESSION_LEVEL_REQUIRED", sessionViewerOnlyMessage(access.session.project ?? "this project"));
   }

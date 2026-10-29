@@ -62,7 +62,9 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  expect(counts.GetCommand ?? 0).toBeLessThanOrEqual(100);
  expect(counts.QueryCommand ?? 0).toBeLessThanOrEqual(3 * projects.length + 14);
  expect(counts.BatchGetCommand ?? 0).toBeLessThanOrEqual(20);
- expect(counts).toEqual({ BatchGetCommand: 14, GetCommand: 92, QueryCommand: 133 });
+ // Release 0.4.18: two more Gets, the chosen name beside the sign-in check and beside the caller's own record (92 before), and one more BatchGet, the owners' chosen names for the live tiles (14 before).
+ // Plan 6 Task 18 (d6eb074d9, review reminders) added one more Query (133 before): Home reads the caller's REVIEW_WAIT partition once per request. It is a fixed read, whatever the number of projects or sessions: the rest is 3 per project (the project's revisions, its shared sessions and its agents) plus 14 fixed.
+ expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 134 });
  expect(names).not.toContain("ScanCommand");
 });
 

@@ -39,8 +39,28 @@ describe("a person's own approval navigation", () => {
   for (const headers of [{ "sec-fetch-mode": "same-origin", "sec-fetch-dest": "empty", "sec-fetch-user": "?1" }, navigation, { ...navigation, "sec-fetch-user": "?0" }]) {
    expect((await s.page("POST", { "sec-fetch-site": "same-origin", ...headers })).statusCode).toBe(403);expect(s.decide).not.toHaveBeenCalled();expect((await s.store.getSession(COOKIE))?.usedAt).toBeUndefined();
   }
-  expect((await s.page("POST", { ...navigation, "sec-fetch-user": "?1" })).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);
-  expect((await s.page("POST", { ...navigation, "sec-fetch-user": "?1" })).statusCode).toBe(401);expect(s.decide).toHaveBeenCalledTimes(1);
+  expect((await s.page("POST", { ...navigation, "sec-fetch-site": "same-origin", "sec-fetch-user": "?1" })).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);
+  expect((await s.page("POST", { ...navigation, "sec-fetch-site": "same-origin", "sec-fetch-user": "?1" })).statusCode).toBe(401);expect(s.decide).toHaveBeenCalledTimes(1);
+ });
+ it("accepts a form POST from Safari, which sends no Sec-Fetch-User, and from browsers that send ?1", async () => {
+  const post = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+  for (const user of [undefined, "?1"]) {
+   const s = await setup();
+   expect((await s.page("POST", { ...post, ...(user === undefined ? {} : { "sec-fetch-user": user }) })).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);
+  }
+ });
+ it("still refuses a POST that is not a same-origin document navigation, or has a wrong Sec-Fetch-User, or no CSRF token", async () => {
+  const post = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "sec-fetch-user": "?1" };
+  for (const bad of [{ "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "same-site" }, { "sec-fetch-site": "none" }, { "sec-fetch-mode": "cors" }, { "sec-fetch-mode": "same-origin" }, { "sec-fetch-dest": "iframe" }, { "sec-fetch-dest": "empty" }, { "sec-fetch-user": "?0" }, { "sec-fetch-user": "1" }, { "sec-fetch-user": "" }, { "sec-fetch-user": "?1, ?1" }]) {
+   for (const withoutUser of [false, true]) {
+    if (withoutUser && "sec-fetch-user" in bad) continue;
+    const s = await setup(), headers: Record<string, string | undefined> = { ...post, ...bad };if (withoutUser) delete headers["sec-fetch-user"];
+    expect((await s.page("POST", headers)).statusCode, JSON.stringify(headers)).toBe(403);expect(s.decide).not.toHaveBeenCalled();expect((await s.store.getSession(COOKIE))?.usedAt).toBeUndefined();
+   }
+  }
+  const s = await setup();
+  const noToken = await routeDecidePage(s.context, { method: "POST", path: s.path, requestId: "fixture", headers: { cookie: `${DECIDE_COOKIE}=${COOKIE}`, origin: CELL, "content-type": "application/x-www-form-urlencoded", ...post }, body: new URLSearchParams({ decision: "approve" }).toString() }, new URL(s.path, CELL));
+  expect(noToken.statusCode).toBe(403);expect(s.decide).not.toHaveBeenCalled();expect((await s.store.getSession(COOKIE))?.usedAt).toBeUndefined();
  });
  it("keeps older browser navigation and forms working without fetch metadata", async () => {
   const s = await setup();expect((await s.page("GET")).statusCode).toBe(200);expect((await s.page("POST")).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);

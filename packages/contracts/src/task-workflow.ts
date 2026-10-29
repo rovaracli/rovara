@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { sha256Hex } from "./web-hash.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE } from "./rovara-code.js";
+import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, WorkflowBranchSyncSchema, SYNC_FAILURES_MAX, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_STOPPED_REASON, FeedbackCiFailuresSchema, WorkflowFeedbackAutonomySchema } from "./rovara-code.js";
 import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
+import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -29,7 +30,15 @@ export const WORKFLOW_BLOCK_REASONS = {
   regressionFound: "A test that passed before this change fails now. Send it back to coding, or close the task.",
   repositoriesIncomplete: "AgentX couldn't find every repository in the final code. Retry coding, or close the task.",
   /** The coding run finished, but the code is still what the task started from (WORKFLOW_NO_CODE_CHANGE_MESSAGE). */
-  noCodeChanged: "Coding finished, but no code changed, so there is nothing to check or open as a pull request. Retry coding, or close the task.",
+  noCodeChanged: NO_CODE_CHANGED_REASON,
+  /** A review stopped before it started: the base commit's rule files could not be checked against the commit's own ids (WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE). */
+  ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
+  /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
+  stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
+  /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
+  leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
+  /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */
+  setupChangedFiles: "The dev container's setup changed the project's files, so the checks did not run. Look at what its setup commands change, then retry, or close the task.",
   /** An approved PR feedback fix left every repository's code as its open pull request holds it: nothing was pushed. */
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",
@@ -151,6 +160,12 @@ export const WORKFLOW_REVIEW_FAILURE_REASONS = [
   "SESSION_FAILED", "USAGE_UNAVAILABLE", "BASE_UNAVAILABLE", "DIFF_UNAVAILABLE",
 ] as const;
 
+/**
+ * The sentence a review report carries when its reviewer's model call failed and left it with no answer: the model-call monitor's fixed shape (a failure class, an allow-listed error token, a status, a request id and an
+ * attempt number), never the provider's text. The broker reads it with the plan check's rule for a model the account can't use.
+ */
+export const WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN = /^the model call failed: [A-Za-z0-9 ._:-]{1,250}$/u;
+
 export const WorkflowReviewReportSchema = z.object({
   operationId: z.string().uuid(),
   candidateDigest: DigestSchema,
@@ -173,6 +188,8 @@ export const WorkflowReviewReportSchema = z.object({
   partialDiff: z.literal(true).optional(),
   /** Rovara Code v2: the code reviewer's own risk level for this change (one of three words; the security review states none). Kept only on a 1.1.0 task. */
   risk: z.enum(["low", "medium", "high"]).optional(),
+  /** The reviewer's model call failed and the review has no answer: why, as a fixed sentence (see `WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN`). The model that failed is this report's provider and version. Optional, so reports stored before it parse. */
+  modelFailure: z.string().max(300).regex(WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN).optional(),
 }).strict().superRefine((report, context) => {
   if (report.risk !== undefined && report.role !== "CRITIC") context.addIssue({ code: "custom", path: ["risk"], message: "only the code review states a risk level" });
   const introduced = report.findings.some((finding) => findingBlocks(finding, report.role));
@@ -337,11 +354,20 @@ export const WorkflowFeedbackNoteSchema = z.object({
 
 export const WorkflowFeedbackDecisionSchema = z.object({
   schemaVersion: z.literal(1), requestId: z.string().uuid(), workflowRevision: z.number().int().positive(),
-  decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]), actorId: ActorIdSchema, actorRole: z.literal("TASK_OWNER"),
+  decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]),
+  // A person's id is 64 hex characters; Rovara's own automatic decision (Plan 6 Task 16) is recorded under "rovara" with the autonomy it was made under, never as the owner's.
+  actorId: z.union([ActorIdSchema, z.literal(FEEDBACK_AUTONOMY_ACTOR_ID)]), actorRole: z.enum(["TASK_OWNER", "ROVARA_AUTONOMY"]),
   reviewDigest: DigestSchema, proposalDigest: DigestSchema, bundleDigests: z.array(DigestSchema).min(1).max(32),
   selectedFindingIds: z.array(FeedbackIdSchema).max(128), selectedCommentIds: z.array(FeedbackIdSchema).max(4096),
   candidates: z.array(WorkflowFeedbackCandidateBindingSchema).max(32), ownerNote: z.string().trim().min(1).max(2000).optional(), at: z.string().datetime(),
+  autonomy: WorkflowFeedbackAutonomySchema.optional(),
+  /** The failing checks the card showed when this was decided (they are part of what the decision is bound to). */
+  ciFailures: FeedbackCiFailuresSchema.optional(),
 }).strict().superRefine((decision, context) => {
+  const byRovara = decision.actorRole === "ROVARA_AUTONOMY";
+  if (byRovara !== (decision.actorId === FEEDBACK_AUTONOMY_ACTOR_ID) || byRovara !== (decision.autonomy !== undefined) || (byRovara && decision.decision !== "APPROVE")) {
+    context.addIssue({ code: "custom", message: "an automatic decision is Rovara's own, carries its autonomy and can only approve" });
+  }
   if (new Set(decision.selectedFindingIds).size !== decision.selectedFindingIds.length
     || new Set(decision.selectedCommentIds).size !== decision.selectedCommentIds.length
     || new Set(decision.bundleDigests).size !== decision.bundleDigests.length
@@ -358,6 +384,10 @@ export const WorkflowFeedbackApprovalBindingSchema = z.object({
   reviewDigest: DigestSchema, proposalDigest: DigestSchema, bundleDigests: z.array(DigestSchema).min(1).max(32),
   candidateDigest: DigestSchema, selectedFindingIds: z.array(z.string().min(1).max(128)).min(1).max(100),
   selectedCommentIds: z.array(z.string().min(1).max(128)).min(1).max(200),
+  /** Present only when Rovara decided the round itself (Plan 6 Task 16): the autonomy and recipe it was decided under, checked again when the worker starts. */
+  autonomy: WorkflowFeedbackAutonomySchema.optional(),
+  /** The digest of the failing checks the card showed, when it showed any. */
+  ciFailuresDigest: DigestSchema.optional(),
 }).strict();
 
 export const ReviewedWorkflowFeedbackSchema = z.object({
@@ -495,19 +525,42 @@ export const PlanOptionIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,30}$/);
 
 export const WorkflowAnswerSchema = z.object({ decisionId: PlanDecisionIdSchema, optionId: PlanOptionIdSchema }).strict();
 
+/**
+ * The broker's own actor for automatic fixing (AUTOFIX): a fixed identity that is nobody's account. Decisions it records carry `actorRole: "AGENTX"`; such a decision can only be
+ * REQUEST_CHANGES with source AUTO_FIX or AUTO_RETRY (see `WorkflowDecisionSchema`), so it can never be an approval, a skip, a rejection or a publication.
+ * (Web-safe file: `sha256Hex` gives the same digest as node:crypto's sha256 of the same UTF-8 text.)
+ */
+export const WORKFLOW_AGENTX_ACTOR_ID = sha256Hex("agentx:automatic-fix:v1");
+/** The stages an automatic action can be recorded for (the same stages the owner's Retry and Send back buttons belong to). */
+export const WORKFLOW_AUTO_STAGES = ["PLAN", "IMPLEMENT", "VERIFY", "REVIEW"] as const;
+/** At most this many automatic send backs to coding per approved plan version (decisions since the plan's last APPROVE). */
+export const WORKFLOW_AUTO_SEND_BACK_LIMIT = 2;
+/** At most this many automatic retries of one stage for one candidate. */
+export const WORKFLOW_AUTO_RETRY_LIMIT = 1;
+/** At most this many automatic actions (send backs and retries together) in one task, however many plan versions it has. */
+export const WORKFLOW_AUTO_ACTION_LIMIT = 6;
+/** What an automatic decision was for: the stage it acted on and, when there was one, the candidate that stage had produced. */
+export const WorkflowAutoActionSchema = z.object({ stage: z.enum(WORKFLOW_AUTO_STAGES), candidateDigest: DigestSchema.optional() }).strict();
+
 export const WorkflowDecisionSchema = z.object({
   requestId: z.string().uuid(),
   workflowRevision: z.number().int().positive(),
   decision: z.enum(["APPROVE", "REQUEST_CHANGES", "REJECT", "SKIP"]),
   actorId: ActorIdSchema,
-  actorRole: z.enum(["TASK_OWNER", "PROJECT_ADMIN"]),
+  /** `AGENTX` is the broker acting by itself (automatic fixing); only with source AUTO_FIX or AUTO_RETRY, and never for an approval. */
+  actorRole: z.enum(["TASK_OWNER", "PROJECT_ADMIN", "AGENTX"]),
   reason: z.string().trim().min(1).max(500),
   artifactDigest: DigestSchema.optional(),
   /** The exact dependency graph covered by this whole-plan approval. */
   workBreakdownDigest: DigestSchema.optional(),
   selectedOptionalCheckIds: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(20).optional(),
-  /** Where the decision was made: an approval gate (the default), the owner sending blocked work back to coding, or the owner resolving review findings. */
-  source: z.enum(["GATE", "SEND_BACK", "FINDINGS"]).optional(),
+  /**
+   * Where the decision was made: an approval gate (the default), the owner sending blocked work back to coding, or the owner resolving review findings; or the broker by itself
+   * sending blocked work back to coding (AUTO_FIX) or retrying a stage (AUTO_RETRY).
+   */
+  source: z.enum(["GATE", "SEND_BACK", "FINDINGS", "AUTO_FIX", "AUTO_RETRY"]).optional(),
+  /** Automatic decisions only: the stage (and candidate) the automatic action was for. The automatic limits are counted from these. */
+  auto: WorkflowAutoActionSchema.optional(),
   /** Plan decisions: the owner's answers that differ from AgentX's recommended ones, in the plan's decision order. */
   answerOverrides: z.array(WorkflowAnswerSchema).min(1).max(WORKFLOW_DECISION_ANSWERS_MAX).optional(),
   /** How many page comments the decision sent along (their IDs are in the decision's detail item). */
@@ -518,6 +571,31 @@ export const WorkflowDecisionSchema = z.object({
   closedAs: z.literal("ANSWERED").optional(),
   at: z.string().datetime(),
 }).strict();
+
+/**
+ * A decision as the workflow stores it: the shape above plus the rules for the AGENTX actor. A separate schema because a refined object cannot be `.omit()`ted or `.extend()`ed,
+ * and clients and tests derive older shapes from the plain one.
+ */
+export const WorkflowDecisionRecordSchema = WorkflowDecisionSchema.superRefine((decision, context) => {
+  const automatic = decision.source === "AUTO_FIX" || decision.source === "AUTO_RETRY";
+  if (automatic !== (decision.actorRole === "AGENTX")) {
+    context.addIssue({ code: "custom", path: ["actorRole"], message: "the AGENTX actor makes automatic decisions, and only it does" });
+  }
+  if (decision.actorRole === "AGENTX" && decision.actorId !== WORKFLOW_AGENTX_ACTOR_ID) {
+    context.addIssue({ code: "custom", path: ["actorId"], message: "an automatic decision is made by the AgentX actor" });
+  }
+  if (automatic) {
+    // An automatic decision can only ask for a change: it carries no approval, no document, no choice of checks and no owner answers.
+    if (decision.decision !== "REQUEST_CHANGES") context.addIssue({ code: "custom", path: ["decision"], message: "an automatic decision can only be REQUEST_CHANGES" });
+    if (decision.auto === undefined) context.addIssue({ code: "custom", path: ["auto"], message: "an automatic decision names its stage" });
+    if (decision.artifactDigest !== undefined || decision.workBreakdownDigest !== undefined || decision.selectedOptionalCheckIds !== undefined
+      || decision.answerOverrides !== undefined || decision.commentsIncluded !== undefined || decision.via !== undefined) {
+      context.addIssue({ code: "custom", message: "an automatic decision carries nothing an approval carries" });
+    }
+  } else if (decision.auto !== undefined) {
+    context.addIssue({ code: "custom", path: ["auto"], message: "only an automatic decision names an automatic stage" });
+  }
+});
 
 export const WorkflowCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
@@ -663,7 +741,9 @@ export const WorkflowReviewBaseSchema = z.array(z.object({
 export const PROGRAM_ROUNDS_MAX = 100;
 
 /** Why pushing a fix to a pull request failed: its head moved on GitHub, GitHub refused it, or the worker cannot push a reviewed fix. */
-export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED"] as const;
+/** What the worker says when a conflict round's tree would drop what the base branch brought (Plan 6 Task 17): the cause `BASE_CHANGES_DROPPED` is told from it. */
+export const WORKFLOW_FIX_DROPS_BASE_CHANGES = "the fix would drop changes the base branch made";
+export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED", "BASE_CHANGES_DROPPED"] as const;
 
 export const WorkflowPullRequestUpdateFailureSchema = z.object({
   numbers: z.array(z.number().int().positive()).min(1).max(32),
@@ -688,11 +768,16 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * and fail now. Kept through a send-back so the coder hears of them; the next block or verification replaces them.
    */
   regressedChecks: z.array(z.string().trim().min(1).max(WORKFLOW_REGRESSED_CHECK_MAX)).min(1).max(WORKFLOW_REGRESSED_CHECKS_MAX).optional(),
+  /**
+   * A coding run that ended with no code change: the commands the agent ran, what they printed and the agent's own conclusion, redacted and bounded (`NoChangeFindingsSchema`), kept while the step is
+   * blocked with `noCodeChanged` and shown with it. Absent from an older worker's result and from every other block.
+   */
+  noChangeFindings: NoChangeFindingsSchema.optional(),
   outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED", "ANSWERED"]).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   artifacts: z.array(WorkflowArtifactSchema).max(100),
-  decisions: z.array(WorkflowDecisionSchema).max(100),
+  decisions: z.array(WorkflowDecisionRecordSchema).max(100),
   checkPolicy: WorkflowCheckPolicySchema.optional(),
   /** Frozen E2E references. Results remain separately qualified by the broker. */
   e2e: E2EWorkflowProgressSchema.optional(),
@@ -718,6 +803,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   feedbackReviewHistory: z.array(WorkflowFeedbackReviewRefSchema).max(100).optional(),
   feedbackDecisions: z.array(WorkflowFeedbackDecisionSchema).max(100).optional(),
   feedbackDispatchApproval: WorkflowFeedbackApprovalBindingSchema.optional(),
+  /** Rovara Code v2: the failing checks added to the owner's feedback card while it waits (Plan 6 Task 16); moved into the decision once decided. */
+  feedbackCiFailures: FeedbackCiFailuresSchema.optional(),
   feedbackNotes: z.array(WorkflowFeedbackNoteSchema).max(100).optional(),
   canvasLineage: z.array(WorkflowCanvasLineageSchema).max(100).optional(),
   canvasLineageVersion: z.number().int().nonnegative().optional(),
@@ -749,6 +836,27 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * failure on one of those heads is covered. The next CI fix round starts whatever the autonomy and the rounds used (that one round is not counted), and clears it.
    */
   ciFixApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
+  /**
+   * Both versions (Plan 6 Task 17): Rovara is merging the base branch into one pull request's branch. WAIT_FOR_MERGE/READY while the merge is queued, WAIT_FOR_MERGE/RUNNING while the worker
+   * runs it. It names the head the merge is for: a head that is no longer that one (a person pushed) stops it.
+   */
+  branchSync: WorkflowBranchSyncSchema.optional(),
+  /**
+   * Both versions (Plan 6 Task 17): the commit of the base branch whose merge conflicted, while a conflict round resolves it. The round's fix is pushed as a merge commit with this commit as its second
+   * parent. Present only with `fixSource: "conflict"`.
+   */
+  conflictBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  /** Both versions: a person told Rovara to go on with a conflict it asked about (Retry): the heads of the open pull requests then. The merge it starts uses it up. */
+  conflictApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
+  /** Both versions: how many times a merge of the base failed on this head (a head a person pushes starts the count again). Rovara stops at `SYNC_FAILURES_MAX`. */
+  syncFailures: z.object({
+    headSha: z.string().regex(/^[a-f0-9]{40}$/),
+    /** Real failures of the merge (its checks failed, Git refused): at `SYNC_FAILURES_MAX` Rovara stops trying this head. */
+    count: z.number().int().min(0).max(SYNC_FAILURES_MAX),
+    /** Failures that were not the merge's (GitHub, a lost machine): never a stop, but each doubles the wait before the next try. */
+    transient: z.number().int().min(1).max(1000).optional(),
+    retryAfter: z.string().datetime().optional(),
+  }).strict().optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -766,6 +874,12 @@ export const WorkflowSnapshotShapeSchema = z.object({
   }
   if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
     context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });
+  }
+  if (workflow.conflictBase !== undefined && workflow.fixSource !== "conflict") {
+    context.addIssue({ code: "custom", path: ["conflictBase"], message: "the base commit of a conflict is kept only while a conflict round runs" });
+  }
+  if (workflow.branchSync !== undefined && !(workflow.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING"))) {
+    context.addIssue({ code: "custom", path: ["branchSync"], message: "a merge of the base branch is queued or running only while waiting for the merge" });
   }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
@@ -846,8 +960,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   if (workflow.stage === "WAIT_FOR_MERGE" || workflow.stage === "MERGED") {
     const pullRequests = workflow.pullRequests ?? [];
     const required = pullRequests.filter((pullRequest) => pullRequest.required);
-    // A pull request holds earlier reviewed code only after pushing its fix failed, or when it merged before the fix was pushed.
-    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
+    // A pull request holds earlier reviewed code only after pushing its fix failed (or was stopped because the autonomy was lowered), or when it merged before the fix was pushed.
+    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed || workflow.blockReason === FEEDBACK_STOPPED_REASON));
     if (required.length === 0 || workflow.candidate === undefined
       || (!earlierAllowed && pullRequests.some((pullRequest) => pullRequest.candidateDigest !== workflow.candidate?.digest))
       || workflow.candidate.repositories.some((repository) => !required.some((pullRequest) => pullRequest.repositoryId === repository.repositoryId))) {

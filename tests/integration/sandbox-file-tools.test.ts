@@ -160,7 +160,7 @@ describe("the task sandbox's file tools", () => {
     // Every call is the sandbox's: docker exec -i as uid 1000, with the sandbox's Node and helper by absolute path.
     expect(fake.execs.length).toBeGreaterThanOrEqual(6);
     for (const exec of fake.execs) {
-      expect(exec.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "1000:1000", sandbox.name, NODE, ...FILE_OPS_NODE_FLAGS, HELPER]);
+      expect(exec.args.slice(0, 12)).toEqual(["exec", "-i", "--user", "1000:1000", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", sandbox.name, NODE, ...FILE_OPS_NODE_FLAGS, HELPER]);
       expect(exec.request.root).toBe(rootPath);
     }
     const ops = new Set(fake.execs.map(({ request }) => request.op));
@@ -323,7 +323,7 @@ describe("the devcontainer's file tools", () => {
     try { expect(await settle(handle, "read")).toBe("resolved"); } finally { handle.dispose(); }
     expect(results[0]!.content[0]!.text).toBe("api alpha\n");
     for (const exec of fake.execs) {
-      expect(exec.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
+      expect(exec.args.slice(0, 12)).toEqual(["exec", "-i", "--user", "vscode", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
       expect(exec.request).toMatchObject({ root: "/workspaces/api", path: "/workspaces/api/a.txt" });
     }
   });
@@ -447,7 +447,7 @@ describe("the devcontainer's file tools", () => {
       ["exec", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", "--version"],
     ]);
     expect(fake.execs).toHaveLength(1);
-    expect(fake.execs[0]!.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
+    expect(fake.execs[0]!.args.slice(0, 12)).toEqual(["exec", "-i", "--user", "vscode", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
   });
 
   it("refuses, with the reason, when the copied Node cannot start in the devcontainer", async () => {
@@ -497,7 +497,7 @@ describe("sessions of reviews", () => {
     };
     const target: FileOpsTarget = { container: "task-sandbox", user: "1000:1000", node: NODE, helper: HELPER, root: rootPath };
     const reports = await runWorkflowReviews({
-      operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
+      ruleFileBaseCommits: [], operationId: randomUUID(), rootPath, model: { provider: "test", modelId: "review-v1" }, candidate, repositories,
       piAdapter: adapter, fileTools: target,
     });
     expect(reports.map(({ role, status }) => ({ role, status }))).toEqual([{ role: "CRITIC", status: "PASS" }, { role: "SECURITY", status: "PASS" }]);

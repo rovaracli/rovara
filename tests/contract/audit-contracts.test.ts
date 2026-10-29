@@ -124,14 +124,17 @@ describe("the event catalog", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
       "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "pull_request.opened",
-      "pull_request.merged", "member.joined", "member.role_changed", "member.removed", "member.left", "org.closed", "org.renamed", "org.invite_created", "org.invite_revoked", "project_member.changed",
-      "project_member.removed", "identity.linked", "identity.unlinked", "agent.owner_changed", "chain.owner_changed", "session.owner_changed", "session.stopped", "session.retried", "session.shared",
-      "connection.saved", "connection.removed", "project_connector.changed", "guardrails.changed", "local_agents.policy_changed",
+      "pull_request.merged", "pull_request.merge_requested", "member.joined", "member.role_changed", "member.removed", "member.left", "member.renamed", "org.closed", "org.renamed", "org.invite_created", "org.invite_revoked", "project_member.changed",
+      "project_member.removed", "slack_channel.bound", "slack_channel.unbound", "slack_team.connected", "slack_team.disconnected", "identity.linked", "identity.unlinked", "agent.owner_changed", "chain.owner_changed", "session.owner_changed", "session.stopped", "session.retried", "session.shared", "session.linked", "session.unlinked",
+      "connection.saved", "connection.removed", "project_connector.changed", "guardrails.changed", "local_agents.policy_changed", "code_settings.changed",
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
       "agent.rolled_back", "builtin.adopted", "chain.published", "chain.rolled_back", "trigger.enabled",
       "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "model_source.saved",
       "model_source.removed", "model_source.order_changed", "audit.read",
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
+      // "How we work" playbook (H1)
+      "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
+      "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -141,6 +144,7 @@ describe("the event catalog", () => {
       "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
       "spend_policy", "model_source",
+      "process",
     ]);
   });
 
@@ -154,6 +158,32 @@ describe("the event catalog", () => {
       expect(keys.length, action).toBeLessThanOrEqual(AUDIT_MAX_FACTS);
       for (const key of keys) expect(key, `${action}.${key}`).not.toMatch(personal);
     }
+  });
+
+  const PLAYBOOK_FACTS = {
+    "project.models_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "approvedCount", "defaultChanged"], sample: { revision: 3, approvedCount: 2, defaultChanged: true } },
+    "project.checks_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "requiredCount", "optionalCount"], sample: { revision: 3, requiredCount: 2, optionalCount: 1 } },
+    "project.e2e_policy_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "screenshots", "traces", "video", "downloads"], sample: { revision: 3, screenshots: true, traces: false, video: false, downloads: true } },
+    "project.model_selection_changed": { target: { kind: "project", name: "web" }, keys: ["surface", "cleared"], sample: { surface: "slack", cleared: false } },
+    "project.roster_changed": { target: { kind: "project", name: "web" }, keys: ["added", "removed"], sample: { added: 2, removed: 1 } },
+    "process.published": { target: { kind: "process", id: "agt_1" }, keys: ["version", "safety", "selfConfirmedSoleOwner"], sample: { version: 2, safety: "safe", selfConfirmedSoleOwner: false } },
+    "process.rolled_back": { target: { kind: "process", id: "agt_1" }, keys: ["fromVersion", "toVersion", "safety"], sample: { fromVersion: 3, toVersion: 2, safety: "safe" } },
+    "playbook.default_process_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "processKind"], sample: { revision: 4, processKind: "builtin" } },
+    "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
+  } as const;
+
+  for (const [action, spec] of Object.entries(PLAYBOOK_FACTS)) {
+    it(`${action} has exactly its fixed fact keys, takes them, and refuses an unknown one`, () => {
+      expect(AUDIT_FACT_KEYS[action as AuditAction]).toEqual(spec.keys);
+      const base = { action, target: spec.target };
+      expect(AuditEventInputSchema.safeParse(event({ ...base, facts: spec.sample })).success).toBe(true);
+      expect(AuditEventInputSchema.safeParse(event({ ...base, facts: { ...spec.sample, projectName: "web" } })).success).toBe(false);
+      expect(AuditEventInputSchema.safeParse(event({ ...base, facts: { kind: "x" } })).success).toBe(false);
+    });
+  }
+
+  it("takes a process target by id", () => {
+    expect(AuditTargetSchema.safeParse({ kind: "process", id: "agt_1" }).success).toBe(true);
   });
 
   it("gives the facts the plan names", () => {

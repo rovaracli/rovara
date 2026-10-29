@@ -10,6 +10,7 @@ import {
   buildRunInstancesInput,
   classifyGetObjectFailure,
   describeRegisteredRows,
+  featureCatalogIdFromTemplate,
   formatQualificationPlan,
   parseQualifyArgs,
   planTestQualification,
@@ -76,6 +77,7 @@ describe("planTestQualification", () => {
       "create-volume",
       "run-instance",
       "attach-volume",
+      "volume-delete-on-termination",
       "read-private-ip",
       "wait-ready",
       "issue-challenge",
@@ -139,6 +141,9 @@ describe("planTestQualification", () => {
     expect(text).toContain(PREFLIGHT_KEY);
     expect(text).toMatch(/spend/i);
     expect(text).toMatch(/never terminates/);
+    expect(text).toContain("[volume-delete-on-termination]");
+    expect(text).toContain("DeleteOnTermination=true");
+    expect(text).toContain("ec2:ModifyInstanceAttribute");
   });
 });
 
@@ -148,7 +153,7 @@ describe("the qualification instance's user data", () => {
   const exportNames = (script: string) => [...script.matchAll(/^export (\w+)=/gm)].map((match) => match[1]);
 
   it("is the worker's normal boot with only the validated qualification variables added", () => {
-    const rendered = decode(renderQualificationUserData(facts, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", qualification }, bootScript));
+    const rendered = decode(renderQualificationUserData(facts, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", generation: 1, qualification }, bootScript));
     const normal = ec2WorkerBootScript({
       workspaceId: WORKSPACE_ID, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true, workerImage: facts.settings.workerImage, executorImage: facts.settings.executorImage, bootStage2Sha256: facts.settings.bootStage2Sha256,
       invokePublicKey: facts.invokePublicKey, controlPlaneUrl: facts.controlPlaneUrl, modelProvider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6",
@@ -173,13 +178,13 @@ describe("the qualification instance's user data", () => {
 
   it("refuses a role ID that is not a role's unique ID", () => {
     for (const workerRoleId of ["", "AIDAEXAMPLEUSERID1234", "AROAshort", `${ROLE_ID}/../`, `${ROLE_ID}:${INSTANCE_ID}`, `${ROLE_ID}*`, `${ROLE_ID}'; touch /tmp/bad`]) {
-      expect(() => renderQualificationUserData({ ...facts, workerRoleId }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", qualification }, bootScript), workerRoleId).toThrow();
+      expect(() => renderQualificationUserData({ ...facts, workerRoleId }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", generation: 1, qualification }, bootScript), workerRoleId).toThrow();
     }
   });
 
   it("refuses a run whose settings have no executor image or are not pinned by digest", () => {
     const render = (settings: Partial<QualificationFacts["settings"]>) =>
-      renderQualificationUserData({ ...facts, settings: { ...facts.settings, ...settings } }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", qualification }, bootScript);
+      renderQualificationUserData({ ...facts, settings: { ...facts.settings, ...settings } }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", generation: 1, qualification }, bootScript);
     expect(() => render({ executorImage: undefined })).toThrow(/executor image/);
     expect(() => render({ bootStage2Sha256: undefined })).toThrow(/boot stage 2 hash/);
     expect(() => render({ executorImage: "111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor:latest" })).toThrow();
@@ -275,6 +280,19 @@ describe("parseQualifyArgs", () => {
   });
 });
 
+describe("featureCatalogIdFromTemplate", () => {
+  const lambda = (id: unknown) => ({ Type: "AWS::Lambda::Function", Properties: { Environment: { Variables: { AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: id } } } });
+  it("reads the one literal catalog ID the deployed functions share, from a JSON template body", () => {
+    expect(featureCatalogIdFromTemplate(JSON.stringify({ Resources: { A: lambda("catalog-1"), B: lambda("catalog-1"), C: { Type: "AWS::SQS::Queue" } } }))).toBe("catalog-1");
+  });
+  it("refuses a missing, non-literal or ambiguous ID rather than guessing which rows to read", () => {
+    for (const resources of [{}, { A: lambda({ Ref: "Param" }) }, { A: lambda("catalog-1"), B: lambda("catalog-2") }]) {
+      expect(() => featureCatalogIdFromTemplate(JSON.stringify({ Resources: resources }))).toThrow(/CATALOG_ID/);
+    }
+    expect(() => featureCatalogIdFromTemplate("not json")).toThrow(/not JSON/);
+  });
+});
+
 describe("describeRegisteredRows", () => {
   it("names the two catalog rows and their revisions from the registration answer, bare or wrapped", () => {
     const answer = { profileId: "linux-arm64-web-api-v1", featureCatalogId: "catalog-1", featureRevisions: { web: 1, api: 2 }, proposalSha256: "f".repeat(64) };
@@ -290,11 +308,14 @@ describe("describeRegisteredRows", () => {
 });
 
 /** Effects that record every call and fail where a test says, so the run is driven with no AWS and no clock. */
-function harness(options: { statuses?: Array<Buffer | undefined>; readies?: Array<Buffer | undefined>; failAt?: string; adminFails?: boolean; instanceId?: string; facts?: QualificationFacts; readBack?: Buffer } = {}) {
+function harness(options: { statuses?: Array<Buffer | undefined>; readies?: Array<Buffer | undefined>; failAt?: string; adminFails?: boolean; instanceId?: string; facts?: QualificationFacts; readBack?: Buffer; registeredGeneration?: number; movedGenerationAfterBoot?: number; lockHeld?: boolean; activeRunners?: number } = {}) {
+  let booted = false;
   const calls: string[] = [];
   const bindings: unknown[] = [];
   const ready = [...(options.readies ?? [Buffer.from(JSON.stringify({ state: "READY", reason: "worker-healthy", finishedAt: "2026-10-19T11:50:00Z" }))])];
   const printed: string[] = [];
+  const locks: string[] = [];
+  const userData: string[] = [];
   let clock = 0;
   const statuses = [...(options.statuses ?? [Buffer.from(JSON.stringify({ state: "SUCCEEDED", reason: "qualified", finishedAt: "2026-10-19T12:00:00Z" }))])];
   const maybeFail = (name: string) => { if (options.failAt === name) throw new Error(`${name} failed`); };
@@ -306,11 +327,14 @@ function harness(options: { statuses?: Array<Buffer | undefined>; readies?: Arra
     async getObjectStrict(key) { calls.push(`getObjectStrict ${key}`); maybeFail("getObjectStrict"); return options.readBack ?? preflightBody ?? Buffer.alloc(0); },
     async createVolume(request) { calls.push(`createVolume ${request.clientToken}`); maybeFail("createVolume"); return "vol-0123456789abcdef0"; },
     async runInstance(request) {
+      userData.push(request.UserData ?? "");
+      booted = true;
       calls.push(`runInstance min=${request.MinCount} max=${request.MaxCount} token=${request.ClientToken}`);
       maybeFail("runInstance");
       return options.instanceId ?? INSTANCE_ID;
     },
     async attachVolume(request) { calls.push(`attachVolume ${request.volumeId} ${request.instanceId}`); maybeFail("attachVolume"); },
+    async setVolumeDeleteOnTermination(request) { calls.push(`setVolumeDeleteOnTermination ${request.volumeId} ${request.instanceId} ${request.device}`); maybeFail("setVolumeDeleteOnTermination"); },
     async privateIpOf(instanceId) { calls.push(`privateIpOf ${instanceId}`); maybeFail("privateIpOf"); return "10.42.128.17"; },
     async issueChallenge(request) { bindings.push(request.binding); calls.push(`issueChallenge ${request.endpoint} ${request.generation} ${request.transportCorrelationId} ${request.profile}`); maybeFail("issueChallenge"); return { challengeId: "c-1", file: "/tmp/challenge.json", expiresAt: "2026-10-19T13:00:00Z" }; },
     async putObject(key, file) { calls.push(`putObject ${key} ${file}`); maybeFail("putObject"); },
@@ -322,25 +346,91 @@ function harness(options: { statuses?: Array<Buffer | undefined>; readies?: Arra
     },
     async deleteObject(key) { calls.push(`deleteObject ${key}`); maybeFail(key === PREFLIGHT_KEY ? "deletePreflight" : "deleteObject"); },
     saveProposal(bytes) { calls.push(`saveProposal ${bytes.toString()}`); return "/tmp/proposal.json"; },
+    async recordSuccess(runId) { calls.push(`recordSuccess ${runId}`); maybeFail("recordSuccess"); },
     async recordModelCheckRunner(runner) { calls.push(`recordModelCheckRunner ${runner.roleId} ${runner.instanceId} ${runner.transportCorrelationId}`); maybeFail("recordModelCheckRunner"); },
     async register(file) { calls.push(`register ${file}`); maybeFail("register"); return JSON.stringify({ profileId: "linux-arm64-web-api-v1", featureCatalogId: "catalog-1", featureRevisions: { web: 1, api: 1 } }); },
+    async nextGeneration() { return booted && options.movedGenerationAfterBoot !== undefined ? options.movedGenerationAfterBoot : options.registeredGeneration === undefined ? 1 : options.registeredGeneration + 1; },
+    async countActiveRunners() { return options.activeRunners ?? 0; },
+    async acquireLock(runId) { locks.push(`acquire ${runId}`); if (options.lockHeld) throw new Error("the renewal lock is held by another run"); },
+    async releaseLock(runId) { locks.push(`release ${runId}`); },
     now: () => clock,
     async sleep(ms) { clock += ms; },
     print: (line) => printed.push(line),
   };
-  return { effects, calls, printed, bindings, clockNow: () => clock };
+  return { effects, calls, printed, bindings, locks, userData, clockNow: () => clock };
 }
 const succeeded = Buffer.from(JSON.stringify({ state: "SUCCEEDED", reason: "qualified", finishedAt: "2026-10-19T12:00:00Z" }));
 const failed = (reason: string) => Buffer.from(JSON.stringify({ state: "FAILED", reason, finishedAt: "2026-10-19T12:00:00Z" }));
 
 describe("runTestQualification", () => {
+  it("issues the challenge at the registered generation + 1, so the manual fallback still registers after an automatic renewal (AR-1 review I-2)", async () => {
+    const { effects, calls } = harness({ registeredGeneration: 2, statuses: [succeeded] });
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(calls.filter((call) => call.startsWith("issueChallenge")).map((call) => call.split(" ")[2])).toEqual(["3"]);
+  });
+
+  it("boots the runner with the same workspace id and generation the challenge carries, so the runner's host-identity check passes (live finding)", async () => {
+    for (const registered of [undefined, 1, 2]) {
+      const { effects, calls, userData } = harness({ ...(registered === undefined ? {} : { registeredGeneration: registered }), statuses: [succeeded] });
+      await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+      const script = gunzipSync(Buffer.from(userData[0]!, "base64")).toString("utf8");
+      const issued = calls.find((call) => call.startsWith("issueChallenge"))!.split(" ");
+      expect(script, `registered ${registered}`).toContain(`export AGENTX_SESSION_GENERATION='${issued[2]}'`);
+      expect(script).toContain(`export AGENTX_WORKSPACE_ID='${issued[3]}'`);
+      expect(issued[2]).toBe(String((registered ?? 0) + 1));
+    }
+  });
+
+  it("re-checks the generation just before the challenge: when another renewal moved the registered runtime after the boot, nothing is issued and the lock is freed (review M2 of AR-fix1)", async () => {
+    const moved = harness({ registeredGeneration: 2, movedGenerationAfterBoot: 5, statuses: [succeeded] });
+    await expect(runTestQualification(plan(), moved.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow(/registered runtime moved after the runner was booted/);
+    expect(moved.calls.some((call) => call.startsWith("issueChallenge") || call.startsWith("register ") || call.startsWith("putObject"))).toBe(false);
+    expect(moved.locks).toEqual([`acquire ${RUN_ID}`, `release ${RUN_ID}`]);
+    // Positive control: the same run without the move issues its challenge at the booted generation.
+    const steady = harness({ registeredGeneration: 2, statuses: [succeeded] });
+    await runTestQualification(plan(), steady.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(steady.calls.filter((call) => call.startsWith("issueChallenge")).map((call) => call.split(" ")[2])).toEqual(["3"]);
+  });
+
+  it("issues generation 1 when nothing is registered yet", async () => {
+    const { effects, calls } = harness({ statuses: [succeeded] });
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(calls.filter((call) => call.startsWith("issueChallenge")).map((call) => call.split(" ")[2])).toEqual(["1"]);
+  });
+
+  it("holds the renewal lock for the run and releases it after success and after a failure", async () => {
+    const ok = harness({ statuses: [succeeded] });
+    await runTestQualification(plan(), ok.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(ok.locks).toEqual([`acquire ${RUN_ID}`, `release ${RUN_ID}`]);
+    const bad = harness({ failAt: "createVolume" });
+    await expect(runTestQualification(plan(), bad.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow("createVolume failed");
+    expect(bad.locks).toEqual([`acquire ${RUN_ID}`, `release ${RUN_ID}`]);
+  });
+
+  it("refuses to launch a third runner: with two qualification runners already up it creates nothing, says so, and frees the lock (review M-4)", async () => {
+    const full = harness({ activeRunners: 2 });
+    await expect(runTestQualification(plan(), full.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow(/2 qualification runners/);
+    expect(full.calls.some((call) => call.startsWith("createVolume") || call.startsWith("runInstance"))).toBe(false);
+    expect(full.locks).toEqual([`acquire ${RUN_ID}`, `release ${RUN_ID}`]);
+    const one = harness({ activeRunners: 1, statuses: [succeeded] });
+    await runTestQualification(plan(), one.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(one.calls.some((call) => call.startsWith("runInstance"))).toBe(true);
+  });
+
+  it("creates nothing when another run holds the lock, and does not release a lock it never took", async () => {
+    const held = harness({ lockHeld: true });
+    await expect(runTestQualification(plan(), held.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow("lock is held");
+    expect(held.calls.some((call) => call.startsWith("createVolume") || call.startsWith("runInstance"))).toBe(false);
+    expect(held.locks).toEqual([`acquire ${RUN_ID}`]);
+  });
+
   it("runs every step once, in order, and registers the downloaded proposal only after the status says SUCCEEDED", async () => {
     const { effects, calls, printed } = harness({ statuses: [undefined, undefined, succeeded] });
     await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
     const names = calls.map((call) => call.split(" ")[0]);
     expect(names).toEqual([
-      "checkAdminSession", "resolveFacts", "putBytes", "getObjectStrict", "deleteObject", "createVolume", "runInstance", "attachVolume", "privateIpOf", "getObject", "issueChallenge", "putObject",
-      "getObject", "getObject", "getObject", "getObject", "saveProposal", "register", "recordModelCheckRunner", "deleteObject",
+      "checkAdminSession", "resolveFacts", "putBytes", "getObjectStrict", "deleteObject", "createVolume", "runInstance", "attachVolume", "setVolumeDeleteOnTermination", "privateIpOf", "getObject", "issueChallenge", "putObject",
+      "getObject", "getObject", "getObject", "getObject", "saveProposal", "register", "recordModelCheckRunner", "recordSuccess", "deleteObject",
     ]);
     // Task 4.10C: the runner that serves model checks is recorded after the registration, bound to its transport correlation, and never before a successful one.
     expect(calls).toContain(`recordModelCheckRunner ${facts.workerRoleId} ${INSTANCE_ID} ${WORKSPACE_ID}`);
@@ -361,6 +451,26 @@ describe("runTestQualification", () => {
     expect(calls.filter((call) => call.startsWith("runInstance"))).toHaveLength(1);
     expect(printed.join("\n")).toContain("PROFILE#linux-arm64-web-api-v1#web revision 1");
     expect(printed.join("\n")).toContain("PROFILE#linux-arm64-web-api-v1#api revision 1");
+  });
+
+  it("counts a successful by-hand qualification as a renewal for the stale alarm, after the registration and the pointer, with this run's ID (ARGUARD)", async () => {
+    const { effects, calls } = harness({ statuses: [undefined, undefined, succeeded] });
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(calls).toContain(`recordSuccess ${RUN_ID}`);
+    expect(calls.findIndex((call) => call.startsWith("recordSuccess"))).toBeGreaterThan(calls.findIndex((call) => call.startsWith("recordModelCheckRunner")));
+  });
+
+  it("does not record a success, and does not register, when the qualification failed", async () => {
+    const { effects, calls } = harness({ statuses: [failed("qualification-failed-exit-3")] });
+    await expect(runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow();
+    expect(calls.some((call) => call.startsWith("recordSuccess"))).toBe(false);
+  });
+
+  it("a success that cannot be recorded is a warning, never a failure of the qualification that already succeeded", async () => {
+    const { effects, calls, printed } = harness({ statuses: [undefined, undefined, succeeded], failAt: "recordSuccess" });
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    expect(calls.some((call) => call.startsWith("deleteObject") && call.includes("challenge"))).toBe(true);
+    expect(printed.join("\n")).toMatch(/could not record the success/);
   });
 
   it("never registers when the status says FAILED, and leaves the instance for diagnosis with the way to end it", async () => {
@@ -424,6 +534,44 @@ describe("runTestQualification", () => {
     expect(calls.filter((call) => call.startsWith("runInstance"))).toHaveLength(1);
     expect(calls.some((call) => call.startsWith("register"))).toBe(false);
     expect(printed.join("\n")).toContain("aws ec2 terminate-instances --instance-ids i-0123456789abcdef0");
+  });
+
+  it("marks the attached volume DeleteOnTermination right after the attachment, before anything else uses the runner (QUALVOLDELETE)", async () => {
+    const { effects, calls, printed } = harness();
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    const attach = calls.findIndex((call) => call.startsWith("attachVolume"));
+    expect(calls[attach + 1]).toBe(`setVolumeDeleteOnTermination vol-0123456789abcdef0 ${INSTANCE_ID} /dev/sdf`);
+    expect(printed.join("\n")).toContain("will be deleted when");
+    expect(printed.join("\n")).not.toContain("WARNING");
+  });
+
+  it("when DeleteOnTermination cannot be set it says so clearly, prints the by-hand delete, finishes the qualification and repeats the reminder at the end (QUALVOLDELETE)", async () => {
+    const { effects, calls, printed } = harness({ failAt: "setVolumeDeleteOnTermination" });
+    await runTestQualification(plan(), effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" });
+    // The qualification still registers: the volume is housekeeping, not part of the verdict.
+    expect(calls.some((call) => call.startsWith("register "))).toBe(true);
+    const text = printed.join("\n");
+    expect(text).toContain("WARNING: could not set DeleteOnTermination on volume vol-0123456789abcdef0");
+    expect(text).toContain("setVolumeDeleteOnTermination failed");
+    expect(text).toContain("NOT be deleted when the runner is terminated");
+    // Said at the time and again at the end, each with the command.
+    expect(text.match(/aws ec2 delete-volume --volume-id vol-0123456789abcdef0/g)).toHaveLength(2);
+    expect(text).toContain("Reminder: DeleteOnTermination could not be set");
+    expect(printed.lastIndexOf("  aws ec2 delete-volume --volume-id vol-0123456789abcdef0 --profile agentx-test --region us-east-1")).toBeGreaterThan(printed.findIndex((line) => line.startsWith("Reminder") || line.includes("Reminder")));
+  });
+
+  it("after a failure later in the run, says the flagged volume goes with the instance and prints no delete-volume for it; when the flag could not be set it still prints it (QUALVOLDELETE)", async () => {
+    const flagged = harness({ failAt: "privateIpOf" });
+    await expect(runTestQualification(plan(), flagged.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow("privateIpOf failed");
+    const text = flagged.printed.join("\n");
+    expect(text).toContain("terminate-instances --instance-ids i-0123456789abcdef0");
+    expect(text).toContain("marked DeleteOnTermination");
+    expect(text).not.toContain("delete-volume");
+    const unflagged = harness({ failAt: "privateIpOf" });
+    unflagged.effects.setVolumeDeleteOnTermination = async () => { throw new Error("modify refused"); };
+    await expect(runTestQualification(plan(), unflagged.effects, { revision: "0123456789ab", profile: "agentx-test", region: "us-east-1" })).rejects.toThrow("privateIpOf failed");
+    expect(unflagged.printed.join("\n")).toContain("aws ec2 delete-volume --volume-id vol-0123456789abcdef0");
+    expect(unflagged.printed.join("\n")).not.toContain("marked DeleteOnTermination");
   });
 
   it("prints only the volume to delete when the launch itself fails", async () => {

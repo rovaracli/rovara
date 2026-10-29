@@ -347,7 +347,7 @@ describe("GET /v1/app/me", () => {
     const me = await brokerCall(h, "GET", "/v1/app/me", second.token, "ANY /v1/app/{proxy+}");
     expect(me.status).toBe(200);
     const parsed = AppMeResponseSchema.parse(me.body);
-    expect(parsed.developer).toEqual({ id: cloudId, name: "Priya Rao", email: "priya@acme.dev", orgRole: "owner" });
+    expect(parsed.developer).toEqual({ id: cloudId, name: "Priya Rao", email: "priya@acme.dev", orgRole: "owner", nameChosen: false });
     expect(parsed.org).toMatchObject({ orgId: first.claims.org, name: "Priya Rao's team", plan: "trial" });
     expect(parsed.identities.map((identity) => identity.provider)).toEqual(["cloud", "github"]);
     expect(parsed.identities[1]).toMatchObject({ email: "priya@acme.dev", login: "priya-dev" });

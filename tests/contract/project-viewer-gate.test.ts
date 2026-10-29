@@ -8,7 +8,8 @@ import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
 import { registerRevision } from "../support/developer-task-broker.js";
-import { createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
@@ -26,7 +27,7 @@ function setGrant(db: FakeDynamoDb, who: Developer, role: ProjectRole): void {
 }
 
 async function withKit(): Promise<Harness> {
-  const h = await createDeveloperTaskBroker();
+  const h = await createSingleAnswerPlanBroker();
   await h.orgOf(KIT);
   h.db.set({ pk: `SESSION#${KIT.sessionId}`, sk: "META", sessionId: KIT.sessionId, developerId: KIT.developerId, amr: KIT.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: "oidc", displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });

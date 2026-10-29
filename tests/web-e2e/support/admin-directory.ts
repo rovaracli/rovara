@@ -1,5 +1,5 @@
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
-import { GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey, orgMetaKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
@@ -36,6 +36,15 @@ export function createAdminDirectory() {
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
+  if (command instanceof BatchGetCommand) {
+   const Responses: Record<string, Row[]> = {};let count = 0;
+   for (const [table, request] of Object.entries(command.input.RequestItems ?? {})) {
+    const keys = request.Keys ?? [];count += keys.length;
+    if (count > 100 || request.ProjectionExpression !== undefined) throw new Error("Unsupported fixture batch read.");
+    Responses[table] = keys.flatMap(key => { if (typeof key.pk !== "string" || typeof key.sk !== "string") throw new Error("Invalid fixture batch key.");const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; });
+   }
+   return { Responses };
+  }
   if (command instanceof QueryCommand) {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
    if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");

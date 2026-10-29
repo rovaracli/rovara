@@ -11,7 +11,7 @@
   "dependencies": {
     "@rovara/audit-verifier": "0.1.0",
     "typescript": "5.9.3",
-    "zod": "4.6.5",
+    "zod": "4.6.6",
     "@aws-crypto/sha256-js": "5.2.0"
   },
   "sideEffects": [

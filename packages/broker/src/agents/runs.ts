@@ -48,6 +48,7 @@ import {
   type WorkOrigin,
   type WorkflowPath,
   type WorkflowProgram,
+  ROVARA_CODE_AGENT_ID,
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { resolvePayer, type PayerFacts } from "../spend/payer.js";
@@ -277,6 +278,8 @@ export interface PrepareRunInput {
   resultContract?: ResultContract;
   /** The owner OK'd the version named (`RunStartOptions.versionApproved`). */
   versionApproved?: true;
+  /** The start is a Rovara Code intent (`RunStartOptions.codeIntent`), the one start that may run the project's process layer. */
+  allowProcessLayer?: true;
   /** The project's repositories, from the revision the task starts on. */
   repositories: ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }>;
   /** The models the project approves (`definition.models.approved`), from the same revision; absent when it lists none. */
@@ -300,6 +303,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
       ...(input.agent === undefined ? {} : { agent: input.agent }),
       ...(input.role === undefined ? {} : { role: input.role }),
       ...(input.versionApproved === true ? { versionApproved: true } : {}),
+      ...(input.allowProcessLayer === true ? { allowProcessLayer: true } : {}),
     });
   } else {
     if (input.agent === undefined) throw agentXError("CONFIG_INVALID", "agent: an autonomous run names its agent");
@@ -354,9 +358,17 @@ export function runLimitsOf(base: number, requested: number | undefined, maxPerR
   return { runLimitUsd, stopAtUsd: maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, maxPerRunUsd), paused: runLimitUsd === 0 };
 }
 
+/**
+ * The limits of a run of the agent `ref`. A project's process layer ("How we work") is Rovara Code with the project's rules on top: its tasks keep the org's Rovara Code max per run (set by an
+ * owner or admin on the built-in), and the layer's own, when it has one, can only lower it. A project publishing a layer never lifts the org's cap.
+ */
 async function runLimits(deps: AgentRunDependencies, orgId: OrgId, ref: TaskAgentRef, requested: number | undefined): Promise<Pick<PreparedRun, "runLimitUsd" | "stopAtUsd" | "paused" | "maxPerRunUsd">> {
   const record = ref.builtin ? await deps.store.getBuiltinSettings(orgId, ref.agentId) : await deps.store.get(orgId, ref.agentId);
-  const maxPerRunUsd = record === undefined ? undefined : effectiveMaxPerRun(record, await readGuardrails(deps, orgId));
+  const guardrails = await readGuardrails(deps, orgId);
+  const own = record === undefined ? undefined : effectiveMaxPerRun(record, guardrails);
+  const base = ref.process === true && !ref.builtin ? await deps.store.getBuiltinSettings(orgId, ROVARA_CODE_AGENT_ID) : undefined;
+  const fromBase = base === undefined ? undefined : effectiveMaxPerRun(base, guardrails);
+  const maxPerRunUsd = own === undefined ? fromBase : fromBase === undefined ? own : Math.min(own, fromBase);
   return { ...runLimitsOf(PER_TASK_BUDGET_USD, requested, maxPerRunUsd), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }) };
 }
 

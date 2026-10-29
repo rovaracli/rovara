@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type OrgId } from "./org.js";
-import type { SessionSharedNoticeSchema} from "./realtime.js";
+import type { CodeSettingsChangedNoticeSchema, SessionSharedNoticeSchema} from "./realtime.js";
 import { channel, type RealtimeNotice } from "./realtime.js";
 import { z } from "zod";
 
@@ -50,13 +50,14 @@ export type RealtimeTokenRequest = Omit<z.infer<typeof RealtimeTokenRequestSchem
 export type RealtimeTokenAnswer = { ok: true; token: string; expiresAt: string } | { ok: false; error: "invalid_request" | "unavailable" };
 
 export type SessionSharedNotice = z.infer<typeof SessionSharedNoticeSchema>;
+export type CodeSettingsChangedNotice = z.infer<typeof CodeSettingsChangedNoticeSchema>;
 
 /**
  * What `GET /v1/app/changes` gives for one notice: the notice, when it was made, and its `sk`, the notice's own place in the feed (it is also a cursor).
  * The feed holds its cursor back by `CHANGES_SETTLE_MS`, so a notice made in the last 30 seconds can be given more than once: **a client drops repeats by `sk`**
  * (the same notice always has the same `sk`, so keeping the first or the last copy gives the same result).
  */
-export type ChangesFeedEntry = (RealtimeNotice | SessionSharedNotice) & { at: string; sk: string };
+export type ChangesFeedEntry = (RealtimeNotice | SessionSharedNotice | CodeSettingsChangedNotice) & { at: string; sk: string };
 
 export interface ChangesFeedPage {
   notices: ChangesFeedEntry[];
@@ -66,4 +67,4 @@ export interface ChangesFeedPage {
   reset?: true;
 }
 
-export { REALTIME_NAMESPACE, RealtimeNoticeSchema, type RealtimeNotice, sessionSegment, channel, sessionChannel, type RealtimeChannel, parseRealtimeChannel, RealtimeTokenResponseSchema, type RealtimeTokenResponse, SessionSharedNoticeSchema } from "./realtime.js";
+export { REALTIME_NAMESPACE, RealtimeNoticeSchema, type RealtimeNotice, sessionSegment, channel, sessionChannel, type RealtimeChannel, parseRealtimeChannel, RealtimeTokenResponseSchema, type RealtimeTokenResponse, SessionSharedNoticeSchema, CodeSettingsChangedNoticeSchema } from "./realtime.js";

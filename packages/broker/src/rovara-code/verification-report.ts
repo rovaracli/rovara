@@ -59,6 +59,14 @@ export interface ChangedFileEntry {
   renamedFrom?: string | undefined;
   added?: number | undefined;
   removed?: number | undefined;
+  /** A test file the change deletes, or only takes lines out of (Plan 6 Task 16): what a fix that hides a failure by removing its test looks like. */
+  testsRemoved?: true | undefined;
+  /** A test file in which a line the change adds skips a test (`.skip(`, `xit(`, `@Disabled`, `t.Skip(`, `pytest.mark.skip`, ...). */
+  testsSkipped?: true | undefined;
+  /** package.json: a line of the `test` scripts was added or removed (Plan 6 Task 16): what a fix looks like that makes the tests not run. */
+  testCommandChanged?: true | undefined;
+  /** The diff changes a route declaration or response model, or a schema, serializer, OpenAPI or protobuf file: the public API or the shape of a response may be different for existing callers. */
+  apiShapeChanged?: true | undefined;
 }
 
 /**

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PARALLEL_PARTS_MAX } from "../../packages/contracts/src/rovara-code.js";
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
 import { workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
@@ -17,7 +17,7 @@ const BASE = "a".repeat(40);
 const t = (digit: string) => digit.repeat(40);
 
 async function approvedParts(options: { version?: "1.0.0" | "1.1.0"; switchOn?: boolean; room?: number } = {}) {
-  const harness = await createDeveloperTaskBroker({
+  const harness = await createSingleAnswerPlanBroker({
     ...(options.switchOn === true ? { developerExtra: { workflowDependenciesEnabled: true } } : {}),
     brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => BASE) } },
   });

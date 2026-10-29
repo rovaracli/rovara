@@ -1,6 +1,7 @@
 // Plan 2, Task 11: what the app shows of a project (its list and its detail) and what each project role may do. A person's
 // role in a project is `maintainer`, `contributor` or `viewer`; an org owner or admin is a maintainer of every project in their org.
 import { z } from "zod";
+import { SlackChannelIdSchema, SlackTeamIdSchema } from "./browser-ids.js";
 import { isPublicSuffix } from "./public-suffix.js";
 
 export const ProjectRoleSchema = z.enum(["maintainer", "contributor", "viewer"]);
@@ -110,6 +111,23 @@ export type ProjectMemberChangeResponse = z.infer<typeof ProjectMemberChangeResp
 export const RemoveProjectMemberBodySchema = z.object({ requestId: z.string().uuid() }).strict();
 export const ProjectMemberRemoveResponseSchema = z.object({ developerId: z.string(), removed: z.boolean() });
 export type ProjectMemberRemoveResponse = z.infer<typeof ProjectMemberRemoveResponseSchema>;
+
+/**
+ * `PUT /v1/app/projects/{name}/slack-channel` (release 0.4.17): an org owner or admin binds a Slack channel of the org's Slack workspace to the project.
+ * `teamId` is optional: without it the org's single Slack workspace is used. `changed` is false when the channel was already bound to this project.
+ */
+export const PutProjectSlackChannelBodySchema = z.object({ requestId: z.string().uuid(), channelId: SlackChannelIdSchema, teamId: SlackTeamIdSchema.optional() }).strict();
+export type PutProjectSlackChannelBody = z.infer<typeof PutProjectSlackChannelBodySchema>;
+export const ProjectSlackChannelResponseSchema = z.object({
+  binding: z.object({ teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, projectName: z.string(), updatedAt: z.string() }),
+  changed: z.boolean(),
+});
+export type ProjectSlackChannelResponse = z.infer<typeof ProjectSlackChannelResponseSchema>;
+
+/** `DELETE /v1/app/projects/{name}/slack-channel`: unbinds one channel of the project; `removed` is false when it was not bound. */
+export const RemoveProjectSlackChannelBodySchema = PutProjectSlackChannelBodySchema;
+export const ProjectSlackChannelRemoveResponseSchema = z.object({ teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, removed: z.boolean() });
+export type ProjectSlackChannelRemoveResponse = z.infer<typeof ProjectSlackChannelRemoveResponseSchema>;
 
 export const AppProjectsResponseSchema = z.object({ projects: z.array(AppProjectSummarySchema) });
 export type AppProjectsResponse = z.infer<typeof AppProjectsResponseSchema>;

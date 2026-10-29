@@ -33,8 +33,27 @@ describe("browser contracts entry", () => {
     expect([...(await graph("packages/contracts/src/web.ts"))].sort()).toEqual(manifest);
   });
   it("refuses a Node import added to a listed file", async () => {
-    const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
-    expect(results.flatMap(result => result.messages).some(message => message.ruleId === "no-restricted-imports")).toBe(true);
+    // Run bare, ESLint types the file with tsconfig.lint.json, the program over the whole repository (about 2,900 files; one eslint process over all of it needed
+    // about 14 GB), and a worker on an 8 GB CI runner, whose heap defaults to about 2 GB, ran out of memory. npm run lint types each file with the program that owns it
+    // instead (scripts/lint-shards.ts, through ROVARA_LINT_PROJECT, which eslint.config.js reads when it loads). The file is in the contracts package's program, so
+    // the same config and the same rule run over a few hundred files.
+    // typescript-eslint also switches to "single run" when CI=true (GitHub Actions sets it): it then reads the file from disk, not the text given to lintText, finds no
+    // Node import in the real file and reports nothing (run 40693750224). TSESTREE_SINGLE_RUN=false keeps the program on the text under test.
+    const before = process.env.ROVARA_LINT_PROJECT;
+    const beforeSingleRun = process.env.TSESTREE_SINGLE_RUN;
+    process.env.ROVARA_LINT_PROJECT = "./tsconfig.lint/pkg-contracts.json";
+    process.env.TSESTREE_SINGLE_RUN = "false";
+    try {
+      const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
+      // The messages are the assertion's own message, so a run that returns none of the rule's (a parse error, an ignored file) says why in its log.
+      const messages = results.flatMap(result => result.messages);
+      expect(messages.some(message => message.ruleId === "no-restricted-imports"), JSON.stringify(messages.map(message => ({ ruleId: message.ruleId, fatal: message.fatal, text: message.message.slice(0, 300) })))).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.ROVARA_LINT_PROJECT;
+      else process.env.ROVARA_LINT_PROJECT = before;
+      if (beforeSingleRun === undefined) delete process.env.TSESTREE_SINGLE_RUN;
+      else process.env.TSESTREE_SINGLE_RUN = beforeSingleRun;
+    }
   });
   it("keeps schema fingerprints byte-compatible with stored Node hashes", () => {
     for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {

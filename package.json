@@ -13,7 +13,8 @@
   "scripts": {
     "build": "tsc -b && npm run build:web",
     "clean": "tsc -b --clean",
-    "lint": "node --max-old-space-size=6144 node_modules/eslint/bin/eslint.js .",
+    "lint": "node scripts/lint-shards.ts",
+    "lint:single": "node --max-old-space-size=14336 node_modules/eslint/bin/eslint.js .",
     "agentx": "node packages/cli/dist/bin.js",
     "preflight": "tsx scripts/preflight.ts",
     "eval": "tsx scripts/eval.ts",
@@ -25,6 +26,7 @@
     "test:boot-script": "AGENTX_BOOT_SCRIPT_DOCKER=1 vitest run tests/live/ec2-boot-script.test.ts",
     "typecheck": "tsc -b --pretty false",
     "typecheck:all": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check",
+    "typecheck:changed": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check --changed",
     "typecheck:baseline": "tsc -b --pretty false && node scripts/typecheck-baseline.ts update",
     "release:prod": "tsx scripts/release-production.ts",
     "session:e2e": "tsx scripts/session-e2e.ts",
@@ -61,6 +63,7 @@
     "eslint": "10.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "jsdom": "29.1.1",
+    "jsonata": "2.2.1",
     "playwright-core": "1.64.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -68,6 +71,17 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.0",
     "vite": "8.3.0",
-    "vitest": "5.0.1"
+    "vitest": "5.0.3"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.12.2"
+    },
+    "e2e": {
+      "zod": "4.6.6"
+    },
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "2.1.3"
+    }
   }
 }

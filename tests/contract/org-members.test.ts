@@ -17,7 +17,8 @@ import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { OIDC_ISSUER, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -34,7 +35,7 @@ const errorOf = (answer: { body: Record<string, unknown> }) => answer.body.error
 /** The broker with Omar an owner and Maya a member of the install's org; sessions end through a spy. */
 async function org(options: Parameters<typeof createDeveloperTaskBroker>[0] = {}) {
   const endDeveloperSessions = vi.fn(async () => ({ ok: true as const }));
-  const harness = await createDeveloperTaskBroker({ ...options, developerExtra: { endDeveloperSessions, ...options.developerExtra } });
+  const harness = await createSingleAnswerPlanBroker({ ...options, developerExtra: { endDeveloperSessions, ...options.developerExtra } });
   seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
   const remove = (by: Developer, who: Developer) => harness.dev(by, "DELETE", `/v1/app/org/members/${who.developerId}`);
   return { ...harness, endDeveloperSessions, remove };
@@ -54,7 +55,7 @@ function person(harness: Harness, name: string, role: OrgRole, email = `${name.t
 const roleOf = (harness: Harness, who: Developer) => (harness.db.get(orgMemberKey(TEST_ORG, who.developerId)) as { role?: string } | undefined)?.role;
 
 describe("GET /v1/app/org/members", () => {
-  it("lists full details for an owner, with names, emails, roles and sign-in methods (a linked person lists cloud and github)", async () => {
+  it("lists every member for any member, by name and role; an owner or admin also sees emails, join dates and sign-in methods (a linked person lists cloud and github)", async () => {
     const harness = await org();
     const { dev, db } = harness;
     const bea = person(harness, "Bea", "admin", "bea@example.com");
@@ -64,12 +65,21 @@ describe("GET /v1/app/org/members", () => {
     link("cloud", "k1", "2026-10-01T00:00:00.000Z");
     link("github", "k2", "2026-10-02T00:00:00.000Z");
 
-    const listed = await dev(OMAR, "GET", "/v1/app/org/members");
+    // Release 0.4.16 (owner decision "option A"): a plain member is shown names and roles, nothing more.
+    const listed = await dev(MAYA, "GET", "/v1/app/org/members");
     expect(listed.status).toBe(200);
-    const members = listed.body.members as Array<Record<string, unknown>>;
+    const seenByMember = listed.body.members as Array<Record<string, unknown>>;
+    expect(seenByMember.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);
+    expect(seenByMember.find((member) => member.name === "Bea")).toEqual({ developerId: bea.developerId, name: "Bea", role: "admin" });
+    expect(JSON.stringify(seenByMember)).not.toMatch(/@|joinedAt|identities/);
+
+    const forOwner = await dev(OMAR, "GET", "/v1/app/org/members");
+    expect(forOwner.status).toBe(200);
+    const members = forOwner.body.members as Array<Record<string, unknown>>;
     expect(members.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);
     expect(members.find((member) => member.name === "Bea")).toMatchObject({ developerId: bea.developerId, email: "bea@example.com", role: "admin", identities: ["cloud", "github"] });
     expect(members.find((member) => member.developerId === OMAR.developerId)).toMatchObject({ name: "Omar Diaz", role: "owner", identities: ["oidc"] });
+    expect(members.every((member) => typeof member.joinedAt === "string")).toBe(true);
     expect(JSON.stringify(members)).not.toMatch(/issuer|subject|https:\/\/github\.example/);
   });
 
@@ -261,7 +271,7 @@ describe("POST /v1/app/org/leave", () => {
     const orgA = `org_${"a".repeat(20)}`;
     const orgB = `org_${"b".repeat(20)}`;
     const zed: Developer = { developerId: createHash("sha256").update("zed").digest("hex"), name: "Zed Yu", provider: "oidc", sessionId: "s-zed" };
-    const harness = await createDeveloperTaskBroker({
+    const harness = await createSingleAnswerPlanBroker({
       brokerExtra: { cloud: true },
       orgResolver: async ({ developerId }) => (developerId === zed.developerId ? orgA : TEST_ORG),
       developerExtra: { endDeveloperSessions: async () => ({ ok: true as const }) },
@@ -813,15 +823,18 @@ describe("every task launch checks that the creator is still a member (ruling R6
   const source = readFileSync(join(import.meta.dirname, "../../packages/broker/src/aws/developer-tasks.ts"), "utf8");
   const functions = source.split(/^(?=(?:export )?(?:async )?function )/m);
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
-  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate"];
+  // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
+  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound"];
 
-  it("finds the eighteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the twenty-one acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
     // limit was approved (`resumeAfterRunLimitApproval`), which checks the creator first.
     // Plan 6 adds four, each checked first like the rest: the Understand step and the plan step after it (Task 4), the plan check and the plan's one revision (Task 8).
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(18);
+    // The nineteenth is Task 16's automatic feedback round (`startAutomaticFeedbackRound`), checked by its only caller.
+    // Mainline #408 adds two, both checked first: the grounding of the plan against the current app (`startTaskWorkflowE2EGroundingFromSystem`) and the planner's one revision after the plan self-check (`startTaskWorkflowPlanRevisionFromSystem`).
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(21);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;

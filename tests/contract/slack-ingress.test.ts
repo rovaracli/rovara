@@ -1219,6 +1219,16 @@ describe("shared task threads (spec 025 FR-035, C10)", () => {
     expect(h.posts).toEqual([{ channel, threadTs: "1695500000.000100", text: VIEW_ONLY_NOTICE }]);
   });
 
+  // C43 d (owner ruling 2026-10-26): lowering a share to view is quiet in the thread, so the first reply after it is where the person learns their access changed. The refusal must say so.
+  it("tells a person whose reply no longer drives the task that they have view-only access", async () => {
+    const h = harness({ shared: { threads: { "1695500000.000100": { mode: "view" } } } });
+    await send(h.handler, reply("Ev0000000100"));
+    expect(h.posts).toHaveLength(1);
+    expect(h.posts[0]?.text).toMatch(/view-only access/);
+    expect(h.posts[0]?.text).toBe(VIEW_ONLY_NOTICE);
+    expect(h.queue).toEqual([]);
+  });
+
   it("says it at most once an hour per thread", async () => {
     const h = harness({ shared: { threads: { "1695500000.000100": { mode: "view" } } } });
     await send(h.handler, reply("Ev0000000102"));

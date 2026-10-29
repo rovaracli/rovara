@@ -40,12 +40,19 @@ export interface FakeGitHubOptions {
  * GitHub as the broker and worker see it: tokens it issued (and for which access), pushes made with them, commit
  * trees, and pull requests opened from a pushed branch.
  */
+/** The login the App's own comments carry in this fake. */
+export const OWN_LOGIN = "rovara-test[bot]";
+
 export class FakeGitHub {
   readonly tokens = new Map<string, "clone" | "push">();
   readonly pushes = new Map<string, { commit: string; tree: string; token: string }>();
   readonly commits = new Map<string, string>();
   /** Each pushed commit's parents. */
   readonly parents = new Map<string, string[]>();
+  /** The commit each base branch is at (Plan 6 Task 17: what a merge of the base takes), by branch name. */
+  readonly baseHeads = new Map<string, string>();
+  /** The commits that merge the base branch into a pull request's branch: pushed by a merge of the base, or a conflict round's fix pushed as one. */
+  readonly baseMerges = new Set<string>();
   readonly pullRequests: FakePullRequest[] = [];
   /** The repository's files by path (as GitHub names them, inside the repository), for the plan's cited code. */
   readonly files = new Map<string, string>();
@@ -55,6 +62,8 @@ export class FakeGitHub {
   readonly appTokens: Array<{ token: string; permissions: Record<string, string> }> = [];
   /** The kind of worker invocation now running, or undefined between invocations. */
   during: string | undefined;
+  /** Every reply Rovara left in a review thread (Plan 6 Task 16), in order, by the comment it replied to. */
+  readonly replies: Array<{ number: number; commentId: string; body: string }> = [];
   /** Every push that moved a branch, in order, with the kind of worker invocation running when it was (AgentX's, or someone else's). */
   readonly pushLog: Array<{ branch: string; commit: string; tree: string; parents: string[]; token: string; during: string | undefined }> = [];
 
@@ -319,7 +328,8 @@ export class FakeGitHub {
 
   /** The feedback GitHub holds, as the provider hands it on: submitted reviews with a body, and every comment. */
   private feedbackComments(pullRequest: FakePullRequest): StoredComment[] {
-    return pullRequest.comments.filter((comment) => comment.kind !== "REVIEW" || (comment.reviewState !== "PENDING" && comment.body.trim() !== ""));
+    // The App's own comments (Rovara's replies) are not feedback, as the real provider leaves them out (Plan 6 Task 16).
+    return pullRequest.comments.filter((comment) => comment.author !== OWN_LOGIN && (comment.kind !== "REVIEW" || (comment.reviewState !== "PENDING" && comment.body.trim() !== "")));
   }
 
   readonly gateway = {
@@ -356,6 +366,8 @@ export class FakeGitHub {
     },
     getBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
       this.fault("getBranchHead");
+      const base = this.baseHeads.get(branch);
+      if (base !== undefined) return base;
       const pushed = this.pushes.get(branch);
       if (pushed === undefined) throw new Error(`GitHub has no branch ${branch}`);
       return pushed.commit;
@@ -380,8 +392,22 @@ export class FakeGitHub {
       this.fault("getPullRequestFeedback");
       const pullRequest = this.find(number);
       const head = this.visibleHead(pullRequest, true);
+      const own = new Set(pullRequest.comments.filter((comment) => comment.author === OWN_LOGIN).map((comment) => comment.id));
       return { pullRequest: { ...this.details(pullRequest, head), headTreeSha: head.tree }, comments: this.feedbackComments(pullRequest).map(publicComment),
-        threads: (pullRequest.threads ?? []).map((thread) => ({ ...thread, commentIds: [...thread.commentIds] })) };
+        threads: (pullRequest.threads ?? []).map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !own.has(id)) })) };
+    },
+    replyToReviewThread: async (_repositoryUrl: string, number: number, commentId: string, body: string): Promise<"replied" | "gone"> => {
+      this.fault("replyToReviewThread");
+      const pullRequest = this.find(number);
+      const target = pullRequest.comments.find((comment) => comment.id === `review_comment:${commentId}`);
+      if (target?.threadId === undefined) return "gone";
+      const databaseId = this.nextId.reviewComment++;
+      const reply: StoredComment = { id: `review_comment:${databaseId}`, threadId: target.threadId, kind: "REVIEW_COMMENT", url: `${pullRequest.url}#discussion_r${databaseId}`,
+        author: OWN_LOGIN, updatedAt: new Date().toISOString(), body, ...(target.path === undefined ? {} : { path: target.path }), ...(target.line === undefined ? {} : { line: target.line }) };
+      pullRequest.comments.push(reply);
+      pullRequest.threads!.find((thread) => thread.id === target.threadId)!.commentIds.push(reply.id);
+      this.replies.push({ number, commentId, body });
+      return "replied";
     },
   };
 
@@ -396,6 +422,8 @@ export class FakeGitHub {
     const headers = new Headers(init?.headers);
     if (!/^Bearer \S+$/.test(headers.get("authorization") ?? "")) return answer(401, { message: "Requires authentication" });
     const path = url.pathname;
+    // The App itself (its slug names the login its own comments carry).
+    if (method === "GET" && path === "/app") return answer(200, { slug: OWN_LOGIN.replace("[bot]", "") });
     if (method === "GET" && path === `/repos/${FULL_NAME}/installation`) return answer(200, { id: INSTALLATION_ID, account: { login: OWNER } });
     if (method === "POST" && path === `/app/installations/${INSTALLATION_ID}/access_tokens`) {
       const body = JSON.parse((typeof init?.body === "string" ? init.body : "{}")) as { permissions?: Record<string, string> };

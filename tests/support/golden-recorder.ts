@@ -35,7 +35,7 @@ import { createFixtureDirectory } from "../fixtures/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { planAnswer, planDocument } from "./plan-documents.js";
-import { MAYA, createDeveloperTaskBroker, recordStream } from "./developer-task-broker.js";
+import { MAYA, createSingleAnswerPlanBroker, recordStream, type createDeveloperTaskBroker } from "./developer-task-broker.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { FAUX_MODEL, fauxModelRuntime } from "./faux-model.js";
 import { goldenUuid, seedGoldenIds } from "./golden-ids.js";
@@ -366,6 +366,7 @@ async function captureOperation(handles: BrokerHandles, workspaceId: string, ope
   const posted: string[] = [];
   const delivery = await createEc2Delivery({
     applicationPlanNotNegotiated: async () => undefined,
+    planQualityNotNegotiated: async () => undefined,
     sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "10.0.0.7" }) },
     binding: async () => ({ deploymentMode: "ec2-ebs" }) as never,
     sign: async () => new Uint8Array(64).fill(7),
@@ -401,7 +402,7 @@ let recordingBrokerExtra: Record<string, unknown> = {};
 
 async function developerBroker(proxy: boolean, brokerExtra: Record<string, unknown> = {}) {
   const access = proxy ? fakeModelAccess() : undefined;
-  const harness = await createDeveloperTaskBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...recordingBrokerExtra, ...brokerExtra } });
+  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...recordingBrokerExtra, ...brokerExtra } });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -774,7 +775,7 @@ function withoutPath<T>(root: T, path: string): T {
  * is left out of the comparison with the fixture; everything else must equal the fixture. `change` names the item of the
  * plan's "Deliberate changes" the path belongs to. With UPDATE_GOLDEN=1 the fixture is written instead and nothing is compared.
  */
-export function expectGolden(name: GoldenScenario, record: unknown, deliberate: Array<{ path: string; expected: unknown; change: 1 | 2 | 3 | 4 | 5 | 6 }> = []): void {
+export function expectGolden(name: GoldenScenario, record: unknown, deliberate: Array<{ path: string; expected: unknown; change: 1 | 2 | 3 | 4 | 5 | 6 | 7 }> = []): void {
   if (updatingGolden()) {
     mkdirSync(FIXTURE_DIRECTORY, { recursive: true });
     writeFileSync(fixturePath(name), goldenText(record));

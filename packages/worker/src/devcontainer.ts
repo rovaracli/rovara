@@ -23,11 +23,12 @@ import {
   hostPathResolver,
   type ContainerInspection,
 } from "./devcontainer-policy.js";
+import { inertContextText } from "./context-text.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
-import type { DockerCli } from "./swebench/containers.js";
-import { hiddenWorkspaceDirectories } from "./workspace-state.js";
+import { createDockerCli, type DockerCli } from "./swebench/containers.js";
+import { hiddenWorkspaceDirectories, isMaskVolumeName } from "./workspace-state.js";
 
 const execFile = promisify(execFileCallback);
 const UP_TIMEOUT_MS = 20 * 60_000;
@@ -132,7 +133,7 @@ export function devcontainerContextFile(paths: DevcontainerPaths): { path: strin
     path: "AgentX devcontainer",
     content: [
       "Shell commands (the bash tool) run inside this project's devcontainer.",
-      `The repository is at ${paths.hostFolder}. Inside the devcontainer it is also at ${paths.containerFolder}.`,
+      `The repository is at ${inertContextText(paths.hostFolder).text}. Inside the devcontainer it is also at ${inertContextText(paths.containerFolder).text}.`,
       "Both paths name the same files, in the file tools and in the shell; prefer the first.",
     ].join("\n"),
   };
@@ -173,15 +174,21 @@ export interface DevcontainerChecks {
   inspect(containerId: string): Promise<ContainerInspection>;
   /** Stops and deletes the container. */
   remove(containerId: string): Promise<void>;
+  /** Deletes volumes by name, once their container is gone; one already gone or still in use is left. */
+  removeVolumes?(names: readonly string[]): Promise<void>;
 }
 
 /** The empty volume mounted over the workspace's Docker data folder in every dev container. */
 export const DOCKER_DATA_MASK_VOLUME = "agentx-docker-data-mask";
 
-/** The empty volume mounted over one of the workspace's hidden folders: the Docker data folder keeps its original name. */
-function maskVolume(path: string): string {
+/**
+ * The empty volume mounted over one of the workspace's hidden folders. Its name is the folder's and this start's own
+ * (`token`), so what a container writes into it is not seen by another container; the Docker data folder keeps its
+ * original name as the prefix.
+ */
+function maskVolume(path: string, token: string): string {
   const name = basename(path);
-  return name === DOCKER_DATA_DIRECTORY ? DOCKER_DATA_MASK_VOLUME : `agentx-mask-${name.replace(/^\./u, "")}`;
+  return `${name === DOCKER_DATA_DIRECTORY ? DOCKER_DATA_MASK_VOLUME : `agentx-mask-${name.replace(/^\./u, "")}`}-${token}`;
 }
 
 export function devcontainerTarget(rootPath: string, project: StoredProjectDefinition): DevcontainerTarget | undefined {
@@ -229,17 +236,17 @@ export async function ensureDevcontainer(cli: DevcontainerCli, target: Devcontai
   let hidden = await hiddenWorkspaceDirectories(target.rootPath);
   const started = await start(hidden);
   if (cli.checks === undefined) return started;
-  let problems = await startedContainerProblems(cli.checks, started.containerId, target, hidden);
+  let { problems, volumes } = await startedContainerProblems(cli.checks, started.containerId, target, hidden);
   let current = started;
   if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE)) {
     // A container created before AgentX hid these folders: created again, with them hidden.
-    await removeStartedContainer(cli.checks, current.containerId);
+    await removeStartedContainer(cli.checks, current.containerId, volumes);
     hidden = await hiddenWorkspaceDirectories(target.rootPath);
     current = await start(hidden);
-    problems = await startedContainerProblems(cli.checks, current.containerId, target, hidden);
+    ({ problems, volumes } = await startedContainerProblems(cli.checks, current.containerId, target, hidden));
   }
   if (problems.length > 0) {
-    await removeStartedContainer(cli.checks, current.containerId);
+    await removeStartedContainer(cli.checks, current.containerId, volumes);
     throw agentXError("CONFIG_INVALID", `The dev container for ${relative(target.rootPath, target.workspaceFolder) || "."} was started with ${problems.join(", ")}, which AgentX does not allow, so AgentX removed it. A dev container feature or the image's devcontainer.metadata label can ask for these; see "Dev container" in docs/project-configuration.md.`.slice(0, 1_000));
   }
   return current;
@@ -295,7 +302,30 @@ async function assertFullConfigurationAllowed(checks: DevcontainerChecks, target
   if (reason !== undefined) {
     throw agentXError("CONFIG_INVALID", `The dev container config ${relative(target.rootPath, target.configPath)}, with its features and image, uses ${reason}, which AgentX does not allow: it would give code in the container the worker host. AgentX did not start it; see "Dev container" in docs/project-configuration.md for what is allowed.`.slice(0, 1_000));
   }
+  const localFeature = localFeatureOutsideConfigFolder(full.featuresConfiguration, target);
+  if (localFeature !== undefined) {
+    throw agentXError("CONFIG_INVALID", `The dev container config ${relative(target.rootPath, target.configPath)} uses the local feature ${localFeature}, which is not inside ${relative(target.rootPath, dirname(target.configPath)) || "."}, so AgentX did not start the dev container. A local feature must be a folder inside the dev container config's own folder, reached through no link that leaves it.`.slice(0, 1_000));
+  }
   return featureLockfile(full.featuresConfiguration, relative(target.rootPath, target.configPath));
+}
+
+/**
+ * The first local feature (one in a folder of the repository rather than from a registry) whose folder, with links resolved,
+ * is not inside the folder of devcontainer.json; undefined when each is. The CLI's own check does not resolve links.
+ */
+function localFeatureOutsideConfigFolder(featuresConfiguration: unknown, target: DevcontainerTarget): string | undefined {
+  const sets = (featuresConfiguration as { featureSets?: unknown } | null | undefined)?.featureSets;
+  const resolvePath = hostPathResolver(target.rootPath);
+  const folder = resolvePath(resolve(dirname(target.configPath)));
+  for (const set of Array.isArray(sets) ? sets as unknown[] : []) {
+    const source = (set as { sourceInformation?: { type?: unknown; userFeatureId?: unknown; resolvedFilePath?: unknown } } | null)?.sourceInformation;
+    if (source?.type !== "file-path") continue;
+    const id = typeof source.userFeatureId === "string" ? source.userFeatureId : "(unnamed)";
+    if (typeof source.resolvedFilePath !== "string") return id;
+    const fromFolder = relative(folder, resolvePath(resolve(source.resolvedFilePath)));
+    if (fromFolder.startsWith("..") || isAbsolute(fromFolder)) return id;
+  }
+  return undefined;
 }
 
 /** A devcontainer lockfile: the exact content of each remote feature, by digest. */
@@ -373,7 +403,7 @@ async function startedContainerProblems(
   containerId: string,
   target: DevcontainerTarget,
   hidden: readonly string[],
-): Promise<string[]> {
+): Promise<{ problems: string[]; volumes: string[] }> {
   let inspection: ContainerInspection;
   try {
     inspection = await containers.inspect(containerId);
@@ -383,30 +413,51 @@ async function startedContainerProblems(
   }
   const dockerDataPath = hidden.find((path) => basename(path) === DOCKER_DATA_DIRECTORY);
   const maskedPaths = hidden.filter((path) => path !== dockerDataPath);
-  return containerProblems(inspection, {
+  const problems = containerProblems(inspection, {
     rootPath: target.rootPath,
     resolvePath: hostPathResolver(target.rootPath),
     ...(dockerDataPath === undefined ? {} : { dockerDataPath }),
     maskedPaths,
   });
+  // The mask volumes this container was given, which go with it.
+  const volumes = (inspection.Mounts ?? []).flatMap((mount) => (mount.Type === "volume" && mount.Name !== undefined && isMaskVolumeName(mount.Name) ? [mount.Name] : []));
+  return { problems, volumes };
 }
 
-async function removeStartedContainer(containers: DevcontainerChecks, containerId: string): Promise<void> {
+async function removeStartedContainer(containers: DevcontainerChecks, containerId: string, volumes: readonly string[] = []): Promise<void> {
   try {
     await containers.remove(containerId);
   } catch (error) {
     // Publication removes every leftover container before it pushes, and fails when it cannot.
     throw new Error(`AgentX could not remove a dev container it does not allow: ${error instanceof Error ? error.message : String(error)}`.slice(0, 512), { cause: error });
   }
+  // The volumes are only the container's; one that cannot be removed now is swept later (removeLeftoverMaskVolumes).
+  if (volumes.length > 0) await containers.removeVolumes?.(volumes).catch(() => undefined);
+}
+
+/**
+ * Removes the mask volumes no container uses (a crash or a removal that missed them), by name; Docker lists as unused only
+ * a volume no container, running or stopped, refers to, so a resumed workspace's stopped dev container keeps its own. The
+ * worker calls it once at startup. Returns how many it removed.
+ */
+export async function removeLeftoverMaskVolumes(docker: DockerCli = createDockerCli()): Promise<number> {
+  const listed = await docker.run(["volume", "ls", "--quiet", "--filter", "dangling=true", "--filter", "name=agentx-"], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+  const names = listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter(isMaskVolumeName) : [];
+  if (names.length === 0) return 0;
+  // Docker prints the name of each volume it removed and fails for one still in use, so what it printed is what went.
+  const removed = await docker.run(["volume", "rm", ...names], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+  const gone = new Set(removed.stdout.split("\n").map((line) => line.trim()));
+  return names.filter((name) => gone.has(name)).length;
 }
 
 async function startDevcontainer(cli: DevcontainerCli, target: DevcontainerTarget, hidden: readonly string[], frozenLockfile: boolean): Promise<DevcontainerUpResult> {
+  const token = randomUUID().replace(/-/gu, "").slice(0, 12);
   const result = await cli.run([
     "up",
     ...targetArgs(target),
     ...(frozenLockfile ? ["--frozen-lockfile"] : []),
     "--mount", `type=bind,source=${target.rootPath},target=${target.rootPath}`,
-    ...hidden.flatMap((path) => ["--mount", `type=volume,source=${maskVolume(path)},target=${path}`]),
+    ...hidden.flatMap((path) => ["--mount", `type=volume,source=${maskVolume(path, token)},target=${path}`]),
     "--log-format", "json",
   ], { timeoutMs: UP_TIMEOUT_MS });
   const outcome = lastJsonLine(result.stdout);
@@ -445,6 +496,7 @@ export async function runContainerCommand(
   rootPath: string,
   command: ProjectCommand,
   signal?: AbortSignal,
+  options: ContainerCommandOptions = {},
 ): Promise<CommandResult> {
   const cwd = contained(rootPath, command.cwd);
   const run = await runInContainerGroup(exec, {
@@ -455,7 +507,9 @@ export async function runContainerCommand(
     args: [command.executable, ...command.args],
     timeoutMs: command.timeoutSeconds * 1_000,
     // The command's own variables (#54) reach the command only, never the TERM and KILL execs.
-    ...(command.env !== undefined ? { env: { ...command.env } } : {}),
+    ...(command.env !== undefined || options.defaultEnvironment !== undefined ? { env: { ...options.defaultEnvironment, ...command.env } } : {}),
+    ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+    ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
     ...(signal !== undefined ? { signal } : {}),
   });
   const { result } = run;
@@ -466,6 +520,25 @@ export async function runContainerCommand(
     ...(result.signal !== undefined ? { signal: result.signal } : {}),
     ...(run.timedOut || result.timedOut === true ? { timedOut: true } : {}),
   };
+}
+
+/**
+ * What a container's commands must not inherit from the container's own ENV. A project's devcontainer is the project's own
+ * image, whose ENV is the project's; the task sandbox is the worker's image, whose ENV is the worker's (Bug F).
+ */
+export interface ContainerCommandOptions {
+  /**
+   * Variables removed from the command's environment before it starts, unless the command sets them itself (a project
+   * command's `env`, #54). The agent's shell sets none of them: the project's `env` belongs to its setup and readiness commands.
+   */
+  unsetEnvironment?: readonly string[];
+  /**
+   * Variables the command starts with unless it sets them itself (a project command's `env`, #54; the agent's shell sets none of them). The task sandbox uses this for
+   * the Python user site (Bug K).
+   */
+  defaultEnvironment?: Readonly<Record<string, string>>;
+  /** Folders put in front of the command's PATH, unless the command sets its own PATH. The sandbox's Python user bin (Bug K). */
+  pathPrefix?: readonly string[];
 }
 
 /** The command's stderr, then a line for each step of the stop sequence that failed. */
@@ -504,7 +577,7 @@ export type ContainerExec = (
  * A timeout reports back after the stop sequence: the TERM exec, the 5 s grace period, then the KILL
  * exec (each exec bounded at 10 s); an abort reports back at once.
  */
-export function containerBashOperations(exec: ContainerExec): BashOperations {
+export function containerBashOperations(exec: ContainerExec, options: ContainerCommandOptions = {}): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (signal?.aborted) throw new Error("aborted");
@@ -515,7 +588,9 @@ export function containerBashOperations(exec: ContainerExec): BashOperations {
         cwd,
         args: [command],
         ...(timeout !== undefined && timeout > 0 ? { timeoutMs: timeout * 1_000 } : {}),
-        env: sessionEnvironment(env),
+        env: { ...options.defaultEnvironment, ...sessionEnvironment(env) },
+        ...(options.unsetEnvironment === undefined ? {} : { unsetEnvironment: options.unsetEnvironment }),
+        ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
         ...(signal !== undefined ? { signal } : {}),
         onStdout: onData,
         onStderr: onData,
@@ -537,9 +612,26 @@ interface ContainerGroupCommand {
   args: readonly string[];
   timeoutMs?: number;
   env?: Record<string, string>;
+  /** Names removed from the environment before the command starts, except those `env` sets (see ContainerCommandOptions). */
+  unsetEnvironment?: readonly string[];
+  /** Folders put in front of PATH before the command starts, unless `env` sets PATH (see ContainerCommandOptions). */
+  pathPrefix?: readonly string[];
   signal?: AbortSignal;
   onStdout?: (data: Buffer) => void;
   onStderr?: (data: Buffer) => void;
+}
+
+/** `export PATH='dir':"$PATH";` for the folders the command asks to have first on PATH, or "" when it sets its own PATH (or asks for none). */
+function pathStatement(command: ContainerGroupCommand): string {
+  if ((command.pathPrefix ?? []).length === 0 || Object.hasOwn(command.env ?? {}, "PATH")) return "";
+  const quoted = (command.pathPrefix ?? []).map((folder) => `'${folder.replaceAll("'", "'\\''")}'`).join(":");
+  return `export PATH=${quoted}:"$PATH"; `;
+}
+
+/** `unset NAME ...;` for the names the command does not set itself, or "" when there are none. */
+function unsetStatement(command: ContainerGroupCommand): string {
+  const names = (command.unsetEnvironment ?? []).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && !Object.hasOwn(command.env ?? {}, name));
+  return names.length === 0 ? "" : `unset ${names.join(" ")}; `;
 }
 
 /**
@@ -595,7 +687,7 @@ async function runInContainerGroup(
       "bash", "-c",
       // Job control only while starting the command, which puts it in its own process group; left
       // on, bash would also print a "Done" line into the output.
-      `set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
+      `${unsetStatement(command)}${pathStatement(command)}set -m; (cd -- "$1" && shift 2 && ${command.body}) & child=$!; set +m; echo "$child" > "$2"; wait "$child"; status=$?; rm -f "$2"; exit "$status"`,
       "bash", command.cwd, groupFile, ...command.args,
     ], {
       ...(command.env !== undefined ? { env: command.env } : {}),
@@ -660,6 +752,9 @@ export function createDevcontainerCli(options: { dockerPath?: string } = {}): De
       async remove(containerId) {
         await execFile(docker, ["rm", "--force", containerId], { encoding: "utf8", timeout: DOCKER_CALL_TIMEOUT_MS });
       },
+      async removeVolumes(names) {
+        await execFile(docker, ["volume", "rm", ...names], { encoding: "utf8", timeout: DOCKER_CALL_TIMEOUT_MS });
+      },
     },
   };
 }
@@ -721,7 +816,12 @@ function contained(parent: string, path: string): string {
   return candidate;
 }
 
-/** Where the file-tool helper and a Node to run it live inside a devcontainer: root-owned, mode 0555, so task code cannot replace them. */
+/**
+ * Where the file-tool helper and a Node to run it live inside a devcontainer: installed root-owned and read-only (mode 0555),
+ * so the container's ordinary users cannot change them. What the tools guarantee is that their reads and writes are confined
+ * to the container's own mounts and never reach the worker; a container whose `remoteUser` is root can still change what
+ * runs inside that container.
+ */
 export const DEVCONTAINER_FILE_OPS_DIRECTORY = "/opt/agentx-file-ops";
 const WORKER_NODE_BINARY = "/usr/local/bin/node";
 

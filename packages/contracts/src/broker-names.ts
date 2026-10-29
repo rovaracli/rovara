@@ -147,6 +147,9 @@ export const BROKER_SETTINGS = {
   mcpConfirmElicitation: { code: "mc", variable: "MCP_CONFIRM_ELICITATION" },
   // Rovara Code v2, on per environment (stack parameter RovaraCodeV2Enabled, off by default): the broker reads it as rovaraCodeV2Live.
   rovaraCodeV2: { code: "rv", variable: "AGENTX_ROVARA_CODE_V2_ENABLED" },
+  // Mainline #408 kill switches (stack parameters PlanSelfCheckEnabled and AutofixEnabled, on by default): the broker reads them as PLAN_SELF_CHECK_ENABLED and AUTOFIX_ENABLED. Packed settings, not Lambda variables (ENV-ROOM).
+  planSelfCheck: { code: "pc", variable: "PLAN_SELF_CHECK_ENABLED" },
+  autofix: { code: "fx", variable: "AUTOFIX_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

@@ -19,6 +19,11 @@ describe("design tokens", () => {
     expect(serverPageCss()).not.toMatch(/url\(|@import|—/);
     expect(TOKENS.motionMs).toEqual({ fast: 120, normal: 200 });
   });
+  it("leaves out the global pre rule for a page that styles its own code blocks", () => {
+    expect(serverPageCss()).toMatch(/(?:^|})pre\{white-space:pre-wrap/);
+    expect(serverPageCss({ pre: false })).not.toMatch(/(?:^|})pre\{/);
+    expect(serverPageCss({ pre: false })).toContain("dd{margin:0");
+  });
   it("calculates the WCAG reference ratios", () => {
     expect(contrastRatio("#000000", "#ffffff")).toBe(21);
     expect(contrastRatio("#ffffff", "#ffffff")).toBe(1);

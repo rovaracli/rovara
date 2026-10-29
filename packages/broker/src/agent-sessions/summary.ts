@@ -9,6 +9,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  NO_CODE_CHANGED_STEP,
+  isNoCodeChangedReason,
   AgentSessionRecordSchema,
   ENDED_SESSION_STATUSES,
   INDEX_EXPIRY_ATTRIBUTE,
@@ -309,6 +311,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const operations: OperationFacts[] = operationItems.filter((item) => item["entityType"] === "OPERATION").map((item) => ({
     id: String(item["id"]), kind: String(item["kind"]), status: String(item["status"]), error: typeof item["error"] === "string" ? item["error"] : undefined,
     createdAt: String(item["createdAt"]), updatedAt: typeof item["updatedAt"] === "string" ? item["updatedAt"] : undefined, fence: typeof item["fence"] === "number" ? item["fence"] : undefined,
+    workflowMode: typeof item["workflowMode"] === "string" ? item["workflowMode"] : undefined,
   }));
   const derived = deriveTaskStatus({
     closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: typeof workspace?.["status"] === "string" ? workspace["status"] : "READY",
@@ -359,6 +362,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     step = workflow === undefined ? run?.currentStep?.name : taskPageStep(workflow, false);
   } else if (workflow !== undefined) {
     step = taskPageStep(workflow, false);
+    // A coding run that needed no code change reads as that, not as "Coding" (the person is asked to close the task or ask for a change; nothing is running).
+    if (workflow.state === "BLOCKED" && isNoCodeChangedReason(workflow.blockReason)) step = NO_CODE_CHANGED_STEP;
     // A blocked workflow can be retried (Plan 3's workflow retry), although it reads as needing a person: the flag lets the session offer the button.
     if (workflow.state === "BLOCKED") workflowBlocked = true;
     // Only a stage that waits on a person is not running: a plan under review needs its owner, a blocked task needs someone, a pull request waits to be merged. The checks and

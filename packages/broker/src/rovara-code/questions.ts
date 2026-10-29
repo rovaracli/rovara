@@ -32,6 +32,8 @@ const AnswersBodySchema = z
   .object({
     requestId: z.string().uuid(),
     round: z.number().int().min(1).max(UNDERSTAND_ROUNDS_MAX),
+    /** The workflow revision the person's page read (the web form sends it): answers to a workflow that has moved on since are `INTENT_NOT_WAITING`. Optional for the clients that name only the round. */
+    revision: z.number().int().min(0).optional(),
     answers: z.array(IntentAnswerSchema).min(1).max(INTENT_QUESTIONS_MAX),
   })
   .strict();
@@ -90,7 +92,7 @@ export async function answerIntentOnSession(deps: SessionReadDependencies, calle
   let next;
   try {
     next = answerIntentQuestions(task.workflow, {
-      expectedRevision: task.workflow.revision, round: input.round, source: "app", answers: input.answers, now: at,
+      expectedRevision: input.revision ?? task.workflow.revision, round: input.round, source: "app", answers: input.answers, now: at,
       by: { actorId: taskOwnerKey(caller.developerId, task.taskId), name },
     });
   } catch (error) {

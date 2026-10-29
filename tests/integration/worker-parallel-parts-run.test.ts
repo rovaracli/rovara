@@ -38,7 +38,7 @@ interface Scenario {
   graph: TaskGraphV1;
   parallel?: { max: number } | undefined;
   /** What the fake model does for a part: returns an error message to end the turn with, or nothing. */
-  act: (title: string, cwd: string, running: { now: number; peak: number }, operationId: string) => Promise<string | undefined>;
+  act: (title: string, cwd: string, running: { now: number; peak: number }, operationId: string, emit: (event: unknown) => void) => Promise<string | undefined>;
   controller?: WorkerCancellationController;
   resumeProgress?: unknown[];
   sequenceStart?: number;
@@ -76,7 +76,7 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
           running.now += 1;
           running.peak = Math.max(running.peak, running.now);
           let failure: string | undefined;
-          try { failure = await scenario.act(title, cwd, running, operationId); } finally { running.now -= 1; }
+          try { failure = await scenario.act(title, cwd, running, operationId, (event) => listener(event)); } finally { running.now -= 1; }
           if (aborted) { listener({ type: "message_end", message: { role: "assistant", stopReason: "aborted" } }); return; }
           listener({ type: "message_end", message: { role: "assistant", stopReason: failure === undefined ? "stop" : "error", ...(failure === undefined ? {} : { errorMessage: failure }), content: [{ type: "text", text: `${title} done` }] } });
         },
@@ -242,5 +242,42 @@ describe("a v2 task's parts, run by the worker", () => {
     expect(outcome.error?.message).toMatch(/was cancelled/);
     expect(prompted.sort()).toEqual(["A", "B"]);
     expect(await readdir(join(root, ".agentx-parts"))).toEqual([]);
+  });
+
+  it("a multi-part run that changes no code answers with each part's commands and words, grouped in the plan's order, though the parts ran at once with the same tool-call ids", async () => {
+    const outcome = await run({
+      graph: { schemaVersion: 1, taskId: randomUUID(), version: 1, items: [item(A, "A"), item(B, "B"), item(C, "C")] }, parallel: { max: 3 },
+      act: async (title, cwd, running, _operationId, emit) => {
+        const call = (id: string, command: string, text: string) => {
+          emit({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command } });
+          return () => emit({ type: "tool_execution_end", toolCallId: id, toolName: "bash", result: { content: [{ type: "text", text }] } });
+        };
+        // Every part uses the id "t1"; all are in their prompts together before any call ends, and the parts end their calls in the reverse of the plan's order.
+        const end = call("t1", `check ${title}`, `output of ${title}`);
+        for (let spins = 0; running.now < 3 && spins < 200; spins += 1) await wait(5);
+        await wait(title === "A" ? 40 : title === "B" ? 20 : 0);
+        end();
+        return undefined;
+      },
+    });
+    const findings = (outcome.error as { noChangeFindings?: { commands: unknown[]; conclusion?: string } } | undefined)?.noChangeFindings;
+    expect(findings?.commands).toEqual([
+      { command: "check A", output: "output of A" }, { command: "check B", output: "output of B" }, { command: "check C", output: "output of C" },
+    ]);
+    expect(findings?.conclusion).toBe("Part 1:\nA done\n\nPart 2:\nB done\n\nPart 3:\nC done");
+  });
+
+  it("an ordered (one at a time) run that changes no code labels each part's words in the same way", async () => {
+    const outcome = await run({
+      graph: { schemaVersion: 1, taskId: randomUUID(), version: 1, items: [item(A, "A"), item(B, "B", [A])] },
+      act: async (title, _cwd, _running, _operationId, emit) => {
+        emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: `check ${title}` } });
+        emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: { content: [{ type: "text", text: `output of ${title}` }] } });
+        return undefined;
+      },
+    });
+    const findings = (outcome.error as { noChangeFindings?: { commands: unknown[]; conclusion?: string } } | undefined)?.noChangeFindings;
+    expect(findings?.commands).toEqual([{ command: "check A", output: "output of A" }, { command: "check B", output: "output of B" }]);
+    expect(findings?.conclusion).toBe("Part 1:\nA done\n\nPart 2:\nB done");
   });
 });

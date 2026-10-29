@@ -62,16 +62,20 @@ import {
   submitWorkflowArtifact,
   submitPlanCritique,
   closePlanCritique,
+  retryPlanCritique,
   skipPlanRevision,
   readPlanCritique,
   parsePlanDocument,
   planAnswerMissingParts,
+  withCiChecks,
+  groundingScenarioIds,
   parseCommentAnswers,
   commentRefInAuthor,
   commentIdInAuthor,
   COMMENT_AUTHOR_PREFIX,
   UNPLACED_COMMENT_AUTHOR,
   plainPageRefs,
+  type PlanQualityFinding,
   type CommentAnswer,
   type PlanClaim,
   type WorkflowDecisionDetail,
@@ -100,7 +104,12 @@ import {
   completeWorkflowFeedbackReview,
   createCandidateManifest,
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
+  FEEDBACK_NOT_RUN_REASON,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
+  noChangeFindingsFrom,
+  WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
+  WORKFLOW_LEFTOVER_PROCESSES_MESSAGE,
+  WORKFLOW_SETUP_CHANGED_FILES_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   type IntentAssessment,
@@ -127,9 +136,15 @@ import {
   blockWorkflowPullRequestUpdate,
   nextWorkflowPullRequestUpdate,
   recordWorkflowPullRequestUpdate,
+  recordWorkflowBranchSync,
+  endWorkflowBranchSync,
+  CONFLICT_ROUNDS_MAX,
+  BRANCH_SYNC_UNSURE_MESSAGE,
+  blockWorkflowBranchSync,
   observeWorkflowPullRequestMergedWithFix,
   workflowPullRequestUpdateDue,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
+  WORKFLOW_FIX_DROPS_BASE_CHANGES,
   type WorkflowPullRequestUpdateCause,
   taskResultChecks,
   type CheckEntry,
@@ -224,6 +239,7 @@ import {
   WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT,
   WorkflowFeedbackReviewRefSchema,
   cleanDisplayName,
+  emailSafeName,
   redactAndCap,
   redactText,
   DISPLAY_NAME_MAX_ENCODED_LENGTH,
@@ -276,6 +292,8 @@ import {
   type AdminChangeOutcome,
   type AdminChangePressEvent,
   AUDIT_SDK_REQUEST_TIMEOUT_MS,
+  type AuditActor,
+  type AuditEventInput,
   auditOperatorId,
   auditPullRequestId,
   INDEX_EXPIRY_ATTRIBUTE,
@@ -305,6 +323,8 @@ import {
   ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
   projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey,
   E2E_MODEL_FREE_LIMITS,
+  PLAN_DRY_RUN_FEATURE,
+  type PlanDryRunClass,
   WorkerInvocationSchema,
   workerProjectDefinition,
   workflowPublicationContext,
@@ -349,11 +369,14 @@ import type { AuditEraseDeps } from "../audit/erase.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPullRequestOpened } from "../audit/events.js";
+import { auditOccurrence, auditPullRequestOpened, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
+import { auditedWrite, modelSelectionAuditEvent, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
-import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
+import { releaseFailedPreparation } from "./failed-preparation.js";
+import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "./slack-thread-key.js";
 import { closeSetupCheck } from "./setup-check-close.js";
 import { requireSameRequest } from "../org/request-records.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -373,7 +396,9 @@ import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConn
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
+import { safeDisplayName } from "../developer/person-name.js";
 import {
   applyInstallationLifecycle, disconnectGithubInstallation, installationBindingCheck, listGithubInstallations, listInstallationRepositories, requireRepositoriesConnected, requireRepositoryConnected, startGithubConnect,
   type GithubConnectionDependencies, type RepositoryGateDependencies,
@@ -385,9 +410,17 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
-import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { readCiChecks } from "../rovara-code/ci-checks.js";
+import { codeMilestoneItems, deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
+import { mergedMilestoneItems } from "../rovara-code/merged.js";
+import { mergedStateItems } from "../rovara-code/merged-state.js";
+import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
+import { loadProofContext } from "../rovara-code/proof-inputs.js";
+import { hadProofSection, proofReadLimitMs, withinTime } from "../rovara-code/proof-keep.js";
+import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
+import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { rovaraCodeV2LiveFromEnvironment } from "../rovara-code/v2-switch.js";
@@ -399,6 +432,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
+import { listTeamChannels, readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
@@ -433,8 +467,16 @@ import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from 
 import { offersApplicationE2EPlan } from "../e2e/feature-plan-executable-kinds.js";
 import { applicationIntentDigest, applicationIntentWithAccountRefs, applicationRoundIntent, evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../e2e/application-plan-approval.js";
 import { portableFeatureIntentOf } from "../e2e/portable-feature-intent.js";
+import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
+import { ApplicationRuntimeRenewed, assertNoRequalifyHold, recycleDriftedWorker, rethrowAsDeferredIfHeld, requalifyHoldFence, replayPredatesRenewal, requalifyHoldActive, requalifySetupWorkRow, selectionChangedRefusal } from "../e2e/requalify-hold.js";
 import { ApplicationDispatchRefusal, ApplicationPlanDefect, applicationAccountsRefusal, applicationRoundRefusal, applicationRuntimeRefusal, applicationSelectionStillCurrent } from "../e2e/application-dispatch-check.js";
-import { applicationApprovedPlanDigest, buildApplicationExecutionAdmission, buildApplicationReplayAdmission } from "../e2e/application-admission.js";
+import { applicationApprovedPlanDigest, buildApplicationExecutionAdmission, buildApplicationGroundingAdmission, buildApplicationReplayAdmission, groundingPlanDigest } from "../e2e/application-admission.js";
+import {
+  groundingRoundLapsed, E2E_GROUNDING_ATTEMPT, E2E_GROUNDING_PURPOSE, groundingStartFailureReason, groundingStartItem, markWorkflowE2EGroundingUnavailable, readWorkflowE2EGroundingRecord, recordWorkflowE2EGrounding, requestWorkflowE2EGroundingRound,
+  verifyGroundingEvidence, type GroundingRecord, type GroundingUnavailableReason,
+} from "./workflow-e2e-grounding.js";
+import { canonicalModelName, planQualityFinding } from "@agentx/contracts";
+import { groundingFindingsOf, plannedExpectation } from "../developer/plan-grounding-findings.js";
 import { handleE2EModelBudgetCallback } from "../e2e/model-budget-endpoint.js";
 import { ModelCheckError, readCurrentTiers, readModelCheck, startModelCheck, untestedRouteSentence, type ModelCheckDependencies } from "../e2e/model-checks.js";
 import { E2EModelRouteError, agentRouteSummary, approveE2EAgentRoute, checkE2EAgentRouteCurrent, deriveE2EAgentRoute, e2eAgentInstallationFromParameters, readE2EModelRouteShape, e2eAgentRoutePolicyLimits, isTransientAwsFault, e2eDayBudgetRoom, planE2EAgentRoute,
@@ -502,11 +544,14 @@ import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
-import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, ownerGithubLoginOf, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
-import { criticModelFor, critiqueModelOf } from "../rovara-code/critic.js";
-import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { githubLoginOf, personNameForText } from "../developer/requester-text.js";
+import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
+import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
+import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
+import { applyAgentStep, crossCompanyTargets, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -515,17 +560,27 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { developerReply, json } from "./json-reply.js";
+import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, laterProgramBuild, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
+import { planQualityFindings } from "../developer/plan-quality.js";
+import { planDryRunFindings, readPlanDryRunOutcome } from "../developer/plan-dry-run-results.js";
+import { planUnreadableCategory } from "../developer/plan-check-summary.js";
+import { AUTOFIX_ROUND_ESTIMATE_USD, autofixConfigFromEnvironment, autofixDayBudgetNeed, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixConfig, type AutofixDependencies } from "./workflow-autofix-runner.js";
+import { PLAN_AUTO_REVISIONS_MAX, PlanSelfCheckRecordSchema, autoRevisableFindings, planRevisionPrompt, planRevisionsUsed, planSelfCheckKey, planQualityContextOf, recordedPlanQualityContext, selfCheckNotes, groundingNotCheckedNote, groundingUndecidedNote, PLAN_GROUNDING_HOLD_MS, type GroundingOutcome, type PlanGroundingHold, type PlanSelfCheckSkipReason, type PlanSelfCheckState } from "../developer/plan-self-check.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
-import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, wakeTrackingRow, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
-import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
+import { mergeViewOf, type CodeMergeHost } from "../rovara-code/merge.js";
+import type { MergeTrackingItem } from "@agentx/contracts";
+import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../rovara-code/ci-fix.js";
+import { installBranchSyncDeciders, planBranchSyncOutcome, type BranchSyncGithub } from "../rovara-code/branch-sync.js";
+import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
-import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, wakeFromPullRequestEvent, wakesTrackingRow, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -535,6 +590,7 @@ import { SessionManager } from "./sessions.js";
 import { STUCK_SETUP_MESSAGE } from "./stuck-setup.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 import { WORKFLOW_STEP_STAGE, blockStoppedWorkflowRun, stopBlocksWorkflowStep } from "./workflow-cancel-reconcile.js";
+import { autofixBlockCauseOf, autofixBlockRows, autofixRowHeld, dispatchExhaustRows, ownerStopRows } from "./workflow-autofix-dispatch-exhaust.js";
 import {
   adaptHttpApiEvent,
   identityFromJwtClaims,
@@ -723,7 +779,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "getRepositoryStanding" | "replyToReviewThread" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -835,6 +891,14 @@ interface AwsBrokerDependencies {
   adminChanges?: { confirm?: { elicitation: boolean; slack: boolean }; now?: () => number; metric?: (outcome: AdminChangeOutcome) => void };
   /** Spec 061: asks the PlanEvidence job to work a plan's evidence row (an async Lambda invoke); absent when the deployment has none. */
   startPlanEvidenceJob?: (event: PlanEvidenceEvent) => Promise<void>;
+  /** Plan self-check (checks every coding plan, asks the planner again once when it finds a fixable problem): on unless this is false, the installation's kill switch (the PlanSelfCheckEnabled stack parameter, a packed setting the broker reads as PLAN_SELF_CHECK_ENABLED; never a Lambda variable of its own). */
+  planSelfCheck?: boolean;
+  /** T7c: false turns the hold for the current-app check off (a plan is shown at once); the default is on. */
+  planGrounding?: boolean;
+  /** T7c: starts the held plan's check on the current app; tests replace it (the real one builds an admission from an exported source). */
+  startPlanGrounding?: typeof startPlanGroundingRound;
+  /** AUTOFIX: automatic fixing of blocked checks and reviews. Absent: off (the harnesses); the deployed Lambda sets it from its packed settings (the AutofixEnabled stack parameter, read as AUTOFIX_ENABLED; on unless it is false; never a Lambda variable of its own). */
+  autofix?: AutofixConfig;
   /** Spec 043: SWE-bench runs; absent in a harness that does not exercise them. */
   swebench?: Pick<EvalBatchDependencies, "deployment" | "startExecution" | "stopBatchForThread" | "onRunEnded" | "now" | "estimateRunCostUsd">;
 }
@@ -872,6 +936,11 @@ function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "enviro
 /** The org of a single-org install, for a writer or reader that has no caller and whose record names no org yet. */
 function installOrgId(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): OrgId {
   return singleOrgIdForEnv(brokerEnvironmentName(dependencies));
+}
+
+/** C25 compatibility: a pre-org workspace belongs only to the checked install's single org. */
+function resolveSlackThreadKey(dependencies: AwsBrokerDependencies, orgId: OrgId, ownerKey: string) {
+  return resolveSlackThreadKeyForInstall(dependencies, orgId, ownerKey, installOrgId(dependencies));
 }
 
 function orgResolverOf(dependencies: Pick<AwsBrokerDependencies, "orgResolver" | "environmentName" | "developer">): OrgResolver {
@@ -1035,7 +1104,7 @@ async function listEgressPending(dependencies: AwsBrokerDependencies, identity: 
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
   const orgs = orgStoreOf(dependencies);
   const developers = dependencies.developer === undefined ? undefined
-    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   const orgNames = new Map<string, string>();
   const people = new Map<string, string>();
   const pending: EgressPendingResponse["pending"] = [];
@@ -1125,7 +1194,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   const projectMembers = agents.projectMembers ?? projectMembersOf({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
   });
-  const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
+  const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   const connections = orgConnectionStoreOf(dependencies);
   const routing = routingOf(dependencies);
   const agentStore = new AgentStore({
@@ -1258,6 +1327,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // Plan 4's move of a chain run's owner and payer to the person who took its session over.
     chainOwner: agents.sessions?.chainOwner ?? chainOwnerMoverFor(routeDependencies as ChainRouteDependencies),
   };
+  // Plan 6, Task 19: what pressing Merge and its confirmation need (GitHub's reads and the merge, the task and its repositories), on the same dependencies.
+  const codeMerge = codeMergeHostOf(dependencies);
+  if (codeMerge !== undefined) routeDependencies.codeMerge = codeMerge;
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
@@ -1306,7 +1378,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
 function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnectionDependencies | undefined {
   const app = dependencies.githubPullRequests;
   if (dependencies.developer === undefined || app.appSlug === undefined || app.oauthClient === undefined || app.installation === undefined) return undefined;
-  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now });
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
     origin: new URL(dependencies.developer.issuer).origin,
@@ -1369,11 +1441,15 @@ function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRe
 }
 
 /** A person's name from their sign-in record, for the answer to an erasure (read before their details are erased). */
-async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, developerId: string): Promise<string | undefined> {
+async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer" | "tableName">, developerId: string): Promise<string | undefined> {
   const table = dependencies.developer?.signInTableName;
   if (table === undefined) return undefined;
-  const out = await dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as { Item?: { displayName?: unknown } };
-  return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
+  const [out, chosen] = await Promise.all([
+    dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as Promise<{ Item?: { displayName?: unknown } }>,
+    // Release 0.4.18: the name the person chose (State table) shows instead of the sign-in record's.
+    readChosenName(dependencies.documentClient, dependencies.tableName, developerId),
+  ]);
+  return chosen ?? (typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined);
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
@@ -1715,11 +1791,12 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
       const object = await dependencies.s3.send(new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: objectKey, Range: `bytes=0-${maxBytes - 1}` }));
       return object.Body ? await object.Body.transformToString("utf8") : "";
     },
+    rewriteLinearCloseLine: (task, key) => rewriteOpenLinearCloseLines(dependencies, task, key),
     pullRequests: async (workspaceId) => (await query(`WORKSPACE#${workspaceId}`, "PULL_REQUEST#"))
       .map((item) => ({ repository: String(item.repository), number: Number(item.number), url: String(item.url), state: item.state as "open" | "closed" | "merged" })),
     acceptTask: (identity, workspaceId, request, extra, options) => acceptTask(dependencies, identity, workspaceId, request, extra, options),
     acceptPullRequest: (identity, workspaceId, request, extra, options) => acceptPullRequest(dependencies, identity, workspaceId, request, extra, options),
-    acceptPullRequestUpdate: (identity, workspaceId, request, extra, workflowCandidate) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, { workflowCandidate }),
+    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : { workflowCandidate: binding }),
     failedPublications: async (workspaceId, candidate) => (await query(`WORKSPACE#${workspaceId}`, "OPERATION#"))
       .filter((item) => {
         const publication = item.publication as OperationRecord["publication"];
@@ -1732,7 +1809,7 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
       const result = await cancelRunningTask(dependencies, workspace, requesterOf(identity), extra);
       return result.outcome === "CANCEL_REQUESTED"
         ? { outcome: "CANCEL_REQUESTED", targetOperationId: result.targetOperationId, cancelOperationId: result.cancelOperationId }
-        : { outcome: "NOTHING_RUNNING" };
+        : { outcome: "NOTHING_RUNNING", ...(result.stopped === undefined ? {} : { stopped: result.stopped }) };
     },
     startClose: (identity, workspace, requestId, extra, discardUnpublished) => startTaskClose(dependencies, identity, workspace, requestId, extra, discardUnpublished),
     deleteCompute: (workspace) => deleteWorkspaceCompute(dependencies, workspace),
@@ -1962,16 +2039,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           reconcile: (taskId, budget) => reconcileWorkflowMergeRecoveryTask(dependencies, taskId, budget),
         });
         // The tracking pass (Rovara Code) runs after the merge pass with the time that is left, in its own partition, behind its own gate: neither starves the other.
-        const tracking = await runDueWorkflowMergeTracking({
-          documentClient: dependencies.documentClient,
-          tableName: dependencies.tableName,
-          now: Date.now,
-          reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
-        }, { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
+        const tracking = await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
           console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { attempted: 0, reconciled: 0, deferred: 0 };
         });
-        return json({ ...result, tracking }, "workflow-merge-recovery");
+        // Rows a review woke are passed now, not at the heartbeat gate's next opening (approval-to-ready latency).
+        const woken = await runWokenTrackingPass(dependencies, Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)));
+        return json({ ...result, tracking, woken }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -1997,7 +2071,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
           });
-        return json({ ...dispatches, planEvidence, codeMilestones, releases }, "workflow-dispatch-recovery");
+        // This schedule ticks at its own moment of the minute, so rows a review woke are passed at whichever of the two ticks comes first.
+        const woken = await runWokenTrackingPass(dependencies, 12_000);
+        return json({ ...dispatches, planEvidence, codeMilestones, releases, woken }, "workflow-dispatch-recovery");
       }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
@@ -2119,6 +2195,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...(agents?.agentSessions === undefined ? {} : { agentSessions: agents.agentSessions }),
+          // The task page says to press Merge in Rovara when it may be pressed (Bug G); this page carries no agent routes, so it carries the merge view alone.
+          ...(agents?.codeMerge === undefined ? {} : { codeMergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[], viewer: string) => mergeViewOf(agents, task, items, viewer) }),
           ...workflowApplicationRouteDependencies(dependencies) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -2321,7 +2399,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return json(await getProjectModels(dependencies, identity), request.requestId);
         }
         if (request.method === "PUT" && serviceUrl.pathname === "/v1/project/model") {
-          return json(await putProjectModel(dependencies, identity, parseBody(request.body)), request.requestId);
+          return json(await putProjectModel(dependencies, identity, parseBody(request.body), request.requestId), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/swebench") {
           await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
@@ -2395,7 +2473,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
         }
         const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
-        return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
+        return developerReply(answer, request.requestId);
       }
 
       const claimed = identityFromJwtClaims(request.jwtClaims, {
@@ -2646,6 +2724,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       }
       if (request.method === "POST" && url.pathname === "/v1/admin/workspaces/prepare") {
         return json(await prepareWorkspace(dependencies, identity, body), request.requestId, 202);
+      }
+      // Release 0.4.17: an operator connects a Slack workspace to a named org (an org of a cloud install has no other way to hold one).
+      const slackTeamRoute = /^\/v1\/admin\/slack\/teams\/([^/]+)$/.exec(url.pathname);
+      if (slackTeamRoute?.[1] && request.method === "PUT") {
+        return json(await connectSlackTeam(dependencies, identity, slackTeamRoute[1], body), request.requestId);
+      }
+      if (slackTeamRoute?.[1] && request.method === "DELETE") {
+        return json(await disconnectSlackTeam(dependencies, identity, slackTeamRoute[1]), request.requestId);
       }
       const slackBinding = /^\/v1\/admin\/slack\/bindings\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (slackBinding?.[1] && slackBinding[2] && request.method === "PUT") {
@@ -3033,7 +3119,8 @@ function withoutDeploymentAttribution(dependencies: GitHubMcpDependencies): Omit
 
 function attributionText(identity: AuthenticatedIdentity, connector: Pick<ResolvedConnector, "attribution">): string | undefined {
   if (!connector.attribution || !identity.slack) return undefined;
-  const name = identity.slack.requesterName;
+  // C55: a Slack display name that is an address is not written on GitHub.
+  const name = identity.slack.requesterName === undefined ? undefined : personNameForText(identity.slack.requesterName);
   const who = inertName(name ?? `Slack member ${identity.slack.requester.userId}`);
   return `Requested by ${who} via AgentX · ${slackThreadUrl(identity.slack.thread)}`;
 }
@@ -3106,7 +3193,7 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
 type RegistrationResult = { project: Omit<RegisteredProjectRecord, "pk" | "sk">; duplicate: boolean; warnings?: string[]; preflight?: RegistrationPreflight };
 
 /** Who registers a project, and in which org: the org it is written in and the owner key its records name. */
-interface RegistrationActor { orgId: OrgId; ownerKey: string; /** The signed-in subject, recorded when an instance administrator takes a project over (AUTH1). */ subject?: string }
+interface RegistrationActor { orgId: OrgId; ownerKey: string; /** The signed-in subject, recorded when an instance administrator takes a project over (AUTH1). */ subject?: string; /** Who the audit events of the revision name, when the owner key is not a member (the operator's admin route). */ auditActor?: AuditActor }
 
 /** The admin route's registration: an administrator registers a project in their own org and administers it. */
 async function registerProject(
@@ -3116,7 +3203,7 @@ async function registerProject(
   checked?: { preflight?: PreflightOutcome },
 ): Promise<RegistrationResult> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  return registerProjectFor(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey, subject: identity.subject }, value, { creatorMembership: "administrator", ...(checked === undefined ? {} : { checked }) });
+  return registerProjectFor(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey, subject: identity.subject, auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } }, value, { creatorMembership: "administrator", ...(checked === undefined ? {} : { checked }) });
 }
 
 /**
@@ -3296,6 +3383,10 @@ export async function registerProjectFor(
     // Judged against the project as it is on this attempt: an administrator who raced a first registration and lost finds the project there on the next one.
     const authority = await judgeAuthority(snapshot.newestRevision);
     const accounts = await planAccounts();
+    // H6: the models, checks and E2E capture this revision changes against the newest one are audited in this transaction. A revision registered late (older than the newest) changes nothing the project runs.
+    const audit = definition.revision < snapshot.newestRevision ? { items: [] as TransactItems, events: [] as AuditEventInput[] } : await auditedWrite(dependencies, () => projectDefinitionAuditEvents({
+      orgId, actor: actor.auditActor ?? auditActorOf(actor.ownerKey), occurredAt: now, before: snapshot.newestDefinition, after: definition,
+    }));
     // One transaction holds at most 100 items; the project revision, its membership, the catalog and the setup admission take the rest.
     if (accounts.items.length > 60) throw agentXError("CONFIG_INVALID", "the setup declares more synthetic test accounts than one registration can store");
     try {
@@ -3338,13 +3429,16 @@ export async function registerProjectFor(
       ...repositoryIndex,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
+      ...audit.items,
       ] }));
+      await flushAuditEvents(dependencies, audit.events);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
       }
       return respond(withoutKeys(record), false, preflight);
     } catch (error) {
+      await rethrowAsDeferredIfHeld(dependencies, error, Date.now()); // AUTOREQUALIFY: the start fence refused the setup run: say so, not "catalog conflict"
       if (!isConditional(error)) throw error;
       // Another request took the name between the read above and this commit.
       if (options.requireNewName === true) {
@@ -3414,8 +3508,9 @@ function projectCreateBodyHash(input: CreateProjectInput): string {
     repository: `${input.owner}/${input.repositoryName}`.toLowerCase(),
     ...(input.name === undefined ? {} : { name: input.name }),
     ...(input.description === undefined ? {} : { description: input.description }),
-    ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
-    ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+    // One command is hashed as the single field it always was, so a retry of a request made before lists existed is still the same request.
+    ...(input.setupCommands === undefined ? {} : input.setupCommands.length === 1 ? { setupCommand: input.setupCommands[0] } : { setupCommands: input.setupCommands }),
+    ...(input.testCommands === undefined ? {} : input.testCommands.length === 1 ? { testCommand: input.testCommands[0] } : { testCommands: input.testCommands }),
   }), "utf8").digest("hex");
 }
 
@@ -3517,7 +3612,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   return cloudProjectAnswer(registered);
 }
 
-async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number; newestRepositories: ProjectDefinition["repositories"] }> {
+async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number; newestRepositories: ProjectDefinition["repositories"]; newestDefinition?: ProjectDefinition }> {
   const catalog = await getItem<{ entityType?: string; name?: string; latestRevision?: number }>(dependencies, orgProjectCatalogKey(orgId, projectName));
   if (catalog !== undefined && (catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== projectName
     || (catalog.latestRevision !== undefined && (!Number.isSafeInteger(catalog.latestRevision) || catalog.latestRevision < 1)))) {
@@ -3525,10 +3620,12 @@ async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, o
   }
   let newestRevision = 0;
   let newestRepositories: ProjectDefinition["repositories"] = [];
+  let newestDefinition: ProjectDefinition | undefined;
   try {
     const newest = await requireLatestProject(dependencies, orgId, projectName);
     newestRevision = newest.definition.revision;
     newestRepositories = newest.definition.repositories;
+    newestDefinition = newest.definition;
     if (newest.definition.name !== projectName || !Number.isSafeInteger(newestRevision) || newestRevision < 1) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "registered project revision history is invalid");
     }
@@ -3538,7 +3635,7 @@ async function readProjectCatalogSnapshot(dependencies: AwsBrokerDependencies, o
   if (catalog?.latestRevision !== undefined && catalog.latestRevision > newestRevision) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "project catalog is ahead of registered revision history");
   }
-  return { catalog, newestRevision, newestRepositories };
+  return { catalog, newestRevision, newestRepositories, ...(newestDefinition === undefined ? {} : { newestDefinition }) };
 }
 
 async function repairProjectCatalogPointerFromHistory(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string, options: { createCatalogRow?: boolean } = {}): Promise<void> {
@@ -3728,6 +3825,7 @@ async function createProjectSetupAdmissionRows(
       transportCorrelationId, endpoint: runtime.endpoint, expiresAt: runtime.expiresAt },
     ...(retry ? { retryOfExecutionId: retry.retryOfExecutionId, retryActorKey: identity.ownerKey } : {}),
   };
+  await assertNoRequalifyHold(dependencies, Date.now()); // AUTOREQUALIFY: no new setup run while the test machine is being switched
   const executionBytes = Buffer.from(canonicalJson(executionObject), "utf8");
   const executionDigest = createHash("sha256").update(executionBytes).digest("hex");
   const executionRef = { key: `project-setup-executions/sha256/${executionDigest}.json`, sha256: executionDigest, byteLength: executionBytes.byteLength };
@@ -3763,7 +3861,8 @@ async function createProjectSetupAdmissionRows(
     workspaceId: transportCorrelationId, deploymentMode: "ec2-ebs", invocation, createdAt: now.toISOString() };
   const put = (item: Record<string, unknown>) => ({ Put: { TableName: dependencies.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
   return { transactionItems: [put({ ...projectSetupExecutionKey(setupExecutionId), entityType: "PROJECT_SETUP_EXECUTION", ...execution }),
-    put({ ...projectSetupSessionKey(setupExecutionId), entityType: "PROJECT_SETUP_SESSION", ...session }), put(operation), put(outbox)] };
+    put({ ...projectSetupSessionKey(setupExecutionId), entityType: "PROJECT_SETUP_SESSION", ...session }), put(operation), put(outbox),
+    put(requalifySetupWorkRow(setupExecutionId, execution.deadlineAt)), requalifyHoldFence(dependencies.tableName, Date.now())] };
 }
 
 async function retryProjectSetupAsAdministrator(
@@ -3889,6 +3988,7 @@ async function retryProjectSetupAsAdministrator(
       && typeof duplicate.setupExecutionId === "string" && typeof duplicate.operationId === "string") {
       return { setupExecutionId: duplicate.setupExecutionId, operationId: duplicate.operationId, status: "QUEUED", duplicate: true };
     }
+    await rethrowAsDeferredIfHeld(dependencies, error, Date.now()); // AUTOREQUALIFY: the start fence refused the retry
     throw error;
   }
   return { setupExecutionId: String(nextExecution.setupExecutionId), operationId: String(nextOperation.operationId), status: "QUEUED", duplicate: false };
@@ -4213,7 +4313,7 @@ async function slackServiceIdentity(
   };
   const shared = await sharedThread(dependencies, context.thread);
   if (shared === undefined) return own;
-  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: shared.developerName };
+  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: emailSafeName(shared.developerName) ?? "a member" };
   // C11: open only while continue, not closed, and the channel still serves the task's project.
   // A Slack-started task's own thread is driven by its owner's buttons, never by the channel's chat agent: closed to it.
   if (!sharedThreadOpen(shared, binding)) {
@@ -4224,7 +4324,11 @@ async function slackServiceIdentity(
   if (dependencies.developer === undefined) throw agentXError("FORBIDDEN", "developer task workflows are not configured");
   let access: TaskAccess;
   try { ({ access } = await slackTaskAccess(dependencies, developerTaskActions(dependencies), shared.taskId, context.requester.userId, "comment")); }
-  catch { throw agentXError("FORBIDDEN", "this Slack member cannot continue the task"); }
+  catch {
+    // A person the task's rules still let read it (their role was lowered to viewer) is told what the thread's notice says: they have view-only access. Anyone else gets the plain refusal.
+    const mayRead = await slackTaskAccess(dependencies, developerTaskActions(dependencies), shared.taskId, context.requester.userId, "read").then(() => true, () => false);
+    throw agentXError("FORBIDDEN", mayRead ? "you have view-only access to this task, so this Slack member cannot continue it" : "this Slack member cannot continue the task");
+  }
   if (access.task.share?.teamId !== context.thread.teamId || access.task.share.channelId !== context.thread.channelId
     || access.task.share.threadTs !== context.thread.threadTs) throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   const authorizedSharedTask = { ...sharedTask, state: "continue" as const, peopleAccessBound: true as const, peopleRevision: access.peopleRevision };
@@ -4353,6 +4457,58 @@ function displayName(value: string | undefined): string | undefined {
   } catch { return undefined; }
 }
 
+/**
+ * Release 0.4.17: `PUT /v1/admin/slack/teams/{teamId}` with `{ orgId }`. An operator (the admin pool, which belongs to no org) connects a Slack
+ * workspace to one named org, so its owner can then bind channels with the developer sign-in. Only an operator may: an org can never claim a
+ * workspace on a cloud install by itself. A closed or closing org takes none. The link is audited in that org's ledger in the same write;
+ * repeating it for the org that holds the workspace changes and records nothing; a workspace another org holds is SLACK_TEAM_TAKEN.
+ */
+async function connectSlackTeam(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, teamIdValue: string, body: unknown): Promise<{ teamId: string; orgId: OrgId }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const teamId = SlackTeamIdSchema.safeParse(decodeURIComponent(teamIdValue));
+  const orgId = OrgIdSchema.safeParse(object(body, "Slack team connection").orgId);
+  if (!teamId.success) throw agentXError("CONFIG_INVALID", "teamId: not a Slack workspace ID");
+  if (!orgId.success) throw agentXError("CONFIG_INVALID", "orgId: not an organization ID");
+  const orgs = orgStoreOf(dependencies);
+  if (await orgs.getOrg(orgId.data) === undefined) throw agentXError("NOT_FOUND", "organization not found");
+  if (await orgs.orgForSlackTeam(teamId.data) !== orgId.data) {
+    const at = new Date().toISOString();
+    // The chain names the operator by a pseudonymous id, never by their identity.
+    const event = await tryAuditEvent(dependencies, () => auditSlackTeamConnected({
+      orgId: orgId.data, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt: at, occurrence: auditOccurrence(teamId.data, at), teamId: teamId.data,
+    }));
+    await orgs.bindSlackTeam({ orgId: orgId.data, teamId: teamId.data, event });
+    console.log(JSON.stringify({ component: "broker", event: "admin.slack_team_connected", orgId: orgId.data }));
+  }
+  return { teamId: teamId.data, orgId: orgId.data };
+}
+
+/**
+ * Release 0.4.17: `DELETE /v1/admin/slack/teams/{teamId}`. An operator releases a Slack workspace from the org that holds it. It is refused while that
+ * org still has channels bound in the workspace (their owner unbinds them first), so no binding is left pointing at a workspace that routes nowhere.
+ * A channel bound in the instant after the check stays in the org's own partition and is never reached: the workspace then belongs to no org, so its
+ * Slack events are ignored. Audited in the org's ledger in the same write.
+ */
+async function disconnectSlackTeam(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, teamIdValue: string): Promise<{ teamId: string; orgId: OrgId }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const teamId = SlackTeamIdSchema.safeParse(decodeURIComponent(teamIdValue));
+  if (!teamId.success) throw agentXError("CONFIG_INVALID", "teamId: not a Slack workspace ID");
+  const orgs = orgStoreOf(dependencies);
+  const orgId = await orgs.orgForSlackTeam(teamId.data);
+  if (orgId === undefined) throw agentXError("NOT_FOUND", "that Slack workspace is not connected to an organization");
+  const channels = await listTeamChannels(dependencies, orgId, teamId.data);
+  if (channels.length > 0) {
+    throw agentXError("CONFIG_INVALID", `${String(channels.length)} channel(s) of that organization are still bound in this Slack workspace (${channels.slice(0, 10).join(", ")}${channels.length > 10 ? ", ..." : ""}); the organization's owner or admin unbinds each one first with: rovara --project <project> slack unbind --channel <channel>`);
+  }
+  const at = new Date().toISOString();
+  const event = await tryAuditEvent(dependencies, () => auditSlackTeamDisconnected({
+    orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt: at, occurrence: auditOccurrence(teamId.data, at), teamId: teamId.data,
+  }));
+  await orgs.unbindSlackTeam({ orgId, teamId: teamId.data, event });
+  console.log(JSON.stringify({ component: "broker", event: "admin.slack_team_disconnected", orgId }));
+  return { teamId: teamId.data, orgId };
+}
+
 async function putSlackBinding(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
@@ -4380,7 +4536,7 @@ async function putSlackBinding(
   await orgStoreOf(dependencies).bindSlackTeam({ orgId, teamId: binding.teamId });
   await dependencies.documentClient.send(new PutCommand({
     TableName: dependencies.tableName,
-    Item: { ...slackBindingKey(orgId, binding.teamId, binding.channelId), entityType: "SLACK_BINDING", ...binding, updatedBy: identity.ownerKey },
+    Item: slackBindingItem(orgId, binding, identity.ownerKey),
   }));
   return { binding, latestRevision: latest.definition.revision };
 }
@@ -4411,15 +4567,7 @@ async function getSlackBinding(
   teamId: string,
   channelId: string,
 ): Promise<SlackChannelBinding | undefined> {
-  const item = await getItem<Record<string, unknown>>(dependencies, slackBindingKey(orgId, teamId, channelId));
-  if (!item) return undefined;
-  // Bindings written before channels followed the latest revision also carry projectRevision; it is ignored.
-  return SlackChannelBindingSchema.parse({
-    teamId: item.teamId,
-    channelId: item.channelId,
-    projectName: item.projectName,
-    updatedAt: item.updatedAt,
-  });
+  return readSlackBinding(dependencies, orgId, teamId, channelId);
 }
 
 /** A channel's binding inside the org its Slack team is bound to; a team bound to no org has none. */
@@ -4490,10 +4638,10 @@ async function startThreadWorkspaceClose(
     throw agentXError("CONFIG_INVALID", "discard_unpublished must be a boolean");
   }
   const discardUnpublished = input.discard_unpublished === true;
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (!workspace) return { outcome: "NOT_FOUND" };
   if (discardUnpublished) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     if (typeof thread?.starterUserId !== "string" || thread.starterUserId !== identity.slack.requester.userId) {
       return { outcome: "REFUSED", reason: "not_owner" };
     }
@@ -4503,7 +4651,7 @@ async function startThreadWorkspaceClose(
   // #213: a failed preparation that was released holds no slot and has nothing to check, and a
   // lazy turn was told it has no compute; answered as an UNPREPARED thread is.
   if (workspace.status === "PREPARATION_FAILED" && !workspace.activeOperationId) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     if (typeof thread?.starterUserId !== "string") return { outcome: "NOT_FOUND" };
   }
   if (workspace.status === "CLOSED" && workspace.closedAt) {
@@ -4681,7 +4829,7 @@ async function completeThreadWorkspaceClose(
   if (identity.sharedTask !== undefined) throw agentXError("FORBIDDEN", SHARED_CLOSE_REFUSED);
   uuid(input.requestId, "requestId");
   const operationId = uuid(input.operationId, "operationId");
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   const operation = await requireOperation(dependencies, workspace.id, operationId);
   if (operation.kind !== "close") throw agentXError("CONFIG_INVALID", "operation is not a workspace close");
@@ -4703,7 +4851,7 @@ async function completeThreadWorkspaceClose(
   const parsedPreflight = WorkspaceClosePreflightResultSchema.parse(operation.result);
   if (!parsedPreflight.safeToClose && operation.discardUnpublished !== true) throw agentXError("WORKSPACE_NOT_READY", "workspace contains unpublished work");
   if (operation.discardUnpublished === true) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     const requestedBy = operation.requestedBy;
     if (typeof thread?.starterUserId !== "string"
       || thread.starterUserId !== slack.requester.userId
@@ -4718,7 +4866,7 @@ async function completeThreadWorkspaceClose(
   await deleteWorkspaceCompute(dependencies, workspace);
   const storageReleased = closeReleasesStorage(workspace);
 
-  const thread = await getItem<{ starterUserId?: string; closedAt?: string }>(dependencies, slackThreadKey(identity.ownerKey));
+  const thread = await getItem<{ starterUserId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
   if (typeof thread?.starterUserId !== "string") throw agentXError("CONFIG_INVALID", "Slack thread starter is missing");
   const orgId = requireOrgId(identity.orgId);
   const organizationKey = slackOrganizationLimitKey(orgId, slack.thread.teamId);
@@ -4758,7 +4906,7 @@ async function completeThreadWorkspaceClose(
       } },
       { Update: {
         TableName: dependencies.tableName,
-        Key: slackThreadKey(identity.ownerKey),
+        Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
         UpdateExpression: "SET closedAt = :closedAt, closeOperationId = :operation",
         ConditionExpression: "attribute_not_exists(closedAt)",
         ExpressionAttributeValues: { ":closedAt": closedAt, ":operation": operationId },
@@ -4854,7 +5002,7 @@ async function ensureThreadWorkspace(
   // an explicit viewer. Everyone else keeps today's behaviour.
   const requesterRole = await slackRequesterRole(dependencies, identity);
   if (requesterRole === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(slack.binding.projectName));
-  const threadWorkspace = await getThreadWorkspace(dependencies, identity.ownerKey);
+  const threadWorkspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey);
   if (threadWorkspace) {
     if (threadWorkspace.status === "CLOSED" && threadWorkspace.closedAt) {
       return { outcome: "CLOSED", workspaceId: threadWorkspace.id, closedAt: threadWorkspace.closedAt };
@@ -4914,7 +5062,7 @@ async function ensureThreadWorkspace(
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         // #213: the starter is recorded with the charge, so a failed preparation can always find it.
-        ...threadChargeItems(dependencies, identity, effective, attempted.workspace.id),
+        ...threadChargeItems(dependencies, identity, effective, attempted.workspace.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey)),
       ] }));
       preparation = attempted;
       break;
@@ -4982,7 +5130,7 @@ async function createUnpreparedThreadWorkspace(
         // Capture creation provenance atomically, before a later participant can touch the thread.
         { Update: {
           TableName: dependencies.tableName,
-          Key: slackThreadKey(identity.ownerKey),
+          Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
           UpdateExpression: "SET #creator = if_not_exists(#creator, :creator)",
           ExpressionAttributeNames: { "#creator": "creator" },
           ExpressionAttributeValues: { ":creator": { userId: identity.slack!.requester.userId, ...(identity.slack!.requesterName === undefined ? {} : { name: identity.slack!.requesterName }) } },
@@ -5070,7 +5218,7 @@ async function prepareThreadWorkspace(
     }
     return { outcome: "WORKSPACE", workspaceId: workspace.id, status: workspace.status, operationId: (await activeOperationForChannel(dependencies, workspace)).operationId, created: false };
   }
-  const workspace = await getThreadWorkspace(dependencies, identity.ownerKey)
+  const workspace = await getThreadWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey)
     ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   if (workspace.status === "CLOSED" && workspace.closedAt) {
@@ -5180,7 +5328,7 @@ async function startThreadPreparation(
       } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
-      ...threadChargeItems(dependencies, identity, effective, workspace.id),
+      ...threadChargeItems(dependencies, identity, effective, workspace.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey)),
     ] }));
   } catch (error) {
     if (!isConditional(error)) throw error;
@@ -5211,6 +5359,7 @@ function threadChargeItems(
   identity: AuthenticatedIdentity,
   effective: SlackServiceConfiguration,
   workspaceId: string,
+  threadKey: { pk: string; sk: string },
 ): TransactItems {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
@@ -5242,7 +5391,7 @@ function threadChargeItems(
     } },
     { Update: {
       TableName: dependencies.tableName,
-      Key: slackThreadKey(identity.ownerKey),
+      Key: threadKey,
       // The same record recordThreadRequester(..., true) writes, so a missing thread row is
       // created whole and the charged member is among its requesters.
       UpdateExpression: "SET #entity = :entity, #thread = if_not_exists(#thread, :thread), #workspace = if_not_exists(#workspace, :workspace), starterUserId = :user, #starter = :starter, orgId = :org ADD #requesters :users",
@@ -5406,7 +5555,7 @@ async function sharedThreadWorkspace(
     ...(include.recoverableOperations ? { recoverableOperations: [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: settings.definition.revision } : {}),
     ...(include.actionPolicy && settings.definition.actionPolicy ? { actionPolicy: settings.definition.actionPolicy } : {}),
-    ...(includeSharedTask ? { sharedTask: { taskId: shared.taskId, developerName: shared.developerName } } : {}),
+    ...(includeSharedTask ? { sharedTask: { taskId: shared.taskId, developerName: emailSafeName(shared.developerName) ?? "a member" } } : {}),
     ...(includeSharedTask && active.developer ? { activeOperation: "developer" as const } : {}),
   };
 }
@@ -5596,7 +5745,7 @@ async function recordThreadRequester(
   if (!slack) return;
   await dependencies.documentClient.send(new UpdateCommand({
     TableName: dependencies.tableName,
-    Key: slackThreadKey(identity.ownerKey),
+    Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
     UpdateExpression: [
       "SET #entity = :entity, #thread = if_not_exists(#thread, :thread), #workspace = if_not_exists(#workspace, :workspace)",
       ...(starter ? [", #starter = if_not_exists(#starter, :user), #creator = if_not_exists(#creator, :creator)"] : []),
@@ -5619,6 +5768,13 @@ async function recordThreadRequester(
   }));
 }
 
+/** The login of the GitHub account a developer linked (C55: the name a pull request footer uses when the display name is an email address). */
+async function githubLoginOfDeveloper(dependencies: AwsBrokerDependencies, developerId: string): Promise<string | undefined> {
+  const developer = dependencies.developer;
+  if (developer === undefined) return undefined;
+  return githubLoginOf(new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }), developerId);
+}
+
 /** A pull request body with who asked for it: the developer footer (FR-023) or the Slack thread. */
 async function attributedBody(
   dependencies: AwsBrokerDependencies,
@@ -5627,13 +5783,15 @@ async function attributedBody(
 ): Promise<string | undefined> {
   if (identity.developer) {
     // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
-    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX");
+    // C55: never the requester's email address: their display name, else their linked GitHub login (read only when the name is an address), else "the task owner".
+    const login = personNameForText(identity.developer.name) !== undefined ? undefined : await githubLoginOfDeveloper(dependencies, identity.developer.developerId);
+    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX", login);
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
   }
   const slack = identity.slack;
   if (!slack) return body;
-  const thread = await getItem<{ requesters?: Iterable<string> }>(dependencies, slackThreadKey(identity.ownerKey));
+  const thread = await getItem<{ requesters?: Iterable<string> }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
   const requesters = [...new Set([...(thread?.requesters ?? []), slack.requester.userId])].sort();
   const link = `https://slack.com/archives/${slack.thread.channelId}/p${slack.thread.threadTs.replace(".", "")}`;
   const attribution = `Requested in Slack thread ${link} by ${requesters.join(", ")}.`;
@@ -5696,18 +5854,18 @@ async function retryThreadPreparation(
   if (!slack || !limits) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
   let current = workspace;
   for (let attempt = 0; attempt < THREAD_RETRY_ATTEMPTS; attempt += 1) {
-    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, slackThreadKey(identity.ownerKey));
+    const thread = await getItem<{ starterUserId?: unknown }>(dependencies, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     const starter = typeof thread?.starterUserId === "string" ? thread.starterUserId : undefined;
     const effective = starter === undefined ? await effectiveSlackLimits(dependencies, requireOrgId(identity.orgId), limits) : undefined;
     if (effective !== undefined) await healSlackMemberSlots(dependencies, requireOrgId(identity.orgId), slack.requester, effective);
     const charge: TransactItems = effective === undefined
       ? [{ ConditionCheck: {
         TableName: dependencies.tableName,
-        Key: slackThreadKey(identity.ownerKey),
+        Key: await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey),
         ConditionExpression: "starterUserId = :user",
         ExpressionAttributeValues: { ":user": starter },
       } }]
-      : threadChargeItems(dependencies, identity, effective, current.id);
+      : threadChargeItems(dependencies, identity, effective, current.id, await resolveSlackThreadKey(dependencies, requireOrgId(identity.orgId), identity.ownerKey));
     try {
       const retried = await retryWorkspacePreparation(dependencies, identity, requestId, identity.ownerKey, project, current, charge);
       return { status: "PREPARING", operationId: retried.operationId };
@@ -5881,7 +6039,7 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
-): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true }) | undefined> {
+): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true; reviewSameModel?: true }) | undefined> {
   if (task?.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
@@ -5892,14 +6050,95 @@ async function dispatchAgentStep(
   // Plan 6 Task 8: the plan check is an ordinary step. The model the company set on it stands; with none set, Rovara recommends one the project may use (a different one from the planner's by default).
   const critic = input.workflowMode === "PLAN_CRITIQUE" && input.agentRun === undefined
     ? await criticModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
-  const recipe = critic?.recipe ?? frozen.recipe;
+  // Trust fix A2: the reviews of a version 2 task default to a different model from the build's, chosen like the plan check's; a model the company set on the step stands.
+  const reviewer = input.workflowMode === "REVIEW" && input.agentRun === undefined && task.workflow?.definitionVersion === "1.1.0"
+    ? await reviewerModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
+  const recipe = critic?.recipe ?? reviewer?.recipe ?? frozen.recipe;
   const stepIds = priorStepIds({ recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, stepIds);
   const applied = applyAgentStep({
     recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
     projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations, agentRun: input.agentRun,
   });
-  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}) };
+  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}), ...(reviewer?.sameModelAsBuilder === true ? { reviewSameModel: true as const } : {}) };
+}
+
+/**
+ * Trust fix A2: the recipe the reviews run under. With no model set on the review step, `reviewerModelFor` chooses one for this one operation (a different model from the build's by default, only another
+ * company's when the company requires it), set as the step's model so the step's ordinary checks and routing apply to it. A choice that can't be made leaves the recipe as it was, so the dispatch checks decide
+ * exactly as before (the cross-company refusal included). The build's model is the one its latest operation recorded, else the project's; the models earlier reviews of this task found unusable are left out.
+ */
+async function reviewerModelOfStep(
+  dependencies: AwsBrokerDependencies, orgId: OrgId, workspace: WorkspaceInstance, task: DeveloperTaskRecord, recipe: ResolvedRecipe, programStepId: string | undefined,
+  guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
+): Promise<{ recipe: ResolvedRecipe; sameModelAsBuilder: boolean }> {
+  const step = stepForOperation(recipe, "REVIEW", programStepId);
+  if (step === undefined) return { recipe, sameModelAsBuilder: false };
+  const operations = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+  // The code under review is the latest build that finished; a later build that failed or was stopped left none.
+  const builds = operations
+    .filter((item) => item.workflowMode === "IMPLEMENT" && item.conversationId === task.conversationId)
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+  const builder = builds.filter((item) => item.status === "SUCCEEDED").at(-1) ?? builds.at(-1);
+  const recorded = ModelSelectionSchema.safeParse(builder?.model);
+  const routing = routingOf(dependencies);
+  // When nothing is chosen the step runs on the project's model (the dispatch's own fallback); when that is the build's model, the review says so.
+  const fallback = projectModel ?? defaultWorkerModel(routing?.rovaraGeography);
+  const own = (step.settings ?? {}) as { model?: unknown; fallbackModel?: unknown };
+  const unchanged = { recipe, sameModelAsBuilder: own.model == null && own.fallbackModel == null && recorded.success && canonicalModelName(recorded.data) === canonicalModelName(fallback) };
+  const history = reviewFailures(operations, builder);
+  if (history.sinceLatestBuild >= CRITIC_MODEL_ATTEMPTS_MAX) return unchanged;
+  // The models of the steps this review must differ in company from; one that recorded none can't be shown to differ, so nothing is chosen and the dispatch's own check decides.
+  const targets = crossCompanyTargets(recipe, step, guardrails);
+  const priors = targets.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, targets);
+  if (priors.some((prior) => prior.model === undefined)) return unchanged;
+  const chosen = reviewerModelFor({
+    step, builderModel: recorded.success ? recorded.data : fallback,
+    project: { approved }, guardrails, differentCompanyFrom: priors.flatMap((prior) => (prior.model === undefined ? [] : [prior.model])),
+    sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
+    unusable: history.models, lastAttempt: history.sinceLatestBuild + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
+  });
+  // The company's own model stands and says nothing; a choice that couldn't be made leaves the project's model, which may be the build's.
+  if (chosen?.chosenBy === "company") return { recipe, sameModelAsBuilder: false };
+  if (chosen === undefined) return unchanged;
+  return {
+    recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
+    sameModelAsBuilder: chosen.sameModelAsBuilder,
+  };
+}
+
+/**
+ * The reviews of one workspace whose model could not serve this account (`criticModelUnusable`): the models they ran on, and how many came after the latest build. A review fails this way in two shapes:
+ * its operation ended FAILED with the refusal (the operation's own session was refused first), or the operation SUCCEEDED and a reviewer's report says its model call failed (`modelFailure`, a fixed sentence
+ * the worker wrote from the model-call monitor's note, on the report's own provider and version). Each operation counts once.
+ */
+function reviewFailures(operations: ReadonlyArray<Record<string, unknown>>, latestBuild: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestBuild: number } {
+  const models: ModelSelection[] = [];
+  let sinceLatestBuild = 0;
+  const from = typeof latestBuild?.createdAt === "string" ? latestBuild.createdAt : "";
+  for (const item of operations) {
+    if (item.workflowMode !== "REVIEW") continue;
+    let failed: ModelSelection | undefined;
+    let unusable = false;
+    if (item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined)) {
+      unusable = true;
+      const model = ModelSelectionSchema.safeParse(item.model);
+      if (model.success) failed = model.data;
+    } else if (item.status === "SUCCEEDED") {
+      const reports = (item.result as { workflowReviews?: unknown } | undefined)?.workflowReviews;
+      for (const report of Array.isArray(reports) ? reports : []) {
+        const { provider, version, modelFailure } = (report ?? {}) as { provider?: unknown; version?: unknown; modelFailure?: unknown };
+        if (typeof modelFailure !== "string" || !criticModelUnusable(modelFailure)) continue;
+        unusable = true;
+        const model = ModelSelectionSchema.safeParse({ provider, modelId: version });
+        if (model.success) failed = model.data;
+      }
+    }
+    if (!unusable) continue;
+    if (failed !== undefined) models.push(failed);
+    if (String(item.createdAt) >= from) sinceLatestBuild += 1;
+  }
+  return { models, sinceLatestBuild };
 }
 
 /**
@@ -5912,22 +6151,44 @@ async function criticModelOfStep(
   guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
 ): Promise<{ recipe: ResolvedRecipe; sameModelAsPlanner: boolean }> {
   const step = stepForOperation(recipe, "PLAN_CRITIQUE", programStepId);
-  const planner = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#"))
-    .filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
+  const operations = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+  const planner = operations
+    .filter((item) => item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
   const recorded = ModelSelectionSchema.safeParse(planner?.model);
+  // Staging 0.4.10: Bedrock answered 403 for the strongest model, which this account had not enabled. The checks that failed that way already named the models to leave out, and only so many are tried.
+  const history = criticFailures(operations, planner);
+  if (history.sinceLatestPlan >= CRITIC_MODEL_ATTEMPTS_MAX) throw new PlanCheckUnavailableError();
   const routing = routingOf(dependencies);
   const chosen = criticModelFor({
     step, agentName: task.agent?.name ?? ROVARA_CODE_NAME, planModel: recorded.success ? recorded.data : projectModel ?? defaultWorkerModel(routing?.rovaraGeography),
     project: { name: workspace.projectName, approved }, guardrails,
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
+    unusable: history.models,
+    lastAttempt: history.sinceLatestPlan + 1 >= CRITIC_MODEL_ATTEMPTS_MAX,
   });
   if ("refuse" in chosen) throw chosen.refuse;
+  if ("unavailable" in chosen) throw new PlanCheckUnavailableError();
   if (step === undefined || chosen.chosenBy === "company" || chosen.model === undefined) return { recipe, sameModelAsPlanner: chosen.sameModelAsPlanner };
   return {
     recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
     sameModelAsPlanner: chosen.sameModelAsPlanner,
   };
+}
+
+/**
+ * The plan checks of one workspace that failed because their model could not serve this account (`criticModelUnusable`): the models they ran on, to leave out of the next choice, and how many
+ * of them came after the latest planning run (a revised plan is checked again, with the earlier refusals remembered but the tries counted afresh). A failed check that recorded no usable model counts as a try.
+ */
+function criticFailures(operations: ReadonlyArray<Record<string, unknown>>, latestPlanner: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestPlan: number } {
+  const failed = operations.filter((item) => item.workflowMode === "PLAN_CRITIQUE" && item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined));
+  const models: ModelSelection[] = [];
+  for (const item of failed) {
+    const model = ModelSelectionSchema.safeParse(item.model);
+    if (model.success) models.push(model.data);
+  }
+  const from = typeof latestPlanner?.createdAt === "string" ? latestPlanner.createdAt : "";
+  return { models, sinceLatestPlan: failed.filter((item) => String(item.createdAt) >= from).length };
 }
 
 /** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
@@ -6028,6 +6289,8 @@ async function taskOperationParts(
   operation.settingsRevision = settings.definition.revision;
   // Plan 6 Task 8: the project allows only one model, so the same model that wrote the plan checks it; the plan view says so.
   if (applied?.criticSameModel === true) operation.criticSameModel = true;
+  // Trust fix A2: only the build's own model was usable for the reviews; their reports say so.
+  if (applied?.reviewSameModel === true) operation.reviewSameModel = true;
   // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
   if (input.planRevision === true) operation.planRevision = true;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
@@ -6056,8 +6319,13 @@ async function taskOperationParts(
     : undefined;
   // Recorded so the broker can refuse a v2 plan from a run that was never asked for one (Ruling AW).
   if (input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext)) operation.workflowE2EPlanVersion = 2;
+  // The part of the context the plan self-check reads is kept on the run, so the check at its result sees exactly what the planner was told.
+  const qualityContext = planQualityContextOf(e2ePlanningContext);
+  if (input.workflowMode === "PLAN" && codingPlan && qualityContext !== undefined) operation.planQualityContext = qualityContext;
+  // The prompt below carries the plan quality guidance; delivery clears this for a worker that cannot read the members it names (see createPlanQualityNegotiationRecorder).
+  if (input.workflowMode === "PLAN" && codingPlan) operation.planQualityAsked = true;
   const requiredParts = codingPlan && input.workflowMode === "PLAN" && input.legacyTask !== true && await codingPlanRequiresParts(dependencies, workspace.id);
-  const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true,
+  const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true, planQuality: true,
     // Rovara Code version 2 only: a plan may say that no code change is needed (version 1's prompt, and so its recorded behaviour, is unchanged).
     ...(task?.workflow?.definitionVersion === "1.1.0" ? { noChangeOption: true } : {}),
     ...(requiredParts ? { requiredParts: true } : {}),
@@ -6086,6 +6354,11 @@ async function taskOperationParts(
     console.log(JSON.stringify({ component: "broker", event: "developer.shared_reread_omitted", operationId }));
   }
   // M1.3 Task 3.7b: the coding run exports the unchanged code when approval asked for it, and again on any later coding run (a retry) while the baseline is still only requested.
+  // T7b: a coding plan run that negotiates the application plan is asked for the unchanged code too, so the plan's must-not-change scenarios can be tried on the current app before the
+  // owner is asked. The worker exports only when the plan it wrote has such scenarios; delivery withholds the request from a worker that cannot (see withoutGroundingSource). A project that
+  // switched the baseline off gets no grounding either.
+  const askGroundingSource = input.workflowMode === "PLAN" && codingPlan && input.legacyTask !== true && offersApplicationE2EPlan(e2ePlanningContext) && projectE2EBaselineWanted(settings);
+  if (askGroundingSource) operation.groundingSourceAsked = true;
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -6096,7 +6369,7 @@ async function taskOperationParts(
     projectRevision: workspace.projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, {
       feedbackBundles: input.workflowMode === "FEEDBACK_REVIEW", feedbackApproval: input.workflowFeedbackApproval !== undefined, chatGptToken: chatgpt !== undefined,
-      candidateExport: input.workflowMode === "IMPLEMENT", workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
+      candidateExport: input.workflowMode === "IMPLEMENT", groundingSource: askGroundingSource, workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
       // The AI browser-test agent's model budget (M1.4): only a round that has agent steps may ask for it.
       e2eModelBudget: input.workflowE2EAdmission?.agentSteps === true,
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
@@ -6119,6 +6392,7 @@ async function taskOperationParts(
       ...(input.workflowFeedbackApproval === undefined ? {} : { workflowFeedbackApproval: input.workflowFeedbackApproval }),
       ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }),
       ...(askBaselineSource ? { workflowE2EBaselineSource: true as const } : {}),
+      ...(askGroundingSource ? { workflowE2EGroundingSource: true as const } : {}),
       ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
       ...(input.workflowBase === undefined ? {} : { workflowBase: input.workflowBase }),
       ...(input.workflowReviewChecks === undefined ? {} : { workflowReviewChecks: input.workflowReviewChecks }),
@@ -6574,6 +6848,7 @@ function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDep
         github.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
     }),
     gate,
+    githubLoginOf: (developerId) => githubLoginOfDeveloper(dependencies, developerId),
   };
   return base;
 }
@@ -6708,7 +6983,7 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
           catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
           // Every approved call is claimed and recorded in the ledger, whatever access the project gave the tool: a retry replays it instead of sending it again.
           durable: true,
-          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName) } : {}),
+          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName, await ownerGithubLoginOf(t, task)) } : {}),
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
@@ -6827,7 +7102,13 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const taskKeyIds = current.modelKeyIds ?? [];
     const keyed = slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer);
     // A thread's work has no task record: the org must still be open and the member the key is for still in it (Task 21, Re-check R-2).
-    await requireOrgOpenFor(dependencies, current.orgId, keyed === undefined ? [] : [keyed]);
+    // Check the requester independently of the payer lookup: removing membership makes linkedRequester return undefined,
+    // but must not downgrade previously attributable work to anonymous org-funded work (C1).
+    const requestedBy = current.requestedBy;
+    const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
+      "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
+    ));
+    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
     return {
       orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),
@@ -7037,7 +7318,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
+  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput; firstEvent?: string } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -7123,10 +7404,18 @@ async function acceptTask(
           ":latestChecks": latestChecksItem({ status: "not_verified", reason: "interrupted" }, operation.id, fence, now),
         },
       } },
-      { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
+      // A first event (Bug N) makes the operation start at sequence 1, so the worker's own events follow it.
+      { Put: { TableName: dependencies.tableName, Item: options.firstEvent === undefined ? operation : { ...operation, eventSequence: 1 }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { ...idempotencyKey, entityType: "IDEMPOTENCY", operationId: operation.id, payloadHash: requestHash }, ConditionExpression: "attribute_not_exists(pk)" } },
       ...extra(publicOperation(operation)),
+      // Last, so the caller's extra items keep their positions in a cancellation's reasons.
+      ...(options.firstEvent === undefined ? [] : [{ Put: {
+        TableName: dependencies.tableName,
+        Item: { pk: `OPERATION#${operation.id}`, sk: `EVENT#${String(1).padStart(12, "0")}`, entityType: "EVENT", workspaceId, operationId: operation.id, sequence: 1,
+          type: "progress", timestamp: now, payload: { message: options.firstEvent } },
+        ConditionExpression: "attribute_not_exists(pk)",
+      } }]),
     ] }));
   } catch (error) {
     if (isConditional(error)) {
@@ -7374,7 +7663,14 @@ async function acceptPullRequestLifecycle(
    * exactly the reviewed tree on the task's pinned base, onto the head the workflow recorded. Only the broker's own
    * dispatch passes it; nothing a person asks for changes a workflow task's pull request.
    */
-  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"] } } = {},
+  options: {
+    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"]; mergeBaseCommit?: string };
+    /**
+     * Plan 6 Task 17: a workflow task's merge of the base branch into its pull request's branch: only a sync, of exactly the base commit named, onto the head the workflow recorded. Only the broker's
+     * own dispatch passes it.
+     */
+    workflowSync?: { baseCommit: string; expectedHeadCommit: string };
+  } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
   // Ruling R60: before any access check, as for acceptPullRequest.
@@ -7383,17 +7679,26 @@ async function acceptPullRequestLifecycle(
   await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
+  const branchSync = options.workflowSync;
   if (candidate !== undefined && (request.action !== "append" || !/^[a-f0-9]{64}$/.test(candidate.candidateDigest)
-    || !/^[a-f0-9]{40}$/.test(candidate.treeSha) || !/^[a-f0-9]{40}$/.test(candidate.baseCommitSha) || !/^[a-f0-9]{40}$/.test(candidate.expectedHeadCommit))) {
+    || !/^[a-f0-9]{40}$/.test(candidate.treeSha) || !/^[a-f0-9]{40}$/.test(candidate.baseCommitSha) || !/^[a-f0-9]{40}$/.test(candidate.expectedHeadCommit)
+    || (candidate.mergeBaseCommit !== undefined && !/^[a-f0-9]{40}$/.test(candidate.mergeBaseCommit)))) {
     throw agentXError("CONFIG_INVALID", "workflow pull request update does not match its reviewed fix");
   }
+  if (branchSync !== undefined && (candidate !== undefined || request.action !== "sync" || !/^[a-f0-9]{40}$/.test(branchSync.baseCommit) || !/^[a-f0-9]{40}$/.test(branchSync.expectedHeadCommit))) {
+    throw agentXError("CONFIG_INVALID", "workflow merge of the base branch does not match its request");
+  }
+  // The head the workflow recorded, for either kind of change the workflow makes to its own pull request.
+  const workflowHead = candidate?.expectedHeadCommit ?? branchSync?.expectedHeadCommit;
+  const workflowBound = workflowHead !== undefined;
   const requestHash = hashJson({
     repository: request.repository,
     pullRequestNumber: request.pullRequestNumber,
     action: request.action,
     ...(request.title === undefined ? {} : { title: request.title }),
     ...(request.body === undefined ? {} : { body: request.body }),
-    ...(candidate === undefined ? {} : { candidateDigest: candidate.candidateDigest, candidateTreeSha: candidate.treeSha }),
+    ...(candidate === undefined ? {} : { candidateDigest: candidate.candidateDigest, candidateTreeSha: candidate.treeSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) }),
+    ...(branchSync === undefined ? {} : { branchSyncBase: branchSync.baseCommit, branchSyncHead: branchSync.expectedHeadCommit }),
   });
   const idempotencyKey = {
     pk: `IDEMPOTENCY#${identity.ownerKey}#${workspaceId}`,
@@ -7408,7 +7713,7 @@ async function acceptPullRequestLifecycle(
   }
   // Ruling A: nothing replaces, reverts, edits, closes or reopens a gated task's pull request through AgentX on request.
   // The workflow's own push of its reviewed fix is the one change it makes, and only its dispatch asks for it.
-  if (candidate === undefined && await gatedTaskWorkspace(dependencies, workspaceId)) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_ACTION_REFUSAL);
+  if (!workflowBound && await gatedTaskWorkspace(dependencies, workspaceId)) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_ACTION_REFUSAL);
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
   const repository = project.definition.repositories.find((candidate) => candidate.name === request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
@@ -7417,7 +7722,7 @@ async function acceptPullRequestLifecycle(
     pullRequestKey(workspaceId, request.repository, request.pullRequestNumber),
   );
   // The workflow's pull request was recorded when AgentX opened it, on the head the workflow recorded too.
-  if (candidate !== undefined && existingRecord?.expectedHeadCommit !== candidate.expectedHeadCommit) {
+  if (workflowBound && existingRecord?.expectedHeadCommit !== workflowHead) {
     throw agentXError("STALE_FENCE", "the pull request's recorded head is not the one the task recorded");
   }
   const scope = await githubScopeOf(dependencies, workspace);
@@ -7586,7 +7891,7 @@ async function acceptPullRequestLifecycle(
     throw agentXError("CONFIG_INVALID", "pull request action is not supported");
   }
   // A workflow task's pull request merged or closed on GitHub since AgentX opened it: it changed there, like a moved head.
-  if (remote.state !== "open") throw agentXError(candidate === undefined ? "CONFIG_INVALID" : "STALE_FENCE", "only an open pull request can be maintained");
+  if (remote.state !== "open") throw agentXError(workflowBound ? "STALE_FENCE" : "CONFIG_INVALID", "only an open pull request can be maintained");
   if (!['READY', 'STOPPED'].includes(workspace.status) || workspace.activeOperationId) {
     throw agentXError(workspace.status === "BUSY" ? "WORKSPACE_BUSY" : "WORKSPACE_NOT_READY", `workspace is ${workspace.status}`);
   }
@@ -7607,7 +7912,8 @@ async function acceptPullRequestLifecycle(
     baseBranch: record.baseBranch,
     expectedHeadCommit: record.expectedHeadCommit,
     codeBuildGates: repository.codeBuildGates ?? [],
-    ...(candidate === undefined ? {} : { workflowCandidate: { candidateDigest: candidate.candidateDigest, treeSha: candidate.treeSha, baseCommitSha: candidate.baseCommitSha } }),
+    ...(candidate === undefined ? {} : { workflowCandidate: { candidateDigest: candidate.candidateDigest, treeSha: candidate.treeSha, baseCommitSha: candidate.baseCommitSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) } }),
+    ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -7632,6 +7938,9 @@ async function acceptPullRequestLifecycle(
       ...(candidate === undefined ? {} : { workflowCandidateTreeSha: candidate.treeSha, workflowBaseCommit: candidate.baseCommitSha }),
       // Which fix it is, for its commit's message (Plan 6 Task 15).
       ...(candidate?.fixSource === undefined ? {} : { workflowFix: { source: candidate.fixSource } }),
+      // A conflict round's fix is a merge commit of the base commit the merge was tried with; a merge of the base names that commit and the head it is for (Plan 6 Task 17).
+      ...(candidate?.mergeBaseCommit === undefined ? {} : { workflowMergeBase: candidate.mergeBaseCommit }),
+      ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
     },
   };
   const outbox = outboxRecord(workspace, invocation);
@@ -7659,7 +7968,7 @@ async function acceptPullRequestLifecycle(
     ] }));
   } catch (error) {
     // The workflow's push, as its publication: a concurrent start of the same request is a duplicate, anything else busy.
-    if (candidate === undefined || !isConditional(error)) throw error;
+    if (!workflowBound || !isConditional(error)) throw error;
     const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
     if (concurrent === undefined) throw acceptancePullRequestCancellation(error, { workspaceId, requestId: request.requestId, action: request.action });
     if (concurrent.payloadHash !== requestHash) throw agentXError("IDEMPOTENCY_CONFLICT", "request ID was reused with another payload");
@@ -7703,7 +8012,8 @@ const CANCELLABLE_KINDS: ReadonlySet<string> = new Set(["task"]);
 type TaskCancellation =
   | { outcome: "CANCEL_REQUESTED"; workspaceId: string; targetOperationId: string; cancelOperationId: string }
   // Issue 196: finishedStatus names the final status when the running task had already finished.
-  | { outcome: "NOTHING_RUNNING"; workspaceId?: string; finishedStatus?: OperationStatus };
+  // `stopped`: no run was live, but the planner's automatic second run was waiting to start; the cancel stopped it.
+  | { outcome: "NOTHING_RUNNING"; workspaceId?: string; finishedStatus?: OperationStatus; stopped?: "PLAN_REVISION" };
 
 /** Cancels the workspace's running task, if it has one (#126). */
 async function cancelRunningTask(
@@ -7715,6 +8025,7 @@ async function cancelRunningTask(
   const targetOperationId = workspace.activeOperationId;
   if (!targetOperationId) {
     await stopQueuedWorkflowE2EReadiness(dependencies, workspace, extra);
+    if (await stopQueuedPlanRevision(dependencies, workspace)) return { outcome: "NOTHING_RUNNING", workspaceId: workspace.id, stopped: "PLAN_REVISION" };
     return { outcome: "NOTHING_RUNNING", workspaceId: workspace.id };
   }
   const target = await requireOperation(dependencies, workspace.id, targetOperationId);
@@ -7731,6 +8042,41 @@ async function cancelRunningTask(
   // A duplicate here means the task finished before the cancel was recorded.
   if (result.duplicate) return { outcome: "NOTHING_RUNNING", workspaceId: workspace.id, finishedStatus: result.operation.status };
   return { outcome: "CANCEL_REQUESTED", workspaceId: workspace.id, targetOperationId, cancelOperationId: result.operation.id };
+}
+
+/**
+ * Plan self-check: between a sent-back planning answer and the start of the planner's automatic second run, planning is RUNNING with no live
+ * run (a REPLAN dispatch row waits, longer when the workspace is busy). A cancel then stops that run: the row is deleted and planning is blocked
+ * (Retry planning is offered), in one transaction conditional on the same workflow revision, so the run never starts and never spends.
+ * True when it stopped one.
+ */
+async function stopQueuedPlanRevision(dependencies: AwsBrokerDependencies, workspace: WorkspaceInstance): Promise<boolean> {
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspace.id));
+  if (pointer === undefined) return false;
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.stage !== "PLAN" || workflow.state !== "RUNNING") return false;
+  const rowKey = { pk: WORKFLOW_DISPATCH_PK, sk: `${task.taskId}#${workflow.revision}` };
+  const row = await getItem<WorkflowDispatchRecord>(dependencies, rowKey);
+  if (row === undefined || row.kind !== "REPLAN" || row.taskId !== task.taskId || row.workflowRevision !== workflow.revision) return false;
+  const now = new Date().toISOString();
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Delete: { TableName: dependencies.tableName, Key: rowKey, ConditionExpression: "#kind = :replan AND workflowRevision = :revision",
+        ExpressionAttributeNames: { "#kind": "kind" }, ExpressionAttributeValues: { ":replan": "REPLAN", ":revision": workflow.revision } } },
+      { Update: { TableName: dependencies.tableName, Key: taskKey(task.taskId),
+        UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+        ConditionExpression: "attribute_not_exists(closedAt) AND workflow.revision = :revision AND workflow.#stage = :plan AND workflow.#state = :running",
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": blockWorkflow(workflow, workflowRunEndedReason("PLAN", "CANCELLED"), now), ":now": now,
+          ":revision": workflow.revision, ":plan": "PLAN", ":running": "RUNNING" } } },
+    ] }));
+    return true;
+  } catch (error) {
+    // The run started (or the task moved) first: the ordinary cancel of a live run is the caller's next answer.
+    if (isConditional(error)) return false;
+    throw error;
+  }
 }
 
 /** Stops a verified warm-up in the brief idle interval before recovery can admit its feature round. */
@@ -7771,6 +8117,7 @@ async function stopQueuedWorkflowE2EReadiness(
         ":now": now, ":revision": workflow.revision, ":verify": "VERIFY", ":waiting": "WAITING", ":required": true,
         ":candidate": workflow.candidate.digest,
       } } },
+    ...ownerStopRows(dependencies, workflow, now),
     ...extra(publicOperation(readiness)),
   ] }));
 }
@@ -7823,6 +8170,7 @@ async function cancelWorkflowE2EReadiness(
         ":workflow": blockWorkflow(workflow, "E2E compute readiness was cancelled; no feature round was admitted.", now),
         ":now": now, ":revision": marker.workflowRevision, ":verify": "VERIFY", ":waiting": "WAITING", ":candidate": marker.candidateDigest,
       } } }] : []),
+    ...(taskMatches && workflow !== undefined ? ownerStopRows(dependencies, workflow, now) : []),
     ...extra(publicOperation({ ...operation, status: "CANCELLED", updatedAt: now,
       result: { status: "CANCELLED", reason: "E2E compute readiness was cancelled by an authorized owner." } })),
   ];
@@ -7999,8 +8347,9 @@ async function handleSlackTaskPeople(dependencies: AwsBrokerDependencies, tasks:
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
-  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks }, caller);
-  const access = await resolveTaskAccess(routeDeps, caller, taskId, event.action === "task-people-read" ? "read" : event.action === "task-people-change" ? "peopleManage" : "takeOwnership");
+  const agents = agentRouteDependencies(dependencies, tasks);
+  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, ...(agents === undefined ? {} : { agents }) }, caller);
+  const access = await resolveTaskAccess(routeDeps, caller, taskId, event.action === "task-people-read" ? "read" : event.action === "task-people-change" ? "peopleManage" : "read");
   if (access.task.share?.teamId !== thread.teamId || access.task.share.channelId !== thread.channelId || access.task.share.threadTs !== thread.threadTs) {
     throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   }
@@ -8077,7 +8426,7 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const existingWorkflowThread = await getItem(dependencies, sharedTaskKey(thread));
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, slackThreadSubject(thread));
-  const existingThreadTask = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, slackThreadKey(threadOwnerKey));
+  const existingThreadTask = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, await slackTeamOrg(dependencies, thread.teamId), threadOwnerKey));
   if (existingWorkflowThread !== undefined || (typeof existingThreadTask?.workspaceId === "string" && existingThreadTask.closedAt === undefined)) {
     throw agentXError("WORKSPACE_BUSY", "this Slack thread already has a task; start the workflow in a new thread");
   }
@@ -8557,7 +8906,7 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
   catch { return { outcome: "refused" }; }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
-  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor);
+  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, nameTableName: dependencies.tableName, now: Date.now }), access.task, userId.data, actor);
   // Plan 6 Task 5: a reply answers Understand's questions only from a person who has "can use" on the task's session in this org, judged live the way the app route judges it (the project
   // role included). It is recorded under that person, whoever owns the task.
   const waiting = access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING";
@@ -8640,11 +8989,12 @@ async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: S
     return cancelRunningTask(dependencies, workspace, { requestedBy: requester },
       sharedStopFences(dependencies, thread, shared, task, workspace, access.peopleRevision));
   }
+  const orgId = await slackTeamOrg(dependencies, thread.teamId);
   const ownerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, slackThreadSubject(thread));
-  const record = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, slackThreadKey(ownerKey));
+  const record = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
   if (typeof record?.workspaceId !== "string" || record.closedAt !== undefined) return { outcome: "NOTHING_RUNNING" };
   const workspace = await requireWorkspace(dependencies, record.workspaceId);
-  if (workspace.ownerKey !== ownerKey) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
+  if (workspace.ownerKey !== ownerKey || (workspace.orgId ?? installOrgId(dependencies)) !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
   return cancelRunningTask(dependencies, workspace, { requestedBy: requester });
 }
 
@@ -8706,8 +9056,10 @@ async function handleCallback(
     return json(await handleWorkflowCandidateBuildSource(dependencies, operation, body), request.requestId);
   }
   if (action === "baseline-source") {
-    if (operation.kind !== "task" || operation.workflowMode !== "IMPLEMENT" || operation.status !== "RUNNING") {
-      throw agentXError("CALLBACK_FORBIDDEN", "baseline source export is limited to the current implementation operation");
+    // T7b: the current implementation run's, or a planning run that was asked for the unchanged code to ground its plan (and only that: the upload is keyed to the operation that sends it).
+    const planAsked = operation.workflowMode === "PLAN" && operation.groundingSourceAsked === true;
+    if (operation.kind !== "task" || (operation.workflowMode !== "IMPLEMENT" && !planAsked) || operation.status !== "RUNNING") {
+      throw agentXError("CALLBACK_FORBIDDEN", "baseline source export is limited to the current implementation operation or a planning operation asked for it");
     }
     return json(await handleWorkflowBaselineSource(dependencies, operation, body), request.requestId);
   }
@@ -8728,6 +9080,17 @@ async function handleCallback(
       if (task === undefined || task.workspaceId !== operation.workspaceId || task.closedAt !== undefined || record === undefined || record.state !== "STARTED" || record.operationId !== operation.id
         || record.roundId !== reference.roundId || record.admissionSha256 !== reference.admissionRef.sha256) {
         throw agentXError("STALE_FENCE", "the replay round is no longer the one that was started");
+      }
+    } else if (reference.purpose === "grounding") {
+      // T7b: a grounding round is not the workflow's round either (the task is holding its plan card back, in PLAN): it is read on what the grounding record says, this operation is the
+      // round that record started, for this plan artifact, base commit and attempt, and the task is still open and still holding that plan.
+      const record = task === undefined || reference.planArtifactSha256 === undefined || reference.attempt === undefined ? undefined
+        : await readWorkflowE2EGroundingRecord(dependencies, { taskId: task.taskId, planArtifactSha256: reference.planArtifactSha256, attempt: reference.attempt });
+      const held = (task as { planGrounding?: { artifactSha256?: unknown } } | undefined)?.planGrounding;
+      if (task === undefined || task.workspaceId !== operation.workspaceId || task.closedAt !== undefined || record === undefined || record.state !== "STARTED" || record.operationId !== operation.id
+        || record.roundId !== reference.roundId || record.admissionSha256 !== reference.admissionRef.sha256 || record.baseCommitSha !== reference.baseCommitSha
+        || record.attempt !== reference.attempt || record.planArtifactSha256 !== reference.planArtifactSha256 || held?.artifactSha256 !== reference.planArtifactSha256) {
+        throw agentXError("STALE_FENCE", "the grounding round is no longer the one that was started");
       }
     } else if (reference.purpose === "baseline") {
       // M1.3 Task 3.7b: a baseline round is not the workflow's current round (the workflow is not running it, and its candidate is another), so it is read on what the baseline's
@@ -9056,6 +9419,9 @@ async function handleWorkflowBaselineSource(dependencies: AwsBrokerDependencies,
   const uploadKey = { pk: `WORKSPACE#${operation.workspaceId}`, sk: `BASELINE_SOURCE#${operation.id}` };
   const stagingKey = (uploadId: string, index: number) => `workflow-baseline-staging/${operation.workspaceId}/${operation.id}/${uploadId}/${index}.chunk`;
   const recorded = StoredBaselineSourceSchema.safeParse(operation.baselineSource);
+  // T7b: a planning run asked for the unchanged code uploads it under its own operation (the same per-operation upload key and fence), and the record lands on that operation's row only,
+  // so it can never replace an implementation run's baseline source. Its worker's free text (git and file system messages) is never stored: a failure is one fixed sentence.
+  const planAsked = operation.workflowMode === "PLAN" && operation.groundingSourceAsked === true;
   /** Records `stored` once; a record already there is answered from, and differs only as an error. `closing` closes the upload row in the same transaction. */
   const record = async (stored: StoredBaselineSource, closing?: { uploadId: string; sha256: string }): Promise<unknown> => {
     try {
@@ -9065,8 +9431,8 @@ async function handleWorkflowBaselineSource(dependencies: AwsBrokerDependencies,
           ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":complete": "COMPLETE", ":open": "OPEN", ":uploadId": closing.uploadId, ":sha256": closing.sha256,
             ":operationId": operation.id, ":fence": operation.fence } } }]),
         { Update: { TableName: dependencies.tableName, Key: operationRowKey, UpdateExpression: "SET baselineSource = :stored",
-          ConditionExpression: "#status = :running AND fence = :fence AND workflowMode = :mode AND attribute_not_exists(baselineSource)",
-          ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":stored": stored, ":running": "RUNNING", ":fence": operation.fence, ":mode": "IMPLEMENT" } } },
+          ConditionExpression: `#status = :running AND fence = :fence AND workflowMode = :mode AND attribute_not_exists(baselineSource)${planAsked ? " AND groundingSourceAsked = :asked" : ""}`,
+          ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":stored": stored, ":running": "RUNNING", ":fence": operation.fence, ":mode": planAsked ? "PLAN" : "IMPLEMENT", ...(planAsked ? { ":asked": true } : {}) } } },
       ] }));
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -9078,7 +9444,7 @@ async function handleWorkflowBaselineSource(dependencies: AwsBrokerDependencies,
     return { accepted: stored.status === "READY", baselineSource: stored };
   };
   if (body.stage === "unavailable") {
-    const stored: StoredBaselineSource = { status: "REFUSED", reason: `the worker could not export the unchanged code: ${body.reason}`.slice(0, 600) };
+    const stored: StoredBaselineSource = { status: "REFUSED", reason: planAsked ? GROUNDING_SOURCE_NOT_EXPORTED_REASON : `the worker could not export the unchanged code: ${body.reason}`.slice(0, 600) };
     if (recorded.success) {
       if (canonicalJson(recorded.data) !== canonicalJson(stored)) throw agentXError("CALLBACK_FORBIDDEN", "this implementation already recorded a different baseline source");
       return { accepted: false, baselineSource: stored, duplicate: true };
@@ -9153,8 +9519,10 @@ async function handleWorkflowBaselineSource(dependencies: AwsBrokerDependencies,
     if (sourceBytes.toString("base64") !== wire.sourceBase64 || manifestBytes.toString("base64") !== wire.manifestBase64) throw new Error("the baseline source encoding is invalid");
     stored = assessBaselineSource({ sourceBytes, manifestBytes });
   } catch (error) {
-    throw agentXError("CONFIG_INVALID", `baseline source export is malformed or is not the unchanged code of one repository: ${error instanceof Error ? error.message : "unreadable"}`.slice(0, 480));
+    throw agentXError("CONFIG_INVALID", `baseline source export is malformed or is not the unchanged code of one repository: ${planAsked ? "unreadable" : error instanceof Error ? error.message : "unreadable"}`.slice(0, 480));
   }
+  // A planning run's refused export keeps no text of the validator's (it can name paths): one fixed sentence, which the grounding record reads as `not-exported`.
+  if (planAsked && stored.status === "REFUSED") stored = { status: "REFUSED", reason: GROUNDING_SOURCE_REFUSED_REASON };
   if (stored.status === "READY") {
     const content = [{ key: stored.sourceRef.key, bytes: sourceBytes, limit: MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES }, { key: stored.buildSource.manifestRef.key, bytes: manifestBytes, limit: E2E_APPLICATION_BUILD_SOURCE_MANIFEST_MAX_BYTES }];
     for (const item of content) {
@@ -9173,6 +9541,10 @@ async function handleWorkflowBaselineSource(dependencies: AwsBrokerDependencies,
   for (let index = 0; index < Number(upload.chunkCount); index += 1) await dependencies.s3.send(new DeleteObjectCommand({ Bucket: dependencies.artifactBucketName, Key: stagingKey(body.uploadId, index) }));
   return answer;
 }
+
+/** The one sentence a planning run's failed export of the unchanged code is stored as (the grounding record reads it as `not-exported`). */
+const GROUNDING_SOURCE_REFUSED_REASON = "the unchanged code's build source was refused for the plan";
+const GROUNDING_SOURCE_NOT_EXPORTED_REASON = "the worker could not export the unchanged code for the plan";
 
 const WORKFLOW_E2E_TRANSFER_CHUNK_BYTES = 64 * 1024;
 const WORKFLOW_E2E_ADMISSION_MAX_BYTES = 24 * 1024 * 1024;
@@ -10056,6 +10428,7 @@ async function verifyWorkflowE2EEvidence(
     // round says: its own completion path verifies it (verifyBaselineEvidence), and nothing here can turn it into a verdict on the candidate.
     if (reference?.purpose === "baseline") return unavailable("baseline-admission-is-not-a-candidate-round");
     if (reference?.purpose === "replay") return unavailable("replay-admission-is-not-a-candidate-round");
+    if (reference?.purpose === "grounding") return unavailable("grounding-admission-is-not-a-candidate-round");
     const evidenceRef = operation.workflowE2EEvidenceRef;
     const groupEvidenceRefs = operation.workflowE2EGroupEvidenceRefs ?? [];
     const groupEvidenceRunIds = operation.workflowE2EGroupRunIds ?? [];
@@ -10657,6 +11030,50 @@ async function verifyReplayRound(dependencies: AwsBrokerDependencies, operation:
 }
 
 /**
+ * T7b: the grounding round's own completion. When its operation ends, this settles the grounding record, and does nothing else: no workflow transition, no `qualifiedRound` or `failedRound`,
+ * no send-back, no publication, no model spend. An operation that did not succeed leaves the record saying the plan could not be checked on the current app (a fixed reason); one that
+ * succeeded is verified exactly as a candidate's evidence is read (`loadApplicationEvidenceInputs`, then the verifier for the purpose it was signed with, bound to the plan digest and base
+ * commit recomputed from the record), and only that verification is recorded, conditionally, on the plan artifact, base commit, attempt, operation, round and admission the record started.
+ * It never throws: whatever goes wrong here, the record stays STARTED and is read as not run once its time is up. Whoever holds the plan's card back reads the record afterwards.
+ */
+export async function settleGroundingRound(dependencies: AwsBrokerDependencies, operation: OperationRecord, status: OperationStatus): Promise<void> {
+  const reference = operation.workflowE2EAdmission;
+  if (operation.kind !== "task" || reference?.purpose !== "grounding" || reference.baseCommitSha === undefined || reference.attempt === undefined || reference.planArtifactSha256 === undefined) return;
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(reference.taskId));
+    if (task === undefined || task.workspaceId !== operation.workspaceId) return;
+    const ref = { taskId: task.taskId, planArtifactSha256: reference.planArtifactSha256, attempt: reference.attempt };
+    const record = await readWorkflowE2EGroundingRecord(dependencies, ref);
+    if (record === undefined || record.state !== "STARTED" || record.operationId !== operation.id) return;
+    const unavailable = (reason: GroundingUnavailableReason) => markWorkflowE2EGroundingUnavailable(dependencies, ref, reason, { from: ["STARTED"], operationId: operation.id });
+    if (status !== "SUCCEEDED") { await unavailable(status === "CANCELLED" ? "stopped" : "run-failed"); return; }
+    const verified = await verifyGroundingRound(dependencies, operation, reference, record);
+    if (verified === undefined) { await unavailable("unverified"); return; }
+    await recordWorkflowE2EGrounding({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, task, ref,
+      { verified, expected: { operationId: operation.id, roundId: reference.roundId, admissionSha256: reference.admissionRef.sha256, baseCommitSha: reference.baseCommitSha } });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.e2e_grounding_settle_failed", taskId: reference.taskId, operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
+/** The broker's own verification of a finished grounding round's evidence, or undefined when the admission or the evidence cannot be read or verify to no rows. */
+async function verifyGroundingRound(dependencies: AwsBrokerDependencies, operation: OperationRecord, reference: E2EWorkflowAdmissionRef, record: GroundingRecord) {
+  const admissionText = await readStoredText(dependencies.s3, dependencies.artifactBucketName, reference.admissionRef.key, WORKFLOW_E2E_ADMISSION_MAX_BYTES);
+  if (admissionText === undefined || reference.baseCommitSha === undefined || reference.attempt === undefined) return undefined;
+  const admissionBytes = Buffer.from(admissionText, "utf8");
+  if (createHash("sha256").update(admissionBytes).digest("hex") !== reference.admissionRef.sha256 || admissionBytes.byteLength !== reference.admissionRef.byteLength) return undefined;
+  let admission: E2EApplicationExecutionAdmission;
+  try { admission = decodeE2EApplicationExecutionAdmission(admissionBytes); } catch { return undefined; }
+  const loaded = await loadApplicationEvidenceInputs(dependencies, operation, reference, admission);
+  if ("unavailable" in loaded) return undefined;
+  const planDigest = groundingPlanDigest({ taskId: reference.taskId, artifactId: record.planArtifactId, artifactSha256: record.planArtifactSha256, workflowRevision: reference.workflowRevision,
+    baseCommitSha: reference.baseCommitSha, attempt: reference.attempt });
+  return verifyGroundingEvidence({ admissionBytes, subject: { taskId: reference.taskId, operationId: operation.id, operationFence: operation.fence, workflowRevision: reference.workflowRevision,
+    candidateDigest: reference.candidateDigest, roundId: reference.roundId, groupRunIds: reference.groupRunIds, admissionSha256: reference.admissionRef.sha256 },
+  aggregate: loaded.aggregate, groupEvidence: loaded.groupEvidence, receivedAt: loaded.receivedAt, terminalStatus: "SUCCEEDED", grounding: { planDigest, baseCommitSha: reference.baseCommitSha } });
+}
+
+/**
  * The current authority an application round's verdict stands on, held against what the round was admitted under: the approved plan and its recorded selection, the
  * pinned project and its policy, the creator's access (exactly the proof the admission carries), the candidate's exported source, and the runtime rows. A row that is not
  * exactly the admitted one was requalified (or revoked, or expired) during the round, and the evidence cannot be judged against a runtime that has moved. The rows are also
@@ -11088,8 +11505,12 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }, task);
   // The owner's decision counts while they are the owner: the creator's, if it was decided before someone took the task over (by the decision's own stored time, never the
   // time it runs), and the taker's after (Plan 5 Task 12a, R3-6).
-  const authorizedActor = access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
-    : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
+  // A decision Rovara made itself (Plan 6 Task 16) is not the owner's, so the owner rule does not apply to it. It holds only while the task's autonomy still allows it (read now, from the frozen recipe the
+  // decision was bound to) and every person whose comment is in the round still has write access on GitHub (read now).
+  const authorizedActor = decision.actorRole === "ROVARA_AUTONOMY"
+    ? (access === undefined || access.status === "ALLOWED") && await autonomyStillHoldsFor(dependencies, task, input)
+    : access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
+      : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
   if (!authorizedActor) throw agentXError("STALE_FENCE", "the owner-approved PR feedback is no longer current");
 
   const finalPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
@@ -11135,6 +11556,26 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }
 }
 
+/** How far the company allows agents to act on their own, now (its guardrails' `maxAutonomy`); an unreadable document throws, which the callers read as `suggest`. */
+async function companyAutonomyLimit(dependencies: AwsBrokerDependencies, orgId: OrgId): Promise<"suggest" | "prepare" | "run"> {
+  return (await readGuardrails(dependencies, orgId)).maxAutonomy;
+}
+
+/** What the worker-start check reads, wired to the broker's live stores (Plan 6 Task 16). */
+function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
+  const orgId = task.orgId;
+  const github = dependencies.githubPullRequests;
+  return autonomyStillHolds({
+    autonomy: () => orgId === undefined ? Promise.resolve({ autonomy: "suggest" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, orgId), undefined, () => companyAutonomyLimit(dependencies, orgId)),
+    repositoryUrl: (repositoryId) => orgId === undefined ? Promise.resolve(undefined) : webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId),
+    standing: github.getRepositoryStanding !== undefined && orgId !== undefined
+      ? (url, login) => github.getRepositoryStanding!(url, login, githubScope(dependencies, orgId))
+      : github.getRepositoryPermission !== undefined && orgId !== undefined
+        ? async (url, login) => ({ permission: await github.getRepositoryPermission!(url, login, githubScope(dependencies, orgId)) })
+        : undefined,
+  }, task, binding);
+}
+
 function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, operation: OperationRecord | undefined,
   input: WorkflowFeedbackApprovalBinding): NonNullable<NonNullable<DeveloperTaskRecord["workflow"]>["feedbackDecisions"]>[number] | undefined {
   const workflow = task?.workflow;
@@ -11155,7 +11596,8 @@ function currentWorkflowFeedbackApproval(task: DeveloperTaskRecord | undefined, 
     || review.bundleRefs.some(ref => !activePullRequests.some(pr => pr.repositoryId === ref.repositoryId && pr.number === ref.number
       && pr.headSha === ref.headSha && pr.candidateDigest === ref.candidateDigest
       && workflow.candidate?.repositories.some(repo => repo.repositoryId === ref.repositoryId && repo.treeSha === ref.headTreeSha)))
-    || decision?.decision !== "APPROVE" || decision.actorRole !== "TASK_OWNER"
+    || decision?.decision !== "APPROVE"
+    || !feedbackApprovalMatchesDecision(decision, input)
     || decision.workflowRevision !== input.decisionWorkflowRevision || decision.reviewDigest !== input.reviewDigest
     || decision.proposalDigest !== input.proposalDigest || JSON.stringify(decision.bundleDigests) !== JSON.stringify(input.bundleDigests)
     || JSON.stringify(decision.selectedFindingIds) !== JSON.stringify(input.selectedFindingIds)
@@ -11574,8 +12016,96 @@ async function reconcilePullRequestUpdate(
   return { url: remote.url, state: remote.state, reconciled: false };
 }
 
+/**
+ * The Linear issue key the task's session follows now, read from the binding. `fallback` stands when the binding cannot be read (a read that fails is never read as "unlinked", which would take the line out).
+ */
+async function freshLinearKey(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, fallback: string | undefined): Promise<string | undefined> {
+  if (task.orgId === undefined || task.sessionId === undefined) return fallback;
+  try {
+    const bindings = await sessionBindingsOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task.orgId, task.sessionId);
+    return bindings.map(linearIssueKeyOf).find((found) => found !== undefined);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Plan 6 Task 20: brings ONE open pull request's description to the Linear binding: the `Fixes <KEY>` line inside Rovara's block is set, changed or taken out (`withLinearCloseLine`) from the description
+ * as GitHub has it now. GitHub has no conditional write for a description, so after each write the description and the binding are read again, and the line is set right again if another writer's
+ * copy (a feedback rewrite that read the description before this write) undid it, or the binding moved meanwhile; at most three writes. `first`: the key the caller knows (a route's, right after its
+ * commit); without it the binding is read. "failed": GitHub refused, the block is not as Rovara wrote it, the description would be too long, or the time ran out.
+ */
+async function settleLinearLine(
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, target: { repositoryUrl: string; number: number }, scope: Awaited<ReturnType<typeof githubScopeOf>>, first: { key: string | undefined } | undefined, deadline: number,
+): Promise<"updated" | "same" | "failed"> {
+  let wanted = first !== undefined ? first.key : await freshLinearKey(dependencies, task, undefined);
+  let wrote = false;
+  for (let round = 0; round < 4; round += 1) {
+    if (Date.now() > deadline) return "failed";
+    const next = withLinearCloseLine((await dependencies.githubPullRequests.getPullRequest(target.repositoryUrl, target.number, scope)).body, wanted);
+    if (next.kind === "same") return wrote ? "updated" : "same";
+    // The fourth look only checks: a third write that was undone again is reported, not repeated.
+    if (next.kind === "no_block" || next.body.length > PULL_REQUEST_BODY_MAX_CHARS || round === 3) return "failed";
+    await dependencies.githubPullRequests.updatePullRequest(target.repositoryUrl, target.number, { body: next.body }, scope);
+    wrote = true;
+    wanted = await freshLinearKey(dependencies, task, wanted);
+  }
+  return "failed";
+}
+
+/**
+ * Plan 6 Task 20: the open pull requests' descriptions say what the session's Linear binding says, at once (a link, a replace or an unlink; the pull request just recorded). Each description is settled
+ * (`settleLinearLine`) within the time a feedback description update has. A pull request that could not be read or written, whose block is not as Rovara wrote it, or past the time limit, counts as failed.
+ * Never throws. `first`: the key a route knows right after its commit; without it the binding is read.
+ */
+async function settleOpenLinearLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, first: { key: string | undefined } | undefined): Promise<{ updated: number; failed: number }> {
+  const open = (task.workflow?.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN");
+  const result = { updated: 0, failed: 0 };
+  const deadline = Date.now() + (dependencies.descriptionUpdateMaxMs ?? DESCRIPTION_UPDATE_MAX_MS);
+  let scope: Awaited<ReturnType<typeof githubScopeOf>> | undefined;
+  for (const pullRequest of open) {
+    try {
+      scope ??= await githubScopeOf(dependencies, task);
+      const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, pullRequest.repositoryId, pullRequest.number));
+      if (record === undefined) { result.failed += 1; continue; }
+      const outcome = await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: pullRequest.number }, scope, first, deadline);
+      if (outcome === "updated") result.updated += 1;
+      else if (outcome === "failed") result.failed += 1;
+    } catch (error) {
+      result.failed += 1;
+      console.log(JSON.stringify({ component: "broker", event: "linear_close.description_not_updated", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    }
+  }
+  return result;
+}
+
+async function rewriteOpenLinearCloseLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }> {
+  return settleOpenLinearLines(dependencies, task, { key });
+}
+
+/**
+ * Plan 6 Task 20: a pull request was just recorded for a version 2 task. Its title and description were fixed when the publication was accepted, so a link, replace or unlink made since is not in them: the
+ * open descriptions are settled against the binding now. Best effort (the next rewrite of the description does it too); never throws.
+ */
+async function settleRecordedPullRequest(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task?.workflow?.definitionVersion !== "1.1.0" || task.orgId === undefined || task.sessionId === undefined) return;
+    await settleOpenLinearLines(dependencies, task, undefined);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "linear_close.recorded_not_settled", taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 /** How long the description update may hold up the worker's callback; past it the push is answered and the update gives up. */
 const DESCRIPTION_UPDATE_MAX_MS = 5_000;
+
+/** Playbook P1: the Proof section's inputs for the description rewrite after a pushed fix. The task's operations are read once and shared by the reads that need them. */
+async function proofContextForRewrite(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<Awaited<ReturnType<typeof loadProofContext>>> {
+  const actions = developerTaskActions(dependencies);
+  const [operations, approvedPlan] = await Promise.all([actions.operations(task.workspaceId), approvedPlanForPullRequest({ actions }, workflow).catch(() => undefined)]);
+  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner") }, task, workflow, approvedPlan, operations);
+}
 
 /**
  * D2: once an approved PR feedback fix is on the pull request, its description lists briefly what was changed for which
@@ -11599,6 +12129,9 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
     if (late() || task?.workflow === undefined || task.workspaceId !== operation.workspaceId) return;
+    // Playbook P1: the Proof section's reads start now, beside the reads below, with a short time of their own: a slow read leaves the Proof section as the description has it, never the whole update abandoned.
+    const proofRead = task.workflow.definitionVersion === "1.1.0" && task.workflow.candidate?.digest === candidateDigest && task.workflow.verification?.candidateDigest === candidateDigest
+      ? withinTime(proofReadLimitMs(dependencies.descriptionUpdateMaxMs ?? DESCRIPTION_UPDATE_MAX_MS), () => proofContextForRewrite(dependencies, task, task.workflow!)) : undefined;
     const { fixes, earlier } = await approvedFeedbackFixes(task.workflow, { repositoryId: record.repository, number: record.number },
       (key, maxBytes) => (late() ? Promise.resolve(undefined) : readObjectText(dependencies, key, maxBytes)), `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`);
     if (late()) return;
@@ -11613,8 +12146,16 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     // The tracked pull request's checks basis and base branch (Plan 6 Task 14), so the description says when every check counted, because the base has no required ones.
     const tracked = workflow.definitionVersion === "1.1.0" && task.orgId !== undefined
       ? (await readMergeTracking(dependencies, task.taskId, task.orgId).catch(() => [])).find((item) => item.repositoryId === record.repository && item.number === record.number) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined ? undefined : {
-      ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+    // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
+    const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
+    const reviewSameModel = workflow.definitionVersion === "1.1.0" && reviewSameModelOf(task, workflow);
+    // Playbook P1: the Proof section is rewritten with the rest of the block (the approved plan, the browser/API rows and the test proof for the code now on the pull request); when its reads were too slow and the description had a Proof section, that section's body becomes a one-line marker (its old table describes the code before this fix).
+    const proofResult = proofRead === undefined ? undefined : await proofRead;
+    const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
+    const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel ? undefined : {
+      ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+      ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }),
     };
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;
@@ -11627,6 +12168,9 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       return;
     }
     await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body }, scope);
+    // Plan 6 Task 20: this write carries a copy of the description read a moment ago, so a Linear link made meanwhile (and rewritten into the description by the route) could be undone by it: the line is settled again
+    // against the binding as it is now. A failure here is logged with the rest of this update's.
+    if (workflow.definitionVersion === "1.1.0" && late() === false) await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: record.number }, scope, undefined, deadline);
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -12467,7 +13011,7 @@ async function completedTurnItems(
   if (pointer === undefined || table === undefined) return [];
   let ended: { operation: OperationRecord; status: OperationStatus } | undefined;
   const recordsTurn = (record: OperationRecord) => record.kind === "task" || record.kind === "publish"
-    || (record.kind === "maintain" && record.maintenance?.workflowCandidate !== undefined);
+    || (record.kind === "maintain" && (record.maintenance?.workflowCandidate !== undefined || record.maintenance?.workflowSync !== undefined));
   if (recordsTurn(operation)) {
     ended = {
       operation: { ...operation, ...(outcome.result === undefined ? {} : { result: outcome.result }), ...(outcome.error === undefined ? {} : { error: outcome.error }) },
@@ -12562,13 +13106,20 @@ export async function processGithubWorkflowEvent(
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
   }
+  // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
+  // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
+  if (options === undefined && wakesTrackingRow(event)) {
+    await wakeFromPullRequestEvent(headEventDependencies(dependencies), event).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "tracking.wake_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   const getFeedback = options === undefined
     ? dependencies.githubPullRequests.getPullRequestFeedback
     : dependencies.githubPullRequests.getPullRequestMergeObservation;
   if (getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", options === undefined
     ? "current GitHub feedback collection is not configured"
     : "current GitHub merge observation is not configured");
-  await reconcileTaskPullRequestFeedback({
+  const changed = await reconcileTaskPullRequestFeedback({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: event.fullName, number: event.number, deliveryId,
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
@@ -12668,6 +13219,12 @@ export async function processGithubWorkflowEvent(
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
+  // Plan 6 Task 20: the merged milestone this save wrote is told to the registered handlers now; one that was not told is told again by the sweep.
+  if (linked !== undefined && changed) {
+    await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, linked.taskId).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: linked.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   if (linked !== undefined && options?.release !== "queue") {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(linked.taskId));
     if (task !== undefined && dependencies.developer !== undefined) {
@@ -12723,6 +13280,20 @@ function headEventDependencies(dependencies: AwsBrokerDependencies): HeadEventDe
   };
 }
 
+/**
+ * Whether the stored review of a task's feedback is sound enough for Rovara to decide it itself (Plan 6 Task 16): the report and comments read and checked as the owner's card reads them. An
+ * unreadable record throws; the tracking pass then leaves the round to the owner.
+ */
+async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies, taskId: string): Promise<boolean> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (task?.workflow === undefined || dependencies.developer === undefined) return false;
+  const routeDependencies = developerTaskRouteDependencies({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
+    now: Date.now, tasks: developerTaskActions(dependencies),
+  }, await ownerCallerOf(dependencies, task, "workflow-feedback-autonomy"), undefined, null);
+  return await planAutomaticFeedbackRound(routeDependencies, task) !== undefined;
+}
+
 /** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
 function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
   const github = dependencies.githubPullRequests;
@@ -12732,16 +13303,59 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     github: {
       getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
       getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
+      ...(github.getRepositoryStanding === undefined ? {} : { getRepositoryStanding: (...args: Parameters<NonNullable<typeof github.getRepositoryStanding>>) => github.getRepositoryStanding!.call(github, ...args) }),
       markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
       requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
       ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
     },
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
-    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
+    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
+    // The origin session links are made from (the approved milestone's "Ready to merge" link).
+    ...(dependencies.developer === undefined ? {} : { origin: new URL(dependencies.developer.issuer).origin }),
+    // The autonomy and the digest of the task's frozen recipe, read together: an automatic decision on review comments is bound to both (Plan 6 Task 16).
+    autonomyBinding: (task) => task.orgId === undefined ? Promise.resolve({ autonomy: "prepare" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
+    // Whether the waiting round's stored report and comments are sound enough for Rovara to decide it (Plan 6 Task 16); the report is read and checked as the owner's card reads it.
+    feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
+    ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      github: { replyToReviewThread: (...args) => github.replyToReviewThread!.call(github, ...args) },
+      scope: (orgId) => githubScope(dependencies, orgId),
+      repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+      log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+    }, task, budget) }),
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
+    log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+  };
+}
+
+/**
+ * What merging a task's pull requests needs of the broker (Plan 6 Task 19): GitHub's status and permission reads and the merge, the task, the repository's URL as the project pins it and the
+ * base branch Rovara opened the pull request against. Undefined where the provider cannot read status or merge (a test double without them). A press that finds a branch GitHub needs up to date
+ * wakes the tracking row, whose sync slot merges the base in.
+ */
+function codeMergeHostOf(dependencies: AwsBrokerDependencies): CodeMergeHost | undefined {
+  const github = dependencies.githubPullRequests;
+  if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.mergePullRequest === undefined) return undefined;
+  return {
+    github: {
+      getPullRequestStatus: (url, number, scope) => github.getPullRequestStatus!.call(github, url, number, scope),
+      getRepositoryPermission: (url, login, scope) => github.getRepositoryPermission!.call(github, url, login, scope),
+      mergePullRequest: (url, number, input, scope) => github.mergePullRequest!.call(github, url, number, input, scope),
+      // Code owners (owner decision 2026-10-27): the CODEOWNERS file, the changed paths and team membership, read only. A provider that cannot read them leaves the check off.
+      ...(github.readCodeOwners === undefined || github.listChangedPaths === undefined ? {} : {
+        readCodeOwners: (url: string, branch: string, scope: GitHubTokenScope) => github.readCodeOwners!.call(github, url, branch, scope),
+        listChangedPaths: (url: string, number: number, scope: GitHubTokenScope) => github.listChangedPaths!.call(github, url, number, scope),
+      }),
+      ...(github.isTeamMember === undefined ? {} : { isTeamMember: (url: string, team: string, login: string, scope: GitHubTokenScope) => github.isTeamMember!.call(github, url, team, login, scope) }),
+    },
+    scope: (orgId) => githubScope(dependencies, orgId),
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    recordedBase: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.baseBranch,
+    requireSyncForMerge: async (task) => { await wakeTrackingRow({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.taskId); },
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
   };
 }
@@ -12757,6 +13371,10 @@ export async function reconcileWorkflowTrackingTask(
   if (tracking === undefined) return observeMerge(taskId, budget);
   // Plan 6 Task 15: failing CI is fixed on Rovara's own pull requests; the slot is filled once for the process.
   installCiFixDecider();
+  // Plan 6 Task 17: keeping the branch up to date (a conflict, or behind a base that requires it) fills the conflict and sync slots.
+  installBranchSyncDeciders();
+  // Plan 6 Task 16: a writer's actionable review comments are fixed on Rovara's own decision (and failing CI is added to the owner's card); the slot is filled once for the process.
+  installFeedbackDecider();
   // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
   if (task?.orgId !== undefined && dependencies.developer !== undefined) {
@@ -13025,6 +13643,20 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
       return;
     }
+    // Plan 6 Task 17: a merge of the base that could not be started is not a reason to stop the task: it ends, and the task waits for the merge as it did (the day's count keeps a retry bounded).
+    if (item.kind === "SYNC") {
+      await endUnstartedBranchSync(dependencies, item, { gaveUp: true });
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
+      return;
+    }
+    // T7c: the held plan's check could not be looked after: the one finish ends the hold as a plan that could not be checked (its card posts); if even that fails, planning is stopped with its Retry.
+    if (item.kind === "GROUNDING") {
+      try { if (await finishPlanGrounding(dependencies, item.taskId, { force: "start-failed" }) !== "WAITING") { await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key })); return; } } catch (finishError) {
+        console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_give_up_finish_failed", taskId: item.taskId, error: finishError instanceof Error ? finishError.name : "unknown" }));
+      }
+      await stopStuckGroundingHold(dependencies, item.taskId);
+      return;
+    }
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     const workflow = task?.workflow;
     const deleteRow = { Delete: { TableName: dependencies.tableName, Key: key, ...sameRow } };
@@ -13037,6 +13669,8 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
       : item.kind === "CRITIQUE" ? ["PLAN_CRITIQUE", "READY", WORKFLOW_BLOCK_REASONS.planCheckNotStarted] as const
       : item.kind === "CRITIC_REPLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planRevisionNotStarted] as const
+      // The planner's automatic second run could not be started: planning stops with its Retry, as a failed planning run would leave it.
+      : item.kind === "REPLAN" ? ["PLAN", "RUNNING", workflowRunEndedReason("PLAN", "FAILED")] as const
       : ["PULL_REQUEST", "READY", WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE] as const;
     const reason = finalReason ?? usualReason;
     // A fix AgentX gave up pushing: the task waits for the merge, blocked, naming the pull request.
@@ -13053,7 +13687,7 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": updating === undefined ? blockWorkflow(workflow, reason, now) : blockWorkflowPullRequestUpdate(workflow, { numbers: [updating.number], now }), ":now": now,
         ":revision": item.workflowRevision, ":stage": stage, ":state": state },
-    } }] }));
+    } }, ...dispatchExhaustRows(dependencies, item, workflow, exhaustedReason, now)] }));
     console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
   } catch (error) {
     // A row or task that changed meanwhile is the newer writer's; anything else is retried by the next sweep.
@@ -13070,6 +13704,64 @@ async function companyChoseCriticModel(dependencies: AwsBrokerDependencies, task
   const frozen = await readTaskRecipe(dependencies, taskId, task.orgId);
   const step = frozen?.recipe.steps.find((candidate) => candidate.kind === "plan_critic");
   return step !== undefined && (step.settings as { model?: unknown } | undefined)?.model != null;
+}
+
+/**
+ * Plan 6 Task 17: a merge of the base branch whose machine was lost (the row names the operation, which has ended without a result): it is judged as a finished one is, from what GitHub shows, and
+ * recorded as Rovara's own when GitHub shows exactly the merge it asked for; with no result there is nothing to show that Rovara's checks passed, so no approval carries (`unverified`). GitHub
+ * that cannot be read is tried again (the row backs off, and gives up by ending the merge). One transaction with the row's delete.
+ */
+async function settleLostBranchSync(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const row = item as WorkflowDispatchRecord & { workspaceId?: unknown; operationId?: unknown };
+  const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
+  const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string" ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
+  if (operation === undefined || !TERMINAL.has(operation.status) || operation.maintenance?.workflowSync === undefined) {
+    // Not an operation that ended: nothing to judge, and the merge must not stay RUNNING for it.
+    await endUnstartedBranchSync(dependencies, item);
+    return "STALE";
+  }
+  const items = await completedBranchSyncItems(dependencies, operation, task, operation.status, new Date().toISOString(), undefined, operation.error, { lost: true });
+  if (items.length === 0) {
+    await endUnstartedBranchSync(dependencies, item);
+    return "STALE";
+  }
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, ...items] }));
+  return "DISPATCHED";
+}
+
+/**
+ * Plan 6 Task 17: a merge of the base branch that could not be started, however often it was tried: its dispatch row goes and the task waits for the merge again, as it did. One transaction, conditional on the
+ * row and on the task still waiting to start exactly this merge; a task that moved on, or a row someone else took, is left alone.
+ */
+async function endUnstartedBranchSync(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, options: { gaveUp?: boolean } = {}): Promise<void> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+  const workflow = task?.workflow;
+  const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE"
+    || (workflow.state !== "READY" && workflow.state !== "RUNNING") || workflow.branchSync === undefined) {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow] }));
+    return;
+  }
+  const now = new Date().toISOString();
+  // A lost merge that GitHub could not be asked about through every retry may or may not have pushed: that is said (a stop), never left as a silent stall behind the guard that waits for the workflow to
+  // learn the head. A merge that could not even be started is only tried again later, after a delay.
+  const unsure = options.gaveUp === true && workflow.state === "RUNNING";
+  const next = unsure ? blockWorkflowBranchSync(workflow, { reason: BRANCH_SYNC_UNSURE_MESSAGE, now }) : endWorkflowBranchSync(workflow, now, options.gaveUp === true ? { failed: "transient" } : {});
+  const pullRequest = workflow.pullRequests?.find((entry) => entry.repositoryId === workflow.branchSync?.repositoryId && entry.number === workflow.branchSync.number);
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
+      TableName: dependencies.tableName, Key: taskKey(item.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": item.workflowRevision, ":stage": "WAIT_FOR_MERGE", ":state": workflow.state },
+    } }, ...(unsure && task.orgId !== undefined && pullRequest !== undefined ? codeMilestoneItems({ tableName: dependencies.tableName }, {
+      kind: "stuck", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: BRANCH_SYNC_UNSURE_MESSAGE,
+      pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }],
+    }, next.revision) : [])] }));
+  } catch (error) {
+    if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.branch_sync_end_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /**
@@ -13168,6 +13860,7 @@ async function blockWorkflowE2EReadiness(dependencies: AwsBrokerDependencies, it
     return;
   }
   const now = new Date().toISOString();
+  const blocked = blockWorkflow(workflow, reason, now);
   await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
     { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk },
       ConditionExpression: "attribute_exists(pk) AND workflowRevision = :revision AND candidateDigest = :candidate",
@@ -13176,10 +13869,15 @@ async function blockWorkflowE2EReadiness(dependencies: AwsBrokerDependencies, it
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :verify AND workflow.#state = :waiting AND workflow.candidate.digest = :candidate AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" }, ExpressionAttributeValues: {
-        ":workflow": blockWorkflow(workflow, reason, now), ":now": now, ":revision": item.workflowRevision,
+        ":workflow": blocked, ":now": now, ":revision": item.workflowRevision,
         ":verify": "VERIFY", ":waiting": "WAITING", ":candidate": item.candidateDigest,
       } } },
+    // AUTOFIX (LIVEFIX-1): a block written here, before the round started, is looked at by the automatic-fix policy exactly like one a finished run writes: it sends the work back, retries, or
+    // asks. The row commits with the block, so no blocked VERIFY step is left for nobody to decide.
+    ...(dependencies.autofix?.enabled === true && blocked.fixSource === undefined && (blocked.pullRequests?.length ?? 0) === 0 ? [workflowDispatchItem(dependencies.tableName, item.taskId, blocked.revision, "AUTOFIX", blocked.candidate?.digest ?? "0".repeat(64), now)] : []),
   ] }));
+  // Run the look right away (never throws); the recovery sweep is the fallback if this is lost.
+  if (dependencies.autofix?.enabled === true) await dispatchWorkflowContinuation(dependencies, item.taskId);
 }
 
 /**
@@ -13533,6 +14231,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       if (!isConditional(error)) throw error;
     }
   };
+  if (item.kind === "AUTOFIX") return runAutofixDispatch(dependencies, item, remove);
   try {
     // Access pauses are lifted only by an explicit, freshly authorized owner retry. Recovery sweeps,
     // ownership restoration and takeover may still encounter the row but never restart its work.
@@ -13548,6 +14247,10 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       // Plan 6 Task 8: the plan check of a version 2 plan, and the one revision a blocking point of it asks for.
       : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
       : item.kind === "CRITIC_REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
+      // Plan 6 Task 17: the merge of the base branch the tracking pass queued.
+      : item.kind === "SYNC" ? workflow?.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING") && workflow.branchSync !== undefined
+      : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "RUNNING"
+      : item.kind === "GROUNDING" ? workflow?.stage === "PLAN" && workflow.state === "RUNNING" && task?.planGrounding?.artifactSha256 === item.candidateDigest
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
@@ -13561,12 +14264,16 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       if (Date.now() < Date.parse(item.nextAttemptAt)) return "STALE";
       return await endStuckUnderstanding(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     }
+    // Plan 6 Task 17: a merge of the base whose machine was lost (the row names its operation): judged from what GitHub shows.
+    if (item.kind === "SYNC" && workflow.state === "RUNNING") return await settleLostBranchSync(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
+        : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -13574,17 +14281,29 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
         if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
         return head;
       },
+      // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
+      currentBaseCommit: async (target, pullRequest) => {
+        const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
+        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+        const scope = await githubScopeOf(dependencies, target);
+        const remote = await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, scope);
+        const getBranchHead = dependencies.githubPullRequests.getBranchHead;
+        if (getBranchHead === undefined || typeof remote.baseBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
+        return getBranchHead.call(dependencies.githubPullRequests, url, remote.baseBranch, scope);
+      },
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
     let outcome: "STARTED" | "DUPLICATE" | "STALE" | "WAITING";
     if (item.kind === "CHECKS") {
+      if (await requalifyHoldActive(dependencies, Date.now())) return "DISPATCHED"; // AUTOREQUALIFY: a switch is in progress; the row stays due
       const readiness = await ensureWorkflowE2EComputeReadiness(dependencies, routeDependencies, item);
       if (readiness.status === "WAITING") return "DISPATCHED";
       if (readiness.status === "STALE") {
         await remove();
         return "STALE";
       }
+      if (await requalifyHoldActive(dependencies, Date.now())) return "DISPATCHED"; // checked again right before the round starts
       outcome = await startWorkflowE2EChecksDispatch(dependencies, routeDependencies, readiness.task, expected, caller);
       // The baseline round holds the workspace: the row stays, and the next pass (or the baseline's own result) tries again.
       if (outcome === "WAITING") return "DISPATCHED";
@@ -13598,10 +14317,19 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       }
     } else if (item.kind === "PLAN") {
       outcome = await startTaskWorkflowPlanFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
+    } else if (item.kind === "GROUNDING") {
+      // T7c: the held plan's check on the current app: start it, then wait for it (the row stays and is looked at again) until the one finish ends the hold.
+      if (await runGroundingStep(dependencies, routeDependencies, caller, item, task) === "WAIT") return "DISPATCHED";
+      outcome = "STARTED";
+    } else if (item.kind === "REPLAN") {
+      // The planner's automatic second run (plan self-check); a row without its prompt can only be dropped.
+      outcome = item.planPrompt === undefined ? "STALE"
+        : await startTaskWorkflowPlanRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision, promptDigest: item.candidateDigest }, item.planPrompt);
     } else {
       outcome = item.kind === "PUBLISH" || item.kind === "UPDATE"
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
         : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
+        : item.kind === "SYNC" ? await startTaskWorkflowBranchSyncFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : item.kind === "CRITIC_REPLAN" ? await startTaskWorkflowCriticRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
@@ -13609,6 +14337,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     await remove();
     return outcome === "STALE" ? "STALE" : "DISPATCHED";
   } catch (error) {
+    // AUTOREQUALIFY: a start refused by the hold fence inside its transaction surfaces as a busy workspace; while the hold stands that is a deferral, not a failure.
+    if (error instanceof AgentXError && error.code === "WORKSPACE_BUSY" && await requalifyHoldActive(dependencies, Date.now()).catch(() => false)) return "DISPATCHED";
     if (error instanceof ApplicationPlanDefect) {
       // The approved plan can no longer run as written, which only a corrected plan fixes: the task goes back to plan review, where Request changes is the way on.
       try {
@@ -13667,7 +14397,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     if (error instanceof AgentXError && error.code === "MODEL_NOT_ALLOWED") {
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_refused", taskId: item.taskId, kind: item.kind, error: error.code }));
       // Plan 6 Task 8: only a model the company chose for the plan check blocks it. Rovara's own recommendation that no source can serve is no one's fault: the plan goes on, unchecked.
-      if (item.kind === "CRITIQUE" && !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true)) {
+      // ... and a plan check whose every usable model was tried (the account could not use them) is no one's refusal either.
+      if (item.kind === "CRITIQUE" && (error instanceof PlanCheckUnavailableError || !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true))) {
         await closeUncheckedPlanCheck(dependencies, item);
         return "STALE";
       }
@@ -13679,6 +14410,132 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     await recordWorkflowDispatchFailure(dependencies, item);
     return "RETRY";
   }
+}
+
+/** At most this many looks at one blocked step: a failing look is retried each sweep, then dropped (the task stays blocked with its card). */
+const AUTOFIX_ATTEMPTS_MAX = 60;
+
+/** AUTOFIX reads only the cost of a usage record, and not its other fields: a worker that adds a field must not make every task's spend unknown (which would switch automatic fixing off). */
+const AutofixUsageCostSchema = z.object({ costUsd: z.number().nonnegative().nullable() });
+
+/** At most this many pages of one operation's events are read for its usage records; an operation with more is spend that cannot be read. */
+const AUTOFIX_USAGE_PAGES_MAX = 40;
+
+/**
+ * Every usage record of one operation, added up: a review run records one per reviewer (code and security), a coding run one. Undefined when the events cannot all be read (more pages than
+ * the bound, or a read that failed): spend that is not known is never counted as zero.
+ */
+async function autofixOperationUsage(dependencies: AwsBrokerDependencies, operationId: string): Promise<{ total: number; records: number } | undefined> {
+  let total = 0;
+  let records = 0;
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < AUTOFIX_USAGE_PAGES_MAX; page += 1) {
+    const response = await dependencies.documentClient.send(new QueryCommand({
+      TableName: dependencies.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :event)", FilterExpression: "#type = :usage",
+      ExpressionAttributeNames: { "#type": "type" }, ExpressionAttributeValues: { ":pk": `OPERATION#${operationId}`, ":event": "EVENT#", ":usage": "usage" },
+      ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<{ payload?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of response.Items ?? []) {
+      const usage = AutofixUsageCostSchema.safeParse(item.payload);
+      records += 1;
+      // A usage record with no cost (an unpriced model) counts as one more round's estimate, never as free; one that cannot be read makes the whole spend unknown.
+      if (!usage.success) return undefined;
+      total += usage.data.costUsd !== null ? usage.data.costUsd : AUTOFIX_ROUND_ESTIMATE_USD;
+    }
+    start = response.LastEvaluatedKey;
+    if (start === undefined) return { total, records };
+  }
+  return undefined;
+}
+
+/** AUTOFIX: the whole task's recorded model spend, every usage record of every run of the task. A model run with no usage record counts as one more round's estimate (never as zero). */
+async function autofixTaskSpendUsd(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<number | undefined> {
+  try {
+    const operations = (await developerTaskActions(dependencies).operations(task.workspaceId)).filter((operation) => operation.kind === "task");
+    let total = 0;
+    for (const operation of operations) {
+      if (operation.workflowMode === "CHECKS") continue;
+      const usage = await autofixOperationUsage(dependencies, operation.id);
+      if (usage === undefined) return undefined;
+      total += usage.records === 0 ? AUTOFIX_ROUND_ESTIMATE_USD : usage.total;
+    }
+    return total;
+  } catch { return undefined; }
+}
+
+/** AUTOFIX: whether the project's AI-navigation day budget has room for one more call; true where the task uses no AI navigation. Undefined when unreadable. */
+async function autofixDayBudgetHasRoom(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<boolean | undefined> {
+  if (task.workflow?.e2e?.required !== true || dependencies.e2eAgentInstallation === undefined) return true;
+  try {
+    const derived = deriveE2EAgentRoute(await dependencies.e2eAgentInstallation());
+    const budgets = derived.status === "available" ? derived.definition.budgets : E2E_MODEL_ROUTE_DEFAULT_BUDGETS;
+    return await e2eDayBudgetRoom({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, orgId: requireOrgId(task.orgId), projectName: task.project, now: Date.now() }, autofixDayBudgetNeed(budgets),
+      { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay });
+  } catch { return undefined; }
+}
+
+/**
+ * AUTOFIX dispatch row: look at the blocked step once. The row is removed when the task moved on or the policy acted or asked; it stays (the sweep looks again) while the original-code round is
+ * not in yet, and after a failed look, up to a bound. It never blocks or gives up on anything: the task is already blocked.
+ */
+async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch, remove: () => Promise<void>): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const config = dependencies.autofix;
+  const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  let task: DeveloperTaskRecord | undefined;
+  if (autofixRowHeld(item, Date.now())) return "RETRY"; // DISPATCHEXHAUST: the one automatic retry of an infrastructure fault waits out its delay; the sweep finds the row when it is due
+  try {
+    task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+    if (config?.enabled !== true || task === undefined || dependencies.developer === undefined) { await remove(); return "STALE"; }
+    // MONEY (mainline #408 sync; owner ruling pending): Rovara's own moves run as the task's effective owner in the task's own org with the plain member role, nothing elevated.
+    const caller = await ownerCallerOf(dependencies, task, "workflow-autofix");
+    const tasks = developerTaskActions(dependencies);
+    const route = developerTaskRouteDependencies({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+      refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
+      workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
+      workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      // AUTOREQUALIFY: the one automatic retry that approves the plan again after a mere renewal of the test machine needs the plan check (the retry itself refuses any other re-approval).
+      validateWorkflowE2EApplicationPlan: workflowApplicationRouteDependencies(dependencies).validateWorkflowE2EApplicationPlan,
+    }, caller, undefined, null);
+    const deps: AutofixDependencies = {
+      config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },
+      taskSpendUsd: (current) => autofixTaskSpendUsd(dependencies, current),
+      dayBudgetHasRoom: (current) => autofixDayBudgetHasRoom(dependencies, current),
+      scenarioResults: async (current) => loadWorkflowE2EScenarioResults(dependencies, current, [], "owner").catch(() => undefined),
+      ownerCancelledChecks: async (current) => {
+        // The stored records, not the public operations: a public operation does not carry which run a cancel targets (so this never saw an owner's stop). DISPATCHEXHAUST: the stage's own latest run.
+        const operations = (await queryAllItems(dependencies, `WORKSPACE#${current.workspaceId}`, "OPERATION#")) as Array<{ id?: string; kind?: string; workflowMode?: string; createdAt: string; targetOperationId?: string }>;
+        const mode = current.workflow?.stage === "REVIEW" ? "REVIEW" : "CHECKS";
+        const latest = operations.filter((operation) => operation.kind === "task" && operation.workflowMode === mode).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        return latest !== undefined && operations.some((operation) => operation.kind === "cancel" && operation.targetOperationId === latest.id);
+      },
+      baselineSourceReady: async (current) => {
+        const digest = current.workflow?.candidate?.digest;
+        if (digest === undefined) return false;
+        const source = await candidateSourceOperation(dependencies, current, digest);
+        const exported = StoredBaselineSourceSchema.safeParse(source?.baselineSource);
+        return exported.success && exported.data.status === "READY";
+      },
+      readArtifactText: async (key) => { const bytes = await readStoredBytes(dependencies, key, 64 * 1024 + 1); return bytes?.toString("utf8"); },
+      recycleWorker: (current) => recycleDriftedWorker(ec2Sessions, current.workspaceId),
+      now: Date.now,
+      log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    };
+    const outcome = await runWorkflowAutofix(deps, task, { expectedRevision: item.workflowRevision, startedAt: item.createdAt, cause: autofixBlockCauseOf(item.autofixCause) });
+    if (outcome !== "WAITING") { await remove(); return outcome === "STALE" || outcome === "DISABLED" ? "STALE" : "DISPATCHED"; }
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "autofix.look_failed", taskId: item.taskId, attempt: (item.attempts ?? 0) + 1, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
+    if ((item.attempts ?? 0) + 1 >= AUTOFIX_ATTEMPTS_MAX) {
+      // Giving up: the owner is told a person must act, so the card never stands for a task nobody is looking at.
+      try { if (task !== undefined) await recordAutofixGiveUpAsk(store, task, Date.now()); }
+      catch (askError) { console.log(JSON.stringify({ component: "broker", event: "autofix.give_up_ask_failed", taskId: item.taskId, error: askError instanceof Error ? askError.name : "unknown" })); }
+      await remove();
+      return "STALE";
+    }
+  }
+  // Look again at the next sweep, a minute from now (a waiting row too, so it never sits at the head of the due index).
+  await postponeAutofixRow(store, item, Date.now());
+  return "RETRY";
 }
 
 /** Reads the original creator from its authoritative, separately scoped sign-in table. */
@@ -13715,12 +14572,12 @@ async function requireApplicationSelectionStillCurrent(dependencies: AwsBrokerDe
     throw new ApplicationDispatchRefusal(`${WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX}${current.reason}`);
   }
   const unchanged = applicationSelectionStillCurrent(recorded.data, current.selection);
-  if (!unchanged.ok) throw new ApplicationDispatchRefusal(`${WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX}${unchanged.reason}`);
+  if (!unchanged.ok) throw selectionChangedRefusal(recorded.data, current.selection, unchanged.reason, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX);
   return current;
 }
 
 /** Whether an operation's signed reference is for a round that is not the candidate's: the baseline (the unchanged code) or an audit replay (Task 4.6b). Neither can ever be a verdict on the candidate. */
-const isNonCandidateRound = (reference: { purpose?: "baseline" | "replay" | undefined } | undefined): boolean => reference?.purpose === "baseline" || reference?.purpose === "replay";
+const isNonCandidateRound = (reference: { purpose?: "baseline" | "replay" | "grounding" | undefined } | undefined): boolean => reference?.purpose === "baseline" || reference?.purpose === "grounding" || reference?.purpose === "replay";
 
 const NO_COMMITTED_EXPORT_REASON = "the candidate has no committed source export, so there is no source to build and run";
 const NO_BUILD_SOURCE_REASON = "no build source manifest was exported for this candidate";
@@ -14053,8 +14910,91 @@ async function startBaselineApplicationRound(
   } catch (error) {
     // The candidate goes on: its own dispatch makes the same checks and, for a plan that cannot run, blocks the workflow with the reason. The baseline only says it could not be checked.
     // A plan that is only AI navigation scenarios has nothing to run on the unchanged code (Ruling DD): that is said as its own reason, and it gates nothing.
+    // AUTOREQUALIFY: a start refused by the hold fence is a deferral (the dispatch row stays due), not a baseline that could not be checked.
+    if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "WORKSPACE_NOT_READY") && await requalifyHoldActive(dependencies, Date.now()).catch(() => false)) throw error;
     const reason = baselineStartFailureReason(error);
     console.log(JSON.stringify({ component: "broker", event: "workflow.e2e_baseline_not_started", taskId: task.taskId, reason, errorName: error instanceof Error ? error.name : "unknown" }));
+    return unavailable(reason);
+  }
+}
+
+/**
+ * T7b: starts one grounding round for a coding plan the task is holding back: the proposed plan's must-not-change scenarios (`groundingScenarioIds`) on the unchanged code the PLAN run
+ * exported (held to the base the task pinned and to GitHub's tree for it), with an admission built from that code and signed as a grounding round, and the one CHECKS operation that
+ * carries exactly that admission, with the record's own start in the same transaction. The selection is derived now for the proposed artifact in approve mode (nothing is reused at
+ * approval, which derives its own). Anything missing or disagreeing leaves the record saying the plan could not be checked, with a fixed reason; it never throws for those, and it never
+ * changes the workflow. Returns what happened so whoever holds the card back knows whether to wait for the round or post the card now.
+ */
+export async function startPlanGroundingRound(
+  dependencies: AwsBrokerDependencies,
+  routeDependencies: Parameters<typeof startTaskWorkflowE2EChecksFromSystem>[0],
+  input: { task: DeveloperTaskRecord; caller: Parameters<typeof startTaskWorkflowReviewFromSystem>[3]; planOperationId: string; plan: PlanDocument; artifact: { id: string; sha256: string }; attempt?: number },
+): Promise<{ outcome: "STARTED" | "DUPLICATE" | "STALE" } | { outcome: "UNAVAILABLE"; reason: GroundingUnavailableReason } | { outcome: "NOTHING_TO_GROUND" }> {
+  const { task, plan, artifact } = input;
+  const attempt = input.attempt ?? E2E_GROUNDING_ATTEMPT;
+  const workflow = task.workflow!;
+  const scenarioIds = groundingScenarioIds(plan);
+  if (scenarioIds.length === 0) return { outcome: "NOTHING_TO_GROUND" };
+  const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const ref = { taskId: task.taskId, planArtifactSha256: artifact.sha256, attempt };
+  await requestWorkflowE2EGroundingRound(store, ref, { scenarioIds, planArtifactId: artifact.id });
+  const existing = await readWorkflowE2EGroundingRecord(store, ref);
+  if (existing === undefined) return { outcome: "UNAVAILABLE", reason: "start-failed" };
+  if (existing.state !== "REQUESTED") return { outcome: "DUPLICATE" };
+  const unavailable = async (reason: GroundingUnavailableReason): Promise<{ outcome: "UNAVAILABLE"; reason: GroundingUnavailableReason }> => {
+    await markWorkflowE2EGroundingUnavailable(store, ref, reason, { from: ["REQUESTED"] });
+    return { outcome: "UNAVAILABLE", reason };
+  };
+  try {
+    const intent = plan.e2e;
+    if (intent?.schemaVersion !== 2) return await unavailable("refused");
+    const planOperation = await getItem<OperationRecord>(dependencies, operationKey(task.workspaceId, input.planOperationId));
+    if (planOperation === undefined || planOperation.kind !== "task" || planOperation.workflowMode !== "PLAN" || planOperation.groundingSourceAsked !== true) return await unavailable("not-exported");
+    const exported = StoredBaselineSourceSchema.safeParse(planOperation.baselineSource);
+    if (!exported.success || exported.data.status === "REFUSED") return await unavailable("not-exported");
+    const stored: ReadyBaselineSource = exported.data;
+    const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+    const repository = project.definition.repositories.length === 1 ? project.definition.repositories[0] : undefined;
+    const pinned = repository === undefined ? undefined : (workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === repository.name);
+    if (repository === undefined || pinned === undefined || stored.repositoryId !== pinned.repositoryId || stored.baseCommitSha !== pinned.baseCommitSha || stored.buildSource.commitSha !== stored.baseCommitSha
+      || stored.buildSource.treeSha !== stored.baseTreeSha) return await unavailable("refused");
+    // The exported tree is held to GitHub's tree for the pinned base, so a worker cannot label other code as the unchanged code (as the baseline round does).
+    if (dependencies.githubPullRequests.getCommitTree !== undefined && await dependencies.githubPullRequests.getCommitTree(repository.url, stored.baseCommitSha, await githubScopeOf(dependencies, task)) !== stored.baseTreeSha) return await unavailable("refused");
+    const sourceBytes = await readStoredBytes(dependencies, stored.sourceRef.key, MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES);
+    if (sourceBytes === undefined || sourceBytes.byteLength !== stored.sourceRef.byteLength || createHash("sha256").update(sourceBytes).digest("hex") !== stored.sourceRef.sha256) return await unavailable("refused");
+    const exportedSource = parseBaselineExport(sourceBytes);
+    const exportedRepository = exportedSource.repositories[0]!;
+    if (exportedRepository.commitSha !== stored.baseCommitSha || exportedRepository.treeSha !== stored.baseTreeSha || exportedSource.candidate.digest !== stored.sourceRef.candidateDigest) return await unavailable("refused");
+    const manifest = await readCandidateBuildSourceManifest(dependencies, stored.buildSource);
+    const snapshot: E2ESourceSnapshot = { candidate: exportedSource.candidate, commitSha: exportedRepository.commitSha, treeSha: exportedRepository.treeSha, treeComplete: true, treePaths: exportedRepository.treePaths,
+      sources: exportedRepository.sources.map((source) => ({ path: source.path, sha256: source.sha256, kind: "blob" as const, bytes: Buffer.from(source.bytesBase64, "base64") })) };
+    // The selection for the proposed artifact, derived now in approve mode: the same derivation approval would make, kept nowhere but as a digest on the record.
+    const derived = await evaluateWorkflowE2EApplicationSelectionNow(dependencies, task, intent, artifact, { mode: "approve", pinned: [] });
+    if (!derived.ok) return await unavailable(derived.kind === "unevaluable" ? "start-failed" : derived.scope === "runtime" ? "runtime-not-ready" : derived.scope === "accounts" ? "accounts-not-ready" : "refused");
+    const creatorAuthority = await requireWorkflowE2ECreatorAuthority(dependencies, task);
+    const workspace = await routeDependencies.actions.workspace(task.workspaceId);
+    const operationId = randomUUID();
+    const built = buildApplicationGroundingAdmission({ taskId: task.taskId, operationId, operationFence: workspace.fence + 1, workflowRevision: workflow.revision, roundId: randomUUID(),
+      runId: randomUUID, intent, artifact, planArtifactId: artifact.id, snapshot, setupProposal: derived.inputs.setup.setupProposal, setupApproval: derived.inputs.setup.setupApproval, policy: derived.inputs.policy,
+      registeredRuntimes: derived.inputs.rows, runtimeCatalogId: derived.inputs.runtimeCatalogId, runtimeBinding: derived.inputs.runtimeBinding,
+      buildSource: { manifest, reference: candidateBuildSourceAdmissionReference(stored.buildSource) }, now: Date.now(), creatorAuthority, accountEntries: derived.inputs.accountEntries,
+      recordedSelection: derived.selection, grounding: { baseCommitSha: stored.baseCommitSha, attempt, scenarioIds } });
+    const admissionRef = E2EWorkflowAdmissionRefSchema.parse({ schemaVersion: 1, kind: "application", taskId: task.taskId, workflowRevision: workflow.revision, candidateDigest: built.admission.candidateDigest,
+      roundId: built.roundId, groupRunIds: built.groupRunIds, admissionRef: { key: `workflow-e2e-admissions/sha256/${built.sha256}.json`, sha256: built.sha256, byteLength: built.bytes.byteLength },
+      purpose: E2E_GROUNDING_PURPOSE, baseCommitSha: stored.baseCommitSha, attempt, planArtifactSha256: artifact.sha256 });
+    await storeWorkflowE2EAdmission(dependencies, { key: admissionRef.admissionRef.key, sha256: built.sha256, bytes: built.bytes, taskId: task.taskId, candidateDigest: built.admission.candidateDigest });
+    const outcome = await startTaskWorkflowE2EGroundingFromSystem(routeDependencies, task.taskId, { workflowRevision: workflow.revision, planArtifactSha256: artifact.sha256 }, admissionRef, operationId,
+      [groundingStartItem(store, ref, { baseCommitSha: stored.baseCommitSha, operationId, roundId: built.roundId, admissionSha256: built.sha256,
+        selectionDigest: createHash("sha256").update(canonicalJson(derived.selection)).digest("hex"), startedAt: new Date().toISOString(), deadlineAt: built.admission.round.deadlineAt })],
+      input.caller);
+    if (outcome === "STALE") return await unavailable("start-failed");
+    return { outcome };
+  } catch (error) {
+    // Only a fixed reason is kept; the error's text (it can name paths or accounts) is not logged.
+    // A busy workspace is not a failed start: the record stays REQUESTED and the held plan's next look starts it again.
+    if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "WORKSPACE_NOT_READY")) throw error;
+    const reason = groundingStartFailureReason(error);
+    console.log(JSON.stringify({ component: "broker", event: "workflow.e2e_grounding_not_started", taskId: task.taskId, reason, errorName: error instanceof Error ? error.name : "unknown" }));
     return unavailable(reason);
   }
 }
@@ -14082,6 +15022,7 @@ async function startReplayApplicationRound(
   const refuse = (code: E2EReplayRefusal, detail: string) => agentXError(code === "replay-in-progress" ? "TASK_BUSY" : "CONFIG_INVALID", `${code}: ${detail}`);
   const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   if (task.closedAt !== undefined) throw refuse("replay-task-closed", "the task is closed");
+  await assertNoRequalifyHold(store, Date.now()); // AUTOREQUALIFY: no replay starts while the test machine is being switched (the start transaction holds the same fence)
   const workflow = task.workflow;
   const qualified = workflow?.e2e?.required === true ? workflow.e2e.qualifiedRound : undefined;
   if (workflow === undefined || qualified === undefined || qualified.roundId !== sourceRoundId) throw refuse("replay-not-qualified", "that round is not the task's qualified round");
@@ -14123,6 +15064,7 @@ async function startReplayApplicationRound(
     if (canonicalApproval === undefined) throw applicationRoundRefusal("the approved plan's approval cannot be read");
     const intent = approved.plan.e2e;
     const current = await requireApplicationSelectionStillCurrent(dependencies, task, intent, artifact);
+    if (replayPredatesRenewal(source.admittedRuntimes, current.inputs.rows)) throw refuse("replay-runtime-renewed", E2E_OWNER_SENTENCES.replayRuntimeRenewed);
     const sourceOperation = await candidateSourceOperation(dependencies, task, candidate.digest);
     if (sourceOperation === undefined) throw applicationRoundRefusal(NO_COMMITTED_EXPORT_REASON);
     const stored = readyCandidateBuildSource(sourceOperation, candidate.digest);
@@ -14147,6 +15089,7 @@ async function startReplayApplicationRound(
         traces: source.traces.map((trace) => ({ caseId: trace.caseId, stepIndex: trace.stepIndex, keyHash: trace.keyHash, traceBase64: Buffer.from(trace.bytes).toString("base64"), binding: trace.binding })) } });
   } catch (error) {
     // The admission could not be built from what the task holds now: nothing was started or recorded. A fault that a later attempt can get past is the operator's to retry.
+    if (error instanceof ApplicationRuntimeRenewed) throw refuse("replay-runtime-renewed", E2E_OWNER_SENTENCES.replayRuntimeRenewed);
     if (error instanceof ApplicationDispatchRefusal || error instanceof ApplicationPlanDefect) throw refuse("replay-source-unavailable", error.message.replace(/\p{Cc}+/gu, " ").slice(0, 300));
     throw error;
   }
@@ -14184,7 +15127,7 @@ const REPLAY_REQUEST_GRACE_MS = 10 * 60_000;
  * definition of the round's route, and takes what the replay needs from that: the recordings its review kept and what each case showed. A refusal names the first thing that fails.
  */
 async function reverifyQualifiedRound(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, qualified: NonNullable<NonNullable<NonNullable<DeveloperTaskRecord["workflow"]>["e2e"]>["qualifiedRound"]>):
-  Promise<{ sourceCases: E2EReplaySourceCase[]; traces: readonly VerifiedAgentTrace[] } | { refusal: E2EReplayRefusal; detail: string }> {
+  Promise<{ sourceCases: E2EReplaySourceCase[]; traces: readonly VerifiedAgentTrace[]; admittedRuntimes: readonly E2ERegisteredRuntime[] } | { refusal: E2EReplayRefusal; detail: string }> {
   const unavailable = (detail: string) => ({ refusal: "replay-source-unavailable" as const, detail });
   try {
     const operation = (await queryAllItems(dependencies, `WORKSPACE#${task.workspaceId}`, "OPERATION#"))
@@ -14211,7 +15154,7 @@ async function reverifyQualifiedRound(dependencies: AwsBrokerDependencies, task:
     if (verified.verdict !== "PASS") return { refusal: "replay-source-not-pass" as const, detail: "the qualified round does not verify as PASS now" };
     const traces = verified.agentTraces ?? [];
     if (traces.length === 0) return { refusal: "replay-no-recording" as const, detail: "the qualified round left no recording to replay" };
-    return { sourceCases: replaySourceCasesOf(verified), traces };
+    return { sourceCases: replaySourceCasesOf(verified), traces, admittedRuntimes: admission.runtimeBindings.map((item) => item.value) };
   } catch (error) {
     if (error instanceof ApplicationDispatchRefusal) return unavailable(error.message.slice(0, 300));
     if (isTransientAwsFault(error)) throw error;
@@ -14327,6 +15270,25 @@ async function startWorkflowE2EChecksDispatch(
 }
 
 /** Run the task's dispatch rows right after the result that wrote them committed. Never throws. */
+function trackingPassDependencies(dependencies: AwsBrokerDependencies): Parameters<typeof runDueWorkflowMergeTracking>[0] {
+  return {
+    documentClient: dependencies.documentClient,
+    tableName: dependencies.tableName,
+    now: Date.now,
+    reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
+  };
+}
+
+/** The pass for rows a webhook woke (review-woken ones first of all): never throws, reads only woken rows, and does not move the heartbeat gate. */
+async function runWokenTrackingPass(dependencies: AwsBrokerDependencies, budgetMs: number): Promise<{ attempted: number; reconciled: number; deferred: number }> {
+  try {
+    return await runDueWorkflowMergeTracking(trackingPassDependencies(dependencies), { budgetMs, wokenOnly: true });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_woken_failed", error: error instanceof Error ? error.name : "unknown" }));
+    return { attempted: 0, reconciled: 0, deferred: 0 };
+  }
+}
+
 async function dispatchWorkflowContinuation(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
   try {
     const rows = await queryAllItems(dependencies, WORKFLOW_DISPATCH_PK, `${taskId}#`);
@@ -14336,6 +15298,224 @@ async function dispatchWorkflowContinuation(dependencies: AwsBrokerDependencies,
   }
 }
 
+/** T7c: the marker partition of held plans (one small item per hold), read by the recovery sweep. */
+const PLAN_GROUNDING_HOLD_PK = "PLAN_GROUNDING_HOLD";
+
+/**
+ * T7c: the last resort for a held plan whose finish keeps failing: planning is stopped with its Retry (as a failed planning run would leave it), the hold, its row and its marker are removed
+ * in one transaction conditioned on the hold. Never throws.
+ */
+async function stopStuckGroundingHold(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    const hold = task?.planGrounding;
+    const workflow = task?.workflow;
+    if (task === undefined || hold === undefined || workflow === undefined) {
+      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${taskId}` } }));
+      return;
+    }
+    const now = new Date().toISOString();
+    const stopped = workflow.stage === "PLAN" && workflow.state === "RUNNING" && task.closedAt === undefined;
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Update: { TableName: dependencies.tableName, Key: taskKey(taskId),
+        UpdateExpression: stopped ? "SET workflow = :workflow, updatedAt = :now REMOVE planGrounding, planGroundingAbandoned" : "REMOVE planGrounding, planGroundingAbandoned",
+        ConditionExpression: "planGrounding.artifactSha256 = :held AND workflow.revision = :revision", ExpressionAttributeValues: { ":held": hold.artifactSha256, ":revision": workflow.revision,
+          ...(stopped ? { ":workflow": blockWorkflow(workflow, workflowRunEndedReason("PLAN", "FAILED"), now), ":now": now } : {}) } } },
+      { Delete: { TableName: dependencies.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#${workflow.revision}` } } },
+      { Delete: { TableName: dependencies.tableName, Key: { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${taskId}` } } },
+    ] }));
+  } catch (error) {
+    if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_stop_failed", taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
+/** The sweep's look at the held plans: one past its deadline is finished (its row may be lost); one that cannot be finished long after that is stopped. Never throws. */
+async function sweepGroundingHolds(dependencies: AwsBrokerDependencies): Promise<void> {
+  try {
+    const holds = await queryAllItems(dependencies, PLAN_GROUNDING_HOLD_PK, "TASK#");
+    for (const marker of holds) {
+      const taskId = String(marker.taskId);
+      const deadline = Date.parse(String(marker.deadlineAt));
+      if (!Number.isFinite(deadline) || Date.now() < deadline) continue;
+      try { await finishPlanGrounding(dependencies, taskId); } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_sweep_finish_failed", taskId, error: error instanceof Error ? error.name : "unknown" }));
+        if (Date.now() > deadline + 30 * 60_000) await stopStuckGroundingHold(dependencies, taskId);
+      }
+    }
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
+/** T7c: how soon the held plan's check is looked at again while it runs. */
+const GROUNDING_POLL_MS = 30_000;
+
+/** Looks again at the held plan's row later: its due time moves, nothing else. */
+async function pollGroundingLater(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+  const next = new Date(Date.now() + GROUNDING_POLL_MS).toISOString();
+  try {
+    await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk },
+      UpdateExpression: "SET nextAttemptAt = :next, dispatchDueSk = :due", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":next": next, ":due": `${next}#${item.sk}` } }));
+  } catch (error) {
+    if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_poll_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
+/**
+ * T7c: one look at a held plan: start its check on the current app if it has not started, then try the one finish. "WAIT": the check is still running (the row stays and is looked at
+ * again). "DONE": the hold ended (finished, or the task moved on). Never throws: whatever fails to start ends the hold through the one finish, as a plan that was not checked.
+ */
+async function runGroundingStep(dependencies: AwsBrokerDependencies, routeDependencies: Parameters<typeof startTaskWorkflowE2EChecksFromSystem>[0],
+  caller: Parameters<typeof startTaskWorkflowReviewFromSystem>[3], item: WorkflowDispatchRecord, task: DeveloperTaskRecord): Promise<"WAIT" | "DONE"> {
+  const hold = task.planGrounding;
+  if (hold === undefined) return "DONE";
+  const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const abandoned = task.planGroundingAbandoned === hold.artifactSha256;
+  // Only a read or the finish itself can fail outside the start; those errors go to the row's retry (bounded, and at its end the give-up finishes the hold), never into the round.
+  const record = abandoned ? undefined : await readWorkflowE2EGroundingRecord(store, { taskId: task.taskId, planArtifactSha256: hold.artifactSha256, attempt: hold.attempt });
+  if (!abandoned && (record === undefined || record.state === "REQUESTED")) {
+    const entry = { id: hold.artifactId, type: "plan" as const, version: hold.version, sha256: hold.artifactSha256, producer: "agentx-worker-untrusted" as const,
+      objectKey: `private/${task.ownerKey}/${task.workspaceId}/plan-documents/${hold.artifactId}.json`, createdAt: hold.artifactCreatedAt, format: "structured" as const };
+    let plan: PlanDocument | undefined;
+    try {
+      const loaded = await loadWorkflowDocument((key, maxBytes) => readStoredText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes), entry, {});
+      if (loaded?.format === "structured") plan = loaded.plan;
+    } catch { plan = undefined; }
+    if (plan === undefined) return await finishThenWait(dependencies, item, task.taskId, "start-failed");
+    try {
+      await (dependencies.startPlanGrounding ?? startPlanGroundingRound)(dependencies, routeDependencies, { task, caller, planOperationId: hold.planOperationId, plan, artifact: { id: hold.artifactId, sha256: hold.artifactSha256 }, attempt: hold.attempt });
+    } catch (error) {
+      // A workspace that is busy for a moment is waited out (the finish ends the hold at its deadline); any other fault of the start ends the hold as a plan that could not be checked.
+      if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "WORKSPACE_NOT_READY")) return await finishThenWait(dependencies, item, task.taskId);
+      console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_step_failed", taskId: task.taskId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
+      return await finishThenWait(dependencies, item, task.taskId, "start-failed");
+    }
+  }
+  return await finishThenWait(dependencies, item, task.taskId);
+}
+
+async function finishThenWait(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, taskId: string, force?: GroundingUnavailableReason): Promise<"WAIT" | "DONE"> {
+  const finished = await finishPlanGrounding(dependencies, taskId, force === undefined ? {} : { force });
+  if (finished === "WAITING") { await pollGroundingLater(dependencies, item); return "WAIT"; }
+  return "DONE";
+}
+
+/** After a grounding round's terminal result (settled, cancelled, lost): the one finish, if that round belongs to a held plan. Never throws. */
+async function finishGroundingForOperation(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<void> {
+  const reference = operation.workflowE2EAdmission;
+  if (operation.kind !== "task" || reference?.purpose !== "grounding") return;
+  try { await finishPlanGrounding(dependencies, reference.taskId); } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_finish_failed", taskId: reference.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
+/**
+ * T7c: THE one finish of a held plan, idempotent and conditioned on the hold it read. Every exit calls it: a settled round, a refused or failed start, the give-up, a lost delivery (the
+ * row's next look), the deadline and a close. It reads the grounding record, then:
+ *  - the task was closed or the owner closed it (`abandoned`): the hold is cleared and nobody is asked anything;
+ *  - the check is still running and is not overdue: "WAITING", nothing changes;
+ *  - otherwise the plan is read again from the planner's saved answer and stored with what the check found (a fixable mismatch with a revision left sends the planner back, once; otherwise
+ *    the plan is submitted and its card posts as for any plan, with the findings or the "not checked" reason beside it). `force` ends a check that has not given a result with that reason.
+ * "NOOP": no hold, or another finish got there first.
+ */
+export async function finishPlanGrounding(dependencies: AwsBrokerDependencies, taskId: string, options: { force?: GroundingUnavailableReason } = {}): Promise<"FINISHED" | "WAITING" | "NOOP"> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  const hold = task?.planGrounding;
+  const workflow = task?.workflow;
+  if (task === undefined || hold === undefined || workflow === undefined) return "NOOP";
+  const rowKey = { pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#${workflow.revision}` };
+  const holdCondition = "workflow.revision = :revision AND workflow.#stage = :plan AND workflow.#state = :running AND planGrounding.artifactSha256 = :held AND attribute_not_exists(closedAt)";
+  const holdNames = { "#stage": "stage", "#state": "state" };
+  const holdValues = { ":revision": workflow.revision, ":plan": "PLAN", ":running": "RUNNING", ":held": hold.artifactSha256 };
+  const now = new Date().toISOString();
+  if (task.closedAt !== undefined || workflow.stage !== "PLAN" || workflow.state !== "RUNNING") {
+    // The task moved on (closed, or stopped to a block): the hold means nothing now and asks nobody anything; the dispatch run drops the row, and the marker goes so no sweep reads it again.
+    await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${taskId}` } }));
+    return "NOOP";
+  }
+  const markerKey = { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${taskId}` };
+  if (task.planGroundingAbandoned === hold.artifactSha256) {
+    try {
+      // The owner closed the task: nobody is asked anything, and planning is stopped (never left running with nothing running); the close goes on.
+      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Update: { TableName: dependencies.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :stopped, updatedAt = :now REMOVE planGrounding, planGroundingAbandoned", ConditionExpression: holdCondition, ExpressionAttributeNames: holdNames,
+          ExpressionAttributeValues: { ...holdValues, ":stopped": blockWorkflow(workflow, workflowRunEndedReason("PLAN", "CANCELLED"), now), ":now": now } } },
+        { Delete: { TableName: dependencies.tableName, Key: rowKey } },
+        { Delete: { TableName: dependencies.tableName, Key: markerKey } },
+      ] }));
+      return "FINISHED";
+    } catch (error) { if (isConditional(error)) return "NOOP"; throw error; }
+  }
+  const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const ref = { taskId, planArtifactSha256: hold.artifactSha256, attempt: hold.attempt };
+  let record = await readWorkflowE2EGroundingRecord(store, ref);
+  const overdue = Date.now() >= Date.parse(hold.deadlineAt);
+  const open = (candidate: GroundingRecord | undefined) => candidate === undefined || candidate.state === "REQUESTED" || candidate.state === "STARTED";
+  if (open(record) && (options.force !== undefined || overdue || (record?.state === "STARTED" && groundingRoundLapsed(record, Date.now())))) {
+    const reason: GroundingUnavailableReason = options.force ?? "timed-out";
+    if (record !== undefined) {
+      await markWorkflowE2EGroundingUnavailable(store, ref, reason, { from: ["REQUESTED", "STARTED"] });
+      // A check still running past the hold's time is asked to stop, so it frees the workspace for what the owner does next. Best effort: a late result changes nothing.
+      if (record.state === "STARTED" && record.operationId !== undefined) {
+        try {
+          const workspace = await requireWorkspace(dependencies, task.workspaceId);
+          if (workspace.activeOperationId === record.operationId) await cancelRunningTask(dependencies, workspace, {});
+        } catch (error) { console.log(JSON.stringify({ component: "broker", event: "workflow.grounding_cancel_failed", taskId, error: error instanceof Error ? error.name : "unknown" })); }
+      }
+      record = await readWorkflowE2EGroundingRecord(store, ref);
+    }
+  }
+  let outcome: GroundingOutcome;
+  if (record === undefined || open(record)) {
+    if (options.force === undefined && !overdue) return "WAITING";
+    outcome = { kind: "unavailable", reason: options.force ?? "timed-out" };
+  } else if (record.state === "RECORDED") {
+    outcome = { kind: "checked", findings: record.findings ?? [], undecided: record.results === undefined ? 0 : groundingFindingsOf(record.results).undecidedScenarioIds.length };
+  } else outcome = { kind: "unavailable", reason: record.reason ?? "run-failed" };
+
+  // The plan is read again from the planner's saved answer, as it was when held; the check's result is added to it.
+  const planOperation = await getItem<OperationRecord>(dependencies, operationKey(task.workspaceId, hold.planOperationId));
+  const answer = await getItem<Record<string, unknown>>(dependencies, { pk: `WORKSPACE#${task.workspaceId}`, sk: `ARTIFACT#${hold.artifactId}` });
+  const plannerReplies: PlannerReplies[] = [];
+  let stored: Awaited<ReturnType<typeof storePlanAnswer>> | undefined;
+  let next: WorkflowSnapshot;
+  if (planOperation === undefined || answer === undefined) {
+    next = blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.planNotSaved, now);
+  } else {
+    stored = await storePlanAnswer(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, answer, now, planOperation.workflowE2EPlanVersion === 2, planOperation, { sha256: hold.artifactSha256, outcome });
+    next = stored.next;
+  }
+  const unreadable = stored?.planUnreadable;
+  const forget = unreadable === null && task.planUnreadable !== undefined;
+  const items: TransactItems = [
+    { Update: { TableName: dependencies.tableName, Key: taskKey(taskId),
+      UpdateExpression: `SET workflow = :workflow, updatedAt = :now${unreadable === undefined || unreadable === null ? "" : ", planUnreadable = :unreadable"}${stored?.selfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${unreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""} REMOVE planGrounding, planGroundingAbandoned${forget ? ", planUnreadable" : ""}`,
+      ConditionExpression: holdCondition, ExpressionAttributeNames: holdNames,
+      ExpressionAttributeValues: { ...holdValues, ":workflow": next, ":now": now,
+        ...(unreadable === undefined || unreadable === null ? {} : { ":unreadable": unreadable }),
+        ...(stored?.selfCheck === undefined ? {} : { ":selfCheck": stored.selfCheck }),
+        ...(unreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}) } } },
+    { Delete: { TableName: dependencies.tableName, Key: rowKey } },
+    { Delete: { TableName: dependencies.tableName, Key: markerKey } },
+    ...(stored?.revision === undefined ? [] : [workflowDispatchItem(dependencies.tableName, taskId, next.revision, "REPLAN", createHash("sha256").update(stored.revision.prompt, "utf8").digest("hex"), now, now, stored.revision.prompt)]),
+    ...(stored?.evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId, ...stored.evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
+    ...(stored?.plannerReplies === undefined ? [] : [{ Put: plannerRepliesItem(dependencies.tableName, stored.plannerReplies, now) }]),
+  ];
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+  } catch (error) {
+    // Another finish (or the owner's close) got there first.
+    if (isConditional(error)) return "NOOP";
+    throw error;
+  }
+  if (stored?.plannerReplies !== undefined) plannerReplies.push(stored.plannerReplies);
+  if (stored?.evidenceJob !== undefined) await startPlanEvidenceJobs(dependencies, [planEvidenceEvent(taskId, stored.evidenceJob.artifactId)]);
+  if (stored?.inlineEvidence !== undefined) await attachInlineEvidence(dependencies, [{ ...stored.inlineEvidence, taskId }]);
+  await writeAllPlannerReplies(dependencies, plannerReplies);
+  await dispatchWorkflowContinuation(dependencies, taskId);
+  return "FINISHED";
+}
+
 /**
  * The recovery sweep: up to 25 rows that are due, oldest due first, each run once. It reads the sparse due-time
  * index, whose sort key starts with the row's next attempt time, so rows waiting out a backoff sort after the
@@ -14343,6 +15523,7 @@ async function dispatchWorkflowContinuation(dependencies: AwsBrokerDependencies,
  * it changed only runs again later, since every write to it is conditional and the start itself is idempotent.
  */
 async function retryDueWorkflowDispatches(dependencies: AwsBrokerDependencies): Promise<{ attempted: number; dispatched: number }> {
+  await sweepGroundingHolds(dependencies);
   const page = await dependencies.documentClient.send(new QueryCommand({
     TableName: dependencies.tableName,
     IndexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
@@ -14448,6 +15629,7 @@ async function completedPullRequestUpdateItems(
   // push was not a fast-forward; or anything else on the way to GitHub (a CodeBuild gate included) stopped it.
   const cause: WorkflowPullRequestUpdateCause = terminalStatus === "SUCCEEDED" ? "PUSH_REFUSED"
     : terminalError?.includes(WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED) === true ? "WORKER_OUTDATED"
+      : terminalError?.includes(WORKFLOW_FIX_DROPS_BASE_CHANGES) === true ? "BASE_CHANGES_DROPPED"
       : terminalError?.startsWith("STALE_FENCE") === true ? "HEAD_MOVED" : "PUSH_REFUSED";
   // A worker that could not take the fix never reached GitHub.
   if (cause === "WORKER_OUTDATED") return failed(cause);
@@ -14499,36 +15681,40 @@ async function completedPullRequestUpdateItems(
   // The pull request must still come from the branch AgentX pushed to: the same tree on another branch is not this push.
   const onReviewedTree = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url
     && current.pullRequest.headBranch === maintenance.headBranch && headTree === binding.treeSha && head !== maintenance.expectedHeadCommit && /^[a-f0-9]{40}$/.test(head);
-  const ownFastForward = async (): Promise<boolean> => {
-    if (record?.expectedHeadCommit === head) return true;
+  // A fix is a fast-forward of the head the task recorded: that head is the commit's only parent. A conflict round's fix is a merge commit (Plan 6 Task 17): the head the task recorded first and the commit of
+  // the base it merged second, and nothing else, whoever says the push is recorded.
+  const mergeBase = binding.mergeBaseCommit;
+  const parentsAreOurs = async (): Promise<boolean> => {
     try {
-      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope)) === JSON.stringify([maintenance.expectedHeadCommit]);
+      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope))
+        === JSON.stringify(mergeBase === undefined ? [maintenance.expectedHeadCommit] : [maintenance.expectedHeadCommit, mergeBase]);
     } catch {
       return false;
     }
   };
-  const landed = onReviewedTree && (pushedCommit !== undefined ? head === pushedCommit && record?.expectedHeadCommit === head : await ownFastForward());
+  const ownFastForward = async (): Promise<boolean> => record?.expectedHeadCommit === head || await parentsAreOurs();
+  const landed = onReviewedTree && (pushedCommit !== undefined ? head === pushedCommit && record?.expectedHeadCommit === head : await ownFastForward()) && (mergeBase === undefined || await parentsAreOurs());
   if (!landed || current.pullRequest.state === "closed") return failed(pushedCommit === undefined ? cause : "HEAD_MOVED");
   // Merged at the pushed fix before its result was recorded: the fix is recorded with the merge, which completes the task.
-  const next = current.pullRequest.state === "merged"
+  const updated = current.pullRequest.state === "merged"
     ? observeWorkflowPullRequestMergedWithFix(workflow, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, observedAt: now }, now)
     : recordWorkflowPullRequestUpdate(workflow, { updates: [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha }], now });
+  // A conflict round's fix was pushed as the merge of the base commit: the candidate is now on that base, so the next review and fix see only Rovara's change.
+  const next = mergeBase !== undefined && current.pullRequest.state !== "merged"
+    ? recordWorkflowBranchSync(updated, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, baseCommitSha: mergeBase, now })
+    : updated;
   const repositoryFullName = githubRepositoryFullName(repository.url);
   // A pull request this save moves to MERGED counts in the project's month of merges, in the same transaction as the move (the task update is conditioned on the revision read, so a replay
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
   const countsAsMerged = current.pullRequest.state === "merged" && pullRequest.state !== "MERGED" && task.orgId !== undefined
     && next.pullRequests?.some((after) => after.repositoryId === pullRequest.repositoryId && after.number === pullRequest.number && after.state === "MERGED") === true;
-  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []), { Update: {
-    TableName: dependencies.tableName,
-    Key: githubWorkflowPullRequestKey(repositoryFullName, pullRequest.number),
-    // The pull request's link to the task now names the fix it holds.
-    UpdateExpression: "SET candidateDigest = :candidate, updatedAt = :now",
-    ConditionExpression: "taskId = :taskId AND #url = :url AND candidateDigest = :previous",
-    ExpressionAttributeNames: { "#url": "url" },
-    ExpressionAttributeValues: { ":candidate": binding.candidateDigest, ":now": now, ":taskId": task.taskId, ":url": pullRequest.url, ":previous": pullRequest.candidateDigest },
-  } },
-  // A push that landed without its update callback: the pull request's record learns its head, for the next push.
-  ...(record !== undefined && record.expectedHeadCommit !== head ? [{ Update: {
+  const recordUpdated = record !== undefined && record.expectedHeadCommit !== head;
+  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []),
+  // The pull request's link to the task now names the fix it holds (for a conflict round's, the fix on the new base).
+  ...await candidateRekeyItems(dependencies, task, project, workflow, next, now),
+  // A push that landed without its update callback: the pull request's record learns its head, for the next push, and GitHub's state (merged included: mergedStateItems below leaves this record to
+  // this one update, because a transaction may not touch one item twice, C59).
+  ...(recordUpdated ? [{ Update: {
     TableName: dependencies.tableName,
     Key: pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber),
     UpdateExpression: "SET expectedHeadCommit = :head, #state = :state, updatedAt = :now",
@@ -14538,9 +15724,146 @@ async function completedPullRequestUpdateItems(
   } }] : []),
   // The new head, for the check and status events that name only a commit.
   ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
+  // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
+  ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
+  // ... and what was kept about the pull request (its tracking row and its record) says merged too (Bug H).
+  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now, [],
+    recordUpdated && current.pullRequest.state === "merged" ? [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number }] : []),
+  // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
+  ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
   ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "UPDATE", next.candidate.digest, now)] : [])];
+}
+
+/**
+ * The link items of the pull requests whose reviewed code was renamed: each one's link to the task names the candidate it holds, and a merge of the base gives a new candidate. Conditional on the digest read,
+ * so a link that moved meanwhile is the newer writer's and cancels the transaction (the result is then recorded by the next attempt, from what is there).
+ */
+async function candidateRekeyItems(
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, project: Awaited<ReturnType<typeof requireRecordProject>>, before: WorkflowSnapshot, after: WorkflowSnapshot, now: string,
+): Promise<TransactItems> {
+  const items: TransactItems = [];
+  for (const pullRequest of after.pullRequests ?? []) {
+    const earlier = before.pullRequests?.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number);
+    if (earlier === undefined || earlier.candidateDigest === pullRequest.candidateDigest) continue;
+    const repository = project.definition.repositories.find((entry) => entry.name === pullRequest.repositoryId);
+    if (repository === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not part of the task's registered project revision");
+    items.push({ Update: {
+      TableName: dependencies.tableName,
+      Key: githubWorkflowPullRequestKey(githubRepositoryFullName(repository.url), pullRequest.number),
+      UpdateExpression: "SET candidateDigest = :candidate, updatedAt = :now",
+      ConditionExpression: "taskId = :taskId AND #url = :url AND candidateDigest = :previous",
+      ExpressionAttributeNames: { "#url": "url" },
+      ExpressionAttributeValues: { ":candidate": pullRequest.candidateDigest, ":now": now, ":taskId": task.taskId, ":url": pullRequest.url, ":previous": earlier.candidateDigest },
+    } });
+  }
+  return items;
+}
+
+/**
+ * Plan 6 Task 17: the result of the merge of the base branch into a workflow task's pull request branch. Only the merge the task is waiting on counts: it must still be at WAIT_FOR_MERGE/RUNNING with this exact
+ * merge marked; anything else (the pull request merged meanwhile, the task closed or moved on) is dropped. What the merge is comes from what GitHub shows (the head is a new commit whose parents are the head the
+ * task recorded and the base commit it merged, on the task's own branch, with the tree the worker reported), never from the worker's word alone: see `planBranchSyncOutcome`. A clean merge is recorded as the
+ * pull request's new head and a candidate on the new base; a conflict starts a conflict round (the workspace holds the merge's files); GitHub refusing workflow files, or the conflict rounds used up, stops with a
+ * plain text and a stuck milestone; anything else ends the merge with nothing recorded and the task waits for the merge as it did.
+ */
+async function completedBranchSyncItems(
+  dependencies: AwsBrokerDependencies,
+  operation: OperationRecord,
+  task: DeveloperTaskRecord & { workflow: WorkflowSnapshot },
+  terminalStatus: OperationStatus,
+  now: string,
+  result: unknown,
+  terminalError: string | undefined,
+  /** `lost`: the operation ended without a result; GitHub is the only witness, so it must be readable (else the caller tries again). */
+  options: { lost?: boolean } = {},
+): Promise<TransactItems> {
+  const binding = operation.maintenance?.workflowSync;
+  const maintenance = operation.maintenance;
+  const workflow = task.workflow;
+  const marker = workflow.branchSync;
+  if (binding === undefined || maintenance === undefined || task.closedAt !== undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "RUNNING" || marker === undefined
+    || marker.repositoryId !== maintenance.repository || marker.number !== maintenance.pullRequestNumber || marker.expectedHeadCommit !== binding.expectedHeadCommit) return [];
+  const pullRequest = workflow.pullRequests?.find((entry) => entry.repositoryId === marker.repositoryId && entry.number === marker.number);
+  if (pullRequest === undefined || pullRequest.headSha !== binding.expectedHeadCommit) return [];
+  const taskUpdate = (next: WorkflowSnapshot): TransactItems[number] => ({ Update: {
+    TableName: dependencies.tableName,
+    Key: taskKey(task.taskId),
+    UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+    ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+    ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
+  } });
+  const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+  const repository = project.definition.repositories.find((entry) => entry.name === maintenance.repository);
+  const gateway = dependencies.githubPullRequests;
+  const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
+  const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
+  // What GitHub shows now. A merge the worker says it pushed is never judged without it (the result is then recorded by the next attempt); for a merge that failed, an unreadable GitHub shows nothing.
+  let github: BranchSyncGithub | undefined;
+  try {
+    const getFeedback = gateway.getPullRequestFeedback;
+    if (repository === undefined || getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the merged pull request against the merge");
+    const scope = await githubScopeOf(dependencies, task);
+    const current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
+    let head = current.pullRequest.headCommit;
+    let headTree = current.pullRequest.headTreeSha;
+    // GitHub moves a pull request's head a moment after a push to its branch, and the push's result comes right after it: while the open pull request still shows the head before the push, its branch says what it holds.
+    if (head === binding.expectedHeadCommit && current.pullRequest.state === "open" && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
+      try {
+        const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
+        if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
+          headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
+          head = branchHead;
+        }
+      } catch {
+        // GitHub could not say: the pull request's own head stands.
+      }
+    }
+    const sameRequest = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url;
+    const parents = head !== binding.expectedHeadCommit && gateway.getCommitParents !== undefined ? await gateway.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
+    if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
+  } catch (error) {
+    if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
+  }
+  // Autonomy is read again where the paid round would start: set to suggest by now, and not started by a person's go-ahead, a conflict is asked about instead.
+  const askFirst = reported?.conflicts !== undefined && marker.approved !== true && task.orgId !== undefined
+    && await taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))) === "suggest";
+  const outcome = planBranchSyncOutcome({
+    askFirst, workflow, binding: { repositoryId: marker.repositoryId, number: marker.number, baseCommit: binding.baseCommit, expectedHeadCommit: binding.expectedHeadCommit },
+    terminalStatus, terminalError, result: reported, github, baseBranch: maintenance.baseBranch, recordedBranch: maintenance.headBranch, now,
+  });
+  const link = { repository: marker.repositoryId, number: marker.number, url: pullRequest.url };
+  const milestone = (kind: "fixing" | "stuck", text: string, n: number): TransactItems => task.orgId === undefined ? [] : codeMilestoneItems({ tableName: dependencies.tableName }, {
+    kind, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: text.slice(0, 500), pullRequests: [link],
+  }, n);
+  if (outcome.kind === "unchanged") return [taskUpdate(outcome.workflow)];
+  if (outcome.kind === "stopped" || outcome.kind === "asked" || outcome.kind === "gave_up") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
+  if (outcome.kind === "conflict") {
+    const round = outcome.workflow.fixRounds?.conflict ?? 1;
+    return [
+      taskUpdate(outcome.workflow),
+      workflowDispatchItem(dependencies.tableName, task.taskId, outcome.workflow.revision, "IMPLEMENT", outcome.workflow.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now),
+      ...milestone("fixing", `The branch conflicts with ${maintenance.baseBranch}, so Rovara is resolving it (try ${String(round)} of ${String(CONFLICT_ROUNDS_MAX)}).`, outcome.workflow.revision),
+    ];
+  }
+  // A clean merge, on GitHub: the pull request's record learns its head (the worker's callback usually did already), the link follows the new candidate, and the new head is indexed for check events.
+  const repositoryFullName = githubRepositoryFullName(repository!.url);
+  const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
+  return [
+    taskUpdate(outcome.workflow),
+    ...await candidateRekeyItems(dependencies, task, project, workflow, outcome.workflow, now),
+    ...(record !== undefined && record.expectedHeadCommit !== outcome.headSha ? [{ Update: {
+      TableName: dependencies.tableName,
+      Key: pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber),
+      UpdateExpression: "SET expectedHeadCommit = :head, #state = :state, updatedAt = :now",
+      ConditionExpression: "expectedHeadCommit = :previous",
+      ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":head": outcome.headSha, ":state": "open", ":now": now, ":previous": maintenance.expectedHeadCommit },
+    } }] : []),
+    ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: outcome.headSha, taskId: task.taskId, repositoryId: marker.repositoryId, number: marker.number }, Date.parse(now))),
+  ];
 }
 
 async function readStoredCandidateSourceExport(
@@ -14578,12 +15901,6 @@ function programContinuesCoding(workflow: WorkflowSnapshot, operation: Operation
   if (workflow.program.steps.find((step) => step.id === workflow.programStepId)?.kind !== "build") return false;
   const move = nextProgramStep(workflow.program, workflow.programStepId, "done");
   return move.kind === "step" && move.step.kind === "build";
-}
-
-/** Whether the workflow program is past its first build step: a work breakdown the plan approved belongs to that first build. */
-function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
-  const first = workflow.program?.steps.find((step) => step.kind === "build");
-  return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
 }
 
 /* Plan 6 Task 10 note: the setup-draft branch is first in completedWorkflowItems. */
@@ -14707,6 +16024,8 @@ async function completedWorkflowItems(
     ...((task.workflow.pullRequests ?? []).length === 0
       ? [(task.workflow.definitionVersion === "1.1.0" ? trackingRecoveryItem : mergeRecoveryItem)(dependencies.tableName, task.taskId, now)] : [])];
   }
+  // Plan 6 Task 17: a merge of the base branch is told apart from the push of a reviewed fix by what the operation was asked.
+  if (operation.kind === "maintain" && operation.maintenance?.workflowSync !== undefined) return completedBranchSyncItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind === "maintain") return completedPullRequestUpdateItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind !== "task" || operation.workflowMode === undefined || task.workflow.state !== "RUNNING") return [];
   // M1.3 Task 3.7b: the candidate's completion refuses a baseline round (the unchanged code, for information only), whatever state the workflow is in. Its result moves nothing here:
@@ -14716,6 +16035,13 @@ async function completedWorkflowItems(
   let next: WorkflowSnapshot;
   // The planning answer's own outcome for the task record: why it could not be read, or `null` to forget an old reason.
   let planUnreadable: DeveloperTaskRecord["planUnreadable"] | null | undefined;
+  /** Trust fix A2: what a review on the build's own model leaves on the task (`reviewSameModel`): the flag for this code, null to clear an earlier one, undefined to leave it. */
+  let reviewSameModel: DeveloperTaskRecord["reviewSameModel"] | null | undefined;
+  // Plan self-check: the answer was not shown (unreadable once, or its own checks found a problem); the planner is asked again by itself, once per document version.
+  let planSelfCheck: PlanSelfCheckState | undefined;
+  let planRevision: { prompt: string } | undefined;
+  // T7c: the plan is held back for its check on the current app: the task keeps it (and a dispatch row for the check) instead of submitting it.
+  let planHold: PlanGroundingHold | undefined;
   // A stored plan that cites code: the job that reads that code later, committed with the plan.
   let evidenceJob: { artifactId: string; artifactSha256: string } | undefined;
   /** The record of the comments the planner answered, committed with the plan it answered them in. */
@@ -14769,9 +16095,17 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_HISTORY_REWRITTEN_MESSAGE) === true ? WORKFLOW_HISTORY_REWRITTEN_MESSAGE
         : terminalError?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.noCodeChanged
+        // The checks' rerun could not first stop the programs earlier work left running, so no check ran: its own reason, and a person decides (nothing sends it back or retries it by itself).
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        // The checks' fresh dev container ran its setup and that changed the project's files: the checks did not run on them, and a person decides.
+        : terminalError?.includes(WORKFLOW_SETUP_CHANGED_FILES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.setupChangedFiles
         // Plan 3, Task 32: the step's budget ran out; a spend request is asked for at the end of this result, and its approval retries the step.
         : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
-        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
+        // Plan 6 Task 16: Rovara's own decision was refused when the worker started (a commenter lost write access, or the autonomy was lowered): the owner is told which.
+        : task.workflow.fixSource === "feedback" && operation.workflowFeedbackApproval?.autonomy !== undefined && terminalError?.includes("feedback-approval failed") === true ? FEEDBACK_NOT_RUN_REASON
+        : workflowRunEndedReason(operation.workflowMode, terminalStatus), now,
+        // A coding run that left the code as it was reports what it found; it is rebuilt here (redacted and bounded again) and kept only with that stop, whatever else the result held.
+        { noChangeFindings: noChangeFindingsFrom(reported.noChangeFindings) });
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
       if (dependencyBinding?.parallel !== undefined) {
@@ -14815,8 +16149,12 @@ async function completedWorkflowItems(
           throw new Error(verificationFailure);
         }
         // A custom sequence runs the approved work breakdown in its first build only; its later builds carry none.
+        // 0.4.17: the one run that may go without a graph is a CI, conflict or feedback fix (the worker protocol forbids a fix to carry one), and then only when the workflow names a different run as
+        // carrying the graph. Every start that carries a binding writes that run's ID onto the workflow in the same transaction as the operation (workflowWithCurrentGraphOperation), so a fix
+        // keeps the first build's ID. Any other unbound run still blocks, whatever ID the workflow names.
         if (dependencyBinding === undefined && task.workflow.workflowDependenciesApproval !== undefined && operation.workflowMode === "IMPLEMENT"
-          && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)) {
+          && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)
+          && !(task.workflow.fixSource !== undefined && task.workflow.workflowDependenciesOperationId !== undefined && task.workflow.workflowDependenciesOperationId !== operation.id)) {
           verificationFailure = "approved work breakdown was not carried into this implementation";
           throw new Error(verificationFailure);
         }
@@ -15014,7 +16352,11 @@ async function completedWorkflowItems(
     }
   } else if (operation.workflowMode === "REVIEW") {
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(task.workflow, workflowRunEndedReason("REVIEW", terminalStatus), now);
+      // A review that stopped because its base rule files could not be verified says so; any other stop keeps the generic reason.
+      next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.ruleFilesUnverified
+        // The programs earlier work left running could not be stopped, so the review never read the code: stopped here with its own reason, for the owner's Retry.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        : workflowRunEndedReason("REVIEW", terminalStatus), now);
     } else {
       const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
       const repositories = Array.isArray(reported.workflowCandidateRepositories) ? reported.workflowCandidateRepositories : [];
@@ -15042,23 +16384,31 @@ async function completedWorkflowItems(
           e2eAuthorityChecks = e2eDiagnostic.authorityChecks ?? [];
           if (e2eAuthorityChecks.length === 0) throw new Error("current E2E authority snapshot could not be fenced at review persistence");
         }
+        // What the workflow keeps of a report: neither the same-model flag (the broker's own record of the dispatch, never the worker's say) nor the model-failure sentence (it stays on the operation's
+        // result, where the next dispatch reads it) is stored. The workflow's review record is strict, so a key an older broker does not know would fail it after a rollback.
+        const kept = reviews.map((review) => {
+          const { sameModelAsBuild: _reported, modelFailure: _failure, ...report } = (review ?? {}) as Record<string, unknown>;
+          void _reported; void _failure;
+          return report;
+        });
         // Validate every report's complete contract and provenance before deciding that a role is missing.
-        for (const review of reviews) {
-          if (review === null || typeof review !== "object" || (review as Record<string, unknown>).operationId !== operation.id) {
-            throw new Error("review result is stale, incomplete, or came from another operation");
-          }
+        for (const review of kept) {
+          if (review.operationId !== operation.id) throw new Error("review result is stale, incomplete, or came from another operation");
           submitWorkflowReview(task.workflow, review, now);
         }
         // Exactly the reviews the step asks for (one code review and one security review, unless a custom sequence's review
         // step asks for fewer): two of one kind would leave the stage waiting for the other.
-        const roles = reviews.map((review) => (review as Record<string, unknown>).role).sort();
+        const roles = kept.map((review) => review.role).sort();
         const asked = workflowReviewRoles(task.workflow);
         if (roles.length !== asked.length || roles.some((role, index) => role !== asked[index])) {
           reviewFailure = WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE;
           throw new Error("review result does not hold one code review and one security review");
         }
         next = task.workflow;
-        for (const review of reviews) next = submitWorkflowReview(next, review, now);
+        for (const review of kept) next = submitWorkflowReview(next, review, now);
+        // The note about the model belongs to the reviews just taken: set for this code when they ran on the build's own model, cleared when an earlier review of it had left one.
+        if (operation.reviewSameModel === true && next.candidate !== undefined) reviewSameModel = { candidateDigest: next.candidate.digest };
+        else if (task.reviewSameModel !== undefined) reviewSameModel = null;
       } catch {
         next = blockWorkflow(task.workflow, reviewFailure, now);
       }
@@ -15070,7 +16420,8 @@ async function completedWorkflowItems(
       || current.revision !== binding.workflowRevision || current.taskId !== binding.taskId
       || current.candidate?.digest !== binding.candidateDigest || current.feedbackReview?.status !== "COLLECTING") return [];
     if (terminalStatus !== "SUCCEEDED") {
-      next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
+      // The programs earlier work left running could not be stopped, so the review read nothing: its own reason, like the other steps that only read.
+      next = blockWorkflow(current, terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses : WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
     } else {
       try {
         const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -15121,7 +16472,12 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       // The step's budget ran out (a spend request is asked for at the end of this result, and its approval retries the step), or its worker could not read its own answer, or the run ended.
       next = blockWorkflow(current, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
-        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
+        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable
+        // The base rule files could not be verified: Understand stopped before it started, and says so. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified
+        // The programs earlier work left running could not be stopped: Understand read nothing. A person chooses Retry; nothing starts it again by itself.
+        : terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.leftoverProcesses
+        : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
     } else {
       // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
       const understood = await readUnderstandingArtifact(dependencies, operation);
@@ -15181,9 +16537,12 @@ async function completedWorkflowItems(
     if (artifact === undefined) {
       next = blockWorkflow(task.workflow, WORKFLOW_BLOCK_REASONS.planNotSaved, now);
     } else {
-      const stored = await storePlanAnswer(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, artifact, now, operation.workflowE2EPlanVersion === 2);
+      const stored = await storePlanAnswer(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, artifact, now, operation.workflowE2EPlanVersion === 2, operation);
       next = stored.next;
       planUnreadable = stored.planUnreadable;
+      planSelfCheck = stored.selfCheck;
+      planRevision = stored.revision;
+      planHold = stored.hold;
       evidenceJob = stored.evidenceJob;
       if (stored.inlineEvidence !== undefined) inlineEvidence?.push({ ...stored.inlineEvidence, taskId: task.taskId });
       // The coding plan (not a requirements or design document) carries the estimate its approval will accept as the run limit. A version 2 plan reaches the person only after its
@@ -15210,9 +16569,19 @@ async function completedWorkflowItems(
   // Only a coding or check run makes reviews due: a review run's own result never queues another review.
   // Task 12: both reviews passed, so the draft pull request is due the same way; AgentX opens it with no one asking.
   // Plan 6 Task 8: a version 2 plan is due its plan check, and a plan the check sent back is due its one revision, the same way.
-  const dispatch = operation.workflowMode === "UNDERSTAND" && next.stage === "PLAN" && next.state === "READY"
+  const dispatch = planHold !== undefined
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "GROUNDING", planHold.artifactSha256, now),
+      // The hold's own marker: the recovery sweep finds a hold past its deadline even if its dispatch row is lost.
+      { Put: { TableName: dependencies.tableName, Item: { pk: PLAN_GROUNDING_HOLD_PK, sk: `TASK#${task.taskId}`, entityType: "PLAN_GROUNDING_HOLD", taskId: task.taskId, deadlineAt: planHold.deadlineAt,
+        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(planHold.deadlineAt) / 1000) + 7 * 86_400 } } }]
+    : planRevision !== undefined
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REPLAN", createHash("sha256").update(planRevision.prompt, "utf8").digest("hex"), now, now, planRevision.prompt)]
+      : operation.workflowMode === "UNDERSTAND" && next.stage === "PLAN" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    // A plan check whose model the account could not use goes again on the next one (retryPlanCritique); the same dispatch row as the first start.
+    : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIC_REPLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
@@ -15232,6 +16601,11 @@ async function completedWorkflowItems(
       : next.program !== undefined && next.stage === "IMPLEMENT" && next.state === "READY"
         && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS" || operation.workflowMode === "REVIEW")
         ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "IMPLEMENT", next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+      // AUTOFIX (mainline #408, #411): checks or reviews that just blocked, with no pull request yet and not inside one of Plan 6's fix rounds (those blocks are Plan 6's to word), are looked at once by
+      // the automatic-fix policy; the row commits with the block (an owner's stop carries its cause), the broker runs it right after, and the sweep runs it if that is lost.
+      : dependencies.autofix?.enabled === true && next.state === "BLOCKED" && (next.stage === "VERIFY" || next.stage === "REVIEW") && task.workflow.state === "RUNNING"
+        && next.fixSource === undefined && (next.pullRequests?.length ?? 0) === 0
+        ? autofixBlockRows(dependencies.tableName, next, terminalStatus === "CANCELLED" ? "owner-stopped" : undefined, now)
         : [];
   // Plan 6 Task 5: Understand's questions are told to the people who can answer (the milestone and its timeline line) in the commit that asks them, never after it.
   const questionsMilestone = operation.workflowMode === "UNDERSTAND" && next.stage === "UNDERSTAND" && next.state === "WAITING"
@@ -15273,14 +16647,17 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planSelfCheck === undefined ? "" : ", planSelfCheck = :selfCheck"}${planHold === undefined ? "" : ", planGrounding = :grounding"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${reviewSameModel === undefined || reviewSameModel === null ? "" : ", reviewSameModel = :reviewSameModel"}${forget || dropStaleEstimate || reviewSameModel === null ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : []), ...(reviewSameModel === null ? ["reviewSameModel"] : [])].join(", ")}` : ""}`,
     ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${raisedPlanningLimit === undefined ? "" : " AND budgetUsd = :seenLimit"}${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
       ...(raisedPlanningLimit === undefined ? {} : { ":raisedLimit": raisedPlanningLimit.limit, ":seenLimit": raisedPlanningLimit.seen }),
       ...(planUnreadable === undefined || planUnreadable === null ? {} : { ":unreadable": planUnreadable }),
+      ...(planSelfCheck === undefined ? {} : { ":selfCheck": planSelfCheck }),
+      ...(planHold === undefined ? {} : { ":grounding": planHold }),
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
       ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
+      ...(reviewSameModel === undefined || reviewSameModel === null ? {} : { ":reviewSameModel": reviewSameModel }),
       ...(graphApproval === undefined || graphCancelTarget?.workflowDependencies === undefined ? {} : {
         ":graphOperationId": graphCancelTarget.id,
         ":graphDigest": graphApproval.graphDigest,
@@ -15325,9 +16702,25 @@ async function planCritiqueOutcome(
   const workflow = task.workflow;
   // The check is advice: whatever goes wrong with it, the plan goes on to the person, who is told it was not checked (or that the check stopped at a limit).
   if (terminalStatus !== "SUCCEEDED") {
-    return terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE
-      ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now })
-      : closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+    if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
+      return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now });
+    }
+    // The base rule files could not be verified: the check never read the rules it is to apply, so it does not pass the plan on as unchecked (that would run without them). It stops
+    // here, visibly, with its own reason and the owner's Retry plan check. This is not a model failure, so the next-ranked model is not tried, and nothing starts the check again by itself.
+    if (terminalError?.includes(WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.stepRuleFilesUnverified, now);
+    // The programs earlier work left running could not be stopped: the check read nothing, so the plan is not passed on as unchecked. It stops here with its own reason; not a model failure.
+    if (terminalError?.includes(WORKFLOW_LEFTOVER_PROCESSES_MESSAGE) === true) return blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.leftoverProcesses, now);
+    // Staging 0.4.10: the account could not use the check's model (Bedrock's 403). The check is made again on the next-ranked model, one try for each, up to CRITIC_MODEL_ATTEMPTS_MAX; the
+    // next start leaves out the models that failed and, when none is left, closes the check as unavailable.
+    if (terminalStatus === "FAILED" && criticModelUnusable(terminalError)) {
+      const operations = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+      const planner = operations.filter((item) => item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
+        .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
+      // This operation is not yet stored as failed: it is one more try than the stored ones.
+      const earlier = criticFailures(operations.filter((item) => item.id !== operation.id), planner).sinceLatestPlan;
+      if (earlier + 1 < CRITIC_MODEL_ATTEMPTS_MAX) return retryPlanCritique(workflow, { expectedRevision: workflow.revision, now });
+    }
+    return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
   }
   const answers = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
     .filter((item) => item.operationId === operation.id && item.name === "plan-critique.md")
@@ -15389,19 +16782,40 @@ async function storePlanAnswer(
   now: string,
   /** Whether this planning run was asked for (and its worker parses) the schema-v2 application plan. */
   applicationPlanNegotiated: boolean,
-): Promise<{ next: WorkflowSnapshot; planUnreadable: NonNullable<DeveloperTaskRecord["planUnreadable"]> | null; evidenceJob?: { artifactId: string; artifactSha256: string }; inlineEvidence?: Omit<InlineEvidence, "taskId">; plannerReplies?: PlannerReplies }> {
+  /** The planning run: what its planner was told of the project (`planQualityContext`), for the plan self-check. */
+  operation: Pick<OperationRecord, "id" | "planQualityContext" | "planQualityAsked"> & { groundingSourceAsked?: true | undefined },
+  /** T7c: set only when the held plan's check on the current app has ended (the one finish): what it found. Absent on a planning run's own answer. */
+  grounded?: { sha256: string; outcome: GroundingOutcome },
+): Promise<{ next: WorkflowSnapshot; planUnreadable: NonNullable<DeveloperTaskRecord["planUnreadable"]> | null | undefined; evidenceJob?: { artifactId: string; artifactSha256: string }; inlineEvidence?: Omit<InlineEvidence, "taskId">; plannerReplies?: PlannerReplies;
+  /** Plan self-check: the answer was not stored; the planner is asked again with `revision.prompt`, and `selfCheck` records the budget this spent. */
+  selfCheck?: PlanSelfCheckState; revision?: { prompt: string };
+  /** T7c: the plan is not stored or shown; the task holds it back while its must-not-change checks run on the current app. */
+  hold?: PlanGroundingHold }> {
   const workflow = task.workflow;
+  const artifactType = workflow.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
+    : workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "design" : "plan";
+  // The automatic second run is spent once per document version (the version being written); an unreadable answer and a plan the self-check sends back share it.
+  const version = workflow.artifacts.filter((entry) => entry.type === artifactType).length + 1;
+  const revisionsUsed = planRevisionsUsed(task.planSelfCheck, artifactType, version);
+  const selfCheckOn = dependencies.planSelfCheck !== false;
+  const revisionLeft = selfCheckOn && revisionsUsed < PLAN_AUTO_REVISIONS_MAX;
+  /** Not shown to the owner, and not stored: the workflow stays in planning, one revision on, and a dispatch row starts the planner again. */
+  const askAgain = (prompt: string) => ({
+    next: WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, updatedAt: now }),
+    planUnreadable: undefined,
+    selfCheck: { artifactType, version, used: revisionsUsed + 1 } satisfies PlanSelfCheckState,
+    revision: { prompt },
+  });
   const unreadable = (errors: string[]) => {
+    if (revisionLeft) return askAgain(planUnreadablePrompt(errors));
     const next = blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.planUnreadable, now);
-    return { next, planUnreadable: { workflowRevision: next.revision, errors: errors.slice(0, PLAN_UNREADABLE_ERRORS_MAX) } };
+    return { next, planUnreadable: { workflowRevision: next.revision, errors: errors.slice(0, PLAN_UNREADABLE_ERRORS_MAX), category: planUnreadableCategory(errors), ...(revisionsUsed > 0 ? { autoRetried: true as const } : {}) } };
   };
   // One byte more than the limit is read, so an answer over the limit is told from one at it.
   const answer = await dependencies.s3.send(new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: String(artifact.objectKey), Range: `bytes=0-${WORKFLOW_PLAN_MAX_BYTES}` }));
   const content = answer.Body ? await answer.Body.transformToString("utf8") : "";
   if (Buffer.byteLength(content, "utf8") > WORKFLOW_PLAN_MAX_BYTES) return unreadable(["the answer is too long"]);
 
-  const artifactType = workflow.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
-    : workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "design" : "plan";
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   // Claim numbers an earlier structured document of this task had and its latest dropped may not come back. A document
   // that cannot be read back or fails its digest is skipped.
@@ -15415,14 +16829,19 @@ async function storePlanAnswer(
       if (entry.type === artifactType) previousVersion = loaded.plan;
     }
   }
+  // Rovara Code version 2: the checks the repository's CI requires join the planner's proposals (a check the project already runs is not repeated, but the plan lists it), so the Checks section
+  // never depends on the planner remembering to look. Whether the plan names a test is still read from the answer as the planner wrote it (below).
+  const rovaraV2 = workflow.definitionVersion === "1.1.0";
+  const withCi = rovaraV2 && artifactType === "plan" && workflow.checkPolicy !== undefined ? await answerWithCiChecks(dependencies, task, project, content) : content;
   // A coding plan's `checks` member proposes its checks; they run only once the owner approves this plan.
-  const parsed = parsePlanDocument(content, {
+  const parsed = parsePlanDocument(withCi, {
     kind: artifactType,
     retiredClaimIds: retiredClaimIds(earlier),
     ...(artifactType === "plan" && workflow.checkPolicy !== undefined ? { checks: {
       repositoryPaths: project.definition.repositories.map((repository) => repository.path),
       required: workflow.checkPolicy.required,
       optionalCount: workflow.checkPolicy.optional.length,
+      ...(rovaraV2 ? { listRequired: true } : {}),
     } } : {}),
   });
   if (!parsed.ok) return unreadable(parsed.errors);
@@ -15442,9 +16861,71 @@ async function storePlanAnswer(
   }
   // The owner's real request (and the replies this step was given) is what the plan says it is for, not the planner's words.
   const step = await planStepComments(dependencies, task, artifactType);
-  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why) }, step, previousVersion);
+  const plan: PlanDocument = planWithCommentIds({ ...parsed.plan, why: await planWhyEntries(dependencies, task, parsed.plan.why, (developerId) => githubLoginOfDeveloper(dependencies, developerId)) }, step, previousVersion);
   const canonical = canonicalPlanJson(plan);
   if (Buffer.byteLength(canonical, "utf8") > WORKFLOW_PLAN_MAX_BYTES) return unreadable(["the plan is too long once saved"]);
+
+  // Plan self-check: fixed-code rules on the parsed plan (the same for Quick and Full). What the planner can fix sends the plan back once, unseen; the rest is kept
+  // with the plan as findings. The check is advisory: a failure in it never blocks the plan.
+  let findings: PlanQualityFinding[] = [];
+  let notes: ReturnType<typeof selfCheckNotes> = [];
+  /** What the dry run found for each proposed check (a fixed class), kept in the record so the card and page can say it. */
+  let tried: Array<{ checkId: string; class: PlanDryRunClass }> | undefined;
+  // Why the rules did not run, when they did not: kept in the record as "not checked".
+  let skipped: PlanSelfCheckSkipReason | undefined = !selfCheckOn ? "disabled" : artifactType !== "plan" ? "not-a-coding-plan" : plan.checks === undefined ? "checks-not-read" : undefined;
+  // A plan whose `checks` member was not read (a task with no check policy) cannot be judged: every claim would look unproved.
+  if (skipped === undefined) {
+    try {
+      // The planning worker's dry run of the proposed checks on the unchanged code (a fixed class per check, never output): its report is read against the exact text the planner
+      // saved (`content`, not the canonical form) and each result is attributed to a proposed check by its command. A worker the planner was not asked through (an older one) has no report to read.
+      const proposed = (plan.checks?.proposed ?? []).map((check) => ({ id: check.id, command: check.command }));
+      const outcome = readPlanDryRunOutcome({
+        events: proposed.length === 0 ? [] : (await operationEventsNewestFirst(dependencies, operation.id, 500)).reverse(),
+        planText: content, proposed, workerFeatures: operation.planQualityAsked === true ? [PLAN_DRY_RUN_FEATURE] : [],
+      });
+      findings = [...planQualityFindings(plan, { kind: "plan", context: recordedPlanQualityContext(operation.planQualityContext) }), ...planDryRunFindings({ outcome, expectOnBase: plan.checks?.expectOnBase })];
+      notes = selfCheckNotes(outcome);
+      tried = outcome.status === "TRIED" ? outcome.results.map((result) => ({ checkId: result.checkId, class: result.class })) : undefined;
+    } catch (error) {
+      findings = [];
+      notes = [];
+      tried = undefined;
+      skipped = "rules-failed";
+      console.log(JSON.stringify({ component: "broker", event: "plan_self_check.failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    }
+    const revisable = autoRevisableFindings(findings, operation.planQualityAsked === true);
+    if (revisable.length > 0 && revisionLeft) return askAgain(planRevisionPrompt(revisable));
+  }
+  // T7c: a coding plan with must-not-change scenarios is held back (nothing stored or submitted) while they run on the unchanged code; the one finish comes back here with what they found.
+  const heldSha = createHash("sha256").update(canonical, "utf8").digest("hex");
+  if (skipped === undefined && artifactType === "plan" && groundingScenarioIds(plan).length > 0) {
+    if (grounded === undefined) {
+      if (operation.groundingSourceAsked === true && dependencies.planGrounding !== false) {
+        const attempt = revisionsUsed + 1;
+        // The held plan is saved under the key it will have once submitted (nothing refers to it until then), so the check can read it back and the finish writes the same bytes.
+        await dependencies.s3.send(new PutObjectCommand({ Bucket: dependencies.artifactBucketName, Key: `private/${task.ownerKey}/${task.workspaceId}/plan-documents/${String(artifact.id)}.json`, Body: canonical, ContentType: "application/json" }));
+        return {
+          next: WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, updatedAt: now }), planUnreadable: undefined,
+          hold: { artifactId: String(artifact.id), artifactSha256: heldSha, artifactCreatedAt: String(artifact.createdAt), version, attempt, planOperationId: operation.id, heldAt: now,
+            deadlineAt: new Date(Date.parse(now) + PLAN_GROUNDING_HOLD_MS).toISOString() },
+        };
+      }
+    } else {
+      // The check ran on the plan as held; a plan that reads differently now was not the one checked.
+      let outcome: GroundingOutcome = grounded.sha256 === heldSha ? grounded.outcome : { kind: "unavailable", reason: "refused" };
+      if (outcome.kind === "checked") {
+        // What the plan itself expected is added to each mismatch (its own words, never the app's value).
+        const withExpected = outcome.findings.map((finding) => (finding.code !== "scenario-base-mismatch" || finding.steps === undefined ? finding : planQualityFinding({
+          code: finding.code, ...(finding.scenarioIds === undefined ? {} : { scenarioIds: finding.scenarioIds }),
+          steps: finding.steps.map((step) => { const expected = plannedExpectation(plan, step.scenarioId, step.assertionKind); return { scenarioId: step.scenarioId, assertionKind: step.assertionKind, ...(step.stepIndex === undefined ? {} : { stepIndex: step.stepIndex }), ...(expected === undefined || expected === "" ? {} : { expected }) }; }) })));
+        outcome = { ...outcome, findings: withExpected };
+        findings = [...findings, ...withExpected];
+        if (outcome.undecided > 0) notes = [...notes, groundingUndecidedNote(outcome.undecided)];
+        const revisableGrounding = autoRevisableFindings(outcome.findings, operation.planQualityAsked === true);
+        if (revisableGrounding.length > 0 && revisionLeft) return askAgain(planRevisionPrompt(revisableGrounding));
+      } else if (outcome.kind === "unavailable") notes = [...notes, groundingNotCheckedNote(outcome.reason)];
+    }
+  }
 
   // The plan is stored now. The code it cites is read afterwards by the evidence job, so a slow or failing GitHub never
   // holds up (or blocks) the plan; the job row is written in the same transaction as the plan.
@@ -15452,6 +16933,15 @@ async function storePlanAnswer(
   const prefix = `private/${task.ownerKey}/${task.workspaceId}/plan-documents/${artifactId}`;
   const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
   await dependencies.s3.send(new PutObjectCommand({ Bucket: dependencies.artifactBucketName, Key: `${prefix}.json`, Body: canonical, ContentType: "application/json" }));
+  {
+    // Beside the document, never inside it: the digest the owner's approval binds does not move. A plan with no record was not checked.
+    try {
+      const record = PlanSelfCheckRecordSchema.parse({ schemaVersion: 1, status: skipped === undefined ? "checked" : "not-checked", ...(skipped === undefined ? {} : { reason: skipped }), artifactId, artifactSha256: sha(canonical), checkedAt: now, findings, notes, autoRevisions: revisionsUsed, ...(tried === undefined || tried.length === 0 ? {} : { tried }) });
+      await dependencies.s3.send(new PutObjectCommand({ Bucket: dependencies.artifactBucketName, Key: planSelfCheckKey(prefix), Body: JSON.stringify(record), ContentType: "application/json" }));
+    } catch (error) {
+      console.log(JSON.stringify({ component: "broker", event: "plan_self_check.record_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    }
+  }
   let next = submitWorkflowArtifact(workflow, {
     expectedRevision: workflow.revision,
     now,
@@ -15489,6 +16979,41 @@ async function storePlanAnswer(
     bundle = { schemaVersion: 1, excerpts: [] };
   }
   return { next, planUnreadable: null, inlineEvidence: { artifactId, artifactSha256, bundle, prefix }, ...withReplies };
+}
+
+/** The most repositories whose CI is read for one plan, and how long the reading may take: a plan is never held up for it. */
+const CI_READ_REPOSITORIES_MAX = 3;
+const CI_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * The planner's answer with the checks the task's repositories' CI workflows require added to its proposed checks (Plan 6 plan quality). Read through the org's read-only GitHub reader of each
+ * repository's default branch; the answer comes back as it was when there is no reader (a private install), nothing can be read in time, or a workflow can't be understood.
+ */
+async function answerWithCiChecks(
+  dependencies: AwsBrokerDependencies,
+  task: DeveloperTaskRecord,
+  project: Awaited<ReturnType<typeof requireRecordProject>>,
+  content: string,
+): Promise<string> {
+  if (dependencies.cloud !== true || dependencies.githubPullRequests.agentRepositoryReader === undefined) return content;
+  const github = dependencies.githubPullRequests;
+  try {
+    const orgId = await orgOfRecord(dependencies, task);
+    const reading = Promise.all(project.definition.repositories.slice(0, CI_READ_REPOSITORIES_MAX).map(async (repository) => {
+      try {
+        const reader = await github.agentRepositoryReader!(repository.url, { orgId }, ...(repository.installationId === undefined ? [] : [{ installationId: repository.installationId }]));
+        return await readCiChecks(reader, repository.path);
+      } catch {
+        return [];
+      }
+    }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const found = await Promise.race([reading, new Promise<never[][]>((resolve) => { timer = setTimeout(() => resolve([]), CI_READ_TIMEOUT_MS); })]);
+    if (timer !== undefined) clearTimeout(timer);
+    return withCiChecks(content, found.flat());
+  } catch {
+    return content;
+  }
 }
 
 /** The planner's answers to the comments the owner sent with a decision, for the version just stored. */
@@ -15750,13 +17275,36 @@ async function cancelledWorkflowStepItems(
   if (task?.purpose === "setup_draft") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   if (task === undefined || target.workflowMode === "SETUP_DRAFT" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
-  // Only the one conditional update of the step the target ran, exactly; anything else is left to the owner's Retry.
-  const update = items.length === 1 ? items[0]?.Update : undefined;
+  // Only the one conditional update of the step the target ran, exactly, and the AUTOFIX row that rides with a block of VERIFY or REVIEW when automatic fixing is on (DISPATCHEXHAUST: refusing
+  // it left the stopped step RUNNING); anything else is left to the owner's Retry.
+  const rows = items.filter((item) => item.Put?.Item?.kind === "AUTOFIX").length;
+  const update = rows <= 1 && items.length === 1 + rows ? items.find((item) => item.Update !== undefined)?.Update : undefined;
   const values = update?.ExpressionAttributeValues;
   const key = taskKey(task.taskId);
   if (update === undefined || update.Key?.pk !== key.pk || update.Key?.sk !== key.sk
     || values?.[":stage"] !== WORKFLOW_STEP_STAGE[target.workflowMode] || values?.[":running"] !== "RUNNING") return [];
   return items;
+}
+
+/**
+ * Whether a worker's failed result is a plain task's no-change end: the first coding turn of a task started without the workflow (it runs in IMPLEMENT mode, the worker's candidate check
+ * refuses a build that changed nothing) and the error is exactly that refusal. A workflow task's build is never this: its no-change stop is `noCodeChanged`, a block a person answers.
+ */
+async function plainTaskLeftCodeAsItWas(dependencies: AwsBrokerDependencies, operation: OperationRecord, status: unknown, error: unknown): Promise<boolean> {
+  if (status !== "FAILED" || operation.kind !== "task" || operation.workflowMode !== "IMPLEMENT" || typeof error !== "string" || !error.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE)) return false;
+  const task = await workspaceTask(dependencies, operation.workspaceId);
+  return task !== undefined && task.workflow === undefined;
+}
+
+/**
+ * A result's findings block (a coding run that left the code as it was) is rebuilt before the result is stored: redacted and bounded here as well as in the worker, so what a worker sent (an older, a
+ * newer or a hostile one) never reaches the table as it came. A block that cannot be read is dropped; every other field of the result is left as it is.
+ */
+function withSafeNoChangeFindings(result: unknown): unknown {
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !("noChangeFindings" in result)) return result;
+  const { noChangeFindings, ...rest } = result as Record<string, unknown>;
+  const safe = noChangeFindingsFrom(noChangeFindings);
+  return safe === undefined ? rest : { ...rest, noChangeFindings: safe };
 }
 
 async function recordTerminalResult(
@@ -15765,7 +17313,10 @@ async function recordTerminalResult(
   value: unknown,
 ): Promise<OperationRecord> {
   const input = object(value, "terminal result");
-  const status = input.status;
+  // Staging 0.4.10: a plain task (no workflow) whose run left the code as it was has nothing to approve, check or publish: it answered, and it ended. The worker reports that as a failure
+  // because a workflow's approved build must not pass with no change; here it is the run's end, so it is recorded as one (a workflow task's stays a failure and blocks the build).
+  const plainNoChange = await plainTaskLeftCodeAsItWas(dependencies, operation, input.status, input.error);
+  const status = plainNoChange ? "SUCCEEDED" : input.status;
   if (!TERMINAL.has(status as OperationStatus)) throw agentXError("CONFIG_INVALID", "terminal status is invalid");
   if (TERMINAL.has(operation.status)) {
     // Issue 202: a task whose cancel failed ended INTERRUPTED but kept its workspace, as it might
@@ -15779,7 +17330,7 @@ async function recordTerminalResult(
     // #213: a repeated result releases a failed prepare's slot too, in case the first one's release
     // did not land (the release is idempotent, and does nothing to a workspace that moved on).
     if (operation.kind === "prepare" && operation.status !== "SUCCEEDED") {
-      await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, operation.workspaceId);
+      await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, operation.workspaceId, undefined, installOrgId(dependencies));
       // #225 review: and records its failure event, in case the first one's did not land (once per prepare).
       await repeatPrepareFailureEvent(dependencies, operation);
     }
@@ -15796,12 +17347,12 @@ async function recordTerminalResult(
   const startRefusal: { text?: string } = {};
   // #154: the worker's error can quote a command's output, so it is redacted before it is stored,
   // and redactAndCap redacts before it caps.
-  const error = typeof input.error === "string" ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
+  const error = typeof input.error === "string" && !plainNoChange ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
   const result = operation.kind === "publish" && status === "SUCCEEDED"
     ? PullRequestResultSchema.parse(input.result)
     : operation.kind === "close" && status === "SUCCEEDED"
       ? WorkspaceClosePreflightResultSchema.parse(input.result)
-      : input.result;
+      : withSafeNoChangeFindings(input.result);
   const closePreflight = operation.kind === "close" && terminalStatus === "SUCCEEDED"
     ? WorkspaceClosePreflightResultSchema.parse(result)
     : undefined;
@@ -15972,7 +17523,7 @@ async function recordTerminalResult(
     const existing = await requireOperation(dependencies, operation.workspaceId, operation.id);
     if (existing.status === terminalStatus || isQueueFailedPrepare(existing, terminalStatus) || isSweptPrepare(existing)) {
       if (existing.kind === "prepare" && existing.status !== "SUCCEEDED") {
-        await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, existing.workspaceId);
+        await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, existing.workspaceId, undefined, installOrgId(dependencies));
         await repeatPrepareFailureEvent(dependencies, existing);
       }
       return existing;
@@ -16007,9 +17558,17 @@ async function recordTerminalResult(
   if (recordedStatus === terminalStatus) await settleBaselineRound(dependencies, operation, terminalStatus);
   // M1.4 Task 4.6b: so does an audit replay, into a record of its own.
   if (recordedStatus === terminalStatus) await settleReplayRound(dependencies, operation, terminalStatus);
+  // T7b: so does a grounding round (the proposed plan's must-not-change checks on the unchanged code), into a record of its own.
+  if (recordedStatus === terminalStatus) await settleGroundingRound(dependencies, operation, terminalStatus);
+  // T7c: and the plan it was holding back is finished now (its card posts, or the planner is sent back once).
+  if (recordedStatus === terminalStatus) await finishGroundingForOperation(dependencies, operation);
   // A replay that was stopped ends through the cancel operation that stopped it (the target's own terminal state is written with the cancel's): its record says so.
   if (recordedStatus === terminalStatus && operation.kind === "cancel" && terminalStatus === "SUCCEEDED" && cancelTargetOperation?.workflowE2EAdmission?.purpose === "replay") {
     await settleReplayRound(dependencies, cancelTargetOperation, "CANCELLED");
+  }
+  if (recordedStatus === terminalStatus && operation.kind === "cancel" && terminalStatus === "SUCCEEDED" && cancelTargetOperation?.workflowE2EAdmission?.purpose === "grounding") {
+    await settleGroundingRound(dependencies, cancelTargetOperation, "CANCELLED");
+    await finishGroundingForOperation(dependencies, cancelTargetOperation);
   }
   // Plan 3 final fix wave (runs I-1): an agent-step run's budget stop with no pause yet (the proxy's mid-step "budget exceeded") is asked for BEFORE the engine is
   // driven, so the engine tells the pause's real scope, once, instead of a made-up one that it then resumes at once. A stop an approval already answered is not asked again.
@@ -16027,6 +17586,8 @@ async function recordTerminalResult(
       console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: milestoneTaskId, error: error instanceof Error ? error.name : "unknown" }));
     });
   }
+  // Plan 6 Task 20: the pull request this publication opened is recorded; a Linear link, replace or unlink made since the description was written is honoured now.
+  if (taskPointer !== undefined && recordedStatus === terminalStatus && operation.kind === "publish" && terminalStatus === "SUCCEEDED") await settleRecordedPullRequest(dependencies, taskPointer.taskId);
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
@@ -16056,7 +17617,7 @@ async function recordTerminalResult(
   // closed and its limit slot given back now. A close that cannot land here is the next check's, or the sweep's. Never fails the callback.
   if (operation.kind === "prepare") await closeCheckAfterPrepare(dependencies, workspace.id);
   if (operation.kind === "prepare" && recordedStatus !== "SUCCEEDED") {
-    await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id);
+    await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id, undefined, installOrgId(dependencies));
     // #225: a developer task's failed setup is an event of its own, so the task shows when it failed.
     if (taskPointer !== undefined) {
       await recordPrepareFailureEvent(dependencies.documentClient, dependencies.tableName, {
@@ -16430,10 +17991,13 @@ async function getDefaultWorkspace(
 
 async function getThreadWorkspace(
   dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
   ownerKey: string,
 ): Promise<WorkspaceInstance | undefined> {
-  const thread = await getItem<{ workspaceId?: string }>(dependencies, slackThreadKey(ownerKey));
-  return typeof thread?.workspaceId === "string" ? requireWorkspace(dependencies, thread.workspaceId) : undefined;
+  const thread = await getItem<{ workspaceId?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
+  if (typeof thread?.workspaceId !== "string") return undefined;
+  const workspace = await requireWorkspace(dependencies, thread.workspaceId);
+  return (workspace.orgId ?? installOrgId(dependencies)) === orgId && workspace.ownerKey === ownerKey ? workspace : undefined;
 }
 
 /**
@@ -16515,6 +18079,7 @@ async function putProjectModel(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
   value: unknown,
+  requestId: string,
 ): Promise<ProjectModelOptions> {
   const projectName = identity.slack?.binding.projectName;
   const requester = identity.slack?.requester;
@@ -16534,7 +18099,14 @@ async function putProjectModel(
     updatedAt: new Date().toISOString(),
     updatedBy: requester,
   };
-  await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: record }));
+  // H6: choosing another model than the one selected is audited, in the transaction that stores it; choosing the same one again changes nothing.
+  const earlier = await getItem<ProjectModelSelectionRecord>(dependencies, projectModelSelectionKey(orgId, projectName));
+  const changed = earlier === undefined || modelKey(earlier.model) !== modelKey(selected);
+  const events = changed ? await tryAuditEvents(dependencies, () => [modelSelectionAuditEvent({
+    orgId, actor: auditActorOf(developerIdForSlackUser(requester.userId)), occurredAt: record.updatedAt, project: projectName, surface: "slack", cleared: false, requestId,
+  })]) : [];
+  await auditTransact(dependencies, { Put: { TableName: dependencies.tableName, Item: record } }, events);
+  await flushAuditEvents(dependencies, events);
   return ProjectModelOptionsSchema.parse({
     projectName,
     approved: policy.approved,
@@ -16790,7 +18362,7 @@ async function adminTaskShareMode(dependencies: AwsBrokerDependencies, identity:
   if (membership?.role !== "administrator") throw agentXError("FORBIDDEN", "administrator project membership is required");
   const claimed = [identity.claims.name, identity.claims.email].find((claim): claim is string => typeof claim === "string" && claim.trim() !== "");
   return adminShareMode(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, orgId, now: Date.now },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, orgId, now: Date.now, ...(dependencies.developer === undefined ? {} : { issuer: dependencies.developer.issuer }) },
     { issuer: identity.issuer, subject: identity.subject, ...(claimed === undefined ? {} : { displayName: claimed.trim() }) },
     task,
     value,
@@ -17214,19 +18786,6 @@ function hookReply(answer: { status: number; body: Record<string, unknown> }): {
   return { statusCode: answer.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(answer.body) };
 }
 
-function json(
-  value: unknown,
-  requestId: string,
-  statusCode = 200,
-): { statusCode: number; headers: Record<string, string>; body: string } {
-  const body = value && typeof value === "object" ? { ...value, requestId } : { data: value, requestId };
-  return {
-    statusCode,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-    body: JSON.stringify(body),
-  };
-}
-
 const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
 const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration), {
   marshallOptions: { removeUndefinedValues: true },
@@ -17443,6 +19002,8 @@ export const handler = createAwsBrokerHandler({
   },
   codeBuild,
   // Spec 061: set only where the PlanEvidence function exists (infra/lib/control-plane.ts).
+  ...(process.env.PLAN_SELF_CHECK_ENABLED === "false" ? { planSelfCheck: false } : {}),
+  autofix: autofixConfigFromEnvironment(process.env),
   ...(process.env.PLAN_EVIDENCE_FUNCTION_NAME
     ? { startPlanEvidenceJob: async (event: PlanEvidenceEvent) => {
         const response = await lambdaClient.send(new InvokeCommand({ FunctionName: process.env.PLAN_EVIDENCE_FUNCTION_NAME, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));

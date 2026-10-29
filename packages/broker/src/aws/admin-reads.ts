@@ -1,3 +1,6 @@
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { OrgIdSchema } from "@agentx/contracts";
+import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Spec 025 phase 25d, FR-038: the admin read routes. Each checks the admin claim only, as today's
 // list routes do (A2), and reads by key or by index: no route scans the table, and no route writes.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -544,7 +547,8 @@ export async function workspaceOwner(deps: AdminReadDependencies, workspace: Wor
     const task = await getStateItem(deps, taskKey(pointer.taskId));
     return { origin: "ai_tool", owner: { taskId: pointer.taskId, ...(typeof task?.developerId === "string" && /^[a-f0-9]{64}$/.test(task.developerId) ? { developerId: task.developerId } : {}), ...(typeof task?.developerName === "string" ? { developerName: displayName(task.developerName) } : {}) } };
   }
-  const thread = await getStateItem(deps, { pk: `SLACK_THREAD#${workspace.ownerKey}`, sk: "META" });
+  const org = OrgIdSchema.safeParse(workspace.orgId ?? installOrgIdFromEnvironment());
+  const thread = !org.success ? undefined : await getStateItem(deps, await resolveSlackThreadKey({ documentClient: deps.documentClient, tableName: deps.tableName }, org.data, workspace.ownerKey));
   if (typeof thread?.thread === "string") {
     try {
       const subject = parseSlackThreadSubject(thread.thread);

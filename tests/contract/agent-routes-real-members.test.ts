@@ -1,6 +1,7 @@
 // PF6: Plan 3's agent routes on Plan 2 Task 21's real `ProjectMembers`. The broker is built with `agents: {}` (as the deployed handler is), so
 // it builds `createProjectMembers` itself over the table, and the people are real items: org members, a project's revision, and grants. One
 // block per route family (agents, skills, roster, AI settings, approvals), each checking a role that comes from a grant and one from the org role.
+import { StoredProjectDefinitionSchema } from "../../packages/contracts/src/project-node.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -46,7 +47,7 @@ async function setup() {
   await enroll(DANA, "admin");
   for (const who of [MAX, CARL, EVE, VIV]) await enroll(who, "member");
   const project = (name: string, archived = false) => {
-    h.db.set({ ...projectRevisionKey(TEST_ORG, name, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", definition: { name, revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "Delegate work." } });
+    h.db.set({ ...projectRevisionKey(TEST_ORG, name, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", definition: StoredProjectDefinitionSchema.parse({ name, revision: 1, repositories: [{ name: "repo", url: "https://github.example/example/repo", path: "repo", defaultBranch: "main", credentialRef: "test" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." }) });
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, name), entityType: "PROJECT_CATALOG", name, latestRevision: 1 });
     if (archived) h.db.set({ ...projectMetaKey(TEST_ORG, name), entityType: "PROJECT_META", name, status: "archived", createdAt: "x", createdBy: DANA.developerId, archivedAt: "y", archivedBy: DANA.developerId });
   };

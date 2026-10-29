@@ -17,7 +17,7 @@ import {
   type OrgId,
   type OrgKey,
 } from "@agentx/contracts";
-import { auditRolledBack } from "../audit/events.js";
+import { auditProcessRolledBack, auditRolledBack } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -224,6 +224,8 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
    */
   protected async rollbackItem(input: {
     orgId: OrgId; id: Id; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark;
+    /** Whether the rollback made anything less safe, which a person confirmed; only a project's process layer's event says so. */
+    safety?: "safe" | "less_safe";
     /** Condition checks that must hold when the write commits (a chain's agents), and what a failed one means; the item's own conditions give the draft conflict. */
     checks?: { items: TransactItem[]; refused: () => Error };
   }): Promise<Rec> {
@@ -232,10 +234,16 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
     const updatedAt = this.iso();
     const rolled: Rec = { ...item, currentVersion: input.version, updatedAt };
     const event = this.newEvent(input.orgId, input.id, "rolled_back", input.by, { from: input.expectedCurrentVersion, to: input.version });
-    const audit = await this.audited(() => [auditRolledBack({
-      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: this.spec.kind, targetId: input.id,
-      fromVersion: input.expectedCurrentVersion, toVersion: input.version,
-    })]);
+    // A project's process layer audits `process.rolled_back` instead.
+    const audit = await this.audited(() => [(item as { purpose?: unknown }).purpose === "process"
+      ? auditProcessRolledBack({
+        orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.id,
+        fromVersion: input.expectedCurrentVersion, toVersion: input.version, safety: input.safety ?? "safe",
+      })
+      : auditRolledBack({
+        orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: this.spec.kind, targetId: input.id,
+        fromVersion: input.expectedCurrentVersion, toVersion: input.version,
+      })]);
     await this.commit([
       this.update(this.spec.key(input.orgId, input.id, "META"), {
         set: { currentVersion: input.version, updatedAt },

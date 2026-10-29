@@ -66,8 +66,10 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       const newNotes = Array.isArray(afterWorkflow?.feedbackNotes) ? afterWorkflow.feedbackNotes.length : 0;
       // A complete report is said again after a new note; any other (failed, timed out, interrupted: said with Retry
       // review) once, by its report.
+      // The failing checks added to (or taken off) a waiting card change what the owner decides on, so the card is said again (Plan 6 Task 16).
+      const ciChanged = beforeReview?.status === "PENDING" && record(afterWorkflow?.feedbackCiFailures)?.digest !== record(beforeWorkflow?.feedbackCiFailures)?.digest;
       if (afterReview?.status === "PENDING" && typeof afterReviewRef?.sha256 === "string"
-        && ((afterReviewRef.status === "COMPLETE" && (afterReviewRef.sha256 !== beforeReviewRef?.sha256 || newNotes !== oldNotes))
+        && ((afterReviewRef.status === "COMPLETE" && (afterReviewRef.sha256 !== beforeReviewRef?.sha256 || newNotes !== oldNotes || ciChanged))
           || (afterReviewRef.status !== "COMPLETE" && afterReviewRef.sha256 !== beforeReviewRef?.sha256))) {
         notices.push({ id: feedbackReviewNoticeId(taskId, afterReviewRef.sha256, Number(afterWorkflow?.revision)), kind: "github_feedback", taskId, at,
           feedbackReviewDigest: afterReviewRef.sha256 });
@@ -83,9 +85,17 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
         notices.push({ id: `${taskId}:workflow:${String(afterWorkflow.revision)}`, kind: "workflow", taskId, at, workflowRevision: Number(afterWorkflow.revision),
           ...(reopened ? { pullRequestReopened: true as const, reopenedPullRequests: reopenedNumbers } : {}) });
       }
+      // AUTOFIX: Rovara wrote why it asks for the blocked step after the step's own card; the card (or a post of its own) carries it.
+      const afterAsk = record(next.autofixAsk);
+      const beforeAsk = record(previous?.autofixAsk);
+      if (afterAsk !== undefined && eventId !== "" && typeof afterAsk.workflowRevision === "number" && afterAsk.workflowRevision === afterWorkflow?.revision
+        && (beforeAsk === undefined || beforeAsk.workflowRevision !== afterAsk.workflowRevision || beforeAsk.at !== afterAsk.at)) {
+        notices.push({ id: `${taskId}:autofix:${afterAsk.workflowRevision}`, kind: "workflow", taskId, at, workflowRevision: afterAsk.workflowRevision });
+      }
       if (after !== undefined && before === undefined) notices.push({ id: `${taskId}:start`, kind: "start", taskId, at });
       // A mode notice is named by its stream event; without one, two changes would collapse into one ID.
-      else if (after !== undefined && before !== undefined && after.mode !== before.mode && eventId !== "") {
+      else if (after !== undefined && before !== undefined && after.mode !== before.mode && eventId !== ""
+        && !(afterWorkflow?.definitionId === "agentx-task-to-pr" && after.mode === "view")) {
         notices.push({ id: `${taskId}:mode:${eventId}`, kind: "mode", taskId, at, mode: after.mode === "continue" ? "continue" : "view" });
       }
       // A stored NULL counts as unset.

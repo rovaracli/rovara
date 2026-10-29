@@ -19,6 +19,7 @@ import {
   type SessionLeg,
 } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, strip, type Item, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { safeDisplayName } from "../developer/person-name.js";
 
 /** The part of a task record a session lookup reads. */
 export interface SessionTaskRef {
@@ -68,7 +69,11 @@ export function sessionEventItem(table: Pick<TableInput, "tableName">, session: 
 export function sessionFromItem(item: Item): AgentSessionRecord | undefined {
   const { [INDEX_EXPIRY_ATTRIBUTE]: _expires, ...fields } = strip(item); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
   const record = AgentSessionRecordSchema.safeParse(fields);
-  return record.success ? record.data : undefined;
+  if (!record.success) return undefined;
+  // Release 0.4.16: a session started before it stored an email as the owner's name reads with a name that is safe to show.
+  const owner = record.data.owner;
+  const name = safeDisplayName(owner.name, owner.developerId);
+  return name === owner.name ? record.data : { ...record.data, owner: { ...owner, name } };
 }
 
 // ---- legs (a move between a Mac and the cloud, Plan 5 Task 19)

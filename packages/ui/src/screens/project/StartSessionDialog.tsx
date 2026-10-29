@@ -22,7 +22,7 @@ export function StartSessionDialog({ project, agent, onBack, onBusyChange, backL
    if (result.kind !== "done") { setPending(result);return; }
    setAccepted(true);
    // RULING Q40: a legacy accepted task can lack its session id. Never guess or submit it a second time.
-   const session = SessionIdSchema.safeParse(result.value.task.sessionId);
+   const session = SessionIdSchema.safeParse((result.value as { sessionId?: string }).sessionId ?? result.value.task.sessionId);
    if (session.success) host.navigate("/s/" + session.data);
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't start this session. Try again."); }
   finally { sending.current = false;setBusy(false);onBusyChange(false); }

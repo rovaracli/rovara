@@ -57,6 +57,7 @@ import { auditPending, auditPendingItem, auditTransact, tryAuditEvent, tryAuditE
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
+import { safeOrgName } from "../developer/person-name.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
 const NOT_EXISTS = "attribute_not_exists(pk)";
@@ -185,7 +186,11 @@ export class OrgStore {
 
   async getOrg(orgId: OrgId): Promise<OrgRecord | undefined> {
     const item = await this.get(orgMetaKey(orgId));
-    return item === undefined ? undefined : (strip(item) as unknown as OrgRecord);
+    if (item === undefined) return undefined;
+    const org = strip(item) as unknown as OrgRecord;
+    // Release 0.4.16: the default name a first sign-in made from an email ("ravi@example.com's team") is never shown to members or invitees.
+    const name = safeOrgName(org.name);
+    return name === org.name ? org : { ...org, name };
   }
 
   /** Owner checked again inside the atomic rename, replay marker and audit transaction. */
@@ -402,7 +407,12 @@ export class OrgStore {
     return { orgId, role };
   }
 
-  async bindSlackTeam(input: { orgId: OrgId; teamId: string }): Promise<void> {
+  /**
+   * Links a Slack workspace to the org: the team's item and the org's reverse item, written together. An org that is closed or closing takes no
+   * workspace (the check is on its META, in the same write, so a close and a link serialize); a workspace another org holds is SLACK_TEAM_TAKEN.
+   * `event` is the audit record of an operator's link, written in the same transaction.
+   */
+  async bindSlackTeam(input: { orgId: OrgId; teamId: string; event?: AuditEventInput | undefined }): Promise<void> {
     const boundAt = this.iso();
     // The reverse item lets `closeOrg` find the org's teams; both are written together or not at all.
     await this.transact(
@@ -416,9 +426,26 @@ export class OrgStore {
           },
         },
         { Put: { TableName: this.input.tableName, Item: { ...orgSlackTeamKey(input.orgId, input.teamId), entityType: "ORG_SLACK_TEAM", orgId: input.orgId, teamId: input.teamId, boundAt } } },
+        { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } },
+        ...this.pendingFor(input.event),
       ],
-      (failed) => (failed.has(0) ? coded("SLACK_TEAM_TAKEN", "that Slack workspace is already connected to another organization") : undefined),
+      (failed) => (failed.has(0) ? coded("SLACK_TEAM_TAKEN", "that Slack workspace is already connected to another organization")
+        : failed.has(2) ? coded("CONFIG_INVALID", "that organization has closed") : undefined),
     );
+    await this.flush(input.event);
+  }
+
+  /** Releases a Slack workspace from the org that holds it (release 0.4.17, an operator's undo of a link). Only the holder's own items go; `event` is audited in the same transaction. */
+  async unbindSlackTeam(input: { orgId: OrgId; teamId: string; event?: AuditEventInput | undefined }): Promise<void> {
+    await this.transact(
+      [
+        { Delete: { TableName: this.input.tableName, Key: slackTeamOrgKey(input.teamId), ConditionExpression: "orgId = :orgId", ExpressionAttributeValues: { ":orgId": input.orgId } } },
+        { Delete: { TableName: this.input.tableName, Key: orgSlackTeamKey(input.orgId, input.teamId) } },
+        ...this.pendingFor(input.event),
+      ],
+      (failed) => (failed.has(0) ? coded("NOT_FOUND", "that Slack workspace is not connected to that organization") : undefined),
+    );
+    await this.flush(input.event);
   }
 
   /** Whether a removal banned this developer from the org (a single-org install only); sign-in refuses a banned developer. */

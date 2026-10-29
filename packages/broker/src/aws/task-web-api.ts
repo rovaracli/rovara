@@ -56,6 +56,8 @@ export const PageDecisionInputSchema = z.object({
   answers: z.array(z.object({ decisionId: DecisionIdSchema, optionId: OptionIdSchema, opened: z.boolean() }).strict()).max(20),
   includedCommentIds: z.array(z.string().uuid()).max(DECISION_COMMENTS_MAX),
   selectedOptionalCheckIds: z.array(z.string().max(64)).max(20).optional(),
+  /** Binds an approval to the exact ordered work breakdown the owner saw (the same value as the MCP tool's work_breakdown_digest); the broker checks it. */
+  workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   note: z.string().trim().min(1).max(PAGE_NOTE_MAX_CHARS).optional(),
 }).strict().superRefine((input, context) => {
   if (new Set(input.answers.map((answer) => answer.decisionId)).size !== input.answers.length) context.addIssue({ code: "custom", path: ["answers"], message: "each decision once" });
@@ -88,6 +90,8 @@ export type PageSuggestionInput = z.infer<typeof PageSuggestionInputSchema>;
 export interface TaskWebApiDependencies {
   /** The canonical API origin (or issuer URL); only its origin is used. */
   origin: string;
+  /** Where a refused action is logged (see `refusalLog`): one structured line of event, route, task ID, status and error code, never a body, token or name. */
+  log?: (entry: Record<string, string>) => void;
   authenticateSession(sessionId: string): Promise<DeveloperCaller | undefined>;
   /** Must run the full access check on every call. */
   taskState(caller: DeveloperCaller, taskId: string): Promise<TaskPageState>;
@@ -133,6 +137,7 @@ function refusalResponse(error: unknown): WebResponse {
     case "slow_down": return json(429, { error: "slow_down", message: text });
     case "thread_full": case "task_full": return json(409, { error: "full", message: text });
     case "not_yours": case "owners_answer": case "not_allowed": return json(403, { error: "not_allowed", message: text });
+    case "refused": return json(422, { error: "refused", message: text });
     case "not_here": case "closed": case "locked": case "changed": case "gone": case "comment_changed": return json(409, { error: "changed", message: text });
     default: break;
   }
@@ -143,6 +148,25 @@ function refusalResponse(error: unknown): WebResponse {
   if (code === "CONFIG_INVALID") return PAGE_SAFE_MESSAGES.has(text) ? invalid(text) : json(409, { error: "changed", message: TASK_CHANGED });
   if (code === "TASK_BUSY" || code === "WORKSPACE_BUSY") return json(409, { error: "busy", message: "AgentX is busy with this task. Try again in a minute." });
   return json(503, { error: "unavailable", message: "AgentX couldn't do that right now. Try again shortly." });
+}
+
+const CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,63}$/u;
+const FIELD_SHAPE = /^[A-Za-z][A-Za-z0-9]{0,39}$/u;
+
+/**
+ * The one line a refused page action leaves in the log, so the next one is visible: what was refused (route, task), how (status), and the error's code. Never the body, the
+ * message (it can name people), a token or an email. For a body the schema refused, `fields` names the keys it objected to (only plain field names, never values).
+ */
+function refusalLog(deps: TaskWebApiDependencies, route: string, taskId: string, response: WebResponse, error: unknown, fields: readonly string[] = []): void {
+  if (deps.log === undefined) return;
+  const { code, pageReason } = (error ?? {}) as { code?: unknown; pageReason?: unknown };
+  const shown = typeof code === "string" && CODE_SHAPE.test(code) ? code : typeof pageReason === "string" && CODE_SHAPE.test(pageReason.toUpperCase()) ? pageReason.toUpperCase() : "UNKNOWN";
+  const plain = fields.filter((field) => FIELD_SHAPE.test(field)).slice(0, 8);
+  try {
+    deps.log({ event: "task_page.refused", route, taskId, status: String(response.statusCode), code: shown, ...(plain.length === 0 ? {} : { fields: plain.join(",") }) });
+  } catch {
+    // A logger that fails never changes the answer.
+  }
 }
 
 const FORBIDDEN = { error: "forbidden", message: "You don't have access to this task." };
@@ -293,10 +317,16 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         return json(200, await deps.retryApplicationRound(caller, taskId, parsedRetry.data));
       }
       const parsed = PageDecisionInputSchema.safeParse(value);
-      if (!parsed.success) return invalid();
+      if (!parsed.success) {
+        const refused = invalid("AgentX didn't accept that decision. Refresh the page and try again.");
+        refusalLog(deps, "decision", taskId, refused, { code: "INVALID_REQUEST" }, parsed.error.issues.flatMap((issue) => [...issue.path.map(String), ...(issue.code === "unrecognized_keys" ? issue.keys : [])]));
+        return refused;
+      }
       return json(200, await deps.decide(caller, taskId, parsed.data));
     } catch (error) {
-      return refusalResponse(error);
+      const refused = refusalResponse(error);
+      if (method === "POST") refusalLog(deps, endpoint, taskId, refused, error);
+      return refused;
     }
   };
 }

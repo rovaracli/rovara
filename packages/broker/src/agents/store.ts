@@ -57,7 +57,13 @@ import { SkillStore } from "./skills.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
 import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OverrideCap, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
-import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished } from "../audit/events.js";
+import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditProcessPublished, auditPublished } from "../audit/events.js";
+import { inertProcessOverlay } from "../playbook/inert-rule-text.js";
+import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
+import { requireBaseIsNotProcess, requireNoOwnerMoveOnProcess, requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
+import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
+import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
+import { requireNoNewPullRequestInstructionsForProcess, requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { type AuditRuntime } from "../audit/outbox.js";
 import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
@@ -74,6 +80,8 @@ export interface AgentRecord {
   description: string;
   owner: AgentOwner;
   accountable?: { developerId: string };
+  /** `process`: a project's process layer ("How we work"), never offered as an agent. Absent for every ordinary agent. */
+  purpose?: "process";
   currentVersion?: number;
   latestVersion: number;
   draftRevision: number;
@@ -216,6 +224,8 @@ export interface BudgetWriteOptions {
    * one of them is refused (the request was decided meanwhile).
    */
   overrideCap?: OverrideCap;
+  /** Condition checks that must hold when the write commits, and the refusal when one fails (a process layer's archive: the playbook still does not point at it). */
+  checks?: { items: TransactItem[]; refused: () => Error };
 }
 
 const policyMoved = () => coded("AGENT_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
@@ -381,6 +391,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
   private async pinTarget(orgId: OrgId, baseId: AgentId, child?: string): Promise<BaseRef> {
     if (isBuiltinAgentId(baseId)) return { agentId: baseId, version: (await this.ensureBuiltinSettings(orgId, baseId)).pinnedVersion };
     const base = await this.require(orgId, baseId);
+    // Nothing is built on a project's How we work.
+    requireBaseIsNotProcess(base);
     if (base.status === "archived") {
       throw coded("AGENT_UNAVAILABLE", child === undefined ? `${base.name} is archived, so it can't start new work.` : `${child} builds on ${base.name}, which is archived. Ask ${child}'s owner to pick another base.`);
     }
@@ -402,6 +414,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     accountable?: { developerId: string };
     extends?: AgentId;
     overlay?: RecipeOverlay;
+    /** Marks the agent as a project's process layer. Left out, it is an ordinary agent. */
+    purpose?: "process";
     /** Task 10c: where the agent comes from. Only the create-from-session route passes it. */
     origin?: AgentOrigin;
     /** What the request's stored answer carries besides the agent (the create-from-session route's `copied` report); a repeat of the request reads it back. */
@@ -415,7 +429,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (this.reservedName(name)) throw nameTaken(name);
     if (input.owner.kind === "project" && input.accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
-    const overlay = parseOverlay(input.overlay ?? {});
+    const parsed = parseOverlay(input.overlay ?? {});
+    requireNoSequenceForProcess({ purpose: input.purpose }, parsed);
+    requireNoSkillsForProcess({ purpose: input.purpose }, parsed);
+    requireNoNewPullRequestInstructionsForProcess({ purpose: input.purpose }, parsed);
+    requireRovaraCodeBaseForProcess({ purpose: input.purpose }, input.extends);
+    const overlay = inertProcessOverlay({ purpose: input.purpose }, parsed);
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     const base = input.extends === undefined ? undefined : await this.pinTarget(input.orgId, input.extends);
 
@@ -428,6 +447,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       description,
       owner: input.owner,
       ...(input.accountable === undefined ? {} : { accountable: input.accountable }),
+      ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
       latestVersion: 0,
       draftRevision: 1,
       status: "active",
@@ -453,17 +473,27 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * its current version; the same base keeps its pin) or, as `null`, none; left out, the base stays as it is.
    */
   async saveDraft(input: { orgId: OrgId; agentId: AgentId; overlay: RecipeOverlay; extends?: AgentId | null; expectedRevision: number; by: string; request?: RequestMark }): Promise<AgentDraft> {
-    const overlay = parseOverlay(input.overlay);
+    const parsed = parseOverlay(input.overlay);
     const agent = await this.require(input.orgId, input.agentId);
+    requireNoSequenceForProcess(agent, parsed);
+    requireNoSkillsForProcess(agent, parsed);
+    const overlay = inertProcessOverlay(agent, parsed);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
+    // Pull request stage rules are used nowhere: kept as they are or removed, never added or changed.
+    requireNoNewPullRequestInstructionsForProcess(agent, parsed, draft.overlay);
     if (draft.revision !== input.expectedRevision) throw conflict();
     await this.skills.requireRefs(input.orgId, overlay.skills?.add);
+    // A process layer stays on Rovara Code: checked before the new base is read.
+    requireRovaraCodeBaseForProcess(agent, input.extends === undefined ? draft.extends : input.extends);
     let base: BaseRef | undefined = draft.extends;
     if (input.extends === null) base = undefined;
     else if (input.extends !== undefined && input.extends !== draft.extends?.agentId) {
       if (input.extends === input.agentId) throw coded("CONFIG_INVALID", "extends: an agent can't build on itself");
       base = await this.pinTarget(input.orgId, input.extends, agent.name);
+    } else if (base !== undefined && !isBuiltinAgentId(base.agentId)) {
+      // The same base keeps its pin; one stored before this rule that is a process layer is not kept.
+      requireBaseIsNotProcess(await this.get(input.orgId, base.agentId));
     }
     const revision = draft.revision + 1;
     const updatedAt = this.iso();
@@ -530,6 +560,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark;
     /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
     safety?: "safe" | "less_safe";
+    /** A project's process layer only: the person who confirmed this publish is the one who asked, being the only one who could (`process.published` says so). */
+    selfConfirmedSoleOwner?: boolean;
   }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
@@ -539,6 +571,9 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const n = agent.latestVersion;
     const version = n + 1;
     const publishedAt = this.iso();
+    // A process layer's stored draft with skills is not published, whatever stored it.
+    requireNoSkillsForProcess(agent, draft.overlay);
+    await requireNoNewPullRequestInstructionsToPublish(this, agent, draft.overlay);
     const added = draft.overlay.skills?.add;
     const pinned = added === undefined ? undefined : await this.skills.pin(input.orgId, added, input.skillDigests);
     const overlay: RecipeOverlay = pinned === undefined ? draft.overlay : { ...draft.overlay, skills: { ...draft.overlay.skills, add: pinned.refs } };
@@ -555,9 +590,10 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...(input.note === undefined ? {} : { note: input.note }),
     };
     const event = this.newEvent(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) });
-    const audit = await this.audited(() => [auditPublished({
-      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe",
-    })]);
+    // A project's process layer audits `process.published` instead.
+    const audit = await this.audited(() => [agent.purpose === "process"
+      ? auditProcessPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.agentId, version, safety: input.safety ?? "safe", selfConfirmedSoleOwner: input.selfConfirmedSoleOwner === true })
+      : auditPublished({ orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe" })]);
     const written: TransactItem[] = [
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),
       this.update(agentKey(input.orgId, input.agentId, "META"), {
@@ -582,8 +618,15 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<AgentRecord> {
+  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe" }): Promise<AgentRecord> {
     const { agentId, ...rest } = input;
+    // A process layer is never rolled back to a version that does not build on Rovara Code, whatever stored it.
+    const agent = await this.require(input.orgId, agentId);
+    if (agent.purpose === "process") {
+      const target = await this.getVersion(input.orgId, agentId, input.version);
+      requireRovaraCodeBaseForProcess(agent, target?.extends);
+      if (target !== undefined) requireNoSkillsForProcess(agent, target.overlay);
+    }
     return this.rollbackItem({ ...rest, id: agentId });
   }
 
@@ -648,11 +691,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const changed: AgentRecord = { ...agent, status, updatedAt };
     // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
-    await this.commit(...withOverride([
+    const [items, refuse] = withOverride([
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
+    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by });
+    const checks = options.checks;
+    // The caller's checks come last, so their indexes start after the write's own items.
+    await this.commit(
+      [...items, ...(checks?.items ?? [])],
+      (failed) => (checks !== undefined && [...failed].some((index) => index >= items.length) ? checks.refused() : refuse(failed)),
+      request, changed,
+    );
     return changed;
   }
 
@@ -750,6 +800,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     // A different owner/accountable can invalidate the route's manage authority before this writer reads it.
     const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
     if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
+    requireNoOwnerMoveOnProcess(agent, options);
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
@@ -834,6 +885,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const agent = await this.require(orgId, agentId);
     const managedOwner = (subject: BudgetSubject) => ({ owner: subject.owner, accountable: subject.accountable });
     if (options.manageSnapshot !== undefined && !sameJsonContent(managedOwner(agent), managedOwner(options.manageSnapshot))) throw budgetActorRefused();
+    requireNoOwnerMoveOnProcess(agent, options);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
@@ -864,6 +916,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
+    requireRovaraCodeBaseForProcess(agent, draft.extends);
+    requireNoSkillsForProcess(agent, draft.overlay);
     if (draft.extends === undefined) throw coded("CONFIG_INVALID", `${agent.name} is built from scratch, so it has no base to update`);
     const target = await this.pinTarget(input.orgId, draft.extends.agentId, agent.name);
     if (target.version === draft.extends.version) return draft;
@@ -890,7 +944,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * (0 before the first share), so of two concurrent saves one wins and the other conflicts. Who may share, and that the principals
    * exist, are the caller's checks (access.ts).
    */
-  replaceShares(input: {
+  async replaceShares(input: {
     orgId: OrgId;
     agentId: AgentId;
     upsert: Array<{ principal: AgentPrincipal; level: AgentShareLevel }>;
@@ -900,6 +954,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     request?: RequestMark;
   }): Promise<void> {
     const { agentId, ...rest } = input;
+    // A process layer is never shared on its own: whoever the route or a confirmation was, the share is not written.
+    requireNoSharesOnProcess(await this.get(input.orgId, agentId));
     return this.replaceItemShares({ ...rest, id: agentId });
   }
 
@@ -907,9 +963,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Takes `from`'s share of one agent away and, when `to` is given, gives `to` the share instead (the higher level when `to` already has
    * one). Rovara's own move after a member merge or removal (Task 11); see `OwnedStore.reassignItemShare`.
    */
-  reassignShare(input: { orgId: OrgId; agentId: AgentId; from: AgentPrincipal; to?: AgentPrincipal; by: string; cause: MoveCause }): Promise<void> {
-    const { agentId, ...rest } = input;
-    return this.reassignItemShare({ ...rest, id: agentId });
+  async reassignShare(input: { orgId: OrgId; agentId: AgentId; from: AgentPrincipal; to?: AgentPrincipal; by: string; cause: MoveCause }): Promise<void> {
+    const { agentId, to, ...rest } = input;
+    // A process layer's share of a departed member is dropped, never handed to someone else.
+    const dropOnly = (await this.get(input.orgId, agentId))?.purpose === "process";
+    return this.reassignItemShare({ ...rest, ...(to === undefined || dropOnly ? {} : { to }), id: agentId });
   }
 
   /**
@@ -1011,7 +1069,7 @@ export async function resolveAgent(
     const base = content.extends === undefined ? EMPTY_RECIPE : await layer(content.extends.agentId, content.extends.version, [...trail, { agentId: id, name: agent.name }]);
     const problems = overlayProblems(base, content.overlay);
     if (problems.length > 0) { if (options.problems) options.problems.push(...problems); else throw problemsError(problems); }
-    const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false };
+    const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false, ...(agent.purpose === "process" ? { process: true as const } : {}) };
     // The registry is read here, not inside applyOverlay, which is synchronous: the layer's added skills are looked up first.
     const added = new Map<string, ResolvedSkill>();
     for (const ref of content.overlay.skills?.add ?? []) added.set(ref.skillId, await resolveSkill(ref));

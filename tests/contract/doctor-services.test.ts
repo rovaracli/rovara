@@ -1,7 +1,7 @@
 import { AgentXError } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { githubChecks, githubWebhookChecks } from "../../packages/cli/src/doctor/github.js";
-import { githubAppSecretName, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";
+import { GITHUB_WEBHOOK_EVENTS, githubAppSecretName, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";
 import { secretChecks } from "../../packages/cli/src/doctor/secrets.js";
 import { slackChecks, slackSigningSecret } from "../../packages/cli/src/doctor/slack.js";
 import { probeSlackUrls, SlackSignatureRefusedError } from "../../packages/cli/src/init/slack-app.js";
@@ -356,6 +356,14 @@ describe("doctor: GitHub webhook", () => {
     expect(found).toMatchObject({ name: "GitHub webhook", status: "warn" });
     expect(found.detail).toContain("pull_request_review, pull_request_review_comment");
     expect(found.fix).toContain("https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions");
+  });
+
+  it("warns, naming the event, when the App is subscribed to everything but Pull request review (Rovara Code's merge tracking needs it to see an approval at once)", async () => {
+    const events = GITHUB_WEBHOOK_EVENTS.filter((event) => event !== "pull_request_review");
+    const found = (await githubWebhookChecks(contextWith({ hookUrl: EXPECTED_URL, events })))[1]!;
+    expect(found).toMatchObject({ name: "GitHub webhook", status: "warn" });
+    expect(found.detail).toBe("the App is not subscribed to pull_request_review");
+    expect(found.fix).toContain("tick pull_request_review at https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions");
   });
 
   it("warns when no usable webhook secret is stored, without showing any secret", async () => {

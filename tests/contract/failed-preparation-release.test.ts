@@ -4,7 +4,7 @@
 import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { releaseFailedPreparation } from "../../packages/broker/src/aws/failed-preparation.js";
 import { failActiveOperation, failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
@@ -15,6 +15,9 @@ import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import {
   SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, finishOperation, lazyEnsureWorkspace, loadSlackBroker, prepareThread, registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
+
+import { legacySlackThread } from "../support/legacy-slack-thread.js";
+afterEach(() => vi.unstubAllEnvs());
 
 const threadOne = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const threadTwo = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000002`;
@@ -420,4 +423,16 @@ describe("the thread's notice for a failed setup (#213)", () => {
       "AgentX could not set up this thread's workspace (FAILED). The workspace was released, so it no longer counts toward the workspace limit. Ask an administrator to fix the project's setup commands, then mention me again in this thread to start fresh.\nReason: setup step 1 (npm ci) exited 1",
     );
   });
+});
+
+it("K1 refunds a charged pre-org legacy thread after preparation fails", async () => {
+  vi.stubEnv("AGENTX_ENV", "staging");
+  const { db, handler } = createBroker();
+  await registerSlackProject(handler);
+  const { workspaceId, operationId } = await preparingThread(db, handler, threadOne, pratik);
+  legacySlackThread(db, workspaceId);
+  await finishOperation(handler, db, workspaceId, operationId, "FAILED");
+  expect(member(db, pratik)).toMatchObject({ count: 0, threads: [] });
+  expect(organization(db)).toMatchObject({ count: 0 });
+  expect(threadRecord(db, threadOne)).not.toHaveProperty("starterUserId");
 });

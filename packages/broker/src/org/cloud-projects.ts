@@ -61,8 +61,10 @@ export interface CreateProjectInput {
   repositoryName: string;
   name?: string;
   description?: string;
-  setupCommand?: string;
-  testCommand?: string;
+  /** The setup commands, in order (the body's `setupCommand` is a list of one). */
+  setupCommands?: string[];
+  /** The test commands, in order (the body's `testCommand` is a list of one). */
+  testCommands?: string[];
 }
 
 /** The body of POST /v1/app/projects (and its alias POST /v1/dev/projects); a refusal names the field and what is wrong with it, never the value. */
@@ -74,13 +76,19 @@ export function parseCreateProjectBody(body: unknown): CreateProjectInput {
   }
   const [, owner, repositoryName] = REPOSITORY.exec(parsed.data.repository) as unknown as [string, string, string];
   // A command that cannot be run is refused here, before GitHub is asked anything.
-  for (const [field, line, timeout] of [["setupCommand", parsed.data.setupCommand, SETUP_TIMEOUT], ["testCommand", parsed.data.testCommand, TEST_TIMEOUT]] as const) {
-    if (line === undefined || line.trim() === "") continue;
-    try {
-      parseCommandLine(line, "repo/check", timeout);
-    } catch (error) {
-      if (error instanceof AgentXError) throw agentXError("CONFIG_INVALID", `${field}: ${error.message.replace(/^[A-Z_]+: /, "")}`);
-      throw error;
+  const setupCommands = parsed.data.setupCommands ?? (parsed.data.setupCommand === undefined ? undefined : [parsed.data.setupCommand]);
+  const testCommands = parsed.data.testCommands ?? (parsed.data.testCommand === undefined ? undefined : [parsed.data.testCommand]);
+  for (const [field, lines, timeout] of [["setupCommand", setupCommands, SETUP_TIMEOUT], ["testCommand", testCommands, TEST_TIMEOUT]] as const) {
+    for (const [index, line] of (lines ?? []).entries()) {
+      if (line.trim() === "") continue;
+      try {
+        parseCommandLine(line, "repo/check", timeout);
+      } catch (error) {
+        // A list names the command's place in it; a single command keeps the field's own name.
+        const place = field === "setupCommand" && parsed.data.setupCommands !== undefined ? `setupCommands.${String(index)}` : field === "testCommand" && parsed.data.testCommands !== undefined ? `testCommands.${String(index)}` : field;
+        if (error instanceof AgentXError) throw agentXError("CONFIG_INVALID", `${place}: ${error.message.replace(/^[A-Z_]+: /, "")}`);
+        throw error;
+      }
     }
   }
   return {
@@ -89,8 +97,8 @@ export function parseCreateProjectBody(body: unknown): CreateProjectInput {
     repositoryName: repositoryName.endsWith(".git") ? repositoryName.slice(0, -4) : repositoryName,
     ...(parsed.data.name === undefined ? {} : { name: parsed.data.name }),
     ...(parsed.data.description === undefined ? {} : { description: parsed.data.description }),
-    ...(parsed.data.setupCommand === undefined ? {} : { setupCommand: parsed.data.setupCommand }),
-    ...(parsed.data.testCommand === undefined ? {} : { testCommand: parsed.data.testCommand }),
+    ...(setupCommands === undefined ? {} : { setupCommands }),
+    ...(testCommands === undefined ? {} : { testCommands }),
   };
 }
 
@@ -121,13 +129,13 @@ export function cloudProjectDefinition(input: {
 }): ProjectDefinition {
   const repoName = agentxRepositoryName(input.input.repositoryName);
   const path = `repo/${repoName}`;
-  const typed = (line: string | undefined, timeoutSeconds: number): ProjectCommand[] => (line === undefined || line.trim() === "" ? [] : [parseCommandLine(line, path, timeoutSeconds)]);
+  const typed = (lines: string[] | undefined, timeoutSeconds: number): ProjectCommand[] => (lines ?? []).filter((line) => line.trim() !== "").map((line) => parseCommandLine(line, path, timeoutSeconds));
   return ProjectDefinitionSchema.parse({
     name: input.input.name ?? repoName,
     revision: 1,
     repositories: [cloudRepositoryEntry({ repositoryName: input.input.repositoryName, repository: input.repository, githubCredentialRef: input.githubCredentialRef, connection: input.connection })],
-    setup: typed(input.input.setupCommand, SETUP_TIMEOUT),
-    readiness: typed(input.input.testCommand, TEST_TIMEOUT),
+    setup: typed(input.input.setupCommands, SETUP_TIMEOUT),
+    readiness: typed(input.input.testCommands, TEST_TIMEOUT),
     orchestratorInstructions: DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
   });
 }

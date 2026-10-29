@@ -117,7 +117,7 @@ describe("worker HTTP contract", () => {
     // Spec 053: what this build parses, so the dispatcher sends the thinking level only to it; spec 051 adds readiness,
     // and publish's reportChecks (P-2), so only this build is asked to publish despite a failing check.
     await expect((await handleWorkerRequest(new Request("http://worker/ping"), state)).json())
-      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "task.workflowUnderstand", "task.workflowPlanCritique", "task.setupDraft", "task.workflowReviewRisk", "task.workflowFix", "task.workflowParallelParts"] });
+      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "task.workflowUnderstand", "task.workflowPlanCritique", "task.setupDraft", "task.workflowReviewRisk", "task.workflowFix", "task.workflowFeedbackAutonomy", "task.workflowParallelParts", "maintain.workflowSync", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1"] });
   });
 
   it("advertises only the invocation features it implements, not those it merely parses", async () => {
@@ -269,6 +269,25 @@ describe("worker HTTP contract", () => {
       expect(terminal[0]).toMatchObject(expected);
       if (!("result" in expected)) expect(terminal[0]).not.toHaveProperty("result");
     }
+  });
+
+  it("sends the findings of a run that left the code as it was, redacted again, and nothing of them for another failure", async () => {
+    const token = ["ghp_", "Ab12".repeat(9)].join("");
+    const findings = { commands: [{ command: "grep -rn retry app", output: `app/a.ts: ${token}` }], conclusion: "We use retry in one file." };
+    const send = async (thrown: Error) => {
+      const journal = new OperationJournal(await mkdtemp(join(tmpdir(), "agentx-terminal-")));
+      const terminal: Array<Record<string, unknown>> = [];
+      const state = createWorkerServerState(journal, { execute: async () => { throw thrown; } }, { onTerminal: async (result) => { terminal.push(result as unknown as Record<string, unknown>); } });
+      await handleWorkerRequest(invocationRequest(taskInvocation()), state);
+      await vi.waitFor(() => expect(terminal).toHaveLength(1));
+      return terminal[0]!;
+    };
+    const sent = await send(Object.assign(new Error("CONFIG_INVALID: the coding run left the code as it was when the task started"), { noChangeFindings: findings }));
+    expect(sent).toMatchObject({ status: "FAILED", result: { noChangeFindings: { commands: [{ command: "grep -rn retry app" }], conclusion: "We use retry in one file." } } });
+    expect(JSON.stringify(sent)).not.toContain(token);
+    expect(JSON.stringify(sent)).toContain("[REDACTED]");
+    expect(await send(new Error("model down"))).not.toHaveProperty("result");
+    expect(await send(Object.assign(new Error("model down"), { noChangeFindings: "not a block" }))).not.toHaveProperty("result");
   });
 
   it("retries a failed terminal callback three times, waiting 2 s, 8 s and 30 s", async () => {
