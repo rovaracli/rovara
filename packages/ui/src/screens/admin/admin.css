@@ -1,0 +1,19 @@
+.rv-admin-context{font-size:var(--rv-font-sm);color:var(--rv-text-muted);margin-bottom:var(--rv-space-4);overflow-wrap:anywhere}
+.rv-admin-nav{display:flex;flex-wrap:wrap;gap:var(--rv-space-4);border-bottom:1px solid var(--rv-border);margin-bottom:var(--rv-space-6)}
+.rv-admin-nav a{display:inline-flex;align-items:center;min-height:44px;text-decoration:none;border-bottom:2px solid transparent;color:var(--rv-text-muted)}
+.rv-admin-nav a[aria-current=page]{color:var(--rv-accent-text);border-bottom-color:var(--rv-accent-text);font-weight:600}
+.rv-admin-section{display:grid;gap:var(--rv-space-4);margin-block:var(--rv-space-6);max-width:76ch}
+.rv-admin-search{max-width:40ch;margin-top:var(--rv-space-6)}
+.rv-admin-search input{min-height:44px;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);color:var(--rv-text);padding:var(--rv-space-2)}
+.rv-admin-note{margin-bottom:var(--rv-space-4)}
+.rv-admin-roles{margin:0;display:grid;grid-template-columns:8rem minmax(0,1fr);gap:var(--rv-space-4)}
+.rv-admin-roles dt{font-weight:600}.rv-admin-roles dd{margin:0}
+.rv-admin-role{padding-block:var(--rv-space-4);border-top:1px solid var(--rv-border)}
+.rv-admin-role ul{margin-bottom:0;padding-left:var(--rv-space-6)}
+.rv-admin-surface td{overflow-wrap:anywhere}
+
+.rv-admin-role-review{display:grid;gap:var(--rv-space-3)}
+.rv-admin-role-review p{margin:0;overflow-wrap:anywhere}
+.rv-admin-role-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
+
+.rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:default}

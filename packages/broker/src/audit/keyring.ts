@@ -12,6 +12,7 @@
 //
 // Every KMS call carries the encryption context { "rovara:purpose": "audit-details", "rovara:org": <orgId> }, which the
 // vault key policy requires, and names the key by its ARN (never by the alias, which an administrator could repoint).
+import { auditFramed } from "./search-index.js";
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { DecryptCommand, GenerateDataKeyCommand, type KMSClient } from "@aws-sdk/client-kms";
 import { GetCommand, PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
@@ -239,6 +240,20 @@ export class AuditKeyring {
   async subjectKey(orgId: string, subject: string, create: boolean): Promise<Uint8Array | "erased" | "shredded" | undefined> {
     if (await this.isShredded(orgId)) return "shredded";
     return this.wrappedKey(orgId, `SUBJECT#${subject}`, create);
+  }
+
+  /** Appender preparation only. Readers never create a cursor key; a shredded org stays shredded. */
+  async prepareCursorKey(orgId: string): Promise<void> {
+    if (await this.isShredded(orgId)) return;
+    await this.wrappedKey(orgId, "PSEUDONYM_KEY", true);
+  }
+
+  /** Full, domain-separated MAC from the existing org key, never a pseudonym output. */
+  async auditCursorTag(orgId: string, payload: string): Promise<string> {
+    if (await this.isShredded(orgId)) throw new Error("audit cursor unavailable");
+    const key = await this.wrappedKey(orgId, "PSEUDONYM_KEY", false);
+    if (!Buffer.isBuffer(key) || await this.isShredded(orgId)) throw new Error("audit cursor unavailable");
+    return createHmac("sha256", key).update(auditFramed(["rovara.audit.cursor.v1", orgId, payload])).digest("hex");
   }
 
   /**

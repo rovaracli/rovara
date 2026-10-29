@@ -24,7 +24,7 @@ export type { OrgId } from "./org.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 export { SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema } from "./session-views.js";
 export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInput, type SessionAnchorRef } from "./agent-sessions.js";
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
@@ -46,8 +46,17 @@ export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessi
 export * from "./onboarding.js";
 
 export { ChainRunViewReaderSchema } from "./chain-session.js";
+
+export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
+
+export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.js";
 
 // "How we work": the project playbook and its effective view (the How we work tab).
 export * from "./project-playbook.js";
 export * from "./how-we-work.js";
+
+// Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
+export * from "./org-slack-workspace-evidence.js";
+
+export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";

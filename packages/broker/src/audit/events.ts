@@ -3,7 +3,7 @@
 // id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
-import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
+import { AuditEventInputSchema, ProjectModelsChangedAuditFactsSchema, ProjectModelSelectionChangedAuditFactsSchema, type ProjectModelsChangedAuditFacts, type ProjectModelSelectionChangedAuditFacts, auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
 
 export interface AuditBuilderBase {
   orgId: string;
@@ -242,6 +242,11 @@ export function auditOrgRenamed(input: AuditBuilderBase): AuditEventInput {
   return build("org.renamed", input, { kind: "org", id: input.orgId }, {});
 }
 
+/** `occurrence`: the org and independent public invite UUID; never token/hash/address material. */
+export function auditOrgInviteCreated(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member"; targeted: boolean }): AuditEventInput {
+  return build("org.invite_created", input, { kind: "invite", id: input.inviteId }, { role: input.role, targeted: input.targeted });
+}
+
 /** A person chose their own display name (release 0.4.16). `occurrence`: `auditOccurrence(developerId, time of the change)`. The name never enters the record. */
 export function auditMemberRenamed(input: AuditBuilderBase & { memberId: string }): AuditEventInput {
   return build("member.renamed", input, { kind: "member", id: input.memberId }, {});
@@ -428,6 +433,23 @@ export function auditModelSourceOrderChanged(input: AuditBuilderBase & { count: 
   return build("model_source.order_changed", input, { kind: "org", id: input.orgId }, { count: input.count });
 }
 
+// Lane C digest-shaped project model events (same actions as the playbook builders below, fact shape told apart by the digest keys);  future emitters require reviewed atomic writes and reader-first rollout.
+type ProjectModelAuditBase = Omit<AuditBuilderBase, "details" | "related"> & { projectName: string };
+function projectModelEvent(action: "project.models_changed" | "project.model_selection_changed", input: ProjectModelAuditBase & { definitionRevision: number }, facts: Record<string, Fact>): AuditEventInput {
+  const base = { orgId: input.orgId, actor: input.actor, occurredAt: input.occurredAt, occurrence: input.occurrence, ...(input.proof === undefined ? {} : { proof: input.proof }) };
+  return AuditEventInputSchema.parse(build(action, base, { kind: "project", name: input.projectName }, facts, [input.orgId, input.projectName, String(input.definitionRevision)]));
+}
+/** Occurrence is the reviewed request or generation/revision identity; org/project/revision also bind the event id. Project names appear only in the name-keyed target; the appender pseudonymizes it and seals its erasable name. No raw model lists or caller-supplied details. */
+export function auditProjectModelsDigestChanged(input: ProjectModelAuditBase & ProjectModelsChangedAuditFacts): AuditEventInput {
+  const facts = ProjectModelsChangedAuditFactsSchema.parse({ beforeModelIdsDigest: input.beforeModelIdsDigest, afterModelIdsDigest: input.afterModelIdsDigest, beforeDefaultModelIdDigest: input.beforeDefaultModelIdDigest, afterDefaultModelIdDigest: input.afterDefaultModelIdDigest, beforeCount: input.beforeCount, afterCount: input.afterCount, definitionRevision: input.definitionRevision });
+  return projectModelEvent("project.models_changed", input, facts);
+}
+/** Same occurrence/binding rule; source surface is a fixed enum, never a message or user-provided reason. */
+export function auditProjectModelSelectionDigestChanged(input: ProjectModelAuditBase & ProjectModelSelectionChangedAuditFacts): AuditEventInput {
+  const facts = ProjectModelSelectionChangedAuditFactsSchema.parse({ beforeModelIdDigest: input.beforeModelIdDigest, afterModelIdDigest: input.afterModelIdDigest, sourceSurface: input.sourceSurface, definitionRevision: input.definitionRevision });
+  return projectModelEvent("project.model_selection_changed", input, facts);
+}
+
 // The ledger itself ------------------------------------------------------------------------------------------------------
 
 interface ReadFacts { fromSeq: number; toSeq: number; count: number; via: string }
@@ -504,4 +526,9 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
+}
+
+/** `occurrence`: reviewed org/request/public UUID, never bearer material. */
+export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
+  return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
 }

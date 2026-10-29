@@ -9,6 +9,7 @@ import { checkChain, genesisHash, recordHash, type AuditRecordV1 } from "@rovara
 import { AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/contracts";
 import { appendOne, AUDIT_APPEND_MAX_RETRIES, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import { processAuditBatch, type AuditSqsEvent } from "../../packages/broker/src/audit/appender-handler.js";
+import { auditProjectModelsDigestChanged,auditProjectModelSelectionDigestChanged } from "../../packages/broker/src/audit/events.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeKms } from "../support/fake-kms.js";
@@ -172,7 +173,7 @@ describe("appendOne: the chain", () => {
     const shape = (items: Array<Record<string, Record<string, unknown>>>) => items.map((entry) => {
       const [kind, action] = Object.entries(entry)[0]!;
       const key = (action.Key ?? action.Item) as { pk: string; sk: string };
-      return [kind, action.TableName, key.pk.startsWith("AUDIT#") ? `AUDIT#<org> ${key.sk.replace(/[0-9a-f]{40}|[0-9]{12}/, "<id>")}` : `${key.pk} ${key.sk === ORG ? "<org>" : key.sk}`, action.ConditionExpression];
+      return [kind, action.TableName, key.pk.startsWith("AUDIT#") ? `AUDIT#<org> ${key.sk.replace(/[0-9a-f]{64}/g, "<digest>").replace(/[0-9a-f]{40}|[0-9]{12}/g, "<id>")}` : `${key.pk} ${key.sk === ORG ? "<org>" : key.sk}`, action.ConditionExpression];
     });
     expect(shape(genesis!)).toStrictEqual([
       ["Put", LEDGER, "AUDIT#<org> SEQ#<id>", "attribute_not_exists(pk)"],
@@ -180,12 +181,16 @@ describe("appendOne: the chain", () => {
       ["Put", LEDGER, "AUDIT#<org> EVENT#aev_<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT_DIRTY <org>", undefined],
       ["Put", LEDGER, "AUDIT_ORGS <org>", undefined],
+      ...["action", "actor", "target"].map(dimension => ["Put", LEDGER, `AUDIT#<org> FILTER#v1#${dimension}#<digest>#SEQ#<id>`, "attribute_not_exists(pk)"]),
+      ["Put", LEDGER, "AUDIT#<org> FILTER#v1#COVERAGE", "attribute_not_exists(pk)"],
     ]);
     expect(shape(second!)).toStrictEqual([
       ["Put", LEDGER, "AUDIT#<org> SEQ#<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT#<org> HEAD", "#seq = :prev AND #hash = :prevHash"],
       ["Put", LEDGER, "AUDIT#<org> EVENT#aev_<id>", "attribute_not_exists(pk)"],
       ["Update", LEDGER, "AUDIT_DIRTY <org>", undefined],
+      ...["action", "actor", "target"].map(dimension => ["Put", LEDGER, `AUDIT#<org> FILTER#v1#${dimension}#<digest>#SEQ#<id>`, "attribute_not_exists(pk)"]),
+      ["Put", LEDGER, "AUDIT#<org> FILTER#v1#COVERAGE", "#through = :prev"],
     ]);
   });
 
@@ -433,7 +438,8 @@ describe("appendOne: targets and details (I8)", () => {
     await appendOne(h.deps, event("a"));
     expect(item(h.db, `AUDIT#${ORG}`, seqKey(1))).not.toHaveProperty("sealedDetails");
     expect(recordsOf(h.db)[0]!.target).toStrictEqual({ kind: "pull_request", id: "pr_1" });
-    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#"))).toStrictEqual([]);
+    // The org cursor key is prepared even for id-only events; no subject/detail key is created.
+    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map(entry => entry.sk).sort()).toStrictEqual(["DATA_KEY", "PSEUDONYM_KEY"]);
   });
 
   it("commits to each part: the record's commitments match the opened details", async () => {
@@ -503,7 +509,7 @@ describe("appendOne: targets and details (I8)", () => {
     const record = recordsOf(h.db)[0]!;
     expect(record.details).toStrictEqual([]);
     expect(item(h.db, `AUDIT#${ORG}`, seqKey(1))).not.toHaveProperty("sealedDetails");
-    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map((entry) => entry.sk)).toStrictEqual(["SUBJECT#dev_1"]);
+    expect(h.db.find((entry) => String(entry.pk).startsWith("ORG#")).map((entry) => entry.sk)).toStrictEqual(["SUBJECT#dev_1", "DATA_KEY", "PSEUDONYM_KEY"]);
   });
 
   it("appends after SHREDDED with the target as n_shredded, no details and no key made", async () => {
@@ -633,4 +639,20 @@ describe("the SQS batch handler", () => {
     expect(JSON.stringify(h.logs)).not.toContain("lovelace");
     expect(h.logs).toContainEqual(expect.objectContaining({ event: "audit.appended", eventId: secret.eventId, orgId: ORG, seq: 1 }));
   });
+});
+
+it("appends and verifies the additive invite-creation action and opaque invite target", async () => {
+ const h = harness(), inviteId = "11111111-1111-4111-8111-111111111111";const input = event("invite-creation", { eventId: auditEventId("org.invite_created", inviteId), action: "org.invite_created", target: { kind: "invite", id: inviteId }, facts: { role: "member", targeted: true } });await appendAll(h, [input]);const records = recordsOf(h.db);expect(records.length).toBe(1);expect(records[0]?.action).toBe("org.invite_created");expect(records[0]?.target).toEqual({ kind: "invite", id: inviteId });expect(chainOk(h.db)).toEqual({ ok: true });
+});
+
+it("appends and verifies the additive invite-revocation action and opaque invite target", async () => {
+ const h = harness(), inviteId = "11111111-1111-4111-8111-111111111111";const input = event("invite-revocation", { eventId: auditEventId("org.invite_revoked", inviteId), action: "org.invite_revoked", target: { kind: "invite", id: inviteId }, facts: { role: "member" } });await appendAll(h, [input]);const records = recordsOf(h.db);expect(records.length).toBe(1);expect(records[0]?.action).toBe("org.invite_revoked");expect(records[0]?.target).toEqual({ kind: "invite", id: inviteId });expect(chainOk(h.db)).toEqual({ ok: true });
+});
+
+for(const action of ["models","selection"] as const)it(`pseudonymizes the name-keyed project ${action} event and seals its erasable name`,async()=>{
+ const h=harness(),projectName="private-roadmap",base={orgId:ORG,actor:{kind:"member" as const,id:"dev_1"},occurredAt:"2026-10-20T11:59:00.000Z",occurrence:"project-revision-2",definitionRevision:2,projectName,projectId:projectName};
+ // The old ID-shaped field is a hostile trap: the project name must never be persisted as an opaque id.
+ const input=action==="models"?auditProjectModelsDigestChanged({...base,beforeModelIdsDigest:"a".repeat(64),afterModelIdsDigest:"b".repeat(64),beforeCount:1,afterCount:2}):auditProjectModelSelectionDigestChanged({...base,beforeModelIdDigest:"a".repeat(64),afterModelIdDigest:"b".repeat(64),sourceSurface:"slack"});
+ const {target,...outside}=input;expect(JSON.stringify(outside)).not.toContain(projectName);await appendOne(h.deps,input);const record=recordsOf(h.db)[0]!;expect(record.target).toEqual({kind:"project",id:await h.keyring.pseudonym(ORG,"project",projectName)});expect(JSON.stringify(record)).not.toContain(projectName);expect(JSON.stringify(h.logs)).not.toContain(projectName);expect(target).toEqual({kind:"project",name:projectName});
+ const sealed=item(h.db,`AUDIT#${ORG}`,seqKey(1))!.sealedDetails as Array<{subject:string;iv:string;ciphertext:string}>;expect((await h.keyring.openDetails(ORG,1,sealed))[0]).toMatchObject({subject:"org",fields:{targetName:projectName}});
 });

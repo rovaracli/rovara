@@ -702,6 +702,8 @@ describe("I4: the builders", () => {
     ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
     ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
     ["auditSlackTeamDisconnected", (occurrence) => builders.auditSlackTeamDisconnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],
+    ["auditOrgInviteCreated", (occurrence) => builders.auditOrgInviteCreated({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member", targeted: true })],
+    ["auditOrgInviteRevoked", (occurrence) => builders.auditOrgInviteRevoked({ ...base, occurrence, details, inviteId: "11111111-1111-4111-8111-111111111111", role: "member" })],
     ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
     ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
     ["auditSessionOwnerChanged", (occurrence) => builders.auditSessionOwnerChanged({ ...base, occurrence, details, sessionId: "ses_0123456789abcdefghij", sessionKind: "task", payerMoved: true })],
@@ -732,6 +734,13 @@ describe("I4: the builders", () => {
     ["auditModelSourceSaved", (occurrence) => builders.auditModelSourceSaved({ ...base, occurrence, details, sourceId: "src_abcdefghij0123456789", sourceKind: "anthropic", change: "created" })],
     ["auditModelSourceRemoved", (occurrence) => builders.auditModelSourceRemoved({ ...base, occurrence, details, sourceId: "src_abcdefghij0123456789", sourceKind: "anthropic" })],
     ["auditModelSourceOrderChanged", (occurrence) => builders.auditModelSourceOrderChanged({ ...base, occurrence, details, count: 2 })],
+    ["auditMemberRenamed", (occurrence) => builders.auditMemberRenamed({ ...base, occurrence, details, memberId: "dev_2" })],
+    ["auditSlackChannelBound", (occurrence) => builders.auditSlackChannelBound({ ...base, occurrence, details, projectName: "project_1", teamId: "T123", channelId: "C123" })],
+    ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "project_1", teamId: "T123", channelId: "C123" })],
+    ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, occurrence, details, teamId: "T123" })],
+    ["auditSlackTeamDisconnected", (occurrence) => builders.auditSlackTeamDisconnected({ ...base, occurrence, details, teamId: "T123" })],
+    ["auditProjectModelsDigestChanged", (occurrence) => builders.auditProjectModelsDigestChanged({ ...base, occurrence, projectName: "project_1", definitionRevision: 2, beforeModelIdsDigest: "a".repeat(64), afterModelIdsDigest: "b".repeat(64), beforeCount: 1, afterCount: 2 })],
+    ["auditProjectModelSelectionDigestChanged", (occurrence) => builders.auditProjectModelSelectionDigestChanged({ ...base, occurrence, projectName: "project_1", definitionRevision: 2, beforeModelIdDigest: "a".repeat(64), afterModelIdDigest: "b".repeat(64), sourceSurface: "slack" })],
     ["auditRead", (occurrence) => builders.auditRead({ ...base, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditStaffRead", (occurrence) => builders.auditStaffRead({ ...base, actor: { kind: "operator", id: `op_${"b".repeat(24)}` }, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
@@ -774,7 +783,9 @@ describe("I4: the builders", () => {
         const { details: kept, ...chain } = event;
         const outside = JSON.stringify(chain.target !== undefined && "name" in chain.target ? { ...chain, target: { kind: chain.target.kind } } : chain);
         for (const personal of PERSONAL) expect(outside, personal).not.toContain(personal);
-        expect(JSON.stringify(kept)).toContain("Jane Roe");
+        // The digest-shaped project-model events intentionally prohibit free-text details. Keep the old builder contract unchanged.
+        if (name === "auditProjectModelsDigestChanged" || name === "auditProjectModelSelectionDigestChanged") expect(kept).toBeUndefined();
+        else expect(JSON.stringify(kept)).toContain("Jane Roe");
       });
     });
   }

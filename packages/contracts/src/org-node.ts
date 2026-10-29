@@ -32,6 +32,8 @@ export interface OrgMembershipRecord {
 }
 
 export interface OrgInviteRecord {
+  /** Sparse directory id; absent on legacy invites. Never the bearer token or its hash. */
+  inviteId?: string;
   orgId: OrgId;
   tokenHash: string;
   email?: string;
@@ -43,6 +45,9 @@ export interface OrgInviteRecord {
   expiresAt: string;
   acceptedBy?: string;
   acceptedAt?: string;
+  revokedAt?: string;
+  revokedBy?: string;
+  revision?: number;
 }
 
 const ORG_ID_BODY_LENGTH = 20;
@@ -97,6 +102,11 @@ export function orgMemberKey(orgId: OrgId, developerId: string): OrgKey {
 /** Pointer from a developer to their org. */
 export function developerOrgKey(developerId: string): OrgKey {
   return { pk: `DEVELOPER_ORG#${developerId}`, sk: "ORG" };
+}
+
+/** Org-scoped sparse invite reference, independent of bearer material. */
+export function orgInviteDirectoryKey(orgId: OrgId, inviteId: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `INVITE_DIRECTORY#${inviteId}` };
 }
 
 export function orgInviteKey(tokenHash: string): OrgKey {

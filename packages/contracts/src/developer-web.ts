@@ -39,14 +39,27 @@ export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
 export const AppMeResponseReaderSchema = forwardReader(AppMeResponseSchema);
 
-/** Exact existing GET /v1/app/org/members response from listOrganizationMembers. No provider subjects or issuer metadata. */
-export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({
-  developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), role: OrgRoleSchema,
-  /** Owners and admins only (release 0.4.16, owner decision "option A"): a member sees names and roles, nothing more. */
-  email: z.string().optional(), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional(),
-}).strict()) }).strict();
+/** Org directory: active members see id/name/role; live owners/admins additionally receive private details. */
+export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: z.enum(["owner", "admin", "member", "unknown"]), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional() }).strict()) }).strict();
 export const AppOrgMembersResponseReaderSchema = forwardReader(AppOrgMembersResponseSchema);
 
+/** Lookup is exact and org scoped. Input is a body, never a URL query or a list filter. */
+export const OrgMemberLookupBodySchema = z.object({ email: z.string().trim().max(254).email().refine(value => !value.includes("*"), "Enter a complete email address.") }).strict();
+export const OrgMemberLookupResponseSchema = z.object({ match: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string() }).strict().nullable() }).strict();
+
+export const OrgMemberLookupResponseReaderSchema = forwardReader(OrgMemberLookupResponseSchema);
+
+/** Optional expectedRole selects the reviewed console path; omitted preserves released CLI requests. */
+export const OrgMemberRoleChangeBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema, expectedRole: OrgRoleSchema.optional() }).strict();
+export const OrgMemberRoleChangeResponseSchema = z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), role: OrgRoleSchema }).strict();
+export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRoleChangeResponseSchema);
+
+/** Pending indexed invites only. Historical unindexed invites may still exist; never return bearer material. */
+export const AppOrgInvitesResponseSchema = z.object({
+ invites: z.array(z.object({ inviteId: z.string().uuid(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
+ unavailableCount: z.number().int().min(0).max(50).optional(), coverage: z.enum(["indexed_only", "indexed_only_partial"]), checkedAt: z.string().datetime(), nextCursor: z.string().max(512).optional(),
+}).strict();
+export const AppOrgInvitesResponseReaderSchema = forwardReader(AppOrgInvitesResponseSchema);
 /** Control characters and format characters (bidi controls, zero-width spaces, tag characters) other than ZWNJ and ZWJ, which scripts and emoji sequences need. */
 const NAME_UNSAFE = /(?![\u200C\u200D])[\p{Cc}\p{Cf}]/u;
 

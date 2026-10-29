@@ -39,3 +39,6 @@ export const GithubConnectResponseReaderSchema = forwardReader(GithubConnectResp
 export const GithubInstallationsResponseReaderSchema = forwardReader(GithubInstallationsResponseSchema);
 export const GithubRepositoriesResponseReaderSchema = forwardReader(GithubRepositoriesResponseSchema);
 export const CloudProjectCreatedResponseReaderSchema = forwardReader(CloudProjectCreatedResponseSchema);
+
+export const RevokeOrganizationInviteBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().nonnegative() }).strict();
+export const RevokeOrganizationInviteResponseSchema = z.object({ inviteId: z.string().uuid(), revokedAt: z.string().datetime(), revision: z.number().int().positive() }).strict();

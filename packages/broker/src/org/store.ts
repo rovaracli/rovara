@@ -3,10 +3,12 @@
 // most one org (the developer pointer's `attribute_not_exists(pk)` condition enforces it), and an
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX,
+  AgentXError,
+  AuditEventInputSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
@@ -21,6 +23,7 @@ import {
   orgBanKey,
   orgEmailKey,
   orgInviteKey,
+  orgInviteDirectoryKey,
   orgInviteRequestKey,
   orgRenameRequestKey,
   orgMemberKey,
@@ -42,9 +45,9 @@ import {
   type OrgRole,
 } from "@agentx/contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
-import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed } from "../audit/events.js";
+import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditPendingItem, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
@@ -80,7 +83,7 @@ export interface OrgStoreInput {
   rovaraCodeV2ForNewOrgs?: boolean;
   /** Where a removed member's agents go (Task 11). Absent on an install with no agents: no marker is written and nothing is called. */
   memberRemoval?: MemberRemovalHook;
-  /** The Audit Ledger's outbox (Task 18). Absent on a legacy install: nothing is recorded and no pending item is written. */
+  /** Ledger delivery runtime. Invite creation always persists its outbox item; other legacy hooks may no-op without this runtime. */
   audit?: AuditRuntime;
 }
 
@@ -269,27 +272,47 @@ export class OrgStore {
    * first answer cannot be given again.
    */
   async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
-    const token = randomBytes(32).toString("base64url");
-    const tokenHash = sha256Hex(token);
-    const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
-    const invite: OrgInviteRecord = {
-      orgId: input.orgId,
-      tokenHash,
-      ...(input.email === undefined ? {} : { email: normalizeInviteEmail(input.email) }),
-      role: input.role,
-      createdBy: input.createdBy,
-      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-      createdAt: this.iso(),
-      expiresAt: new Date(this.input.now() + ttlMs).toISOString(),
-    };
-    await this.transact(
-      [
+    try {
+      const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
+      if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
+      const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
+      if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = sha256Hex(token), inviteId = randomUUID();
+      const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
+      const invite: OrgInviteRecord = {
+        inviteId,
+        orgId: input.orgId,
+        tokenHash,
+        ...(input.email === undefined ? {} : { email: normalizeInviteEmail(input.email) }),
+        role: input.role,
+        createdBy: input.createdBy,
+        ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+        createdAt: this.iso(),
+        expiresAt: new Date(this.input.now() + ttlMs).toISOString(),
+      };
+      const items: TransactItem[] = [
         this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
         ...(input.requestId === undefined ? [] : [this.put(orgInviteRequestKey(input.orgId, input.requestId), "ORG_INVITE_REQUEST", { tokenHash, createdAt: invite.createdAt })]),
-      ],
-      (failed) => (failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined),
-    );
-    return { token };
+        this.put(orgInviteDirectoryKey(input.orgId, inviteId), "ORG_INVITE_DIRECTORY", { orgId: input.orgId, inviteId, tokenHash }),
+      ];
+      const authorityAt = items.length;
+      items.push(
+        { ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(input.orgId, input.createdBy), ConditionExpression: "orgId = :org AND developerId = :person AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":person": input.createdBy, ":role": actor.role } } },
+        { ConditionCheck: { TableName: this.input.tableName, Key: developerOrgKey(input.createdBy), ConditionExpression: "orgId = :org AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":role": actor.role } } },
+        { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "orgId = :org AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":org": input.orgId } } },
+      );
+      const authorityEnd = items.length;
+      if (this.input.audit !== undefined && this.input.audit.tableName !== this.input.tableName) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
+      const parsedEvent = AuditEventInputSchema.safeParse(auditOrgInviteCreated({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-created", input.orgId, inviteId), inviteId, role: input.role, targeted: input.email !== undefined }));
+      if (!parsedEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
+      const event = parsedEvent.data;
+      // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
+      items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
+      await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
+      await this.flush(event);
+      return { token };
+    } catch (error) { if (error instanceof AgentXError) throw error;throw coded("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Reload before trying again."); }
   }
 
   /**
@@ -306,7 +329,7 @@ export class OrgStore {
   async peekInvite(tokenHash: string): Promise<{ orgId: OrgId; role: OrgRole; email?: string } | undefined> {
     const key = this.inviteKeyOf(tokenHash);
     const invite = key === undefined ? undefined : await this.get(key);
-    if (invite === undefined) return undefined;
+    if (invite === undefined || invite.revokedAt !== undefined) return undefined;
     return { orgId: invite.orgId as OrgId, role: invite.role as OrgRole, ...(typeof invite.email === "string" ? { email: invite.email } : {}) };
   }
 
@@ -322,7 +345,7 @@ export class OrgStore {
   async describeInviteByHash(tokenHash: string): Promise<InviteDescription | undefined> {
     const key = this.inviteKeyOf(tokenHash);
     const invite = key === undefined ? undefined : await this.get(key) as (Item & OrgInviteRecord) | undefined;
-    if (invite === undefined) return undefined;
+    if (invite === undefined || invite.revokedAt !== undefined) return undefined;
     const org = await this.getOrg(invite.orgId);
     if (org === undefined) return undefined;
     const state = invite.acceptedAt !== undefined ? "used" : invite.expiresAt <= this.iso() ? "expired" : "open";
@@ -338,7 +361,7 @@ export class OrgStore {
     if (inviteKey === undefined) throw inviteInvalid();
     const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
     const nowIso = this.iso();
-    if (invite === undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
+    if (invite === undefined || invite.revokedAt !== undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
     const { orgId, role } = invite;
     const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({
       orgId, actor: { kind: "member", id: input.developerId }, occurredAt: nowIso, occurrence: input.tokenHash,
@@ -352,7 +375,7 @@ export class OrgStore {
           TableName: this.input.tableName,
           Key: inviteKey,
           UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
-          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND expiresAt > :now",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND attribute_not_exists(revokedAt) AND expiresAt > :now",
           ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
         },
       },
