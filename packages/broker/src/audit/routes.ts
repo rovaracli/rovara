@@ -18,6 +18,7 @@ import {
   type OrgId,
   type OrgRole,
 } from "@agentx/contracts";
+import { indexedQueryOf, readIndexedAudit } from "./indexed-reader.js";
 import { z } from "zod";
 import { assertExportRange, exportDownloadUrl, getAuditExport, startAuditExport, type AuditExportClientDeps, type AuditExportRequest, type AuditExportView } from "./export.js";
 import { auditRead } from "./events.js";
@@ -187,6 +188,12 @@ export async function routeAuditRequest(ledger: AuditExportClientDeps | undefine
     recordAuditRead(ledger, auditRead({ orgId, actor, occurredAt: new Date(ledger.now()).toISOString(), occurrence: request.requestId, ...facts, via }));
 
   if (request.method === "GET" && rest === "/records") {
+    if (url.searchParams.has("filterVersion")) {
+      const result = await readIndexedAudit(ledger, caller, indexedQueryOf(url.searchParams));
+      const first = result.records[0]?.record.seq, last = result.records.at(-1)?.record.seq;
+      await reading({ fromSeq: first ?? 0, toSeq: last ?? 0, count: result.records.length }, "api");
+      return { status: 200, body: result };
+    }
     const result = await readAuditRecords(ledger, orgId, readQueryOf(url.searchParams));
     await reading(pageFacts(result), "api");
     return { status: 200, body: result };

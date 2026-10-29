@@ -221,7 +221,7 @@ export async function takeRate(
 }
 
 /** `takeRate` for any rate item. */
-async function takeRateAt(
+export async function takeRateAt(
   deps: TableDependencies & Pick<DeveloperTaskRouteDependencies, "now">,
   Key: { pk: string; sk: string },
   limit: number,

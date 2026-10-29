@@ -1322,9 +1322,10 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
   it("an invite into an org that has closed is INVITE_INVALID, the invite is not burnt, and nothing is recorded", async () => {
     const { capture, db, store, orgId, afterSetup } = await ownersWorld();
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
+    const created = afterSetup();expect(created.map(event => event.action)).toEqual(["org.invite_created"]);
     db.set({ ...db.get(orgMetaKey(orgId))!, closedAt: "2026-10-20T00:00:00.000Z" });
     await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" })).rejects.toMatchObject({ code: "INVITE_INVALID", message: expect.stringContaining("closed") as string });
-    expect(afterSetup()).toEqual([]);
+    expect(afterSetup()).toEqual(created);
     db.set({ ...db.get(orgMetaKey(orgId))!, closedAt: undefined });
     delete db.get(orgMetaKey(orgId))!.closedAt;
     expect(await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" })).toMatchObject({ orgId });
@@ -1370,7 +1371,8 @@ describe("answers as today when the intake queue never answers (the remaining si
     expect(await settle(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" }))).toMatchObject({ orgId });
     await settle(store.addMember({ orgId, developerId: "dev-third", role: "member" }));
     expect(db.get(orgMemberKey(orgId, "dev-new"))).toBeDefined();
-    expect(capture.pending().map((event) => event.facts?.via).sort()).toEqual(["invite", "org_created", "sign_in"]);
+    expect(capture.pending().filter(event => event.action === "member.joined").map((event) => event.facts?.via).sort()).toEqual(["invite", "org_created", "sign_in"]);
+    expect(capture.pending().filter(event => event.action === "org.invite_created").length).toBe(1);
   });
 
   it("binding a requested installation, disconnecting one, and GitHub's own change", async () => {

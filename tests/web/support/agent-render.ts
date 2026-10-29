@@ -8,12 +8,13 @@ import { DirectoryScreen } from "../../../packages/ui/src/screens/agents/Directo
 import { renderUi } from "./render.js";
 import { h } from "./h.js";
 import { fakeHost } from "./fake-host.js";
-import { navFixture } from "./fixtures.js";
+import { navFixture, meFixture } from "./fixtures.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID, agentPerson } from "./agent-fixture.js";
 export function renderAgents(options: { path?: string; profile?: ReturnType<typeof agentProfile>; reply?: (request: ApiRequest) => Promise<ApiResponse>; live?: unknown[]; liveReply?: () => Promise<ApiResponse>; projectRole?: "viewer" | "contributor"; projectStatus?: "active" | "archived"; agentOnProject?: boolean; shares?: unknown[]; versions?:unknown[]; theme?: "light" | "dark" } = {}) {
  let profile = options.profile ?? agentProfile();
  const f = fakeHost(async request => {
   if (request.method !== "GET") return options.reply?.(request) ?? { status: 200, body: { agent: profile.agent } };
+  if (request.path === "/v1/app/me") return { status: 200, body: meFixture() };
   if (request.path.startsWith("/v1/app/agents?")) return { status: 200, body: request.path.includes("?project=") && options.agentOnProject === false ? { agents: [] } : agentDirectory() };
   if (request.path === "/v1/app/agents/" + AGENT_FIXTURE_ID || request.path === "/v1/app/agents/rovara-code" || request.path === "/v1/app/agents/ticket-triage") return { status: 200, body: profile };
   if (request.path.endsWith("/draft")) return { status: 200, body: { draft: { revision: 9, overlay: { instructions: "Retain refund checks." }, extends: { agentId: "ticket-triage", version: 1 }, updatedBy: agentPerson, updatedAt: "2026-10-23T12:00:00.000Z" } } };

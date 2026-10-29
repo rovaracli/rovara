@@ -1,3 +1,10 @@
+import { readSlackWorkspaceEvidence } from "../org/slack-workspace-evidence.js";
+import { revokeOrganizationInvite } from "../org/invite-revocation.js";
+import { logDeveloperEvent } from "../developer/log.js";
+import { listOrganizationInvites } from "../org/invite-directory.js";
+import { changeReviewedMemberRole } from "../org/role-changes.js";
+import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
+import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { navigationReadCache } from "../app-nav/read-cache.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../app-nav/nav.js";
 import { navigationLive } from "../agent-sessions/live.js";
@@ -116,6 +123,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
@@ -338,10 +346,6 @@ export interface DeveloperCaller { developerId: string; sessionId: string; amr: 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
 
-/** One structured log line. Only event names, reasons and error names: never payloads or secrets. */
-function logDeveloperEvent(entry: Record<string, string>): void {
-  console.log(JSON.stringify({ component: "broker", ...entry }));
-}
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "UnknownError");
 const SLACK_UNAVAILABLE = { ok: false, error: "slack_unavailable" } as const;
 /** A Slack or DeveloperIdentity error code: the only error text that may reach a log or an answer (R9). */
@@ -1965,6 +1969,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
+  if (authenticated !== undefined) requireReviewedModelSourceWebWrite(request, url);
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (request.method === "GET" && url.pathname === "/v1/app/models") {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
@@ -2079,15 +2085,29 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return getOrganization(deps, caller);
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  const revokeInvite = /^\/v1\/app\/org\/invites\/([^/]+)\/revoke$/.exec(url.pathname);
+  if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
+  // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
+    if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
+    return readSlackWorkspaceEvidence(deps, caller);
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
+  if (request.method === "POST" && url.pathname === "/v1/app/org/members/lookup") return lookupOrganizationMember(deps, caller, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
   if (request.method === "PUT" && url.pathname === "/v1/app/me/name") return setMyName(deps, caller, jsonBody(request));
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
-  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
+  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) {
+    const body = jsonBody(request);
+    // Only the trusted cookie adapter supplies authenticated; headers/body cannot opt into legacy authority.
+    if (authenticated !== undefined && !OrgMemberRoleChangeBodySchema.required({ expectedRole: true }).safeParse(body).success) throw agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.");
+    return changeMemberRole(deps, caller, memberRoute[1]!, body);
+  }
   if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
   if (request.method === "GET" && url.pathname === "/v1/dev/budget") return getBudget(deps, caller);
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
@@ -2245,7 +2265,9 @@ async function getOrganization(deps: DeveloperRouteDependencies, caller: Develop
  */
 async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ inviteUrl: string }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
+  let live: Record<string, unknown> | undefined;
+  try { const answer = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(caller.orgId, caller.developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };live = answer.Item; } catch { throw agentXError("RUNTIME_UNAVAILABLE", "Invite access could not be checked. Try again."); }
+  if (live?.orgId !== caller.orgId || live.developerId !== caller.developerId || (live.role !== "owner" && live.role !== "admin")) throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
   const parsed = CreateOrganizationInviteBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -2253,7 +2275,7 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const { requestId, role, email } = parsed.data;
-  if (role === "admin" && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
+  if (role === "admin" && live.role !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
   // A cloud install shares the web app's link, with the token in the fragment so a static host never receives it. A private install's
@@ -2272,45 +2294,18 @@ const bodyError = (error: z.ZodError) => {
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
-/**
- * `GET /v1/app/org/members`: any member may list the org's people, by name and role. Names are email-safe (the sign-in table reads them so). Emails, join dates and
- * sign-in methods are for owners and admins only (release 0.4.16, owner decision "option A"): a member's answer leaves them out.
- */
-async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ members: Array<{ developerId: string; name: string; email?: string; role: OrgRole; joinedAt?: string; identities?: DeveloperSignInMethod[] }> }> {
-  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  const store = signInStoreOf(deps);
-  const admin = isOrgAdmin(caller);
-  const members = await deps.orgs.listMembers(caller.orgId);
-  // The records and the chosen names of everyone in the list, read together (release 0.4.18: one batch for the names, not one read per row).
-  const records = await store.getDevelopers(members.map((member) => member.developerId));
-  const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
-    if (!admin) {
-      const record = records.get(member.developerId);
-      return { developerId: member.developerId, name: record?.displayName ?? "Unknown", role: member.role, joinedAt: member.joinedAt };
-    }
-    const record = records.get(member.developerId);
-    const identities = await store.identitiesOf(member.developerId);
-    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
-    // A person from before sign-in methods were linked has no IDENTITY rows: their record's own provider is the method they signed in with.
-    const methods = identities.length > 0 ? identities.map((identity) => identity.provider) : record === undefined ? [] : [record.provider];
-    return {
-      developerId: member.developerId, name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }), role: member.role, joinedAt: member.joinedAt,
-      identities: [...new Set(methods)],
-    };
-  });
-  // An owner or admin sees the list in join order, with the dates. A plain member is shown no dates, so the list is not in join order either: it is by name.
-  if (!admin) return { members: listed.sort((left, right) => left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId)).map(({ joinedAt: _joinedAt, ...rest }) => rest) }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
-  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
-}
-
-const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();
+const ChangeRoleBodySchema = OrgMemberRoleChangeBodySchema;
 
 /** `PUT /v1/app/org/members/{developerId}/role`: owners only. Demoting the last owner is LAST_OWNER (409). */
 async function changeMemberRole(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string, body: unknown): Promise<{ developerId: string; role: OrgRole }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
+  const reviewed = typeof body === "object" && body !== null && Object.hasOwn(body, "expectedRole");
+  // Preserve the released CLI's owner-first check and field-specific validation on legacy bodies.
+  if (!reviewed && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   const parsed = ChangeRoleBodySchema.safeParse(body);
-  if (!parsed.success) throw bodyError(parsed.error);
+  if (!parsed.success) throw reviewed ? agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.") : bodyError(parsed.error);
+  if (parsed.data.expectedRole !== undefined) return changeReviewedMemberRole(deps, caller, developerId, { ...parsed.data, expectedRole: parsed.data.expectedRole });
+  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });
   logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
   return { developerId, role: parsed.data.role };

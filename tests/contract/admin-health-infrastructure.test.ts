@@ -141,6 +141,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",
       // Plan 2, Task 21: a project's member-change request records (replay keys) expire on it after a day.
       "packages/broker/src/org/project-members.ts",
+      // Reviewed company-role replay receipts become TTL-eligible after 30 days in named environments; legacy tables retain them.
+      "packages/broker/src/org/role-changes.ts",
       // Plan 2, Task 22: a project's setup-check request records (replay keys) expire on it after a day.
       "packages/broker/src/org/project-setup-check.ts",
       // Final review M2: the one request-id pattern's record (archive and restore, staff egress decisions) expires on it after a day.
@@ -315,4 +317,9 @@ describe("the health route's grants (A13)", () => {
     expect(brokerEnvironment(legacy)).not.toHaveProperty("AGENTX_ALARM_PREFIX");
     expect(brokerEnvironment(legacy)).not.toHaveProperty("HEALTH_DEAD_LETTER_QUEUES");
   });
+});
+
+it("uses the shared State TTL attribute for reviewed company role receipts", () => {
+ const source = readFileSync("packages/broker/src/org/role-changes.ts", "utf8");
+ expect(source).toContain("[INDEX_EXPIRY_ATTRIBUTE]");expect(source).not.toMatch(/\bindexExpiresAt\s*:/);
 });

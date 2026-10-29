@@ -1186,6 +1186,18 @@ describe("the audit ledger in templates", () => {
             }
           });
 
+          it("C47 posting sort keys use unchanged appender actions and org-leading-key grants", () => {
+            const grant = identity(synthesis).find(statement => statement.Sid === "LedgerTable")!;
+            const expected = { Sid: "LedgerTable", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource: LEDGER, Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT#*", "AUDIT_DIRTY", "AUDIT_ORGS"] } } };
+            expect(grant).toStrictEqual(expected);
+            for (const action of expected.Action) expect(request(action, LEDGER, ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa"]).allowed).toBe(true);
+            expect(request("dynamodb:PutItem", LEDGER, ["FILTER#v1#action"]).allowed).toBe(false);
+            expect(request("dynamodb:Query", LEDGER, ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa"]).allowed).toBe(false);
+            const broadened = { ...grant, Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["*"] } } };
+            expect(simulateIam([broadened], { action: "dynamodb:PutItem", resource: LEDGER, context: { "dynamodb:LeadingKeys": ["FILTER#v1#action"] } }).allowed).toBe(true);
+            expect(() => expect(broadened).toStrictEqual(expected)).toThrow();
+          });
+
           it("denies PutItem with leading key AUDIT_EPOCH, SEALED#, SEALS# or any other key on the ledger table, alone or beside a good one", () => {
             for (const keys of [["AUDIT_EPOCH"], ["SEALED#org_aaaaaaaaaaaaaaaaaaaa"], ["SEALS#org_aaaaaaaaaaaaaaaaaaaa"], ["AUDIT_PENDING#3"], ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa", "AUDIT_EPOCH"], ["AUDITX"], ["audit#org_a"]]) {
               expect(request("dynamodb:PutItem", LEDGER, keys), keys.join(",")).toMatchObject({ allowed: false, reason: "implicit-deny" });
@@ -1798,6 +1810,16 @@ describe("the audit ledger in templates", () => {
     for (const env of ["production", "staging", "acme"]) {
       describe(env, () => {
         const synthesis = named(env);
+
+        it("C47 indexed reads need only the unchanged broker base-table read grant", () => {
+          const grant = ownStatements(synthesis).find(statement => statement.Sid === "ReadLedgerAndSeals")!;
+          const expected = { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] };
+          expect(grant).toStrictEqual(expected);
+          for (const action of expected.Action) expect(simulateIam([grant], { action, resource: LEDGER }).allowed).toBe(true);
+          expect(simulateIam([grant], { action: "dynamodb:BatchGetItem", resource: LEDGER }).allowed).toBe(false);
+          const broadened = { ...grant, Action: [...expected.Action, "dynamodb:BatchGetItem"] };
+          expect(() => expect(broadened).toStrictEqual(expected)).toThrow();
+        });
 
         it("has exactly the pinned read statements, in a policy of its own on the broker's role", () => {
           const roleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];

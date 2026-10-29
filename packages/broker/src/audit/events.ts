@@ -242,6 +242,11 @@ export function auditOrgRenamed(input: AuditBuilderBase): AuditEventInput {
   return build("org.renamed", input, { kind: "org", id: input.orgId }, {});
 }
 
+/** `occurrence`: the org and independent public invite UUID; never token/hash/address material. */
+export function auditOrgInviteCreated(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member"; targeted: boolean }): AuditEventInput {
+  return build("org.invite_created", input, { kind: "invite", id: input.inviteId }, { role: input.role, targeted: input.targeted });
+}
+
 /** A person chose their own display name (release 0.4.16). `occurrence`: `auditOccurrence(developerId, time of the change)`. The name never enters the record. */
 export function auditMemberRenamed(input: AuditBuilderBase & { memberId: string }): AuditEventInput {
   return build("member.renamed", input, { kind: "member", id: input.memberId }, {});
@@ -504,4 +509,9 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
+}
+
+/** `occurrence`: reviewed org/request/public UUID, never bearer material. */
+export function auditOrgInviteRevoked(input: AuditBuilderBase & { inviteId: string; role: "admin" | "member" }): AuditEventInput {
+  return build("org.invite_revoked", input, { kind: "invite", id: input.inviteId }, { role: input.role });
 }

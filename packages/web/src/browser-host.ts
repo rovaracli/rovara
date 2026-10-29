@@ -3,6 +3,9 @@ import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/u
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
+ innerWidth?: number;
+ addEventListener?: (type: "resize", listener: () => void) => void;
+ removeEventListener?: (type: "resize", listener: () => void) => void;
  location: Pick<Location, "origin" | "pathname" | "search" | "assign">;
  fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
  document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
@@ -67,6 +70,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    if (response.status !== 204) throw new ApiError(response.status, "SIGN_OUT_FAILED", "Couldn't sign out. Try again.");
    csrf = undefined;win.location.assign("/app/signed-out?reason=ended");
   },
+  viewport: { width: () => win.innerWidth ?? 0, subscribe(listener) { win.addEventListener?.("resize", listener);return () => win.removeEventListener?.("resize", listener); } },
   storage: { get(key) { try { return win.localStorage.getItem(key) ?? undefined; } catch { return undefined; } }, set(key, value) { try { win.localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } }, features: { admin: true },
  };
  const api = createApiClient(host);return host;

@@ -26,6 +26,7 @@ import { commit, coded, failedIndexes, NOT_EXISTS, withoutUndefined, type Item, 
 import { auditModelSourceOrderChanged, auditModelSourceRemoved, auditModelSourceSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { changeReviewedSourceOrder } from "./reviewed-order.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 
 export interface ModelSourceStoreInput {
@@ -255,7 +256,8 @@ export class ModelSourceStore {
   }
 
   /** Sets the order sources are tried in. It names at least one source, none twice, and only `rovara`, `personal-chatgpt` and sources the org has. */
-  async setOrder(input: { orgId: string; order: readonly string[]; by: string; request?: RequestMark | undefined }): Promise<{ order: string[] }> {
+  async setOrder(input: { orgId: string; order: readonly string[]; by: string; request?: RequestMark | undefined; expectedRevision?: number | undefined; expectedOrgId?: string | undefined; expectedDeveloperId?: string | undefined }): Promise<{ order: string[]; revision?: number }> {
+    if (input.expectedRevision !== undefined) return changeReviewedSourceOrder({ ...this.input, read: (orgId) => this.read(orgId) }, { ...input, expectedRevision: input.expectedRevision });
     const orgId = parseOrg(input.orgId);
     const adding = input.order.includes("personal-chatgpt");
     // The install-wide switch is a hard off: ChatGPT cannot be put into an order while it is off. An order that already has it may be changed around it.

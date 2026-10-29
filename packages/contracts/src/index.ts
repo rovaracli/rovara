@@ -137,7 +137,7 @@ export * from "./realtime-readers.js";
 export * from "./app-nav.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
-export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
+export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 
@@ -146,4 +146,13 @@ export * from "./agent-web-views.js";
 export * from "./onboarding.js";
 
 export * from "./setup-draft.js";
+
+export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
+
+export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 export * from "./test-proof.js";
+
+// Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
+export * from "./org-slack-workspace-evidence.js";
+
+export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";

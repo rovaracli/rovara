@@ -38,3 +38,6 @@ export {
 } from "./bundle.js";
 export { TIMESTAMP_SKEW_MS, bundleSealedThroughSeq, timestampCoversRecord, verifyBundle, type BundleCheck, type BundleReport, type VerifyBundleOptions } from "./verify-bundle.js";
 export { verifyExtends } from "./extends.js";
+
+export { parseSearchExport, SEARCH_EXPORT_MAX_RECORDS, SEARCH_EXPORT_MAX_JSON_BYTES, type SearchExportV1, type SearchPredicate } from "./search-export.js";
+export { verifySearchExport, SEARCH_EXPORT_CLAIMS, type SearchExportReport } from "./verify-search-export.js";

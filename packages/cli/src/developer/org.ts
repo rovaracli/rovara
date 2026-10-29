@@ -2,7 +2,7 @@
 // one signed-in call to the control plane's /v1/app/org routes; the control plane decides who may do what, and this only names the
 // person (by email or ID), asks before leaving, and prints what happened.
 import { randomUUID } from "node:crypto";
-import { AppMeResponseSchema, CommentTriggerOptOutSchema, DeveloperSignInMethodSchema, OrgRoleSchema, agentXError, type CommentTriggerOptOut, type OrgRole } from "@agentx/contracts";
+import { AppMeResponseSchema, OrgMemberLookupResponseReaderSchema, CommentTriggerOptOutSchema, DeveloperSignInMethodSchema, OrgRoleSchema, agentXError, type CommentTriggerOptOut, type OrgRole } from "@agentx/contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
 import { neutralised, terminalSafe } from "./audit.js";
@@ -13,10 +13,9 @@ const MemberSchema = z.object({
   developerId: z.string(),
   name: z.string(),
   email: z.string().optional(),
-  role: OrgRoleSchema,
-  // Owners and admins only (release 0.4.16): a plain member's list has names and roles, no emails, join dates or sign-in methods.
+  role: z.enum(["owner", "admin", "member", "unknown"]),
   joinedAt: z.string().optional(),
-  identities: z.array(DeveloperSignInMethodSchema).default([]),
+  identities: z.array(DeveloperSignInMethodSchema).optional(),
 });
 const MembersResponseSchema = z.object({ members: z.array(MemberSchema) });
 const RoleResponseSchema = z.object({ developerId: z.string(), role: OrgRoleSchema });
@@ -36,7 +35,7 @@ export async function orgMembers(deps: DeveloperSessionDeps, env: string | undef
 export function orgMembersText(result: OrgMembersResult): string {
   const lines = [`Members of your organization on ${result.env} (${result.url}):`];
   for (const member of result.members) {
-    const methods = member.identities.length === 0 ? "" : `  signs in with ${member.identities.map((method) => METHOD_TEXT[method]).join(", ")}`;
+    const methods = member.identities === undefined || member.identities.length === 0 ? "" : `  signs in with ${member.identities.map((method) => METHOD_TEXT[method]).join(", ")}`;
     lines.push(`  ${sanitizeServerText(member.name)}${member.email === undefined ? "" : ` <${sanitizeServerText(member.email)}>`}  ${member.role}  ${member.developerId}${methods}`);
   }
   return `${lines.join("\n")}\n`;
@@ -51,9 +50,19 @@ export function findMember(members: readonly OrgMember[], who: string): OrgMembe
   return found[0]!;
 }
 
+/** Resolve an exact email without requiring a private bulk directory projection. */
+export async function resolveOrgMember(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ env: string; url: string; member: OrgMember }> {
+ const listed = await orgMembers(deps, env);
+ if (who.includes("@") && listed.members.some(member => member.joinedAt === undefined) && !listed.members.some(member => member.email?.toLowerCase() === who.trim().toLowerCase())) {
+  const { body } = await developerRequest(deps, env, "/v1/app/org/members/lookup", OrgMemberLookupResponseReaderSchema, { method: "POST", body: { email: who }, explain: true });
+  if (body.match !== null) return { env: listed.env, url: listed.url, member: listed.members.find(member => member.developerId === body.match?.developerId) ?? { developerId: body.match.developerId, name: body.match.name, role: "unknown" } };
+ }
+ return { env: listed.env, url: listed.url, member: findMember(listed.members, who) };
+}
+
 export async function orgSetRole(deps: DeveloperSessionDeps, env: string | undefined, who: string, role: OrgRole): Promise<{ env: string; url: string; member: OrgMember; role: OrgRole }> {
-  const listed = await orgMembers(deps, env);
-  const member = findMember(listed.members, who);
+  const listed = await resolveOrgMember(deps, env, who);
+  const member = listed.member;
   const { body } = await developerRequest(deps, env, `/v1/app/org/members/${member.developerId}/role`, RoleResponseSchema, { method: "PUT", body: { requestId: randomUUID(), role }, explain: true });
   return { env: listed.env, url: listed.url, member, role: body.role };
 }
@@ -62,8 +71,8 @@ const ROLE_PHRASE = { owner: "an owner", admin: "an admin", member: "a member" }
 export const orgRoleText = (result: { member: OrgMember; role: OrgRole }) => `${sanitizeServerText(result.member.name)} is now ${ROLE_PHRASE[result.role]}.\n`;
 
 export async function orgRemove(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ env: string; url: string; member: OrgMember; message: string }> {
-  const listed = await orgMembers(deps, env);
-  const member = findMember(listed.members, who);
+  const listed = await resolveOrgMember(deps, env, who);
+  const member = listed.member;
   const { body } = await developerRequest(deps, env, `/v1/app/org/members/${member.developerId}`, RemoveResponseSchema, { method: "DELETE", explain: true });
   return { env: listed.env, url: listed.url, member, message: body.message };
 }

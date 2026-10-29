@@ -52,6 +52,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { ReviewedSourceOrderBodySchema } from "./reviewed-order.js";
 import { finishRemovals, releaseSource, viaProxy } from "./release.js";
 import type { ModelSourceStore, StoredModelSources } from "./store.js";
 
@@ -82,6 +83,18 @@ type HostStatus = "pending" | "approved" | "rejected" | "not_requested";
 const LIST_PATH = "/v1/app/org/model-sources";
 const ORDER_PATH = "/v1/app/org/model-sources-order";
 const ITEM_PATH = /^\/v1\/app\/org\/model-sources\/([^/]+)(?:\/(check))?$/;
+/** Called only by the trusted cookie adapter; share the exact path matchers with the handlers. */
+export function requireReviewedModelSourceWebWrite(request: AdaptedHttpRequest, url: URL): void {
+  if (request.method === "PUT" && url.pathname === ORDER_PATH && !ReviewedSourceOrderBodySchema.required({ expectedOrgId: true, expectedDeveloperId: true }).safeParse(jsonBody(request)).success) {
+    throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
+  }
+  const item = ITEM_PATH.exec(url.pathname);
+  // Legacy removal changes routing order without the reviewed revision/authority fences.
+  if (request.method === "DELETE" && item !== null && item[2] === undefined) {
+    throw agentXError("FORBIDDEN", "Removing a company AI source is not available in the console yet.");
+  }
+}
+
 const MISSING = "no AI source has that ID";
 const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sources.";
 const CHECK_RACED = "this source changed while it was being tested; run the check again";
@@ -210,7 +223,7 @@ async function listSources(deps: Deps, caller: AgentCaller): Promise<unknown> {
     return viewOf(deps, caller.orgId, stored, source, status);
   }));
   return {
-    sources, order: stored.order,
+    orgId: caller.orgId, developerId: caller.developerId, sources, order: stored.order, revision: stored.revision,
     ...(stored.assistantModel === undefined ? {} : { assistantModel: stored.assistantModel }),
     ...(stored.chatgptPreferredModel === undefined ? {} : { chatgptPreferredModel: stored.chatgptPreferredModel }),
   };
@@ -390,6 +403,14 @@ async function removeSource(deps: Deps, caller: AgentCaller, rawId: string, body
 
 async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
+  if (typeof body === "object" && body !== null && "expectedRevision" in body) {
+    const reviewed = ReviewedSourceOrderBodySchema.safeParse(body);
+    if (!reviewed.success) throw agentXError("CONFIG_INVALID", "Review a valid company source order before submitting.");
+    const { requestId, order, expectedRevision, expectedOrgId, expectedDeveloperId } = reviewed.data;
+    // Preserve tombstones for the sweeper: cleanup must not precede the reviewed atomic write.
+    // RequestMark requires fingerprint, but only the reviewed digest binds this path; no legacy receipt is used.
+    return deps.modelSources.store.setOrder({ orgId: caller.orgId, by: caller.developerId, order, expectedRevision, expectedOrgId, expectedDeveloperId, request: { orgId: caller.orgId, developerId: caller.developerId, requestId, fingerprint: fingerprintOf("reviewed-source-order", "", { order, expectedRevision }) } });
+  }
   await finishOwedRemovals(deps, caller, caller);
   const { requestId, order } = parseBody(OrderBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-order", "", requestId, { order });

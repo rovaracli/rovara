@@ -183,3 +183,6 @@ describe("agentx org comment-triggers list (Plan 3, Task 14b)", () => {
     expect(h.err.join("")).not.toContain("\u202E");
   });
 });
+
+it("lists the restricted directory without requiring private details", async () => { const h = await cli(() => undefined, { members: [{ developerId: MAYA, name: "Maya Chen", role: "member" }] });expect(await h.run(["org", "members"])).toBe(0);expect(h.out.join("")).toContain("Maya Chen  member");expect(h.out.join("")).not.toContain("signs in with"); });
+it("resolves an exact email through the server when the directory is restricted", async () => { const h = await cli((method, path) => path.endsWith("/lookup") ? Response.json({ match: { developerId: BEA, name: "Bea Ortiz" }, requestId: "wire-fixture" }) : method === "PUT" ? Response.json({ developerId: BEA, role: "admin" }) : undefined, { members: [{ developerId: BEA, name: "Bea Ortiz", role: "member" }] });expect(await h.run(["org", "role", "bea@example.com", "admin"])).toBe(0);expect(h.calls.find(call => call.path.endsWith("/lookup"))).toMatchObject({ method: "POST", body: { email: "bea@example.com" } }); });

@@ -526,7 +526,8 @@ describe("a ban on a single-org install", () => {
     expect(refused).toMatchObject({ code: "REMOVED_FROM_ORG", message: expect.stringContaining("You were removed from this organization. Ask an admin to invite you again.") as string });
     expect(await orgs.orgForDeveloper(maya)).toBeUndefined();
 
-    const { token } = await orgs.createInvite({ orgId: TEST_ORG, createdBy: "other", role: "member" });
+    await orgs.addMember({ orgId: TEST_ORG, developerId: "valid-inviter", role: "admin" });
+    const { token } = await orgs.createInvite({ orgId: TEST_ORG, createdBy: "valid-inviter", role: "member" });
     expect(await resolveOrgOnSignIn(deps, { ...input(maya), inviteTokenHash: inviteTokenHash(token) })).toEqual({ orgId: TEST_ORG, role: "member" });
     expect(db.get(orgBanKey(TEST_ORG, maya))).toBeUndefined();
     expect(await orgs.orgForDeveloper(maya)).toEqual({ orgId: TEST_ORG, role: "member" });
