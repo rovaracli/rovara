@@ -97,7 +97,7 @@ it("without a session id in the answer, says the change was accepted and starts 
   fireEvent.click(screen.getByRole("button", { name: "Make a change anyway" }));
   await screen.findByText(/The change was accepted/u);
   expect(f.navigate).not.toHaveBeenCalled();
-  expect((screen.getByRole("button", { name: "Make a change anyway" })).disabled).toBe(true);
+  expect((screen.getByRole<HTMLButtonElement>("button", { name: "Make a change anyway" })).disabled).toBe(true);
   expect(f.posts()).toHaveLength(1);
   f.close();
 });
