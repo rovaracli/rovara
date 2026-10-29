@@ -107,6 +107,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }
   const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body);json(200,result);return;
  }
+ // B32: browser-only save and database status use the same real route adapter.
+ if(current.name==="admin"&&((method==="POST"&&/^\/v1\/web\/projects\/[^/]+\/working-branches$/.test(url.pathname))||(method==="GET"&&/^\/v1\/web\/projects\/[^/]+\/working-branches\/requests\/[^/]+$/.test(url.pathname)))){
+  let body:unknown;if(method==="POST"){let raw="";for await(const chunk of request){raw+=String(chunk);if(raw.length>4096)throw new Error("Mock body limit.");}body=JSON.parse(raw) as unknown;}
+  const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),body,headers);json(200,result);return;
+ }
  // B23: real cookie gate, project context/core and scoped SDK over synthetic HTTP/bindings.
  if(current.name==="admin"&&method==="GET"&&/^\/v1\/web\/projects\/[^/]+\/(?:working-branches|repositories\/[^/]+\/branches(?:\/preview)?)$/.test(url.pathname)){
   const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),undefined,headers);json(200,result);return;

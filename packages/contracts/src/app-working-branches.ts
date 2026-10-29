@@ -38,3 +38,10 @@ export const ProjectWorkingBranchContextSchema = z.object({ orgId: OrgIdSchema, 
 });
 export const ProjectWorkingBranchContextReaderSchema = ProjectWorkingBranchContextSchema.strip();
 export type ProjectWorkingBranchContext = z.infer<typeof ProjectWorkingBranchContextSchema>;
+
+// Browser save is a setting only; task consumers remain separately gated.
+export const ProjectWorkingBranchSaveBodySchema = z.object({ requestId:z.string().uuid(), expectedOrgId:OrgIdSchema, expectedRevision:lifecycle, expectedProjectRevision:config.max(Number.MAX_SAFE_INTEGER-1), repository:AgentXNameSchema, branch:WorkingBranchNameSchema, expectedCommit:z.string().regex(/^[a-f0-9]{40}$/) }).strict();
+export const ProjectWorkingBranchReceiptSchema = z.object({orgId:OrgIdSchema,project:AgentXNameSchema,repository:AgentXNameSchema,branch:WorkingBranchNameSchema,commit:z.string().regex(/^[a-f0-9]{40}$/),fromProjectRevision:config,projectRevision:config,lifecycleRevision:lifecycle,savedAt:z.string().datetime()}).strict();
+export const ProjectWorkingBranchSaveResultSchema = z.object({receipt:ProjectWorkingBranchReceiptSchema,replayed:z.boolean()}).strict();
+export const ProjectWorkingBranchSaveResultReaderSchema = ProjectWorkingBranchSaveResultSchema.strip();
+export type ProjectWorkingBranchSaveBody = z.infer<typeof ProjectWorkingBranchSaveBodySchema>;

@@ -35,12 +35,12 @@ export function createAdminDirectory() {
    if (part === "attribute_exists(pk)") return row !== undefined;
    if (part === "attribute_not_exists(closingAt)") return row?.closingAt === undefined;
    if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
-   const absent = /^attribute_not_exists\((archiveRevision|orgId|#status)\)$/.exec(part);
+   const absent = /^attribute_not_exists\((archiveRevision|orgId|#status|#s[0-9]+)\)$/.exec(part);
    if (absent) return row?.[names[absent[1]!] ?? absent[1]!] === undefined;
-   const equal = /^([#A-Za-z.]+) = (:[A-Za-z]+)$/.exec(part);
+   const equal = /^([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(part);
    if (equal === null) throw new Error("Unsupported fixture condition.");
    let actual: unknown = row;for (const field of equal[1]!.split(".")) actual = typeof actual === "object" && actual !== null ? (actual as Row)[names[field] ?? field] : undefined;
-   return actual === values[equal[2]!];
+   return JSON.stringify(actual) === JSON.stringify(values[equal[2]!]);
   });
  }
  const documentClient = { async send(command: unknown): Promise<unknown> {
@@ -55,6 +55,7 @@ export function createAdminDirectory() {
    const values = command.input.ExpressionAttributeValues ?? {}, after: unknown = command.input.ExclusiveStartKey?.sk, limit = command.input.Limit;
    if (after !== undefined && typeof after !== "string") throw new Error("Invalid fixture pagination key.");
    const matches = [...rows.values()].filter(row => row.pk === values[":pk"] && String(row.sk).startsWith(String(values[":prefix"] ?? "")) && (after === undefined || String(row.sk) > after)).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1);
+   if(command.input.ScanIndexForward===false)matches.reverse();
    const page = limit === undefined ? matches : matches.slice(0, limit), last = page.at(-1);
    return { Items: page, ...(limit !== undefined && matches.length > limit && last !== undefined ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
   }
@@ -75,7 +76,7 @@ export function createAdminDirectory() {
   const checks = actions.map(action => {
    const write = action.Update ?? action.ConditionCheck ?? action.Put;
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
-   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", archiveUpdate, restoreUpdate].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
+   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", archiveUpdate, restoreUpdate, "SET latestRevision = :next"].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
    const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write ? write.UpdateExpression ?? "" : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
    for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
@@ -88,6 +89,7 @@ export function createAdminDirectory() {
    if (action.Put?.Item !== undefined) put(action.Put.Item);
    if (action.Update !== undefined) {
     const update = action.Update, values = update.ExpressionAttributeValues ?? {}, row = rows.get(keyOf(update.Key));
+    if (update.UpdateExpression === "SET latestRevision = :next") { if(row===undefined||!Number.isSafeInteger(values[":next"]))throw new Error("Invalid fixture catalog update.");put({...row,latestRevision:values[":next"]});continue; }
     if (update.UpdateExpression === archiveUpdate) { put({ ...update.Key, ...row, entityType: values[":type"], name: values[":name"], status: values[":archived"], archivedAt: values[":at"], archivedBy: values[":by"], archiveRevision: values[":next"], createdAt: row?.createdAt ?? values[":at"], createdBy: row?.createdBy ?? values[":unknown"] });continue; }
     if (update.UpdateExpression === restoreUpdate) { if (row === undefined) throw new Error("Missing restore fixture meta.");const next: Row = { ...row, status: values[":active"], archiveRevision: values[":next"] };delete next.archivedAt;delete next.archivedBy;put(next);continue; }
     if (row === undefined || values[":role"] === undefined) throw new Error("Unsupported fixture update.");

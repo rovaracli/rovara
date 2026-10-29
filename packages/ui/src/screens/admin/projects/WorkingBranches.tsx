@@ -1,3 +1,4 @@
+import { SaveWorkingBranch } from "./SaveWorkingBranch.js";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { ProjectWorkingBranchContextReaderSchema, ProjectWorkingBranchPageReaderSchema, ProjectWorkingBranchPreviewReaderSchema, type ProjectWorkingBranchContext } from "@agentx/contracts/web";
@@ -66,7 +67,7 @@ function BranchPreview({ api, root, context, repo, branch, onInvalid }: {api: Ap
   return <section aria-label="Selected branch inspection"><h4>Selected branch: <VisibleText text={branch} /></h4>{action("Recheck selected branch", preview.isFetching, () => { void preview.refetch(); })}
     {preview.isPending ? <Skeleton label="Checking selected branch" /> : <>
       {preview.isError && <p role="alert">{missing ? "That branch is no longer available. Inspect another branch; no default branch was substituted." : preview.data ? `This branch check is stale. ${problem(preview.error)}` : problem(preview.error)}</p>}
-      {preview.data && !missing && <><p>Commit: <code><VisibleText text={preview.data.commit} /></code></p><p>Checked at <time dateTime={preview.data.checkedAt}>{preview.data.checkedAt}</time> UTC.</p>{preview.isFetching && <p role="status">Rechecking the selected branch; the previous check is shown.</p>}</>}
+      {preview.data && !missing && <><p>Commit: <code><VisibleText text={preview.data.commit} /></code></p><p>Checked at <time dateTime={preview.data.checkedAt}>{preview.data.checkedAt}</time> UTC.</p>{preview.isFetching && <p role="status">Rechecking the selected branch; the previous check is shown.</p>}{!preview.isFetching && !preview.isError && <SaveWorkingBranch key={`${preview.data.checkedAt}:${preview.data.commit}`} preview={preview.data} />}</>}
     </>}</section>;
 }
 function BranchPage({ api, root, context, repo, onInvalid }: {api: Api; root: QueryKey; context: ProjectWorkingBranchContext; repo: Repo; onInvalid: (error: unknown) => void}) {
@@ -111,7 +112,7 @@ function Inspection({ name, projectRevision }: {name: string; projectRevision: n
   const onInvalid = useCallback((error: unknown) => setBlocked(error), []);
   async function refresh() { const result = await context.refetch();if (result.isSuccess) setBlocked(undefined); }
   return <div className="rv-admin-branch-inspection" aria-busy={context.isFetching}>
-    <p>This is a read-only inspection. It does not configure a working branch or change running work. Saving or starting work requires another check.</p>
+    <p>Inspect a branch, then explicitly review and save its setting. Saving does not change task behavior; task consumers remain unavailable.</p>
     {action("Refresh branch context", context.isFetching, () => { void refresh(); })}
     {context.isPending ? <Skeleton label="Loading branch context" /> : context.isError || blocked !== undefined ? <p role="alert">{problem(blocked ?? context.error)}</p> : context.data && <><p>Project context checked at <time dateTime={context.data.checkedAt}>{context.data.checkedAt}</time> UTC · Project revision {context.data.expectedProjectRevision}.</p>{!context.isFetching && <Repositories api={api} root={root} context={context.data} onInvalid={onInvalid} />}</>}
   </div>;

@@ -9,7 +9,7 @@ import { FIXTURE_ORG, FIXTURE_DEVELOPER } from "../../web/support/fixtures.js";
 export function seedLaneB(put: (row: Record<string, unknown>) => unknown) {
  for (const [org,name,status] of [[FIXTURE_ORG,"payments","active"],[FIXTURE_ORG,"old","archived"],["org_bbbbbbbbbbbbbbbbbbbb","foreign-project","active"]] as const) {
   const definition = StoredProjectDefinitionSchema.parse({ name,revision:1,repositories:[{name:"web",url:`https://github.com/acme/${name}.git`,path:"repo/web",defaultBranch:"main",credentialRef:"github-app",installationId:11,githubRepositoryId:22}],setup:[],readiness:[],orchestratorInstructions:"Read-only fixture." });
-  put({...projectRevisionKey(org,name,1),entityType:"PROJECT",definition,registeredBy:"fixture",registeredAt:"2026-10-01T00:00:00.000Z"});
+  put({...projectRevisionKey(org,name,1),entityType:"PROJECT",definition,runtimeBinding:{fixture:true},registeredBy:"fixture",registeredAt:"2026-10-01T00:00:00.000Z"});
   put({...orgProjectCatalogKey(org,name),entityType:"PROJECT_CATALOG",name,latestRevision:1});
   put({...projectMetaKey(org,name),entityType:"PROJECT_META",name,status,createdAt:"2026-10-01T00:00:00.000Z",createdBy:FIXTURE_DEVELOPER});
  }

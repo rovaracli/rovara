@@ -2808,7 +2808,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
         return isolate ? withDecideIsolation(response) : response;
       }
       const response = unexpectedErrorAnswer(error, request.requestId);
@@ -18660,6 +18660,12 @@ async function assertCurrentWorkflowPublication(dependencies: AwsBrokerDependenc
   }
   const baseCommitSha = (workflow.reviewBase ?? task.preparedBase)?.find((item) => item.repositoryId === repository.repositoryId)?.baseCommitSha;
   if (baseCommitSha !== publication.expectedBaseCommit) throw agentXError("CALLBACK_FORBIDDEN", "workflow publication base is stale");
+  // B32/C94: retain the existing stale refusal, with a fixed settings reason.
+  const publicationOrg = await orgOfRecord(dependencies, task);
+  const currentCatalog = await getItem<{latestRevision?:unknown}>(dependencies,orgProjectCatalogKey(publicationOrg,task.project));
+  if(currentCatalog?.latestRevision!==publication.admittedLatestRevision){
+    throw Object.assign(agentXError("CALLBACK_FORBIDDEN","Project settings changed. Review again before publishing."),{reason:"settingsChanged" as const});
+  }
   const currentAuthority = await currentWorkflowPublicationAuthorityForTask({
     actions: developerTaskActions(dependencies),
     tableName: dependencies.tableName,
