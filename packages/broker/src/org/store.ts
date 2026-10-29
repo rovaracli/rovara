@@ -1,3 +1,4 @@
+import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
 import { inviteCreateBodyHash } from "./invite-creation.js";
 import { takeRateAt } from "../developer/page-comments.js";
@@ -539,6 +540,8 @@ export class OrgStore {
         throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
       }
     }
+    // Mandatory before teardown/final close: failures retain closingAt so a fresh close resumes bounded cleanup.
+    await clearWorkingBranchSaveReceipts(this.input, orgId);
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
