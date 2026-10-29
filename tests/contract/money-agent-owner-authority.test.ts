@@ -62,3 +62,23 @@ for(const field of ["budget","status"] as const)it(`pins the route's ${field} sn
  }return send(command);};
  expect((await f.transfer()).status).toBe(409);expect(raced).toBe(true);expect(f.snapshot()).toEqual(afterRace);expect(f.t.db.get(agentRequestKey(TEST_ORG,DEB.developerId,f.requestId))).toBeUndefined();
 });
+for(const field of ["owner","accountable"] as const)it(`refuses a real ${field} change after the store has obtained its native read`,async()=>{
+ const f=await fixture(field==="accountable");
+ // No monthly share: isolate native META refusal from an independently failing counter.
+ expect((await f.t.api(ADA,"PUT",f.path+"/budget",{monthlyUsd:null})).status).toBe(200);
+ if(field==="accountable")f.t.grantRole(MAYA,"maintainer");
+ const before=f.t.db.get(f.key)!,send=f.t.db.send.bind(f.t.db);let reads=0,raced=false,afterRace=f.snapshot();
+ f.t.db.send=async command=>{
+  const result=await send(command),input=command.input as {Key?:{pk?:string;sk?:string}};
+  if(command.constructor.name==="GetCommand"&&input.Key?.pk===f.key.pk&&input.Key.sk===f.key.sk&&!raced&&++reads===2){
+   raced=true;
+   expect((result as {Item?:Record<string,unknown>}).Item).toMatchObject({owner:before.owner});
+   const changed=await f.t.api(ADA,"PUT",f.path+"/"+field,field==="owner"?{owner:{kind:"member",developerId:BEN.developerId}}:{accountable:{developerId:MAYA.developerId}});
+   expect(changed.status).toBe(200);afterRace=f.snapshot();
+   expect((result as {Item?:Record<string,unknown>}).Item?.[field]).toEqual(before[field]);
+   expect(f.t.db.get(f.key)?.[field]).not.toEqual(before[field]);
+  }
+  return result;
+ };
+ expect((await f.transfer()).status).toBe(409);expect(raced).toBe(true);expect(f.snapshot()).toEqual(afterRace);expect(f.t.db.get(agentRequestKey(TEST_ORG,DEB.developerId,f.requestId))).toBeUndefined();
+});
