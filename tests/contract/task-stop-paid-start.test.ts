@@ -2233,3 +2233,27 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect((await f.t.decide(DEB, requestId)).spendRequest.status).toBe("APPROVED");
   expect(f.t.ownerTotal(BEN)).toBe(120); expect(f.t.db.get(topUpKey(TEST_ORG, month, scope))).toMatchObject({ amountUsd: 1 });
 });
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) it(`legacy cutover expires ${resource} ${operation} asks missing original carried proof`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 40 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const ask = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(ask.status).toBe(202); const requestId = String(ask.body.spendRequestId);
+  const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" }, row = f.t.db.get(key)!;
+  const financial = row.ownerFinancialTerms as Record<string, unknown>, { carriedSource: _source, ...incomplete } = financial; void _source;
+  expect(financial.carriedSource).toBeDefined(); f.t.db.set({ ...row, ownerFinancialTerms: incomplete });
+  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 100 })).toMatchObject({ expired: 1, complete: true });
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+});
