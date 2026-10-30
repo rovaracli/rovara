@@ -1,6 +1,6 @@
 // Live steer: what happens at the broker when a step stopped because the owner's live message asked for a change outside the approved plan. The worker ended the step with the fixed words
 // `WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE` followed by the ids of the owner's messages it had been given (server-made ids, never text). The step's own result blocks the workflow with a fixed
-// reason (the owner decides: retry, or send back with the change in a note); this marks each of those messages `needs re-approval` on its row and says so on the session's timeline. It never
+// reason (the owner decides: Understand and Plan retry with the message and the new plan is approved; Coding retries the approved plan without the change, or a new task asks for it); this marks each of those messages `needs re-approval` on its row and says so on the session's timeline. It never
 // throws (the block is already committed) and no log line, event or row holds a message's text.
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "@agentx/contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";

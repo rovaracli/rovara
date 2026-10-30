@@ -9,7 +9,7 @@
 // ever left queued without a note. A queued message becomes `delivered` when the task's `threadNotesFedThrough` passes its note (`settleSteerDeliveries`, run by the session's summary refresh),
 // and when the session ends the messages no step took are made `not_delivered` (`closeQueuedSteers`). The session counts its queued messages (`sessionQueuedSteersKey`), so a session with none
 // is not searched. No log line, event or notice holds a message's text.
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AppNoteSchema,
   ENDED_SESSION_STATUSES,
@@ -356,7 +356,7 @@ export async function deliverSteerToDevice(deps: SteerDependencies, orgId: OrgId
 /**
  * A steer the worker took into its running step's session (live steer) is `delivered`: its message, the queue's count and the session's event, as a step taking a note does, and (with
  * `taskId`) its note is marked `liveDeliveredAt` in the same transaction, so the next step shows it as already given live rather than as a fresh message. The note stays (a step that fails
- * and runs again still reads it). A message not queued any more is left as it is. Never throws: a message left queued is settled by the next step that reads its note, or closed when the
+ * and runs again still reads it, and its mark is cleared then: `clearLiveDeliveredSince`). A message not queued any more is left as it is. Never throws: a message left queued is settled by the next step that reads its note, or closed when the
  * session ends. Answers whether it marked the message.
  */
 export async function deliverSteerLive(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string, taskId?: string): Promise<boolean> {
@@ -418,6 +418,40 @@ export async function markSteerNeedsReapproval(deps: SteerDependencies, orgId: O
     if (failedIndexes(error) === undefined) deps.log?.({ event: "agent_session.steer_reapproval_mark_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
     return false;
   }
+}
+
+/**
+ * A step that took live messages and then did not succeed will run again, and its re-run never received them: their notes stop saying "already given to the running step" so the re-run reads
+ * them as the messages they are (information only, as before). Scoped to the attempt that ended: only a note marked live at or after `sinceIso` (when that attempt's operation was created)
+ * is cleared, so a message given live to an earlier step that succeeded keeps its mark. Never throws; answers how many notes it cleared. No message text is read into a log or an error.
+ */
+export async function clearLiveDeliveredSince(deps: SteerDependencies, taskId: string, sinceIso: string): Promise<number> {
+  let cleared = 0;
+  try {
+    let start: Record<string, unknown> | undefined;
+    do {
+      const page = await deps.documentClient.send(new QueryCommand({
+        TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :note)", FilterExpression: "attribute_exists(liveDeliveredAt)", ConsistentRead: true,
+        ProjectionExpression: "sk, liveDeliveredAt", ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":note": "NOTE#msg_" }, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+      for (const item of page.Items ?? []) {
+        if (typeof item["liveDeliveredAt"] !== "string" || item["liveDeliveredAt"] < sinceIso) continue;
+        try {
+          await deps.documentClient.send(new UpdateCommand({
+            TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: String(item["sk"]) }, UpdateExpression: "REMOVE liveDeliveredAt",
+            ConditionExpression: "attribute_exists(pk) AND liveDeliveredAt = :at", ExpressionAttributeValues: { ":at": item["liveDeliveredAt"] },
+          }));
+          cleared += 1;
+        } catch (error) {
+          if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+        }
+      }
+      start = page.LastEvaluatedKey;
+    } while (start !== undefined);
+  } catch (error) {
+    deps.log?.({ event: "agent_session.steer_live_mark_clear_failed", taskId, error: error instanceof Error ? error.name : "unknown" });
+  }
+  return cleared;
 }
 
 /** Whether a message to the agent is still queued: the live steer's dispatch checks it again before it reaches a session. */

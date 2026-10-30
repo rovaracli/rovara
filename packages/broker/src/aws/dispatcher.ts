@@ -196,7 +196,7 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
 
 export interface DispatchLogEntry {
   level: "warn" | "error";
-  event: "dispatch.attempt_failed" | "dispatch.terminal_transition_failed";
+  event: "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured";
   operationId?: string;
   workspaceId?: string;
   outboxId?: string;
@@ -304,7 +304,11 @@ export function createDispatcherHandler(dependencies: {
           try {
             const setup = record.invocation.kind === "project-setup-smoke" ? dependencies.projectSetupLifecycle : undefined;
             if (setup) await setup.markFailed(record, terminalDispatchError(error, attempt));
-            else if (record.invocation.kind === "steer" && dependencies.liveSteer !== undefined) await dependencies.liveSteer.fail(record);
+            else if (record.invocation.kind === "steer") {
+              // A live steer has no operation record: its own end, or (a dispatcher without live steer) none at all, never the operation's markFailed. The message stays the note it already is.
+              if (dependencies.liveSteer !== undefined) await dependencies.liveSteer.fail(record);
+              else logDispatchFailure(dependencies.log, { level: "warn", event: "dispatch.live_steer_unconfigured", outboxId: record.id, messageId: message.messageId, attempt, maxAttempts, terminal: true, errorName: "AgentXError", errorCode: "RUNTIME_UNAVAILABLE" });
+            }
             else await dependencies.markFailed(record, terminalDispatchError(error, attempt));
             continue;
           } catch (transitionError) {

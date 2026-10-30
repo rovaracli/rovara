@@ -20,7 +20,7 @@ const inertText = (text: string): string => Array.from(text, (character) => {
 }).join("").replace(/\s+/gu, " ").trim().replaceAll("<", "‹").replaceAll(">", "›");
 
 /** What a step does with an owner's request that would change the approved plan: it makes no change for it and says so in a marked line the worker reads (the step then stops for the owner's approval). */
-const SCOPE_ASK = `make no change for it, and end your final message with one line that starts with "${LIVE_STEER_REAPPROVAL_MARKER}" and says the change that was asked; your step then stops and the owner is asked to approve it before anything more is built`;
+const SCOPE_ASK = `make no change for it, and end your final message with one line that starts with "${LIVE_STEER_REAPPROVAL_MARKER}" and says the change that was asked; your step then stops, nothing is built for it, and the owner decides what happens next`;
 
 /**
  * Gives a message to the sessions that are streaming a prompt now, and only to those: pi keeps a message queued on an idle session for a later prompt (or loses it when the session ends), so an

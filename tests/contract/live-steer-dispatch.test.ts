@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AppNoteSchema, LIVE_STEER_REAPPROVAL_REASON, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, workspaceSessionKey } from "../../packages/contracts/src/index.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createLiveSteerDispatch } from "../../packages/broker/src/agent-sessions/live-steer-dispatch.js";
-import { deliverSteerLive } from "../../packages/broker/src/agent-sessions/steer.js";
+import { clearLiveDeliveredSince, deliverSteerLive } from "../../packages/broker/src/agent-sessions/steer.js";
 import { reapprovalMessageIds, settleLiveSteerReapproval } from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
 import { threadNotesPromptSection } from "../../packages/broker/src/aws/developer-tasks.js";
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
@@ -135,6 +135,20 @@ describe("the dispatcher delivering a live steer", () => {
     await handler(event(2));
     expect(s.posts).toHaveLength(0);
   });
+
+  it("M9: a dispatcher without live steer never calls the operation's markFailed for a steer item (it has no operation record): the last attempt is acknowledged with a fixed log event and the message stays a note", async () => {
+    const s = await setup();
+    const markFailed = vi.fn(async () => undefined);
+    const logs: Array<Record<string, unknown>> = [];
+    const handler = createDispatcherHandler({ markDispatching: async () => true, markDelivered: async () => undefined, markFailed, maxAttempts: 2, deliverEc2: async () => "DELIVERED", log: (entry) => logs.push(entry as unknown as Record<string, unknown>) });
+    const event = (attempt: number) => ({ Records: [{ messageId: "m4", body: JSON.stringify(s.record), attributes: { ApproximateReceiveCount: String(attempt) } }] });
+    expect(await handler(event(2))).toEqual({ batchItemFailures: [] });
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(logs.find((entry) => entry["event"] === "dispatch.live_steer_unconfigured")).toMatchObject({ terminal: true, level: "warn" });
+    expect(JSON.stringify(logs)).not.toContain("LIVE-TEXT-4471");
+    expect(s.messageNow()["delivery"]).toMatchObject({ state: "queued" });
+    expect(s.f.notes()).toHaveLength(1);
+  });
 });
 
 describe("a message given live is not shown again as a fresh message (I4)", () => {
@@ -164,6 +178,39 @@ describe("a message given live is not shown again as a fresh message (I4)", () =
     s.f.w.db.delete({ pk: `DEVTASK#${s.f.made.taskId}`, sk: `NOTE#${s.message.messageId}` });
     await s.handler(1);
     expect(s.messageNow()["delivery"]).toMatchObject({ state: "delivered" });
+  });
+});
+
+describe("a live mark is scoped to the step attempt that took the message (minor c)", () => {
+  const noteOf = (f: Awaited<ReturnType<typeof setup>>["f"]) => AppNoteSchema.parse(Object.fromEntries(Object.entries(f.notes()[0]!).filter(([key]) => key !== "pk" && key !== "sk" && key !== "entityType")));
+  const deps = (s: Awaited<ReturnType<typeof setup>>) => ({ documentClient: s.f.w.db, tableName: "state", now: () => s.f.w.clock.now });
+
+  it("a note given live during an attempt that did not succeed loses its mark, so the re-run's prompt shows it as an ordinary message, text kept", async () => {
+    const s = await setup();
+    await s.handler(1);
+    expect(noteOf(s.f).liveDeliveredAt).toBeDefined();
+    const attemptStart = new Date(s.f.w.clock.now - 1000).toISOString();
+    expect(await clearLiveDeliveredSince(deps(s), s.f.made.taskId, attemptStart)).toBe(1);
+    const note = noteOf(s.f);
+    expect(note.liveDeliveredAt).toBeUndefined();
+    const section = threadNotesPromptSection([note], "n0nce");
+    expect(section).not.toContain("live_delivered");
+    expect(section).not.toContain("already given");
+    expect(section).toContain("LIVE-TEXT-4471");
+    expect(await clearLiveDeliveredSince(deps(s), s.f.made.taskId, attemptStart)).toBe(0);
+  });
+
+  it("a note given live before the failed attempt began (an earlier step that succeeded) keeps its mark", async () => {
+    const s = await setup();
+    await s.handler(1);
+    const marked = noteOf(s.f).liveDeliveredAt;
+    expect(await clearLiveDeliveredSince(deps(s), s.f.made.taskId, new Date(s.f.w.clock.now + 60_000).toISOString())).toBe(0);
+    expect(noteOf(s.f).liveDeliveredAt).toBe(marked);
+  });
+
+  it("never throws: an unknown task clears nothing", async () => {
+    const s = await setup();
+    expect(await clearLiveDeliveredSince(deps(s), "00000000-0000-4000-8000-000000000000", new Date(0).toISOString())).toBe(0);
   });
 });
 

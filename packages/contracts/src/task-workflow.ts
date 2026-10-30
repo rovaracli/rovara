@@ -36,8 +36,16 @@ export const WORKFLOW_BLOCK_REASONS = {
   ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
   /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
   stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
-  /** A step stopped because the owner's live message asked for a change outside the approved plan (WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE): the owner decides. */
-  liveSteerReapproval: "A live message from the owner asks for a change outside the approved plan, so this step stopped for the owner's approval. To approve the change, put it in a note and retry or send the task back; to leave it out, retry the step as it is.",
+  /**
+   * Understand or Plan stopped because the owner's live message asked for a change outside what was approved (WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE). Retry plans again with the message, and the
+   * new plan is what the owner approves before anything is built.
+   */
+  liveSteerReapproval: "A live message from the owner asks for a change outside what was approved, so this step stopped. Choose Retry: Rovara plans again with that message, and you approve the new plan before anything is built.",
+  /**
+   * The same stop at Coding. A blocked coding step has no way to approve a change to the plan (Retry coding and Send back both keep the approved plan), so the words say what each way does: the
+   * run's work was not kept, Retry builds the approved plan without the change, and a new task is how to include it.
+   */
+  liveSteerReapprovalCoding: "A live message from the owner asks for a change outside the approved plan, so coding stopped and this run's work was not kept. Retry coding builds the approved plan without that change. To include the change, close this task and start a new task that asks for it.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
   leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
   /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */

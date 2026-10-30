@@ -1204,6 +1204,8 @@ export class ControlPlaneStack extends Stack {
       // Mainline #408: the plan self-check and automatic fixing switches, packed settings (never Lambda variables of their own). On unless the operator sets the parameter to false.
       brokerSettings.add("planSelfCheck", signInParameters.planSelfCheckEnabled.valueAsString);
       brokerSettings.add("autofix", signInParameters.autofixEnabled.valueAsString);
+      // Live steer kill switch, a packed setting (two bytes of key, one of value; never a variable of its own). Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("liveSteer", signInParameters.liveSteerEnabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
