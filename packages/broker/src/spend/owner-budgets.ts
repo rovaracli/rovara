@@ -8,6 +8,7 @@ import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "./owner-total.js";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
+import { pinSourceWrite, staleApproval, type ApprovalSource } from "./approval-source.js";
 import { cleanUsd } from "./top-ups.js";
 
 /**
@@ -39,6 +40,7 @@ export interface OverrideCap {
   /** The actual deciding actor; supplied only by the approval handler. */
   actor: BudgetActor;
   spendRequestId: string;
+  source?: ApprovalSource;
   items: TransactItem[];
   /** The error when one of `items` is refused (the request was decided meanwhile). */
   closed: () => Error;
@@ -49,11 +51,12 @@ export function withOverride(items: TransactItem[], refuse: (failed: Set<number>
   const override = options.overrideCap;
   if (override === undefined) return [items, refuse];
   if (override.actor === undefined || override.actor.developerId !== scope.by) throw budgetActorRefused();
+  const sourceIndex = override.source === undefined ? undefined : pinSourceWrite(items, override.source);
   const checks = budgetActorChecks(scope.tableName, scope.orgId, override.actor);
   const actorStart = items.length, start = actorStart + checks.length;
   return [[...items, ...checks, ...override.items], (failed) => (
     [...failed].some(index => index >= actorStart && index < start) ? budgetActorRefused()
-      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : refuse(failed)
+      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : sourceIndex !== undefined && failed.has(sourceIndex) ? staleApproval() : refuse(failed)
   )];
 }
 

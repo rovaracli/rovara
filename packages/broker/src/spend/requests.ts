@@ -1,3 +1,5 @@
+import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
+import type { BudgetSubject } from "./owner-total.js";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 // Plan 3 Task 32: requests for more spend. A run that reached one of its own limits (its run limit, the agent's max per run, the planning limit) asks the person
 // who may raise it; an agent budget change that would take one person past the owner cap asks an org admin. A request is one record (`spendRequestKey`) with
@@ -10,7 +12,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
+  agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
@@ -84,6 +86,7 @@ const logLine = (deps: Pick<SpendRequestDependencies, "log">, event: string, fie
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
 const notFound = () => agentXError("NOT_FOUND", "spend request not found");
 const ENDED_WORDS: Record<NonNullable<SpendRequestRecord["endedBecause"]>, string> = {
+  figures_changed: "Spending figures changed; ask again.",
   continued: "The task went on without this, so nobody can decide it now.",
   task_closed: "This task was closed, so nobody can decide this now.",
   target_left: "The person this change names is no longer a member of your organization, so it can't apply now.",
@@ -542,6 +545,7 @@ export interface CreateSpendRequestInput {
   requestedFor?: { developerId: string };
   resume?: SpendRequestRecord["resume"];
   change?: OwnerCapChange;
+  approvalSource?: ApprovalSource;
   /** The subject the one-pending rule is kept for: the task, by default; an `owner_cap` request's agent or person. */
   subject?: string;
   /** Written in the same transaction as the request (a task event, the asking request's own item). `request` is R18's mark, with what to answer a repeat. */
@@ -594,6 +598,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       reason: "", requestedBy: input.requestedBy, ...(input.requestedFor === undefined ? {} : { requestedFor: input.requestedFor }),
       approverRole: "org_admin", approverIds: [], status: "PENDING",
       ...(input.resume === undefined ? {} : { resume: input.resume }), ...(input.change === undefined ? {} : { change: input.change }),
+      ...(input.approvalSource === undefined ? {} : { approvalSource: input.approvalSource }),
       createdAt, expiresAt: iso(input.kind === "month" ? monthRequestExpiry(now) : now + SPEND_REQUEST_TTL_DAYS * DAY_MS),
     };
     const approvers = await spendApprovers(deps, draft);
@@ -1087,17 +1092,24 @@ export const ownerCapMessage = (reason: string) => `${reason} I asked an org adm
  * request and the words the route answers with.
  */
 export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
-  orgId: OrgId; agentId?: string; chainId?: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; change: OwnerCapChange; request?: RequestMark;
+  orgId: OrgId; agentId?: string; chainId?: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; change: OwnerCapChange; request?: RequestMark; before: BudgetSubject;
 }): Promise<{ record: SpendRequestRecord; message: string }> {
   const chainId = input.chainId;
   if ((input.agentId === undefined) === (chainId === undefined)) throw new Error("an owner_cap request is about an agent or a chain");
+  const key = chainId !== undefined ? chainKey(input.orgId, chainId, "META") : isBuiltinAgentId(input.agentId as never) ? builtinSettingsKey(input.orgId, input.agentId as never) : agentKey(input.orgId, input.agentId as never, "META");
+  const original = await getItem(deps, key);
+  for (const field of ["status", "owner", "accountable", "monthlyBudgetUsd"] as const) {
+    if (canonicalJson(original?.[field]) !== canonicalJson(input.before[field])) throw staleApproval();
+  }
+  const approvalSource: ApprovalSource = { version: 1, key, exists: original !== undefined, fields: sourceFields(original) };
   const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd, chainId === undefined ? "agent" : "agent and chain");
   const made = await createSpendRequest(deps, {
     orgId: input.orgId, kind: "owner_cap",
     ...(chainId === undefined ? { scope: { kind: "agent" as const, agentId: input.agentId as never }, agentId: input.agentId as string } : { scope: { kind: "chain" as const, chainId: chainId }, chainId, subject: `CHAIN#${chainId}` }),
     ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }), forOwner: input.owner,
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
-    reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change,
+    reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change, approvalSource,
+    extraItems: () => [{ ConditionCheck: { TableName: deps.tableName, Key: key, ...sourceCondition(approvalSource) } }],
     ...(input.request === undefined ? {} : { request: input.request }),
     requestResult: (record) => ({ status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message: ownerCapMessage(record.reason) }),
   });
@@ -1341,7 +1353,7 @@ async function requireSameOwner(deps: SpendRequestDependencies, record: SpendReq
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
 async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], decisionActor: BudgetActor): Promise<void> {
   const agentId = record.agentId as never;
-  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, spendRequestId: record.spendRequestId, items, closed: () => closed({ status: "APPROVED" }) } };
+  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
     try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] })); }
@@ -1444,9 +1456,19 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   if (record.kind === "owner_cap") {
     const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
+    if (status === "APPROVED" && change !== undefined && change.op !== "confirm_move") {
+      const parsedSource = ApprovalSourceSchema.safeParse(record.approvalSource);
+      const source = parsedSource.success ? parsedSource.data : undefined;
+      const key = record.chainId !== undefined ? chainKey(record.orgId, record.chainId, "META") : isBuiltinAgentId(record.agentId as never) ? builtinSettingsKey(record.orgId, record.agentId as never) : agentKey(record.orgId, record.agentId as never, "META");
+      const current = await getItem(deps, key);
+      if (source?.version !== 1 || source.key.pk !== key.pk || source.key.sk !== key.sk || source.exists !== (current !== undefined) || canonicalJson(source.fields) !== canonicalJson(sourceFields(current))) {
+        await expireOne(deps, record, "figures_changed"); throw staleApproval();
+      }
+    }
     try {
       await applyOwnerCap(deps, record, change, decidedBy, ending, decisionActor);
     } catch (error) {
+      if (error instanceof AgentXError && error.code === "SPENDING_APPROVAL_STALE") await expireOne(deps, record, "figures_changed");
       if (error instanceof AgentXError) throw error;
       await refused(error);
     }

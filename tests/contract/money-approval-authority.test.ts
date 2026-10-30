@@ -92,10 +92,10 @@ for (const kind of ["agent", "chain"] as const) it(`preserves a competing commit
     return send(command);
   };
   const error = await f.decide().then(() => undefined, (failure: { code?: string }) => failure);
-  expect(raced).toBe(true); expect(error?.code).toBe(kind === "agent" ? "AGENT_REVISION_CONFLICT" : "CHAIN_REVISION_CONFLICT");
+  expect(raced).toBe(true); expect(error?.code).toBe("SPENDING_APPROVAL_STALE");
   expect(f.t.db.get(f.s.key)?.monthlyBudgetUsd).toBe(25); expect(f.t.db.get(f.s.key)?.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
-  expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("PENDING");
-  expect(f.capture.recorded()).toHaveLength(1); expect(f.capture.pending()).toHaveLength(0);
+  expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+  expect(f.capture.recorded()).toHaveLength(2); expect(f.capture.pending()).toHaveLength(0);
 });
 
 it("fences the deciding actor when an owner-cap request is denied", async () => {

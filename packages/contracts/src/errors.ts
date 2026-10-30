@@ -12,6 +12,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "WORKSPACE_BUSY",
   "IDEMPOTENCY_CONFLICT",
   "RUNTIME_UNAVAILABLE",
+  "SPENDING_APPROVAL_STALE",
   "TASK_STOP_CONFIG_MISSING",
   "TASK_STOP_CONFIG_INVALID",
   "TASK_STOP_APPROVAL_ABOVE_CEILING",
@@ -131,6 +132,7 @@ export class AgentXError extends Error {
 }
 
 export function errorStatus(code: AgentXErrorCode): number {
+  if (code === "SPENDING_APPROVAL_STALE") return 409;
   if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.

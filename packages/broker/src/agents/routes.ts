@@ -825,7 +825,7 @@ export async function holdingOwnerCap<T>(
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
-      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
+      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark, before,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
     });
     return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });

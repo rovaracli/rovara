@@ -338,6 +338,8 @@ export interface SpendRequestRecord {
   resume?: "continue" | "implement" | "plan";
   /** The change an `owner_cap` request applies once approved. */
   change?: OwnerCapChange;
+  /** Original native money-source state; absence is meaningful. */
+  approvalSource?: { version: 1; key: { pk: string; sk: string }; exists: boolean; fields: Record<string, unknown> };
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
   /** The chain an `owner_cap` request is about (Plan 4): the person's agent and chain budgets are one total. */
@@ -349,7 +351,7 @@ export interface SpendRequestRecord {
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
   /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, the agent came to count for another owner than the one the change was summed for, or everyone who could decide it left. */
-  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left";
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left" | "figures_changed";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */
