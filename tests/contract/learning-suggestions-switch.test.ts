@@ -137,6 +137,15 @@ describe("GET and PUT /v1/app/org/learning-settings", () => {
     expect(await failure(s.put(callerOf(ADMIN, "admin"), { expectedRevision: 0, suggestions: "on" }))).toMatchObject({ code: "LEARNING_SETTINGS_CHANGED" });
   });
 
+  it("reads a record with a value and a revision but no changedBy or changedAt as the company's, so the next write is not stuck (review M5)", async () => {
+    const s = setup();
+    const { changedBy: _by, changedAt: _at, ...bare } = recordOf("on", 3);
+    void _by; void _at;
+    s.db.set(bare);
+    expect(await s.get(callerOf(OWNER, "owner"))).toMatchObject({ suggestions: "on", source: "company", revision: 3 });
+    expect(await s.put(callerOf(OWNER, "owner"), { expectedRevision: 3, suggestions: "off" })).toMatchObject({ suggestions: "off", source: "company", revision: 4 });
+  });
+
   it("replaces a record it cannot read at the first write instead of being stuck behind it", async () => {
     const s = setup();
     s.db.set(recordOf("auto", 7));
@@ -235,6 +244,19 @@ describe("grouping while the switch is off", () => {
     expect(result.judged).toBe(2);
     expect(suggestionsOf(world)).toHaveLength(1);
     expect(audit.recordedBy("rule.suggested")).toHaveLength(1);
+  });
+
+  it("opens nothing when the switch is turned off after the run read it (review M3): the open commit is held to the switch", async () => {
+    const world = makeWorld();
+    const audit = capturingAuditDeps({ db: world.db, now: () => world.clock.ms });
+    setSwitch(world, "on");
+    await add(world, LINT_A, { task: "t1" });
+    await add(world, LINT_B, { task: "t2" });
+    // newId is called just before the open commit: someone turns the switch off at that moment.
+    const result = await groupCorrections({ ...world.deps, audit: audit.audit }, world.scope, { newId: () => { setSwitch(world, "off", 2); return "s-late"; } });
+    expect(result.opened).toEqual([]);
+    expect(suggestionsOf(world)).toEqual([]);
+    expect(audit.recordedBy("rule.suggested")).toEqual([]);
   });
 
   it("reads the setting by default (the install default when the company never chose) and checks it before anything else", async () => {

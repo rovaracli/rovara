@@ -22,6 +22,7 @@ import type { AgentDraft, AgentRecord, AgentVersion } from "../agents/store.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { inertRuleText } from "../playbook/inert-rule-text.js";
 import { appendRuleToOverlay, removeRuleFromOverlay } from "./overlay.js";
+import { ProcessModelRefusal } from "../model-selection/process-refusal.js";
 import { postProjectProcess } from "../playbook/process-layer.js";
 import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rolledBackEvent } from "./audit.js";
 import { dismissedSetKey, groupCorrections, prCaptureOff } from "./grouping.js";
@@ -145,6 +146,8 @@ async function saveExactDraft(deps: LearningDecideDeps, caller: DeveloperCaller,
 
 /** A refusal from the agent code (not "unavailable"): nothing was published. A network error or any other failure may have come after the write, so it is never read as a refusal. */
 function isRefusal(error: unknown): boolean {
+  // The model resolver's refusal (409 with its own code) is not an AgentXError, but it too means nothing was published.
+  if (error instanceof ProcessModelRefusal) return true;
   return error instanceof Error && error.name === "AgentXError" && (error as { code?: unknown }).code !== "RUNTIME_UNAVAILABLE";
 }
 
