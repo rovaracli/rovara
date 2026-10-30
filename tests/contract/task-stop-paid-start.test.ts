@@ -1,3 +1,4 @@
+import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
@@ -1362,4 +1363,21 @@ it("model key record refuses a competing admitted cap write and returns no key",
   expect(raced).toBe(true); expect(reply.status).not.toBe(200);
   expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined();
   expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
+});
+
+for (const change of ["terminal", "fence"] as const) it(`key recording refuses a competing operation ${change} write`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; const op = f.t.db.get(operationKey(task.workspaceId, plan.id))!;
+      f.t.db.set({ ...op, ...(change === "terminal" ? { status: "SUCCEEDED" } : { fence: Number(op.fence) + 1 }) });
+    }
+    return send(command);
+  };
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(raced).toBe(true); expect(reply.status).not.toBe(200);
+  expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
 });
