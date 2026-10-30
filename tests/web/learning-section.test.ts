@@ -41,6 +41,7 @@ describe("the Suggested rules section", () => {
   const card = within(cards()[0]!);
   expect(card.getByRole("heading", { name: "Suggested rule for Build" })).toBeTruthy();
   expect(card.getByText("Applies to:").textContent).toBe("Applies to: Build");
+  expect(card.getByText("Accepted for the Build step. To use it elsewhere, edit How we work.")).toBeTruthy();
   const box = card.getByRole<HTMLTextAreaElement>("textbox", { name: "Proposed wording" });
   expect(box.value).toBe("Add a test for every bug fix.");
   expect(box.maxLength).toBe(LEARNING_TEXT_MAX);
@@ -58,6 +59,7 @@ describe("the Suggested rules section", () => {
  it("names the project-wide stage in words", async () => {
   await open({ view: learningView({ suggestions: [suggestion({ stage: "*" })] }) });
   expect(within(cards()[0]!).getByText("Applies to:").textContent).toBe("Applies to: Everyone except reviewers (project-wide)");
+  expect(within(cards()[0]!).getByText("Accepted for the Everyone except reviewers (project-wide) step. To use it elsewhere, edit How we work.")).toBeTruthy();
  });
 
  it("renders a source that holds a link or markdown literally, and links only the server's task path", async () => {
@@ -79,6 +81,11 @@ describe("the Suggested rules section", () => {
   expect(card.getByText("May overlap with: Run the linter first.; Keep changes small.")).toBeTruthy();
   expect(card.getByRole("button", { name: "Request approval" })).toBeTruthy();
   expect(card.queryByRole("button", { name: "Accept as new version" })).toBeNull();
+ });
+
+ it("keeps the plain Accept label for a review-stage suggestion the server did not mark less safe", async () => {
+  await open({ view: learningView({ suggestions: [suggestion({ stage: "review" })] }) });
+  expect(within(cards()[0]!).getByRole("button", { name: "Accept as new version" })).toBeTruthy();
  });
 
  it("is read-only where the server says this person cannot decide", async () => {
@@ -112,6 +119,16 @@ describe("the Suggested rules section", () => {
   expect(screen.getByText("No suggested rules yet. Rovara suggests one when the same correction comes up twice.")).toBeTruthy();
  });
 
+ it("shows nothing at all, and no alert, where the company has not opened the learning loop", async () => {
+  const f = setup({ learn: (request, url) => request.method === "GET" && url.pathname === LEARNING_PATH ? refuse("NOT_FOUND", "Rovara isn't learning from this project right now.", 404) : undefined });
+  await screen.findByRole("heading", { name: "Build" });
+  await waitFor(() => expect(f.learningReads()).toBe(1));
+  expect(screen.queryByRole("region", { name: "Suggested rules" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText(/Suggested rules/u)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+ });
+
  it("says when the read failed, and tries again", async () => {
   let fail = true;
   const f = setup({ learn: (request, url) => fail && request.method === "GET" && url.pathname === LEARNING_PATH ? refuse("RUNTIME_UNAVAILABLE", "Rovara could not load suggested rules.", 400) : undefined });
@@ -124,10 +141,9 @@ describe("the Suggested rules section", () => {
 });
 
 describe("accepting", () => {
- it("sends the strict body with the edited wording, the chosen stage and the suggestion's revision", async () => {
+ it("sends the strict body with the edited wording, the suggestion's own stage and its revision", async () => {
   const f = await open({ learn: request => request.method === "POST" ? ok({ outcome: "published", version: 7 }) : undefined });
   fireEvent.change(screen.getByRole("textbox", { name: "Proposed wording" }), { target: { value: "  Always add a regression test.  " } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Use this rule for" }), { target: { value: "*" } });
   accept();
   expect((await screen.findByRole("status")).textContent).toContain("Added in version 7");
   const [write] = f.learningWrites();
@@ -135,14 +151,16 @@ describe("accepting", () => {
   expect(() => LearningAcceptBodySchema.parse(write!.body)).not.toThrow();
   const sent = LearningAcceptBodySchema.parse(write!.body);
   expect(sent.requestId).toMatch(/^[0-9a-f-]{36}$/u);
-  expect({ ...sent, requestId: "" }).toEqual({ requestId: "", expectedRevision: 4, stage: "*", text: "Always add a regression test." });
+  expect({ ...sent, requestId: "" }).toEqual({ requestId: "", expectedRevision: 4, stage: "build", text: "Always add a regression test." });
  });
 
- it("offers the work stages, project-wide, and the review stages marked as needing a second person", async () => {
-  await open();
-  const options = within(screen.getByRole("combobox", { name: "Use this rule for" })).getAllByRole("option").map(option => [option.getAttribute("value"), option.textContent]);
-  expect(options).toEqual(expect.arrayContaining([["build", "Build"], ["*", "Everyone except reviewers (project-wide)"], ["plan_critic", "Plan check (needs a second person)"], ["review", "Review (needs a second person)"]]));
-  expect(options.map(option => option[0])).not.toContain("pull_request");
+ it("shows the stage as a label, with no stage picker, and sends the suggestion's own stage (project-wide too)", async () => {
+  const f = await open({ view: learningView({ suggestions: [suggestion({ stage: "*" })] }), learn: request => request.method === "POST" ? ok({ outcome: "published", version: 7 }) : undefined });
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.queryByText(/needs a second person\)/u)).toBeNull();
+  accept();
+  await screen.findByText(/Added in version 7/u);
+  expect(f.learningWrites()[0]!.body).toMatchObject({ stage: "*" });
  });
 
  it("invalidates the learning read and the How we work reads after a decision", async () => {
@@ -211,6 +229,14 @@ describe("accepting", () => {
   await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
  });
 
+ it("reads the list again when a write finds the suggestion gone, and shows the server's words", async () => {
+  const f = await open({ learn: request => request.method === "POST" ? refuse("NOT_FOUND", "That suggestion is gone.", 404) : undefined });
+  const reads = f.learningReads();
+  accept();
+  expect((await screen.findByText("That suggestion is gone.")).closest("[role=alert]")).toBeTruthy();
+  await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
+ });
+
  it("shows the resolver's refusal in its fixed sentence, with a link only to this app", async () => {
   await open({ learn: request => request.method === "POST" ? refuse("CONFIG_INVALID", "Model choices can't be published: STAGE_LOCKED build /app/admin/how-we-work", 400) : undefined });
   accept();
@@ -238,7 +264,7 @@ describe("accepting", () => {
 describe("dismissing", () => {
  const startDismiss = () => fireEvent.click(screen.getByRole("button", { name: "Dismiss…" }));
  it("needs a reason before anything is sent", async () => {
-  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: suggestion({ status: "dismissed" }) }) : undefined });
+  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: { id: "sug_1", status: "dismissed" } }) : undefined });
   startDismiss();
   const form = screen.getByRole("group", { name: "Why dismiss this?" });
   expect(within(form).getAllByRole("radio").map(radio => radio.parentElement?.textContent)).toEqual(["Wrong or not helpful", "Already covered by a rule", "One-off, not a pattern", "Other"]);
@@ -256,22 +282,21 @@ describe("dismissing", () => {
   expect(LearningDismissBodySchema.parse(write!.body)).toEqual({ expectedRevision: 4, dismissKind: "one_off", note: "Only for the migration." });
  });
 
- it("reads the short answer the route really gives ({ suggestion: { id, status } })", async () => {
-  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: { id: "sug_1", status: "dismissed" } }) : undefined });
-  startDismiss();fireEvent.click(screen.getByRole("radio", { name: "Other" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
-  expect((await screen.findByRole("status")).textContent).toContain("Dismissed.");
-  expect(screen.queryByRole("alert")).toBeNull();
-  expect(f.learningWrites()).toHaveLength(1);
- });
-
  it("leaves the note out when it is empty, and limits it to 500 characters", async () => {
-  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: suggestion({ status: "dismissed" }) }) : undefined });
+  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: { id: "sug_1", status: "dismissed" } }) : undefined });
   startDismiss();
   expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Note (optional)" }).maxLength).toBe(500);
   fireEvent.click(screen.getByRole("radio", { name: "Other" }));
   fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
   await waitFor(() => expect(f.learningWrites()).toHaveLength(1));
   expect(f.learningWrites()[0]!.body).toEqual({ expectedRevision: 4, dismissKind: "other" });
+ });
+
+ it("reads the learning list again after a dismiss", async () => {
+  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: { id: "sug_1", status: "dismissed" } }) : undefined });
+  const reads = f.learningReads();
+  startDismiss();fireEvent.click(screen.getByRole("radio", { name: "Other" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
+  await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
  });
 
  it("cancel closes the form without sending", async () => {
@@ -284,7 +309,7 @@ describe("dismissing", () => {
  it("shows a refusal and keeps the form", async () => {
   await open({ learn: request => request.method === "POST" ? refuse("LEARNING_LAYER_BUSY", "x") : undefined });
   startDismiss();fireEvent.click(screen.getByRole("radio", { name: "Wrong or not helpful" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
-  await screen.findByText("Finish or discard the How we work draft or pending change first.");
+  await screen.findByText("This suggestion is being accepted. Try again once it is decided.");
   expect(screen.getByRole("group", { name: "Why dismiss this?" })).toBeTruthy();
  });
 });
@@ -361,6 +386,14 @@ describe("the Added by suggestions list", () => {
   await screen.findByText("Sent for confirmation: someone else who can approve changes in this project confirms it.");
   fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));
   expect(f.host.openExternal).toHaveBeenCalledWith(CONFIRM_URL);
+ });
+
+ it("a conflict on Remove talks about the rule, not a suggestion", async () => {
+  await open({ view: learningView({ suggestions: [], rules: [rule()] }), learn: request => request.method === "POST" ? refuse("AGENT_REVISION_CONFLICT", "x") : undefined });
+  fireEvent.click(screen.getByRole("button", { name: "Added by suggestions (1)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Remove rule" }));
+  await screen.findByText("This rule isn't in How we work any more. Reload and try again.");
+  expect(screen.queryByText("This suggestion changed. Reload and try again.")).toBeNull();
  });
 
  it("shows a refusal of Remove", async () => {

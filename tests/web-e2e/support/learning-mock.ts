@@ -33,7 +33,7 @@ export async function learningMock({ url, method, body, json, record }: MockExch
   const found = state.suggestions.find(item => item.id === dismiss[1]);
   if (found === undefined || found.revision !== input.expectedRevision) { json(409, conflict);return true; }
   state.suggestions = state.suggestions.filter(item => item !== found);state.dismissed.push({ id: found.id, stage: found.stage, at: "2026-10-30T09:00:00.000Z", kind: input.dismissKind, text: found.text });
-  json(200, { suggestion: { id: found.id, stage: found.stage, status: "dismissed", allFromOnePerson: false, lessSafe: false, lessSafeWords: [], overlaps: [], sources: [], revision: found.revision + 1 } });return true;
+  json(200, { suggestion: { id: found.id, status: "dismissed" } });return true;
  }
  if (reopen !== null) {
   record(LearningReopenBodySchema.parse(await body()));

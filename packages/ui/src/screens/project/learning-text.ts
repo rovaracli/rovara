@@ -11,9 +11,7 @@ export const LEARNING_TEXT = {
  LOADING: "Loading suggested rules",
  WORDING_LABEL: "Proposed wording",
  WORDING_HINT: "Proposed wording (from the latest correction). Edit before accepting.",
- STAGE_LABEL: "Use this rule for",
  PROJECT_WIDE: "Everyone except reviewers (project-wide)",
- SECOND_PERSON_MARK: "needs a second person",
  ONE_PERSON: "All from one person",
  LESS_SAFE: "Needs a second person",
  LESS_SAFE_BODY: "Someone else who can approve changes in this project confirms this rule before it applies.",
@@ -42,6 +40,8 @@ export const LEARNING_TEXT = {
 } as const;
 export const addedMessage = (version: number | undefined) => version === undefined ? "Added. New tasks use it; running tasks keep their version." : `Added in version ${String(version)}. New tasks use it; running tasks keep their version.`;
 export const removedMessage = (version: number | undefined) => version === undefined ? "Removed. New tasks use the change; running tasks keep their version." : `Removed in version ${String(version)}. New tasks use it; running tasks keep their version.`;
+/** Under the stage label: a rule is accepted only for the step it was suggested for. */
+export const acceptedForText = (stageName: string) => `Accepted for the ${stageName} step. To use it elsewhere, edit How we work.`;
 export const DISMISSED_MESSAGE = "Dismissed. You can reopen it from the Dismissed list.";
 export const REOPENED_MESSAGE = "Reopened. It is back in the suggested rules.";
 export const whyText = (count: number) => `Why: said ${String(count)} ${count === 1 ? "time" : "times"}`;
@@ -96,8 +96,16 @@ export type Failure =
  | { kind: "refusals"; items: Array<{ text: string; href?: string }> }
  | { kind: "message"; parts: MessagePart[] };
 /** What to show for a failed write: a fixed sentence for a code the learning loop owns, the resolver's refusals in their fixed words, else the server's own message (never a retry). */
-export function learningFailure(error: unknown, fallback: string): Failure {
+export type LearningAction = "accept" | "dismiss" | "reopen" | "remove";
+/** Two codes mean something different for one action: Dismiss meets LEARNING_LAYER_BUSY when the suggestion is being accepted, and Remove meets AGENT_REVISION_CONFLICT when the rule is no longer in How we work. */
+const PER_ACTION: Readonly<Record<string, Partial<Record<LearningAction, string>>>> = {
+ LEARNING_LAYER_BUSY: { dismiss: "This suggestion is being accepted. Try again once it is decided.", reopen: "This suggestion is being accepted. Try again once it is decided." },
+ AGENT_REVISION_CONFLICT: { remove: "This rule isn't in How we work any more. Reload and try again." },
+};
+export function learningFailure(error: unknown, fallback: string, action?: LearningAction): Failure {
  if (!(error instanceof ApiError)) return { kind: "message", parts: [{ text: fallback }] };
+ const own = action === undefined ? undefined : PER_ACTION[error.code]?.[action];
+ if (own !== undefined) return { kind: "fixed", text: own, reload: error.code === "AGENT_REVISION_CONFLICT" };
  if (Object.hasOwn(FIXED, error.code)) return { kind: "fixed", text: FIXED[error.code]!, reload: error.code === "AGENT_REVISION_CONFLICT" };
  const refusals = error.code === "CONFIG_INVALID" ? parseStageRefusalMessage(error.message) : undefined;
  if (refusals !== undefined) return { kind: "refusals", items: refusals.map(refusal => ({ text: `${STAGE_LABELS[refusal.stage]}: ${refusalText(refusal.code)}`, ...(refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) ? { href: refusal.fixHref } : {}) })) };
