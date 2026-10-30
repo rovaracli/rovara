@@ -29,7 +29,7 @@ describe("project worker model selection", () => {
     expect(ProjectDefinitionSchema.safeParse({ ...base, models: { ...models, approved: [...models.approved, { provider: "x", modelId: "x", label: "FAST" }] } }).success).toBe(false);
   });
 
-  it("stores one project-wide selection and resolves it into the next task", async () => {
+  it("stores one project-wide selection beneath the company lock on the next task", async () => {
     const { handler, db } = await modelSelectionSlackWorld();
     await registerSlackProject(handler, { models });
     const workspace = await ensureWorkspace(handler, thread, user);
@@ -51,10 +51,10 @@ describe("project worker model selection", () => {
     const task = await serviceCall(handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
     expect(task.status).toBe(202);
     const invocation = db.find((item) => item.entityType === "OUTBOX" && item.operationId === (task.body.operation as { id: string }).id)[0]!.invocation as { payload: Record<string, unknown> };
-    expect(invocation.payload.model).toEqual({ provider: "amazon-bedrock", modelId: SELECTION_MODELS[1]!.modelId });
+    expect(invocation.payload.model).toEqual({ provider: "amazon-bedrock", modelId: SELECTION_MODELS[0]!.modelId });
   });
 
-  it("rejects unapproved choices and refuses a stale explicit selection after a later revision", async () => {
+  it("rejects unapproved choices while a company lock governs an outdated lower-precedence selection", async () => {
     const { handler, db } = await modelSelectionSlackWorld();
     await registerSlackProject(handler, { models });
     const refused = await serviceCall(handler, thread, user, "PUT", "/v1/service/project/model", { provider: "other", modelId: "unapproved" });
@@ -69,11 +69,13 @@ describe("project worker model selection", () => {
     const conversationId = (conversation.body.conversation as { id: string }).id;
     const outboxBefore=db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===workspaceId).length;
     const task = await serviceCall(handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
-    expect(task).toMatchObject({status:403,body:{error:{code:"MODEL_NOT_ALLOWED",message:expect.stringContaining("How we work") as string}}});
-    expect(db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===workspaceId)).toHaveLength(outboxBefore);
+    expect(task.status).toBe(202);
+    const id=(task.body.operation as {id:string}).id,queued=db.find(item=>item.entityType==="OUTBOX"&&item.operationId===id)[0]!;
+    expect((queued.invocation as {payload:unknown}).payload).toMatchObject({model:{provider:models.default.provider,modelId:models.default.modelId},modelPolicy:{stage:"build",companyRevision:1}});
+    expect(db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===workspaceId)).toHaveLength(outboxBefore+1);
   });
 
-  it("carries the approved entry's thinking level into the task, and no level key where the entry has none (spec 053)", async () => {
+  it("keeps the company lock's model and default effort above the approved selection effort", async () => {
     const leveled = {
       default: models.default,
       approved: [models.approved[0]!, { ...models.approved[1]!, thinkingLevel: "low" }],
@@ -103,10 +105,10 @@ describe("project worker model selection", () => {
     // A member selects by identifier only; the level comes from the approved entry.
     const selected = await serviceCall(handler, thread, user, "PUT", "/v1/service/project/model", { provider: "amazon-bedrock", modelId: SELECTION_MODELS[1]!.modelId });
     expect(selected.status).toBe(200);
-    expect(await taskModel()).toEqual({ provider: "amazon-bedrock", modelId: SELECTION_MODELS[1]!.modelId, thinkingLevel: "low" });
+    expect(await taskModel()).toEqual({ provider: "amazon-bedrock", modelId: SELECTION_MODELS[0]!.modelId });
   });
 
-  it("omits the task model for a legacy project", async () => {
+  it("carries the governed model for a legacy project and still rejects forged routing", async () => {
     const { handler, db } = await modelSelectionSlackWorld();
     await registerSlackProject(handler);
     const workspace = await ensureWorkspace(handler, thread, user);
@@ -119,7 +121,7 @@ describe("project worker model selection", () => {
     expect(refused).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN" } } });
     const task = await serviceCall(handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "test it" });
     const invocation = db.find((item) => item.entityType === "OUTBOX" && item.operationId === (task.body.operation as { id: string }).id)[0]!.invocation as { payload: Record<string, unknown> };
-    expect(invocation.payload).not.toHaveProperty("model");
+    expect(invocation.payload).toMatchObject({model:{provider:"amazon-bedrock",modelId:SELECTION_MODELS[0]!.modelId},modelPolicy:{stage:"build",companyRevision:1}});
   });
 });
 

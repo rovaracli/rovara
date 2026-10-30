@@ -1,3 +1,4 @@
+import {TEST_ORG} from "../support/orgs.js";
 // Sign in with ChatGPT (#341): a task whose owner connected a working plan runs on it. The broker picks
 // the model and grants the token callback; the worker asks for the token and never sees the refresh token.
 import { randomUUID } from "node:crypto";
@@ -8,14 +9,14 @@ import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/conne
 import { chatGptOwner, chatGptTaskModel } from "../../packages/broker/src/chatgpt/task-model.js";
 import { CHATGPT_TOKEN_MARGIN_MS, chatGptTokenSource } from "../../packages/worker/src/chatgpt-token.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
-import { call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { call, createAuditedSlackBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 
 const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const maya = "U0123456789";
 const sam = "U0456789012";
 const models = {
-  default: { provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" },
-  approved: [{ provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" }],
+  default: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6", label: "Balanced" },
+  approved: [{ provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6", label: "Balanced" },{provider:"openai",modelId:"gpt-6.1-sol",label:"Plan primary"},{provider:"openai",modelId:"gpt-5.5",label:"Plan alternate"}],
 };
 
 beforeAll(loadSlackBroker);
@@ -59,9 +60,12 @@ function connections(views: Record<string, ChatGptConnectionView | "unreadable">
   return { service, accessToken, markStatus, refreshModels };
 }
 
-async function taskFor(user: string, views: Record<string, ChatGptConnectionView | "unreadable">) {
+async function startTaskFor(user: string, views: Record<string, ChatGptConnectionView | "unreadable">) {
   const { service, accessToken, markStatus, refreshModels } = connections(views);
-  const { handler, db } = createBroker({ extra: { chatgpt: service } });
+  const developer={issuer:"https://cell.example/v1/auth",env:"staging",signInTableName:"signin",methods:{slack:true,oidc:false},verifyAccessToken:async()=>({}),channelMembers:async()=>({ok:true as const,memberOf:[]})};
+  const { handler, db } = createAuditedSlackBroker({developer,extra:{chatgpt:service}});
+  const {seedMembership}=await import("../support/developer-task-broker.js");const actor=developerIdForSlackUser(user);
+  seedMembership(db,actor,{orgId:TEST_ORG,role:"owner"});db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",revoked:false});
   await registerSlackProject(handler, { models });
   const workspace = await ensureWorkspace(handler, thread, user);
   const workspaceId = workspace.body.workspaceId as string;
@@ -69,7 +73,11 @@ async function taskFor(user: string, views: Record<string, ChatGptConnectionView
   const conversation = await serviceCall(handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/conversations`, {});
   const conversationId = (conversation.body.conversation as { id: string }).id;
   const task = await serviceCall(handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
-  expect(task.status).toBe(202);
+  return {handler,db,workspaceId,task,accessToken,markStatus,refreshModels};
+}
+async function taskFor(user:string,views:Record<string,ChatGptConnectionView|"unreadable">){
+  const {handler,db,workspaceId,task,accessToken,markStatus,refreshModels}=await startTaskFor(user,views);
+  expect(task.status,JSON.stringify(task.body)).toBe(202);
   const operationId = (task.body.operation as { id: string }).id;
   const invocation = db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string; payload: Record<string, unknown> };
   const actions = (JSON.parse(Buffer.from(invocation.callbackCapability.split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] }).actions;
@@ -84,14 +92,15 @@ async function taskFor(user: string, views: Record<string, ChatGptConnectionView
   return { db, invocation, actions, askToken, tellStatus, accessToken, markStatus, refreshModels, operation: db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`), current: () => db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`) };
 }
 
-const connected: ChatGptConnectionView = { connected: true, status: "connected", email: "maya@acme.com", models: ["gpt-5.5", "gpt-6.1-sol"] };
+const connected: ChatGptConnectionView = { connected: true, status: "connected", connectedAt:"2026-10-01T00:00:00.000Z", email: "maya@acme.com", models: ["gpt-5.5", "gpt-6.1-sol"] };
 
 describe("a task whose owner connected ChatGPT (#341)", () => {
-  it("runs on the owner's plan, keeps the default to fall back to, and may ask for the owner's token only", async () => {
+  it("runs on the owner's exact verified plan model with a pinned policy and may ask for that owner's token only", async () => {
     const owner = developerIdForSlackUser(maya);
     const h = await taskFor(maya, { [owner]: connected });
     expect(h.invocation.payload.chatgpt).toEqual({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
-    expect(h.invocation.payload.model).toEqual({ provider: "amazon-bedrock", modelId: "default-model" });
+    expect(h.invocation.payload.model).toEqual({ provider: "openai", modelId: "gpt-6.1-sol" });
+    expect(h.invocation.payload.modelPolicy).toMatchObject({stage:"build",companyRevision:0});
     expect(h.actions).toContain("chatgpt-token");
     expect(h.operation).toMatchObject({ chatgptDeveloperId: owner, chatgptThread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" } });
     const token = await h.askToken();
@@ -102,7 +111,7 @@ describe("a task whose owner connected ChatGPT (#341)", () => {
   });
 
   it("runs on the default, and may not ask for a token, when the owner has no working connection", async () => {
-    for (const view of [undefined, { ...connected, status: "revoked" as const }, { ...connected, status: "limit-reached" as const }, { ...connected, models: ["gpt-unknown-9"] }, "unreadable" as const]) {
+    for (const view of [undefined, { ...connected, status: "revoked" as const }, { ...connected, status: "limit-reached" as const }, { ...connected, models: ["gpt-unknown-9"] }]) {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const h = await taskFor(maya, view === undefined ? {} : { [developerIdForSlackUser(maya)]: view });
       log.mockRestore();
@@ -118,6 +127,14 @@ describe("a task whose owner connected ChatGPT (#341)", () => {
     const h = await taskFor(sam, { [developerIdForSlackUser(maya)]: connected });
     expect(h.invocation.payload).not.toHaveProperty("chatgpt");
   });
+});
+
+it("refuses unavailable personal connection evidence instead of silently choosing a default",async()=>{
+ const log=vi.spyOn(console,"log").mockImplementation(()=>undefined);
+ try {
+  const h=await startTaskFor(maya,{[developerIdForSlackUser(maya)]:"unreadable"});
+  expect(h.task).toMatchObject({status:503,body:{error:{code:"RUNTIME_UNAVAILABLE"}}});
+ }finally{log.mockRestore();}
 });
 
 describe("the worker's side of a ChatGPT task (#341)", () => {

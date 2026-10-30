@@ -1,3 +1,6 @@
+import {readTurnActorChecks} from "../model-selection/turn-authority.js";
+import {authorizeTurnModelFallback} from "../model-selection/turn-fallback.js";
+import {prepareTurnModelPolicy} from "../model-selection/turn-policy.js";
 import {ProcessModelRefusal,processModelRefusalBody} from "../model-selection/process-refusal.js";
 import {ModelIdentifierSchema} from "@agentx/contracts";
 import {writeProjectModelSelection} from "../model-selection/selection-write.js";
@@ -5,7 +8,7 @@ import {survivorOf} from "../org/project-members.js";
 import {resolveAndAuthorizeTaskFallback} from "../model-selection/fallback-request.js";
 import {reviewFailures,criticFailures} from "../model-selection/task-failures.js";
 import {taskStageReferences,scopedTaskOperations,taskStageReferenceOperation} from "../model-selection/task-references.js";
-import {prepareTaskModelFallback,joinTaskModelFallback} from "../model-selection/fallback-record.js";
+import {prepareTurnModelFallback,prepareTaskModelFallback,joinTaskModelFallback} from "../model-selection/fallback-record.js";
 import type {StageModelResult} from "../model-selection/resolver.js";
 import {loadPinnedTaskStage} from "../model-selection/task-live.js";
 import {type TaskModelPolicyBinding,STAGE_OPERATION_MAPPING} from "@agentx/contracts";
@@ -6390,7 +6393,7 @@ async function taskOperationParts(
   workspace: WorkspaceInstance,
   input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
-): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspace.id);
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
@@ -6401,11 +6404,27 @@ async function taskOperationParts(
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
   const frozen=task?.agent===undefined?undefined:await readTaskRecipe(dependencies,task.taskId,orgId);
   const governed=frozen?.modelPolicyPin!==undefined&&recipeRunner(frozen.recipe)==="coding"&&input.agentRun===undefined;
-  const planOwner = governed?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
+  const planOwner = governed||task?.payer!==undefined?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
   const planSelection = dependencies.chatgpt === undefined || input.workflowMode === "CHECKS" || input.agentRun !== undefined ? undefined
     : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
-  const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
+  let applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
+  const turnActor=chatGptOwner(task?.developerId,input.requester.requestedBy,developerIdForSlackUser);
+  let turnPolicy:Awaited<ReturnType<typeof prepareTurnModelPolicy>>|undefined;
+  if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS") {
+    const signInTableName=dependencies.developer?.signInTableName;
+    if(turnActor===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
+    const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    const actorDeveloperId=await followMerges(signInStore,turnActor);
+    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId,signedInId:turnActor});
+    const payerDeveloperId=planOwner===undefined?undefined:await followMerges(signInStore,planOwner);
+    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
+    turnPolicy.checks.push(...actorChecks);
+  }
+  if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"&&turnPolicy===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
+  if(turnPolicy!==undefined) {
+    applied={...applied,model:turnPolicy.model,ranModel:turnPolicy.model,stepName:"build",dropChatgpt:turnPolicy.decision.sourceId!=="personal-chatgpt",modelDecision:turnPolicy.decision,modelCompanyRevision:turnPolicy.binding.companyRevision,modelPolicy:turnPolicy.binding};
+  }
   // Governed stages resolve the pinned precedence themselves; an ungoverned coding choice cannot silently become the default.
   if(resolvedModel.selectionUnavailable===true&&applied?.modelDecision===undefined&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
@@ -6413,8 +6432,8 @@ async function taskOperationParts(
   let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined ? undefined : planSelection;
   // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
   if(applied?.modelDecision?.sourceId==="personal-chatgpt") {
-    if(task?.payer?.kind!=="member"||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
-    chatgpt={developerId:task.payer.developerId,model:applied.model};
+    if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
+    chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
   }
   // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
   // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
@@ -6468,6 +6487,9 @@ async function taskOperationParts(
   const ranModel = leftThePlan ? applied?.model : applied?.ranModel;
   if (ranModel !== undefined) operation.model = ranModel;
   if(applied?.modelPolicy!==undefined&&task!==undefined){operation.modelPolicy=applied.modelPolicy;operation.modelTaskId=task.taskId;}
+  if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
+  const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
+  if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
@@ -6587,9 +6609,9 @@ async function taskOperationParts(
       ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
     },
   };
-  const fallback=applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
+  const fallback=turnPolicy!==undefined||applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
   if(fallback?.replayed===true)throw agentXError("IDEMPOTENCY_CONFLICT","The fallback operation has already been recorded.");
-  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(fallback===undefined?{}:{fallback}) };
+  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(turnPolicy===undefined?{}:{modelChecks:[...turnPolicy.checks,...(turnAudit?.items??[])]}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
 }
 
 /** Whether the workspace's task has a baseline round that is requested and not yet started, so a coding run is to export the unchanged code. Never throws: a baseline never stops the coding. */
@@ -7487,6 +7509,12 @@ async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspace
   return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
 }
 
+/** Ordinary turn admission keeps policy/source/identity fences and its audit within one small transaction. */
+function boundedTurnAdmission(items:TransactItems):TransactItems {
+  if(items.some(item=>item.Put?.Item?.modelTurnPin!==undefined)&&items.length>25)throw agentXError("RUNTIME_UNAVAILABLE","The turn's atomic model admission is unavailable.");
+  return items;
+}
+
 async function acceptTask(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
@@ -7533,7 +7561,7 @@ async function acceptTask(
     throw agentXError(workspace.status === "BUSY" ? "WORKSPACE_BUSY" : "WORKSPACE_NOT_READY", `workspace is ${workspace.status}`);
   }
   const now = new Date().toISOString();
-  const { operation, outbox, fence,fallback } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: request.requestId,
     conversationId: request.conversationId,
     prompt: request.prompt,
@@ -7566,7 +7594,7 @@ async function acceptTask(
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
   }, now);
   try {
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: joinTaskModelFallback([
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: boundedTurnAdmission(joinTaskModelFallback([
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -7591,7 +7619,8 @@ async function acceptTask(
           type: "progress", timestamp: now, payload: { message: options.firstEvent } },
         ConditionExpression: "attribute_not_exists(pk)",
       } }]),
-    ],fallback?.items??[]) }));
+      ...(modelChecks??[]),
+    ],fallback?.items??[])) }));
   } catch (error) {
     if (isConditional(error)) {
       const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
@@ -7611,6 +7640,7 @@ async function acceptTask(
     throw error;
   }
   if(fallback?.event!==undefined)await flushAuditEvents(dependencies,[fallback.event]);
+  if(turnAudit!==undefined)await flushAuditEvents(dependencies,[turnAudit.event]);
   return { operation: publicOperation(operation), duplicate: false };
 }
 
@@ -9209,10 +9239,12 @@ async function handleCallback(
     throw agentXError("STALE_FENCE", "terminal operations cannot publish more output");
   }
   if(action==="model-fallback") {
-    if(cancelClaims!==undefined||dependencies.developer===undefined||operation.orgId===undefined||operation.modelTaskId===undefined)throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
+    if(cancelClaims!==undefined||dependencies.developer===undefined||operation.orgId===undefined||(operation.modelTaskId===undefined&&operation.modelTurnPin===undefined))throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
     const signInTableName=dependencies.developer.signInTableName;
     if(signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's model authority is unavailable.");
     const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    if(operation.modelTurnPin!==undefined)return json(await authorizeTurnModelFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
+    if(operation.modelTaskId===undefined)throw agentXError("CALLBACK_FORBIDDEN","This operation has no task model authority.");
     return json(await resolveAndAuthorizeTaskFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,taskId:operation.modelTaskId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
   }
   if (action === "chatgpt-token") return json(await chatGptTaskToken(dependencies, operation), request.requestId);
@@ -12985,9 +13017,9 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   const task = pointer.pendingWorkflowMode === "PLAN" ? await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)) : undefined;
-  const { operation, outbox, fence,fallback } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
     prompt: pointer.pendingPrompt,
@@ -12999,6 +13031,7 @@ async function queuedFirstTask(
   }, now);
   return {
     ...(fallback===undefined?{}:{fallback}),
+    ...(turnAudit===undefined?{}:{turnAudit}),
     workspaceUpdate: { Update: {
       TableName: dependencies.tableName,
       Key: workspaceKey(workspace.id),
@@ -13025,6 +13058,7 @@ async function queuedFirstTask(
         UpdateExpression: "REMOVE pendingPrompt, pendingWorkflowMode",
         ConditionExpression: "attribute_exists(pendingPrompt) AND attribute_not_exists(cancelledAt)",
       } },
+      ...(modelChecks??[]),
     ],
   };
 }
@@ -13095,8 +13129,9 @@ async function sendTerminalResult(
     return terminalStatus;
   }
   try {
-    await send(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[]));
+    await send(boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[])));
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
+    if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
     // C19: a temporary error from the one queuing write committed nothing; the worker tries again.
     // A TransactionCanceledException with a TransactionConflict reason is not temporary here: it

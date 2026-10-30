@@ -1,3 +1,4 @@
+import type {TurnModelPin} from "../model-selection/turn-policy.js";
 // The operation records and the cancel path shared by the broker and, for issue 173, the session
 // reconciler's backstop: moved here unchanged from broker.ts, so both cancel through the same code.
 // No module-level state and no environment reads, so the reconciler can load it without the broker's.
@@ -43,6 +44,9 @@ export const TERMINAL = new Set<OperationStatus>(["SUCCEEDED", "FAILED", "CANCEL
 export interface OperationRecord extends Operation {
   /** Frozen developer task identity for governed fallback callbacks. */
   modelTaskId?: string;
+  modelTurnPin?: TurnModelPin;
+  modelFallbackReceipts?: unknown;
+  modelFallbackRevision?: number;
   modelPolicy?: TaskModelPolicyBinding;
   pk: string;
   sk: string;
@@ -202,6 +206,7 @@ export function publicOperation(record: OperationRecord): Operation {
     id: record.id,
     workspaceId: record.workspaceId,
     kind: record.kind,
+    ...(record.modelFallbacks===undefined?{}:{modelFallbacks:record.modelFallbacks}),
     ...(record.discardUnpublished === true ? { discardUnpublished: true } : {}),
     ...(record.workflowMode === undefined ? {} : { workflowMode: record.workflowMode }),
     ...(record.workflowFeedbackReview === undefined ? {} : { workflowFeedbackReview: record.workflowFeedbackReview }),
