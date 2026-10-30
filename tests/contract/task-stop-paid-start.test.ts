@@ -87,3 +87,21 @@ for (const loss of ["project_archive", "project_viewer"] as const) it(`enrolled 
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
 });
+it("enrolled paid start refuses a corrupt project identity without work", async () => {
+  const f = await fixture();
+  f.t.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "another-project", status: "active" });
+  const reply = await f.start(); expect(reply.status).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+});
+it("enrolled paid start fences archive/restore ABA even when active status is unchanged", async () => {
+  const f = await fixture(), key = projectMetaKey(TEST_ORG, "payments"), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.set({ ...key, entityType: "PROJECT_META", name: "payments", status: "active", archiveRevision: 1 });
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true; f.t.db.set({ ...f.t.db.get(key)!, archiveRevision: 3 });
+    }
+    return send(command);
+  };
+  const reply = await f.start(); expect(changed).toBe(true); expect(reply.status).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+});
