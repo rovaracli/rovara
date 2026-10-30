@@ -1155,3 +1155,23 @@ it("a max-per-run ask retains distinct original/proposed run limit, per-run stop
   expect(request.approvalTerms).toMatchObject({ operation: "max_per_run", askedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 4_000_000, baseline: 0, amount: 5_000_000 },
     proposedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 9_000_000, window: "keep" } });
 });
+
+it("a max-per-run approval above the existing run limit keeps its exact window while the follow-up approval is pending", async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
+  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
+  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
+
+  const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!, operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id);
+  expect((await f.t.decide(ADA, request.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 4_000_000, calculationInput: { approvedMaxPerRunMicrousd: 9_000_000 } } });
+  const followUp = f.t.requestOf(f.task.taskId, "run_limit").find(record => record.status === "PENDING")!; expect(followUp.newLimitUsd).toBe(9);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(f.task.workspaceId).map(operation => operation.id)).toEqual(operations);
+  expect((await f.t.decide(MAYA, followUp.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+});
