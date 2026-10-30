@@ -2117,7 +2117,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         requireScopeAccess: async input => {
           const fresh = await deps.checkAccess(input.project);
           await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
-          if (deps.agentRuns !== undefined) await requireAgentAccess(deps.agentRuns, caller, input.agentId, "use");
+          if (deps.agentRuns !== undefined) await requireAgentAccess(deps.agentRuns, caller, input.agentId, prepared?.ref.version === "draft" ? "edit" : "use");
         },
       }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
         agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd,
@@ -2130,7 +2130,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         });
         if (deps.agentRuns !== undefined && prepared !== undefined) {
           const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
-          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole }, async () => {
+          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole, ...(prepared.ref.draftRevision === undefined ? {} : { expectedDraftRevision: prepared.ref.draftRevision }) }, async () => {
             if (deps.agentRuns === undefined) throw budgetActorRefused();
             await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
           }, async () => {

@@ -5,7 +5,7 @@ import { AgentGuardrailsSchema, AgentOwnerSchema, AgentPrincipalSchema, agentGua
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,
-  input: { orgId: OrgId; project: string; agentId: AgentId; draft: boolean; process: boolean; developerId: string; role: OrgRole }, authorize: () => Promise<void>, readShares: () => Promise<readonly { principal: unknown }[]>): Promise<TransactItem[]> {
+  input: { orgId: OrgId; project: string; agentId: AgentId; draft: boolean; process: boolean; developerId: string; role: OrgRole; expectedDraftRevision?: number }, authorize: () => Promise<void>, readShares: () => Promise<readonly { principal: unknown }[]>): Promise<TransactItem[]> {
   if (isBuiltinAgentId(input.agentId)) {
     const settingsKey = builtinSettingsKey(input.orgId, input.agentId), guardrailsKey = agentGuardrailsKey(input.orgId);
     const rows = await Promise.all([settingsKey, guardrailsKey].map(async Key => {
@@ -42,6 +42,8 @@ export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "docu
     if (row === undefined || row.pk !== key.pk || row.sk !== key.sk || row.orgId !== input.orgId || row.agentId !== input.agentId) throw budgetActorRefused();
     if (index === 0 ? row.entityType !== "AGENT" || row.status !== "active" || !AgentOwnerSchema.safeParse(row.owner).success
       : row.entityType !== "PROJECT_AGENT" || row.project !== input.project) throw budgetActorRefused();
+    if (index === 0 && input.draft && (input.expectedDraftRevision === undefined || !Number.isSafeInteger(input.expectedDraftRevision)
+      || input.expectedDraftRevision < 1 || row.draftRevision !== input.expectedDraftRevision)) throw budgetActorRefused();
     return row;
   }));
   const additional: TransactItem[] = [];
