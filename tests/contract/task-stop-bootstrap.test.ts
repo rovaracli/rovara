@@ -172,3 +172,29 @@ for (const explicit of [false, true]) it(`legacy agent upgrade records explicit 
   expect(await invoke(deps, input)).toMatchObject({ outcome: "preserved" });
   expect(f.db.get(key.pk, key.sk)).toEqual(saved); expect(f.db.transactions()).toHaveLength(count);
 });
+
+for (const invalid of ["missing", "wrong_identity", "null_limit", "negative_limit", "contradiction", "closed"] as const) it(`legacy inheritance refuses ${invalid} without writes`, async () => {
+  const f = fixture(), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", key = agentKey(orgId, agentId, "META");
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", ...(invalid === "closed" ? { closingAt: new Date(now).toISOString() } : {}) });
+  if (invalid !== "missing") f.db.set({ ...key, orgId, entityType: "AGENT", agentId: invalid === "wrong_identity" ? "agt_bbbbbbbbbbbbbbbbbbbb" : agentId, status: "active", revision: 4,
+    ...(invalid === "null_limit" ? { maxPerRunUsd: null } : invalid === "negative_limit" ? { maxPerRunUsd: -1 } : invalid === "contradiction" ? { stopKind: "limited" } : {}) });
+  const original = f.db.get(key.pk, key.sk), count = f.db.transactions().length;
+  await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId })).rejects.toThrow();
+  expect(f.db.get(key.pk, key.sk)).toEqual(original); expect(f.db.transactions()).toHaveLength(count);
+});
+for (const race of ["limit", "closed"] as const) it(`legacy inheritance refuses native ${race} race and preserves its winner`, async () => {
+  const f = fixture(), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", key = agentKey(orgId, agentId, "META"), orgKey = orgMetaKey(orgId);
+  f.db.set({ ...orgKey, orgId, entityType: "ORG" });
+  const original = { ...key, orgId, entityType: "AGENT", agentId, status: "active", revision: 4, monthlyBudgetUsd: 50 };
+  f.db.set(original); const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand) {
+      raced = true;
+      if (race === "limit") f.db.set({ ...original, maxPerRunUsd: 0.5 });
+      else f.db.set({ ...orgKey, orgId, entityType: "ORG", closingAt: new Date(now).toISOString() });
+    }
+    return send(command);
+  };
+  await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId })).rejects.toThrow();
+  expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(race === "limit" ? { ...original, maxPerRunUsd: 0.5 } : original);
+});
