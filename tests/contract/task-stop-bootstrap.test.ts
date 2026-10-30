@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, builtinSettingsKey, ROVARA_CODE_AGENT_ID, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -269,4 +269,20 @@ for (const race of ["pin", "identity"] as const) it(`built-in inheritance fences
   f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true; f.db.set(winner); } return send(command); };
   await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId: ROVARA_CODE_AGENT_ID })).rejects.toThrow();
   expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(winner); expect(f.db.get(key.pk, key.sk)).not.toHaveProperty("seedProvenance");
+});
+
+for (const creation of ["ensureOrg", "createOrgWithOwner"] as const) for (const pin of [false, true]) it(`${creation} seeds registered built-in inheritance atomically without duplicate pin writes: pin=${pin}`, async () => {
+  const f = fixture(pin);
+  if (creation === "ensureOrg") await f.store.ensureOrg(orgId, "Company");
+  else await f.store.createOrgWithOwner({ name: "Company", developerId: who });
+  const txn = f.db.transactions().find(items => items.some(item => putItem(item)?.sk === "TASK_STOP_POLICY"));
+  for (const agentId of BUILTIN_AGENT_IDS) {
+    const key = builtinSettingsKey(orgId, agentId), item = f.db.get(key.pk, key.sk);
+    expect(item).toMatchObject({ entityType: "BUILTIN_AGENT_SETTINGS", orgId, agentId, revision: 1, stopKind: "inherit", seedProvenance: { source: "bootstrap", reviewRequired: true } });
+    expect(item).not.toHaveProperty("maxPerRunUsd");
+    expect(txn?.filter(entry => putItem(entry)?.pk === key.pk && putItem(entry)?.sk === key.sk)).toHaveLength(1);
+  }
+  const codeKey = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), code = f.db.get(codeKey.pk, codeKey.sk);
+  if (creation === "createOrgWithOwner" && pin) expect(code).toMatchObject({ pinnedVersion: 2, updatedBy: who });
+  else expect(code).not.toHaveProperty("pinnedVersion");
 });
