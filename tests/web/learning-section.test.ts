@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { userEvent } from "@testing-library/user-event";
@@ -519,9 +519,24 @@ describe("while the company's suggestions are off (Learning is collecting)", () 
   expect(within(section).getByRole("heading", { name: "Learning is collecting" })).toBeTruthy();
   expect(within(section).getByText("Suggestions are off for your company. Rovara has collected 5 corrections so far.")).toBeTruthy();
   expect(within(section).getByText(/A company owner or admin can turn suggestions on in/u).textContent).toContain("Company settings → How we work");
-  expect(within(section).getByRole("link", { name: "Company settings → How we work" }).getAttribute("href")).toBe("/app/admin/how-we-work");
   expect(within(section).queryByText(/^No suggested rules yet/u)).toBeNull();
   expect(screen.queryAllByRole("region", { name: /^Suggested rule for/u })).toHaveLength(0);
+ });
+ describe("the Company settings link", () => {
+  const withRole = async (role: string | undefined) => {
+   const f = await open({ view: collecting(5) });
+   if (role !== undefined) act(() => { f.query.setQueryData(["nav"], { me: { orgRole: role } }); });
+   return f;
+  };
+  it.each(["owner", "admin"])("is a link to the company page for a company %s", async role => {
+   await withRole(role);
+   expect((await screen.findByRole("link", { name: "Company settings → How we work" })).getAttribute("href")).toBe("/app/admin/how-we-work");
+  });
+  it.each(["member", undefined])("is plain text, with the same words, for a %s (or when the nav is not loaded)", async role => {
+   await withRole(role);
+   expect(screen.getByText(/A company owner or admin can turn suggestions on in Company settings → How we work/u)).toBeTruthy();
+   expect(screen.queryByRole("link", { name: /Company settings/u })).toBeNull();
+  });
  });
  it("says 1 correction in the singular and 0 corrections when there are none", async () => {
   await open({ view: collecting(1) });
