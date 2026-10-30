@@ -378,3 +378,10 @@ describe("what was approved is exactly what was tested (test 35)", () => {
     expect(await planE2EAgentRoute(store, { ...chosen, payloadShape: undefined })).toMatchObject({ status: "unavailable" });
   });
 });
+
+it("M47 platform model check rechecks runtime qualification before dispatching the canary", async () => {
+  const h = harness(), read = h.deps.readRuntimeRow; let reads = 0;
+  h.deps.readRuntimeRow = async () => { reads += 1; return reads === 1 ? read() : undefined; };
+  await expect(startModelCheck(h.deps, { kind: "drive", modelId: MODEL }, "linux-arm64-web-api-v1")).rejects.toMatchObject({ status: 409, code: "no-ready-runtime" });
+  expect(reads).toBe(2); expect(h.puts).toEqual([]);
+});
