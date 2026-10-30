@@ -3,10 +3,10 @@ import { z } from "zod";
 import { OrgIdSchema } from "./org.js";
 import { AgentXNameSchema } from "./names.js";
 import { TaskStopMicrousdSchema } from "./task-stop.js";
-export const TaskStopProjectPolicySchema = z.object({
-  schemaVersion: z.literal(1),
-  stopMicrousd: TaskStopMicrousdSchema,
-}).strict();
+export const TaskStopProjectPolicySchema = z.discriminatedUnion("schemaVersion", [
+  z.object({ schemaVersion: z.literal(1), stopMicrousd: TaskStopMicrousdSchema }).strict(),
+  z.object({ schemaVersion: z.literal(2), kind: z.literal("inherit") }).strict(),
+]);
 export type TaskStopProjectPolicy = z.infer<typeof TaskStopProjectPolicySchema>;
 
 // A scoped source projection, not a complete effective policy or start authorization.
