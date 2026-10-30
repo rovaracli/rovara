@@ -1,8 +1,12 @@
+import { isDeepStrictEqual } from "node:util";
+import { budgetActorChecks } from "../agents/budget-authority.js";
+import { taskAccessFence } from "../developer/task-people.js";
+import type { DeveloperTaskRecord } from "../developer/task-records.js";
 // An accepted-operation receipt is durable replay evidence, never a free-standing
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -51,6 +55,7 @@ export function taskStopWindowItem(tableName: string, input: TaskStopWindowIdent
 const transitionSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
+  actorRole: OrgRoleSchema, peopleRevision: revision.nullable(),
   transitionKind: z.literal("continue-as-task"), spendingStop: snapshotSchema, payer: PayerSchema, place: PlaceSchema,
   agentRunRevision: revision.nullable(), workflowRevision: revision.nullable(), outcome: z.literal("transitioned"), admittedAt: z.string().datetime(),
 }).strict();
@@ -66,9 +71,21 @@ export async function readTaskStopTransition(deps: Pick<TableInput, "documentCli
   if (row.actorId !== input.actorId || row.intentHash !== input.intentHash) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already accepted a different spending transition. Use a new request ID.");
   return row;
 }
-export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt">): TransactItem {
+export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision">): TransactItem {
   const Item = transitionSchema.parse({ ...taskStopWindowKey(input.orgId, input.taskId, input.requestId), ...value,
     entityType: "SPENDING_ADMISSION", version: 1, orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId,
     actorId: input.actorId, intentHash: input.intentHash, transitionKind: "continue-as-task", outcome: "transitioned" });
   return { Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } };
+}
+
+/** Restores current native authority from an existing accepted window. No
+ * current spending settings are read and no money is granted during recovery. */
+export async function taskStopTransitionRecoveryChecks(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord, reference: SpendingAdmissionReference): Promise<TransactItem[]> {
+  if (task.orgId === undefined || task.agent === undefined) throw invalid();
+  const receipt = await readTaskStopTransition(deps, { orgId: task.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
+    intentHash: reference.intentHash, project: task.project, agentId: task.agent.agentId });
+  if (receipt === undefined || task.origin !== "app" || task.closedAt !== undefined || !isDeepStrictEqual(task.payer, receipt.payer)
+    || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)) throw invalid();
+  return [...budgetActorChecks(deps.tableName, task.orgId, { developerId: receipt.actorId, role: receipt.actorRole }),
+    taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined)];
 }

@@ -1,3 +1,4 @@
+import { taskStopTransitionRecoveryChecks } from "../org/task-stop-window.js";
 import { budgetActorRefused } from "./budget-authority.js";
 import { failedIndexes } from "./table-writes.js";
 // Plan 3, Task 22: the agent-step engine. A run of an agent made of agent steps (`recipeRunner(recipe) === "agent_steps"`) is a task that holds ONE
@@ -18,7 +19,7 @@ import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/li
 import {
   AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentStepGroundingSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER, UNVERIFIED_END_PREFIX,
   agentXError, redactText, renderRunInput, shortenToBytes,
-  type AgentRunState, type AgentStepTools, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
+  type SpendingAdmissionReference, type AgentRunState, type AgentStepTools, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
 } from "@agentx/contracts";
 import type { DeveloperTaskActions, TransactItems } from "../aws/developer-task-actions.js";
 import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from "../aws/broker-shared.js";
@@ -500,6 +501,8 @@ async function dispatchStep(
   options: { continuation?: Continuation; counted?: boolean; nativeRecoveryChecks?: readonly TransactItem[] } = {},
 ): Promise<Moved> {
   const { task, run } = loaded;
+  const nativeRecoveryChecks = run.spendingAdmission === undefined ? options.nativeRecoveryChecks ?? []
+    : await taskStopTransitionRecoveryChecks(deps, task, run.spendingAdmission);
   const gated = await gate(deps, loaded, recipe);
   if ("moved" in gated) return gated.moved;
   const host = hostOf(deps);
@@ -528,11 +531,11 @@ async function dispatchStep(
         ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
         ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
         // The messages' mark moves in the step's own transaction, last: it holds only while the task's note count is the one read.
-        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem]), ...(options.nativeRecoveryChecks ?? [])],
+        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem]), ...nativeRecoveryChecks],
       });
       return "moved";
     } catch (error) {
-      const nativeCount = options.nativeRecoveryChecks?.length ?? 0;
+      const nativeCount = nativeRecoveryChecks.length;
       const extraCancellation = error instanceof AgentXError ? (error as { extraCancellation?: string[] }).extraCancellation : undefined;
       if (nativeCount > 0 && extraCancellation?.slice(-nativeCount).includes("ConditionalCheckFailed")) throw budgetActorRefused();
       // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
@@ -581,7 +584,7 @@ async function askForApproval(deps: AgentRunEngineDependencies, loaded: Loaded, 
  * task no longer lets it go on. Safe to call at any time and from any process: a run that is waiting, paused, busy or over is left as it is.
  * `PAUSED_BUDGET` runs again from the step that was cut off once the task's `budgetPause` has been cleared (Task 32's approval of the raise).
  */
-export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string, expectedPausedRevision?: number, nativeRecoveryChecks: readonly TransactItem[] = []): Promise<AdvanceResult> {
+export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string, expectedPausedRevision?: number, nativeRecoveryChecks: readonly TransactItem[] = [], spendingAdmission?: SpendingAdmissionReference): Promise<AdvanceResult> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     let loaded = await load(deps, taskId);
     if (loaded === undefined) return "no_run";
@@ -602,7 +605,7 @@ export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: 
         await notifyPause(deps, loaded);
         continue;
       }
-      const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING" };
+      const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING", ...(spendingAdmission === undefined ? {} : { spendingAdmission }) };
       delete (resumed as { pause?: unknown }).pause;
       try {
         if (!await commitOrLost(deps, [putRun(deps, taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0), ...nativeRecoveryChecks])) continue;

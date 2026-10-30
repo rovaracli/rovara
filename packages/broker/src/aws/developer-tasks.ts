@@ -1,3 +1,4 @@
+import type { SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
 import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, type TaskStopTransition } from "../org/task-stop-window.js";
@@ -2792,6 +2793,7 @@ export interface SpendResumeInput {
   firstDispatch: boolean;
   expectedPausedAgentRevision?: number;
   nativeRecoveryChecks?: TransactItems;
+  spendingAdmission?: SpendingAdmissionReference;
   /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
   resume?: "implement";
   runLimitUsd?: number;
@@ -2824,7 +2826,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision, input.nativeRecoveryChecks);
+    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision, input.nativeRecoveryChecks, input.spendingAdmission);
     return;
   }
   const requestId = resumeRequestId(input.spendRequestId, "resume");
@@ -2870,7 +2872,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       throw error;
     }
     if (current.closedAt === undefined && (receipt.workflowRevision === null || current.workflow?.revision === receipt.workflowRevision)) {
-      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false, nativeRecoveryChecks,
+      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false, nativeRecoveryChecks, spendingAdmission: { requestId: receipt.requestId, actorId: receipt.actorId, intentHash: receipt.intentHash },
         ...(receipt.agentRunRevision === null ? {} : { expectedPausedAgentRevision: receipt.agentRunRevision }) });
     }
     const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
@@ -2907,11 +2909,11 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
     const runSource = await get<{ revision: number; state: string }>(deps, taskAgentRunKey(taskId));
     if (runSource !== undefined && (!Number.isSafeInteger(runSource.revision) || runSource.revision < 1 || runSource.state !== "PAUSED_BUDGET")) throw agentXError("CHANGE_STALE", "The test run's paused step changed. Review it and continue again.");
-    const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, payer, place,
-      agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
     const baseline = deps.modelAccess === undefined ? undefined
       : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
     const transitionAccess = await authorizeTaskAction(deps, caller, taskId, "work");
+    const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, payer, place, actorRole: caller.orgRole, peopleRevision: transitionAccess.peopleRevision ?? null,
+      agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
     const item = windowAndPauseUpdate(deps, task, baseline, captured)[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
     const source = ["origin", "budgetPause", "startedBy", "place", "workflow", "modelKeyIds"] as const;

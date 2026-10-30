@@ -590,3 +590,25 @@ for (const loss of ["closing", "people"] as const) it(`platform recovery retains
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.meta(f.task.taskId).spendingStop).toEqual(admitted);
 });
+
+for (const receiptState of ["valid", "missing", "corrupt"] as const) it(`platform recovery uses a ${receiptState} committed payer receipt without current money settings`, async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let interrupted = false;
+  f.t.db.send = async command => {
+    if (!interrupted && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      interrupted = true; throw new Error("test process interrupted before paid operation commit");
+    }
+    return send(command);
+  };
+  await f.transition(); expect(interrupted).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  const admitted = f.t.meta(f.task.taskId).spendingStop;
+  expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ spendingAdmission: { requestId: f.request.requestId, actorId: MAYA.developerId } });
+  f.t.db.delete(f.policy);
+  const receiptKey = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` };
+  if (receiptState === "missing") f.t.db.delete(receiptKey);
+  if (receiptState === "corrupt") f.t.db.set({ ...f.t.db.get(receiptKey)!, version: 999 });
+  const rows = f.t.db.find(row => row.pk === "WORKFLOW_DISPATCH" && row.taskId === f.task.taskId); expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) f.t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (receiptState === "valid" ? 1 : 0));
+  expect(f.t.meta(f.task.taskId).spendingStop).toEqual(admitted); expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
+});
