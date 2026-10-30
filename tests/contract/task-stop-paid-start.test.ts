@@ -654,3 +654,28 @@ it("platform recovery retains the accepted frozen recipe after a later draft edi
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
   expect(f.t.meta(f.task.taskId)).toMatchObject({ agent: before.agent, spendingStop: before.spendingStop, budgetUsd: 0.5 });
 });
+
+for (const source of ["payer", "budget"] as const) it(`platform recovery fences task ${source} source changes at the actual operation commit`, async () => {
+  const f = await queuedPayerTransition(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      changed = true; f.t.db.set({ ...f.t.meta(f.task.taskId), ...(source === "payer" ? { payer: { kind: "project", project: "payments" } } : { budgetUsd: 0.25 }) });
+    }
+    return send(command);
+  };
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(changed).toBe(true);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.meta(f.task.taskId)).toMatchObject(source === "payer" ? { payer: { kind: "project", project: "payments" } } : { budgetUsd: 0.25 });
+});
+it("platform recovery keeps its committed stop after a numeric policy edit at the actual operation commit", async () => {
+  const f = await queuedPayerTransition(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      changed = true; f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 250_000 } } });
+    }
+    return send(command);
+  };
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(changed).toBe(true);
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 0.5, spendingStop: { effectiveStopMicrousd: 500_000 } });
+});
