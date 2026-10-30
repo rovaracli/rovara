@@ -140,7 +140,8 @@ async function customStart() {
 }
 it("a legitimate published custom agent can start under the captured company stop", async () => {
   const f = await customStart(), reply = await f.startCustom(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toEqual([expect.objectContaining({ budgetUsd: 1.234567, agent: expect.objectContaining({ agentId: f.agentId }) })]);
+  const tasks = f.t.db.find(row => row.entityType === "DEVELOPER_TASK"); expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({ budgetUsd: 1.234567, agent: { agentId: f.agentId } });
 });
 for (const loss of ["archive", "roster", "owner"] as const) it(`paid custom-agent start refuses a real competing ${loss} write at commit`, async () => {
   const f = await customStart(), send = f.t.db.send.bind(f.t.db); let changed = false;
@@ -157,4 +158,20 @@ for (const loss of ["archive", "roster", "owner"] as const) it(`paid custom-agen
   const reply = await f.startCustom(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+it("an agent per-run numeric edit after capture affects only the next admission", async () => {
+  const f = await customStart(), send = f.t.db.send.bind(f.t.db); let edited = false;
+  f.t.db.send = async command => {
+    if (!edited && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      edited = true; const saved = await f.t.api(MAYA, "PUT", `/v1/app/agents/${f.agentId}/budget`, { maxPerRunUsd: 0.5 });
+      expect(saved.status).toBe(200);
+    }
+    return send(command);
+  };
+  const first = await f.startCustom(); expect(first.status, JSON.stringify(first.body)).toBe(200); expect(edited).toBe(true);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toEqual([expect.objectContaining({ budgetUsd: 1.234567 })]);
+  const next = await f.t.dev(MAYA, "POST", "/v1/dev/tasks", { ...f.request, requestId: randomUUID(), agent: { agentId: f.agentId } });
+  expect(next.status, JSON.stringify(next.body)).toBe(200);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK").map(row => row.budgetUsd).sort()).toEqual([0.5, 1.234567]);
 });
