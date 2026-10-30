@@ -1,3 +1,7 @@
+import { requireNativeProjectWorkRole } from "../developer/task-access.js";
+import { requireAgentAccess, type AgentAccessDeps } from "../agents/access.js";
+import { taskStartProjectAuthorityChecks } from "./task-start-project-authority.js";
+import { taskStartAgentAuthorityChecks } from "./task-start-agent-authority.js";
 import { isDeepStrictEqual } from "node:util";
 import { budgetActorChecks } from "../agents/budget-authority.js";
 import { taskAccessFence } from "../developer/task-people.js";
@@ -80,12 +84,17 @@ export function taskStopTransitionItem(tableName: string, input: TaskStopWindowI
 
 /** Restores current native authority from an existing accepted window. No
  * current spending settings are read and no money is granted during recovery. */
-export async function taskStopTransitionRecoveryChecks(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord, reference: SpendingAdmissionReference): Promise<TransactItem[]> {
+export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, task: DeveloperTaskRecord, reference: SpendingAdmissionReference): Promise<TransactItem[]> {
   if (task.orgId === undefined || task.agent === undefined) throw invalid();
   const receipt = await readTaskStopTransition(deps, { orgId: task.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
     intentHash: reference.intentHash, project: task.project, agentId: task.agent.agentId });
   if (receipt === undefined || task.origin !== "app" || task.closedAt !== undefined || !isDeepStrictEqual(task.payer, receipt.payer)
     || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)) throw invalid();
+  const actor = { orgId: task.orgId, developerId: receipt.actorId, orgRole: receipt.actorRole }, agentId = task.agent.agentId, draft = task.agent.version === "draft";
+  const projectChecks = await taskStartProjectAuthorityChecks(deps, { orgId: task.orgId, developerId: actor.developerId, role: actor.orgRole, project: task.project },
+    () => requireNativeProjectWorkRole(deps, task, actor));
+  const agentChecks = await taskStartAgentAuthorityChecks(deps, { orgId: task.orgId, project: task.project, agentId, draft, frozenRecipe: true, process: task.agent.process === true, developerId: actor.developerId, role: actor.orgRole },
+    () => requireAgentAccess(deps, actor, agentId, draft ? "edit" : "use").then(() => undefined), () => deps.store.listShares(actor.orgId, agentId));
   return [...budgetActorChecks(deps.tableName, task.orgId, { developerId: receipt.actorId, role: receipt.actorRole }),
-    taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined)];
+    taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined), ...projectChecks, ...agentChecks];
 }

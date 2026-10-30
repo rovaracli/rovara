@@ -436,7 +436,7 @@ async function pausedTestTransition(spentUsd?: number) {
   await f.t.pauseAndEnd(task, { kind: "test", taskId: task.taskId });
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
   const request = { requestId: randomUUID() };
-  return { ...f, task, request, transition: () => f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue-as-task`, request) };
+  return { ...f, agentId, task, request, transition: () => f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue-as-task`, request) };
 }
 it("Continue-as-task captures the current stop for its new payer and retains historical testing identity", async () => {
   const f = await pausedTestTransition(), before = f.t.meta(f.task.taskId), reply = await f.transition();
@@ -641,4 +641,16 @@ for (const source of ["project", "agent"] as const) for (const when of ["before_
   };
   await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(changed).toBe(true);
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
+
+it("platform recovery retains the accepted frozen recipe after a later draft edit", async () => {
+  const f = await queuedPayerTransition(), before = f.t.meta(f.task.taskId), agentId = f.agentId, draft = await f.t.store.getDraft(TEST_ORG, agentId);
+  expect(draft).toBeDefined();
+  const edited = await f.t.api(MAYA, "PUT", `/v1/app/agents/${agentId}/draft`, { expectedRevision: draft!.revision, overlay: { ...TRIAGE, instructions: "A later draft must not replace accepted work." } });
+  expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+  f.t.db.delete(f.policy);
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ agent: before.agent, spendingStop: before.spendingStop, budgetUsd: 0.5 });
 });
