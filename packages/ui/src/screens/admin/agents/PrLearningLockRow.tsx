@@ -21,7 +21,7 @@ export function PrLearningLockRow() {
  const read = useAdminRead("agent-guardrails", "company-pr-learning", PATH, rawReader);
  const [busy, setBusy] = useState(false), [waiting, setWaiting] = useState<Waiting>(), [failure, setFailure] = useState<string>();
  if (read.isPending) return null;
- if (read.data === undefined) return <p role="alert">Couldn't load the setting for learning from PR review comments.</p>;
+ if (read.data === undefined) return <p className="rv-muted">Learning from PR review comments: couldn't load the setting. Refresh the page to try again.</p>;
  const { guardrails, revision } = read.data, locked = guardrails.prCommentLearning === "locked_off", next = locked ? "allowed" : "locked_off";
  async function send() {
   if (sending.current) return;
@@ -29,7 +29,6 @@ export function PrLearningLockRow() {
   try {
    const result = await api.send("PUT", PATH, { requestId: crypto.randomUUID(), expectedRevision: revision, guardrails: { ...guardrails, prCommentLearning: next } }, ANYTHING);
    if (result.kind === "needs_confirmation") setWaiting({ text: "Waiting for a company admin to approve", changes: result.changes, ...(result.confirmUrl === undefined ? {} : { confirmUrl: result.confirmUrl }) });
-   else if (result.kind === "needs_admin_approval") setWaiting({ text: "Waiting for a company admin to approve", changes: [result.message] });
    await query.invalidateQueries({ queryKey: ["admin", "agent-guardrails"] });
   } catch (error) { setFailure(error instanceof ApiError && error.message !== "" ? error.message : "Couldn't change this setting. Try again."); }
   finally { sending.current = false;setBusy(false); }

@@ -29,7 +29,7 @@ export function LearningSettings({ project, settings, canDecide, skippedUnlinked
   {settings.locked && <p>{T.LOCKED}</p>}
   {!settings.locked && pending !== undefined && <p role="status">{T.PENDING}</p>}
   {!settings.locked && expires !== undefined && <p className="rv-muted">{expires}</p>}
-  {waiting && <p role="status">{T.WAITING}</p>}
+  {waiting && pending === undefined && <p role="status">{T.WAITING}</p>}
   {on && skippedUnlinked > 0 && <p className="rv-muted">{skippedUnlinkedText(skippedUnlinked)}</p>}
   {canWrite && pending !== undefined && <>
    <label className="rv-learning-sole"><input type="checkbox" checked={sole} disabled={busy} onChange={event => setSole(event.target.checked)} />{T.SOLE_OWNER}</label>

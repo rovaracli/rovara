@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
-import { createMemoryRouter, RouterProvider } from "react-router";
+import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
@@ -11,12 +11,14 @@ import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { navFixture, meFixture } from "./support/fixtures.js";
+import { companyPolicyRaw } from "./support/company-policy-raw.js";
+import { PrLearningLockRow } from "../../packages/ui/src/screens/admin/agents/PrLearningLockRow.js";
 
 const GUARDRAILS = "/v1/app/org/agent-guardrails";
 const base = { maxAutonomy: "prepare", forbiddenModels: [], requireCrossCompanyReview: true, maxAgentMonthlyUsd: 100, maxPerRunCeilingUsd: 10, disabledBuiltins: [], extraTriggerLabels: [], extraCommandWords: [], reportLinkDomains: [] };
-const agent = { agentId: "rovara-code", name: "Rovara Code", description: "Build code", builtin: true, status: "active", access: "edit", latestVersion: 2, pinnedVersion: 1, monthlyBudgetUsd: 0 };
+const POLICY = "/v1/app/org/model-selection-policy";
 type Doc = { guardrails: Record<string, unknown>; revision: number };
-function mount(options: { doc?: Doc; role?: string; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
+function mount(options: { doc?: Doc; role?: string; direct?: boolean; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const state = { doc: options.doc ?? { guardrails: base, revision: 7 } };
  const me = meFixture();me.developer.orgRole = (options.role ?? "owner") as typeof me.developer.orgRole;
  const nav = navFixture({ me: { developerId: me.developer.id, name: "Priya", orgRole: options.role === "member" ? "member" : "owner" }, features: { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false } });
@@ -25,12 +27,14 @@ function mount(options: { doc?: Doc; role?: string; put?: (request: ApiRequest) 
   if (request.path === "/v1/app/nav") return { status: 200, body: nav };
   if (request.path === GUARDRAILS && request.method === "PUT") return options.put?.(request) ?? { status: 200, body: state.doc };
   if (request.path === GUARDRAILS) return { status: 200, body: structuredClone(state.doc) };
-  return { status: 200, body: { agents: [agent] } };
+  if (request.path === POLICY) return { status: 200, body: companyPolicyRaw() };
+  if (request.path === "/v1/app/org/model-sources") return { status: 200, body: { sources: [], order: ["rovara"] } };
+  return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
  const query = createQueryClient();query.setQueryData(["nav"], nav);
- const routes = appRoutes(nav.features), admin = routes.find(r => r.path === "/app")!.children!.find(r => r.path === "admin/*")!;
- admin.children!.unshift({ path: "agents", lazy: async () => ({ Component: (await import("../../packages/ui/src/screens/admin/agents/AgentsScreen.js")).AgentsScreen }) });
- const router = createMemoryRouter(routes, { initialEntries: ["/app/admin/agents"] });
+ // `direct` mounts the row alone, under a layout context with the given role (the real layout keeps a member out of the page altogether).
+ const context = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", company: "Acme", developerId: me.developer.id, role: options.role ?? "owner", checking: false };
+ const router = createMemoryRouter(options.direct === true ? [{ path: "/", element: h(Outlet, { context }), children: [{ index: true, element: h(PrLearningLockRow, {}) }] }] : appRoutes(nav.features), { initialEntries: [options.direct === true ? "/" : "/app/admin/how-we-work"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  const puts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "PUT");
  return { ...f, ...view, state, puts, close() { view.unmount();router.dispose();query.clear(); } };
@@ -39,6 +43,24 @@ const row = () => screen.findByText(/^Learning from PR review comments:/u);
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("the company lock for learning from PR review comments", () => {
+ it("is on the company How we work page, which is routed", async () => {
+  const f = mount();
+  await screen.findByRole("heading", { name: /How we work/u });
+  expect((await row()).textContent).toBe("Learning from PR review comments: Allowed");
+  f.close();
+ });
+ it("offers no button to someone who is not an owner or admin, but still shows the state", async () => {
+  const f = mount({ direct: true, role: "member", doc: { guardrails: { ...base, prCommentLearning: "locked_off" }, revision: 7 } });
+  expect((await row()).textContent).toBe("Learning from PR review comments: Locked off");
+  expect(screen.queryByRole("button", { name: /Lock off|Allow again/u })).toBeNull();
+  f.close();
+ });
+ it("offers the button to an admin", async () => {
+  const f = mount({ direct: true, role: "admin" });
+  await row();
+  expect(screen.getByRole("button", { name: "Lock off" })).toBeTruthy();
+  f.close();
+ });
  it("shows Allowed when the setting is absent, with a Lock off button", async () => {
   const f = mount();
   expect((await row()).textContent).toBe("Learning from PR review comments: Allowed");
@@ -71,7 +93,6 @@ describe("the company lock for learning from PR review comments", () => {
   fireEvent.click(screen.getByRole("button", { name: "Allow again" }));
   await waitFor(() => expect(screen.getByText("Learning from PR review comments: Allowed")).toBeTruthy());
   expect((f.puts()[0]!.body as { guardrails: Record<string, unknown> }).guardrails).toEqual({ ...base, prCommentLearning: "allowed" });
-  expect(await screen.findByText("Guardrail revision: 8")).toBeTruthy();
   f.close();
  });
  it("a 202 shows that a company admin must approve, with the server's words", async () => {
@@ -80,7 +101,8 @@ describe("the company lock for learning from PR review comments", () => {
   fireEvent.click(screen.getByRole("button", { name: "Allow again" }));
   await screen.findByText("Waiting for a company admin to approve");
   expect(screen.getByText("Allow learning from PR review comments again")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Open confirmation" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));
+  expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/v1/app/approve/abc123");
   f.close();
  });
  it("shows a refusal as plain text", async () => {

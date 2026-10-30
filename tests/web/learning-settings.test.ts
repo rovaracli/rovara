@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -37,11 +37,19 @@ describe("the Learn from PR review comments setting", () => {
   expect(screen.getByText("Status: Off")).toBeTruthy();
   const reads = f.learningReads();
   fireEvent.click(button("Turn on…"));
-  await screen.findByText("Waiting for a second person to approve");
+  await screen.findByText("Turning on is waiting for a second person");
   expect(writes(f)).toHaveLength(1);
   expect(writes(f)[0]).toMatchObject({ method: "PUT", path: SETTINGS, body: LearningSettingsBodySchema.parse({ expectedRevision: 3, prComments: "on" }) });
   await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
-  await screen.findByText("Turning on is waiting for a second person");
+  // The re-read brings the pending line; the one-off waiting line is then gone, so only one waiting line shows.
+  expect(screen.queryByText("Waiting for a second person to approve")).toBeNull();
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+ });
+ it("Turn on shows the waiting line when the re-read does not yet show a proposal", async () => {
+  const f = await open({ view: view({}), learn: async (request, url) => request.method === "PUT" && url.pathname === SETTINGS ? ok({ applied: false, proposalId: "prop_1" }) : undefined });
+  fireEvent.click(button("Turn on…"));
+  await screen.findByText("Waiting for a second person to approve");
+  expect(writes(f)).toHaveLength(1);
  });
  it("on: states it and Turn off sends off, then reads again", async () => {
   const f = await open({ view: view({ prComments: "on" }), learn: async (request, url) => { if (request.method === "PUT" && url.pathname === SETTINGS) { f.learning.view = view({});return ok({ applied: true, settings: { prComments: "off", locked: false, revision: 4 } }); } return undefined; } });
@@ -124,10 +132,14 @@ describe("the Learn from PR review comments setting", () => {
  });
  it("TOO_MANY_REQUESTS shows its words and is not retried", async () => {
   const f = await open({ view: view({}), learn: async (request, url) => request.method === "PUT" && url.pathname === SETTINGS ? refuse("TOO_MANY_REQUESTS", "Too many learning setting requests. Try again in a minute.", 429) : undefined });
-  fireEvent.click(button("Turn on…"));
-  await screen.findByText("Too many changes. Try again in a minute.");
-  await new Promise(resolve => setTimeout(resolve, 50));
-  expect(writes(f)).toHaveLength(1);
+  // The client's own retry would wait about a second; fake timers run past it so a retry, if there were one, would be seen.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+   fireEvent.click(button("Turn on…"));
+   await screen.findByText("Too many changes. Try again in a minute.");
+   await vi.advanceTimersByTimeAsync(10_000);
+   expect(writes(f)).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
  });
  it("a double click sends one request", async () => {
   let release: () => void = () => undefined;
