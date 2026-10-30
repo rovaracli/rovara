@@ -3,7 +3,7 @@
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, approvalKey, orgMemberKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -36,6 +36,7 @@ function world(): MergeWorld {
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
   (w.deps as { store: AgentStore }).store = store;
   w.store = store;
+  w.db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, createdAt: "2026-10-01T00:00:00.000Z" });
   return w;
 }
 function decideDeps(w: MergeWorld, overrides: Partial<LearningDecideDeps> = {}): LearningDecideDeps {

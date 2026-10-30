@@ -8,7 +8,7 @@
 // A record that cannot be read throws. Callers refuse the capture; they never guess a standing.
 import { createHash } from "node:crypto";
 import { GetCommand, type TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { effectiveProjectRole, readProjectMeta } from "../developer/project-roles.js";
 import type { LearningScope } from "./store.js";
 
@@ -74,6 +74,15 @@ export async function readStandingChecked(deps: StandingDeps, orgId: OrgId, deve
 export async function readStanding(deps: StandingDeps, orgId: OrgId, developerId: string, project: string): Promise<LearningStanding> {
   const role = await readProjectRole(deps, orgId, developerId, project);
   return role === "maintainer" || role === "contributor" ? "member" : "outsider";
+}
+
+/**
+ * True only while the company exists and is neither closing nor closed (the same test the company-owner and invite writes make: `closingAt` and `closedAt` absent on the org record). A company
+ * with no record is not open.
+ */
+export async function companyIsOpen(deps: StandingDeps, orgId: OrgId): Promise<boolean> {
+  const org = await read(deps, orgMetaKey(orgId));
+  return org !== undefined && org["orgId"] === orgId && org["closingAt"] === undefined && org["closedAt"] === undefined;
 }
 
 /**

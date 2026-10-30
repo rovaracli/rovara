@@ -5,6 +5,7 @@ import { projectLearningKey, type OrgId } from "../../packages/contracts/src/ind
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const WRITES: Array<[string, string]> = [
+  ["GET", "learning"],
   ["POST", "learning/remember"],
   ["POST", "learning/corrections/c1/forget"],
   ["POST", "learning/suggestions/s1/accept"],
@@ -46,12 +47,16 @@ describe("learning writes need a live browser session", () => {
     expect(db.commandNames()).toEqual([]);
   });
 
-  it("does not refuse a read (GET) on the same path for being a token call", async () => {
+  it("refuses a bearer-token read (GET /learning) too, before any table read, and lets a browser session through the guard", async () => {
     const { loadSlackBroker } = await import("../support/slack-broker.js");
     await loadSlackBroker();
     const { routeDeveloperRequest } = await import("../../packages/broker/src/aws/developer-routes.js");
+    const db = new FakeDynamoDb();
     const request = { method: "GET", headers: { authorization: "Bearer x" }, body: "" };
-    const outcome = await routeDeveloperRequest({ documentClient: new FakeDynamoDb() } as never, request as never, new URL("/v1/app/projects/web/learning", "https://app.example.test")).then(() => "answered", (error: { message?: string }) => String(error.message));
-    expect(outcome).not.toContain("live browser session for learning");
+    await expect(routeDeveloperRequest({ documentClient: db } as never, request as never, new URL("/v1/app/projects/web/learning", "https://app.example.test"))).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("live browser session") as unknown });
+    expect(db.commandNames()).toEqual([]);
+    const caller = { developerId: "a".repeat(64), sessionId: "s", amr: "oidc", name: "x", orgId: "org_aaaaaaaaaaaaaaaaaaaa", orgRole: "member", browserSession: true } as never;
+    const passed = await routeDeveloperRequest({ documentClient: db, tableName: "state", now: () => 1 } as never, request as never, new URL("/v1/app/projects/web/learning", "https://app.example.test"), { caller, csrf: "x" }).then(() => "answered", (error: { message?: string }) => String(error.message));
+    expect(passed).not.toContain("live browser session");
   });
 });
