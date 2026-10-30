@@ -2112,7 +2112,7 @@ it("bounded task cutover retains below-cap task asks and never clamps monthly ow
   expect(f.t.ownerTotal(BEN)).toBe(80); expect(f.t.meta(taskId)).toEqual(before);
 });
 
-for (const drift of ["none", "total_before", "source_before", "policy_before", "counter_commit", "actor_commit", "policy_commit", "source_commit"] as const) it(`owner financial cutover preserves monthly semantics and original terms: ${drift}`, async () => {
+for (const bounded of [false, true]) for (const drift of ["none", "total_before", "source_before", "policy_before", "counter_commit", "actor_commit", "policy_commit", "source_commit"] as const) it(`owner financial cutover preserves monthly semantics and original terms: ${drift}, bounded=${bounded}`, async () => {
   const f = await fixture(); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN); const agentId = await f.t.budgeted(40);
   const ask = await f.t.api(ADA, "PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: BEN.developerId } }); expect(ask.status).toBe(202);
   const id = String(ask.body.spendRequestId), requestKey = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${id}`), sk: "META" };
@@ -2131,10 +2131,10 @@ for (const drift of ["none", "total_before", "source_before", "policy_before", "
     }
     return send(command);
   };
-  const fn: unknown = Reflect.get(spendRequests, "expireOwnerCapCutoverApproval"); expect(typeof fn).toBe("function");
+  const fn: unknown = Reflect.get(spendRequests, bounded ? "expireUnapprovableSpendingRequests" : "expireOwnerCapCutoverApproval"); expect(typeof fn).toBe("function");
   if (typeof fn !== "function") throw new Error("owner cutover missing");
-  const invoke = fn as (deps: unknown, actor: unknown, id: string) => Promise<unknown>;
-  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, id)).toMatchObject({ kind: drift === "none" ? "retain" : drift.endsWith("_commit") ? "retry" : "expired" });
+  const invoke = fn as (deps: unknown, actor: unknown, input: unknown) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, bounded ? { orgId: TEST_ORG, limit: 1 } : id)).toMatchObject(bounded ? { expired: drift === "none" || drift.endsWith("_commit") ? 0 : 1, complete: !drift.endsWith("_commit") } : { kind: drift === "none" ? "retain" : drift.endsWith("_commit") ? "retry" : "expired" });
   expect(f.t.db.get(requestKey)?.status).toBe(drift === "none" || drift.endsWith("_commit") ? "PENDING" : "EXPIRED");
   expect(snapshots).toBe(1); expect(f.t.agentItem(agentId)).toEqual(drift === "source_commit" ? { ...before, maxPerRunUsd: 0.5 } : before); expect(f.t.ownerTotal(BEN)).toBe(total + (drift === "counter_commit" ? 1 : 0));
   if (drift.endsWith("_commit")) expect(raced).toBe(true);
