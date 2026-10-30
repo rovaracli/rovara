@@ -268,7 +268,7 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
   }
   const rule = await readRule(learning, scope, ruleId);
   if (rule?.status === "pending") await commitAwaiting(deps, scope, rule, approvalIdFor(caller.orgId, caller.developerId, requestId), caller.developerId);
-  return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl, changes: result.changes };
+  return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl, changes: result.changes ?? [] };
 }
 
 /** The page where a project's How we work is set up. */
@@ -456,7 +456,7 @@ export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCall
         if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
       }
     }
-    return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl, changes: result.changes };
+    return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl, changes: result.changes ?? [] };
   }
   await recheckTriggers(deps, caller, rule.processAgentId);
   const audited = await learningEvents(learning, () => [rolledBackEvent(learning, scope, memberActor(caller.developerId), { ruleId: rule.id, processAgentId: rule.processAgentId, processVersion: result.value.version })]);

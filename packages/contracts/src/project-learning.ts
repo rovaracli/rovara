@@ -300,7 +300,8 @@ export const LearningAcceptAnswerSchema = z.discriminatedUnion("outcome", [
   // `status` and `changes` are what a hand publish's 202 carries too (added: older readers ignore them).
   z.object({ outcome: z.literal("awaiting_approval"), confirmUrl: z.string().max(1000), status: z.literal("NEEDS_CONFIRMATION").optional(), changes: z.array(z.string().max(1000)).max(100).optional() }).strict(),
 ]);
-export const LearningDismissAnswerSchema = z.object({ suggestion: LearningSuggestionViewSchema }).strict();
+// What the dismiss route answers: the suggestion's id and its new status. The screens read the list again for the rest.
+export const LearningDismissAnswerSchema = z.object({ suggestion: z.object({ id: z.string().min(1).max(100), status: z.literal("dismissed") }).strict() }).strict();
 export const LearningReopenAnswerSchema = z.object({ reopened: z.literal(true) }).strict();
 export const LearningRuleRemoveAnswerSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("published"), version: z.number().int().positive() }).strict(),
