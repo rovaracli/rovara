@@ -267,6 +267,8 @@ export const LearningSuggestionViewSchema = z.object({
   overlaps: z.array(z.string().max(200)).max(20),
   sources: z.array(LearningSuggestionSourceViewSchema).max(LEARNING_SUGGESTION_SOURCES_MAX),
   revision: RevisionSchema,
+  /** Whether THIS caller may accept this suggestion (a live maintainer, or an author of one of its sources who still has standing). Computed with the rule Accept itself uses. */
+  canDecide: z.boolean().optional(),
 }).strict();
 export const LearningRuleViewSchema = z.object({
   id: IdSchema,

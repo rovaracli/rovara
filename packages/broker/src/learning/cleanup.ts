@@ -12,7 +12,7 @@
 //
 // Nothing here logs or returns text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentKey, agentVersionSk, canonicalJson, learningWalkKey, projectLearningKey, type AgentId, type OrgId, type RecipeOverlay } from "@agentx/contracts";
+import { OrgIdSchema, agentKey, agentVersionSk, canonicalJson, learningWalkKey, projectLearningKey, type OrgId, type RecipeOverlay } from "@agentx/contracts";
 import { appendRuleToOverlay } from "./overlay.js";
 import { learningItemKind, sameProject } from "./retention.js";
 import { closeSuggestion, readLearningPartition, type LearningDeps } from "./store.js";
@@ -129,7 +129,7 @@ async function withdrawPendingRule(deps: LearningDeps, orgId: OrgId, project: st
 async function restoreProcessDraft(deps: LearningDeps, orgId: OrgId, rule: Item): Promise<void> {
   const agentId = rule["processAgentId"], stage = rule["stage"], text = rule["text"];
   if (typeof agentId !== "string" || typeof stage !== "string" || typeof text !== "string") return;
-  const id = agentId as AgentId;
+  const id = agentId;
   const get = async (sk: Parameters<typeof agentKey>[2]) => (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: agentKey(orgId, id, sk), ConsistentRead: true })) as { Item?: Item }).Item;
   const meta = await get("META"), draft = await get("DRAFT");
   if (meta === undefined || draft === undefined || typeof draft["revision"] !== "number" || meta["draftRevision"] !== draft["revision"]) return;

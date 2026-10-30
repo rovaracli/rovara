@@ -30,7 +30,7 @@ import {
   acceptNote, commitApplied, commitAwaiting, commitNotApplied, findVersionByNote, learningOf, parseSuggestionItem, readMembers, readRule, removeNote, ruleSk, ruleTransition, settleProject,
   type LearningDecideDeps,
 } from "./settle.js";
-import { learningScopeChecked, readStandingChecked, readStandingsChecked, type StandingCheck } from "./standing.js";
+import { canAcceptSuggestion, learningScopeChecked, readStandingChecked, readStandingsChecked, type StandingCheck } from "./standing.js";
 import { closeSuggestion, dismissedSk, getLearningItem, suggestionSk, terminalSuggestionItems, type LearningScope } from "./store.js";
 import { learningExpiry } from "./retention.js";
 
@@ -148,12 +148,12 @@ function isRefusal(error: unknown): boolean {
 
 /** True when a published version carries `note`, or when that cannot be told (then nothing is undone). */
 async function mayHavePublished(deps: LearningDecideDeps, caller: DeveloperCaller, agentId: string, note: string): Promise<boolean> {
-  try { return await findVersionByNote(deps.approvals, { processAgentId: agentId as AgentRecord["agentId"] }, caller.orgId, note) !== undefined; } catch { return true; }
+  try { return await findVersionByNote(deps.approvals, { processAgentId: agentId }, caller.orgId, note) !== undefined; } catch { return true; }
 }
 
 /** A trigger re-check after a publish is best effort: the publish is done, and no failure of the re-check may undo or hide it. */
 async function recheckTriggers(deps: LearningDecideDeps, caller: DeveloperCaller, agentId: string): Promise<void> {
-  try { await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: agentId as AgentRecord["agentId"] }); } catch { /* the next change or sweep re-checks */ }
+  try { await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: agentId }); } catch { /* the next change or sweep re-checks */ }
 }
 
 /** One condition per record: a transaction may not name an item twice (the accepter can be a source author too). */
@@ -169,7 +169,7 @@ function uniqueChecks(...lists: StandingCheck[][]): StandingCheck[] {
 
 // ---- authority
 
-interface Authority { scope: LearningScope; scopeChecks: StandingCheck[]; accepterChecks: StandingCheck[]; maintainer: boolean }
+interface Authority { scope: LearningScope; scopeChecks: StandingCheck[]; accepterChecks: StandingCheck[]; maintainer: boolean; standing: "member" | "outsider" }
 
 async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, options: { authorMayAct: boolean }): Promise<Authority & { project: string }> {
   const found = await deps.projectFor(caller, rawProject);
@@ -180,7 +180,7 @@ async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawP
   const standing = await readStandingChecked(deps, caller.orgId, caller.developerId, project);
   const maintainer = projectAllows(found.role, "edit_settings");
   if (standing.standing !== "member" || (!maintainer && !options.authorMayAct)) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
-  return { project, scope: checked.scope, scopeChecks: checked.checks, accepterChecks: standing.checks, maintainer };
+  return { project, scope: checked.scope, scopeChecks: checked.checks, accepterChecks: standing.checks, maintainer, standing: standing.standing };
 }
 
 // ---- Accept
@@ -215,7 +215,7 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
 
   // The members, read live. L3: a contributor may accept only a rule their own corrections produced.
   const members = await readMembers(learning, scope, suggestion.correctionIds);
-  if (!auth.maintainer && !members.some((member) => member.c.author === caller.developerId)) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
+  if (!canAcceptSuggestion({ standing: auth.standing, maintainer: auth.maintainer, developerId: caller.developerId }, members.map((member) => member.c.author))) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
 
   // The source authors, read now (design 5.1), with the records they were read from: those conditions go into the transaction that follows. A retry re-reads them too, and is refused when
   // fewer than 2 sources from 2 tasks are left (it withdraws nothing: the rule it resumes is settled on its own).
@@ -469,4 +469,4 @@ export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCall
   return { outcome: "published", version: result.value.version };
 }
 
-export { appendRuleToOverlay, removeRuleFromOverlay };
+export { appendRuleToOverlay, removeRuleFromOverlay, canAcceptSuggestion };

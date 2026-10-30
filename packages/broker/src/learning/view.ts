@@ -2,8 +2,9 @@
 //
 // Who reads: anyone who can see the project (`projectFor`: another company's project and one the caller cannot see answer the same `PROJECT_NOT_FOUND`). What they get depends on who they
 // are, read live (standing.ts), never from the sign-in:
-//   - `canDecide` is true only for a project member with the maintainer role (an org owner or admin counts). It is what the screen uses to show Accept, Dismiss and Remove; the deciding
-//     routes check it again.
+//   - The top-level `canDecide` is true only for a project member with the maintainer role (an org owner or admin counts): it is what the screen uses to show Dismiss and Remove. Each
+//     suggestion's own `canDecide` is whether this caller may ACCEPT it: a live maintainer, or an author of one of its sources who still has standing. Both come from `canAcceptSuggestion`
+//     (standing.ts), the rule Accept itself uses; the deciding routes check again.
 //   - Correction text (each source's `label` and the suggestion's `proposedText`) goes only to a project MEMBER (the same test capture uses). A viewer, or a person who reaches the project
 //     only through its Slack channel, sees that suggestions exist, their stage and how many sources, but no one's words.
 //
@@ -20,7 +21,7 @@ import {
 import { readGuardrails } from "../agents/guardrails.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { readMembers } from "./settle.js";
-import { learningScopeChecked, readStanding, type StandingDeps } from "./standing.js";
+import { canAcceptSuggestion, learningScopeChecked, readStanding, type StandingDeps } from "./standing.js";
 import { getLearningItem, readLearningPartition, type LearningDeps, type LearningScope } from "./store.js";
 
 /** The whole read gives up after this long. */
@@ -82,7 +83,8 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   // Read now, not from the sign-in: a person demoted since they signed in is not a member.
   const standing = await readStanding(deps, caller.orgId, caller.developerId, project);
   const member = standing === "member";
-  const canDecide = member && projectAllows(found.role, "edit_settings");
+  const maintainer = projectAllows(found.role, "edit_settings");
+  const canDecide = canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, []);
 
   const [settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
     settingsView(deps, learning, scope),
@@ -106,6 +108,8 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
     ...(member && suggestion.proposedText !== undefined ? { proposedText: suggestion.proposedText } : {}),
     allFromOnePerson: suggestion.allFromOnePerson, lessSafe: suggestion.lessSafe, lessSafeWords: suggestion.kinds, overlaps: suggestion.overlaps,
     sources: sourceViews(suggestion, members, member), revision: suggestion.revision,
+    // Per suggestion, with the rule Accept authorises by (standing.ts): the screen cannot offer what the API will refuse.
+    canDecide: canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, suggestion.correctionIds.flatMap((id) => { const author = members.get(id)?.author; return author === undefined ? [] : [author]; })),
   }));
 
   // The dismissed patterns: the id of the pattern (what Reopen takes), the stage and kind of the suggestion it came from, and when. No text from either.

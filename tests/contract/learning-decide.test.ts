@@ -14,6 +14,7 @@ import { acceptRequestId, acceptSuggestion, appendRuleToOverlay, dismissSuggesti
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
+import { viewLearning } from "../../packages/broker/src/learning/view.js";
 import { forgetCorrection, groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { learningSettler, settleProject } from "../../packages/broker/src/learning/settle.js";
 import type { LearningDecideDeps } from "../../packages/broker/src/learning/settle.js";
@@ -704,7 +705,7 @@ function interleaved(w: MergeWorld) {
       return result;
     },
   };
-  const store = new AgentStore({ documentClient: client as never, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+  const store = new AgentStore({ documentClient: client, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
   (w.deps as { store: AgentStore }).store = store;
   w.store = store;
   const foreignSave = (layer: AgentId) => async () => {
@@ -720,7 +721,7 @@ function beforeFirstTransaction(w: MergeWorld, before: () => void) {
       if (armed && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { armed = false; before(); }
       return w.db.send(command as never);
     },
-  } as unknown as LearningDecideDeps["documentClient"];
+  };
 }
 
 describe("C1: Accept and Remove publish exactly the draft they saved", () => {
@@ -773,7 +774,7 @@ describe("I1: only a refusal before the publish undoes an Accept", () => {
     const failing = { send: async (command: unknown) => {
       if ((command as RawCommand).input?.TransactItems?.some((entry) => entry.Update?.ExpressionAttributeValues?.[":to"] === "active")) throw Object.assign(new Error("reset"), { code: "ECONNRESET" });
       return w.db.send(command as never);
-    } } as unknown as LearningDecideDeps["documentClient"];
+    } };
     await expect(acceptSuggestion(decideDeps(w, { documentClient: failing }), callerOf(w, MAX), "web", id, acceptBody(w, id))).rejects.toMatchObject({ code: "ECONNRESET" });
     expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
     expect(ruleItems(w)[0]).toMatchObject({ status: "pending" });
@@ -860,7 +861,7 @@ describe("I3: a Remove that was declined or expired gives the draft back", () =>
     const ruleId = suggestionOf(w, id).ruleId as string;
     const asked = await removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() });
     expect(asked.outcome).toBe("awaiting_approval");
-    return { layer, ruleId, approvalId: approvalIdOf(w, asked as { outcome: string; confirmUrl?: string }) };
+    return { layer, ruleId, approvalId: approvalIdOf(w, asked) };
   }
 
   for (const how of ["declined", "expired"] as const) {
@@ -987,5 +988,84 @@ describe("erase never lets a pending approval publish erased words", () => {
     await decide(w, OLA, approvalId).catch(() => undefined);
     expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
     expect(JSON.stringify(await notesOf(w, layer))).not.toContain("retry");
+  });
+});
+
+
+describe("canDecide is per suggestion, from the rule Accept authorises by", () => {
+  const viewOf = async (w: MergeWorld, who: string) => (await viewLearning(decideDeps(w), callerOf(w, who), "web")).suggestions[0]!;
+
+  /** Both directions: what the screen says, and whether Accept lets the person through the authority check. */
+  async function agree(w: MergeWorld, who: string, id: string, expected: boolean) {
+    const seen = await viewOf(w, who).then((one) => one.canDecide, (error: { code?: string }) => error.code);
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, who), "web", id, acceptBody(w, id)));
+    if (expected) {
+      expect(seen).toBe(true);
+      expect(refusal?.code).not.toBe("FORBIDDEN");
+      expect(refusal?.code).not.toBe("PROJECT_NOT_FOUND");
+    } else {
+      expect(seen === false || seen === "PROJECT_NOT_FOUND").toBe(true);
+      expect(["FORBIDDEN", "PROJECT_NOT_FOUND"]).toContain(refusal?.code);
+    }
+  }
+
+  it("a maintainer: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, MAX, id, true);
+  });
+
+  it("an author who still has standing: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, ARJUN, id, true);
+  });
+
+  it("an author who has lost standing (now a viewer): false, and Accept refuses", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    w.db.set({ ...projectMemberKey(ORG_A, ARJUN, "web"), entityType: "MEMBERSHIP", ownerKey: ARJUN, projectName: "web", grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+    w.members.grant(ORG_A, "web", ARJUN, "viewer");
+    await agree(w, ARJUN, id, false);
+  });
+
+  it("a contributor who wrote none of the sources: false, and Accept refuses", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: OLA, task: "t2", text: RETRY_B }] });
+    await agree(w, PRIYA, id, false);
+  });
+
+  it("a viewer: false, and Accept refuses; a person with no place in the project cannot even read it", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, MIA, id, false);
+    await agree(w, "f".repeat(64), id, false);
+  });
+
+  it("is decided suggestion by suggestion: an author sees true only on the suggestion they wrote", async () => {
+    const w = world();
+    await processLayer(w);
+    const mine = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await suggest(w, { stage: "plan", sources: [{ author: MAX, task: "t3", text: "Name database migrations with the date prefix and a short description." }, { author: OLA, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
+    const view = await viewLearning(decideDeps(w), callerOf(w, PRIYA), "web");
+    expect(view.suggestions).toHaveLength(2);
+    expect(view.suggestions.find((one) => one.id === mine)!.canDecide).toBe(true);
+    expect(view.suggestions.find((one) => one.id !== mine)!.canDecide).toBe(false);
+    expect(view.canDecide).toBe(false);
+  });
+
+  it("keeps the tightening: a viewer sees the fixed phrase and no proposed text; a member sees the words", async () => {
+    const w = world();
+    await processLayer(w);
+    await suggest(w);
+    const viewer = await viewOf(w, MIA);
+    expect(viewer.proposedText).toBeUndefined();
+    expect(viewer.sources.every((source) => source.label === "A correction from a project member")).toBe(true);
+    expect((await viewOf(w, ARJUN)).proposedText).toBeDefined();
   });
 });

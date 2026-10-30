@@ -76,6 +76,15 @@ export async function readStanding(deps: StandingDeps, orgId: OrgId, developerId
   return role === "maintainer" || role === "contributor" ? "member" : "outsider";
 }
 
+/**
+ * Who may accept a suggestion (design 5.1, L3): a person with standing in the project who is a maintainer, or who wrote one of the suggestion's corrections. THE one rule: Accept authorises
+ * with it and the learning view's per-suggestion `canDecide` is computed with it, so the screen and the API cannot disagree. `authors` are the authors of the suggestion's corrections.
+ */
+export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean; developerId: string }, authors: readonly string[]): boolean {
+  if (who.standing !== "member") return false;
+  return who.maintainer || authors.includes(who.developerId);
+}
+
 /** The standing of each distinct person, for the re-check at Accept (at most 25 people at once). */
 export async function readStandings(deps: StandingDeps, orgId: OrgId, project: string, developerIds: readonly string[]): Promise<Map<string, LearningStanding>> {
   const distinct = [...new Set(developerIds)];
