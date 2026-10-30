@@ -200,3 +200,14 @@ describe("a ChatGPT task that stopped using the plan (#342)", () => {
     expect(hourOld.invocation.payload.chatgpt).toEqual({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   });
 });
+
+it("C53 governed token failure refuses a legacy notification reply or missing authority",async()=>{
+ const binding={version:1 as const,stage:"build" as const,companyRevision:3,recipeDigest:"a".repeat(64)};
+ const payload={model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},chatgpt:{model:{provider:"openai",modelId:"gpt-6.1-sol"}},modelPolicy:binding};
+ const token=async()=>{throw Error("token unavailable");};
+ await expect(resolveTaskSessionModel(payload,token,{})).rejects.toThrow("fallback authorization");
+ await expect(resolveTaskSessionModel(payload,token,{},async()=>undefined,undefined,async()=>({recorded:true}))).rejects.toThrow("fallback authorization");
+ const authorizedModel={provider:"amazon-bedrock",modelId:"us.anthropic.claude-haiku-4-5-20251001-v1:0"};
+ const allowed=await resolveTaskSessionModel(payload,token,{},async()=>undefined,undefined,async()=>({version:1,binding,model:authorizedModel,sourcesRevision:4}));
+ expect(allowed.model).toMatchObject(authorizedModel);
+});

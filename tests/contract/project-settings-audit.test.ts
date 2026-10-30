@@ -1,3 +1,4 @@
+import {modelSelectionSlackWorld,SELECTION_MODELS} from "../support/model-selection-slack-world.js";
 // "How we work" H6: the project settings that changed with no audit record now leave one, in the same transaction as the write.
 //   project.models_changed / project.checks_changed / project.e2e_policy_changed: a new project definition revision (registerProjectFor, the one writer).
 //   project.model_selection_changed: the Slack project model selection (putProjectModel).
@@ -179,13 +180,14 @@ const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const slackUser = "U0123456789";
 
 describe("the project model selection (putProjectModel)", () => {
+  const selectedBalanced={...SELECTION_MODELS[0]!,label:"Balanced"},selectedFast={...SELECTION_MODELS[1]!,label:"Fast"};
   const selecting = async () => {
-    const w = world();
-    await registerSlackProject(w.handler, { models: MODELS });
+    const w = await modelSelectionSlackWorld(slackUser);
+    await registerSlackProject(w.handler, { models: {default:selectedBalanced,approved:[selectedBalanced,selectedFast]} });
     await ensureWorkspace(w.handler, thread, slackUser);
     return w;
   };
-  const select = (handler: ReturnType<typeof world>["handler"], model = FAST) => serviceCall(handler, thread, slackUser, "PUT", "/v1/service/project/model", { provider: model.provider, modelId: model.modelId });
+  const select = (handler: ReturnType<typeof world>["handler"], model = selectedFast) => serviceCall(handler, thread, slackUser, "PUT", "/v1/service/project/model", { provider: model.provider, modelId: model.modelId });
 
   it("records the selection once, from Slack, in the transaction that stores it", async () => {
     const { cap, db, handler } = await selecting();
@@ -205,13 +207,13 @@ describe("the project model selection (putProjectModel)", () => {
     await select(handler);
     await select(handler);
     expect(cap.recordedBy("project.model_selection_changed")).toHaveLength(1);
-    await select(handler, BALANCED);
+    await select(handler, selectedBalanced);
     expect(cap.recordedBy("project.model_selection_changed")).toHaveLength(2);
   });
 
   it("records nothing for a model that is not approved, and is blocked when the audit item cannot be written", async () => {
     const { cap, db, handler } = await selecting();
-    expect((await serviceCall(handler, thread, slackUser, "PUT", "/v1/service/project/model", { provider: "other", modelId: "unapproved" })).status).toBe(400);
+    expect((await serviceCall(handler, thread, slackUser, "PUT", "/v1/service/project/model", { provider: "other", modelId: "unapproved" })).status).toBe(403);
     expect(cap.recordedBy("project.model_selection_changed")).toEqual([]);
     failAuditItems(db);
     expect((await select(handler)).status).toBeGreaterThanOrEqual(500);

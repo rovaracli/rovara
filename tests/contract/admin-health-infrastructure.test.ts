@@ -221,6 +221,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/sharing.ts",
       // The marker a project setup run leaves for the test machine renewal's drain (AUTOREQUALIFY AR-3) ends at the run's deadline and expires on it a day later.
       "packages/broker/src/e2e/requalify-hold.ts",
+      // C53: replay only reads the existing AGENT_REQUEST receipt expiry in a ConditionCheck; it creates no new TTL-bearing entity.
+      "packages/broker/src/model-selection/selection-write.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

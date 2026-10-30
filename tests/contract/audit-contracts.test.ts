@@ -163,7 +163,7 @@ describe("the event catalog", () => {
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
       "agent.rolled_back", "builtin.adopted", "chain.published", "chain.rolled_back", "trigger.enabled",
       "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "model_source.saved",
-      "model_source.removed", "model_source.order_changed", "audit.read",
+      "model_source.removed", "model_source.order_changed", "model_policy.changed", "model_policy.lock_set", "model_policy.lock_removed", "model.fallback_used", "audit.read",
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",

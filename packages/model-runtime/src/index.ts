@@ -20,6 +20,8 @@ import { streamSimple as anthropicMessagesStream } from "@earendil-works/pi-ai/a
 import { streamSimple as openAIResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+export interface AuthorizedModelFallback {model:ModelIdentifier&{thinkingLevel?:ThinkingLevel};proxy?:ModelProxyOptions}
+
 export interface ModelRuntimeOptions {
   environment?: NodeJS.ProcessEnv;
   readSecret?: (arn: string) => Promise<string | undefined>;
@@ -37,6 +39,8 @@ export interface ModelRuntimeOptions {
   chatgptFallback?: ChatGptFallback;
   /** MODEL3: told when a missing provider secret sent the work to the installation's chosen fallback model. */
   onFallback?: (notice: ModelFallbackNotice) => void;
+  /** Optional server authority gate before constructing a missing-key replacement runtime. */
+  authorizeFallback?: (notice: ModelFallbackNotice) => Promise<void|AuthorizedModelFallback>;
   /**
    * The model proxy (ruling R29): every request goes to `baseUrl` with a per-task proxy key, and no provider secret is read.
    * Only the Claude models the proxy serves (Bedrock's, under the catalog's own ids) are available; any other model is refused.
@@ -92,6 +96,8 @@ export interface ChatGptFallback {
   reason?: ChatGptFallbackReason;
   /** The same request, on the install's default model. Options carry no ChatGPT key. */
   stream(context: TranscriptContext, options: SimpleStreamOptions | undefined): Promise<AssistantMessageEventStream>;
+  /** Optional server authority gate. A rejection must prevent the replacement call, not become telemetry. */
+  authorize?(reason: ChatGptFallbackReason): Promise<void>;
   /** Told once, at the first request that fell back. */
   onFallback(reason: ChatGptFallbackReason): void;
 }
@@ -161,6 +167,14 @@ export async function createModelRuntimeWithFallback<T extends ModelIdentifier>(
       role, reason, requested: { provider: selected.provider, modelId: selected.modelId }, effective: model,
       text: `ran on Amazon Bedrock \`${model.modelId}\` because the ${label} key secret is missing`,
     };
+    const authorized=await options.authorizeFallback?.(notice);
+    if(authorized!==undefined){
+      const approvedOptions={...options};
+      delete approvedOptions.apiKey;delete approvedOptions.chatgptFallback;delete approvedOptions.proxy;
+      if(authorized.proxy!==undefined)approvedOptions.proxy=authorized.proxy;
+      // The broker already recorded governed history/audit; construct only its approved replacement.
+      return {runtime:await createConfiguredModelRuntime(authorized.model,approvedOptions),model:authorized.model};
+    }
     console.info(JSON.stringify({ event: "model_fallback", role, reason, requested: notice.requested, effective: model }));
     try { options.onFallback?.(notice); } catch { /* Reporting must not fail the run it is about. */ }
     return { runtime: await createConfiguredModelRuntime(model, options), model, fallback: notice };
@@ -342,6 +356,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
   /** The rest of this request, and every later one, on the fallback; told once, with why. */
   const fallBack = async (fallback: ChatGptFallback, reason: ChatGptFallbackReason) => {
     if (fallback.reason === undefined) {
+      await fallback.authorize?.(reason);
       fallback.reason = reason;
       try { fallback.onFallback(reason); } catch { /* Reporting must not fail the request it is about. */ }
     }

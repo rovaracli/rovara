@@ -1,3 +1,12 @@
+import type {TransactItem} from "../../packages/broker/src/agents/table-writes.js";
+import {AuditKeyring} from "../../packages/broker/src/audit/keyring.js";
+import {processAuditBatch} from "../../packages/broker/src/audit/appender-handler.js";
+import {FakeDynamoDb} from "../support/fake-dynamodb.js";
+import {FakeKms} from "../support/fake-kms.js";
+import type {DynamoDBDocumentClient} from "@aws-sdk/lib-dynamodb";
+import {capturingAuditDeps} from "../support/audit-capture.js";
+import {fakeModelAccess} from "../support/fake-model-access.js";
+import {modelSourcesKey} from "../../packages/contracts/src/index.js";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 16: the settings of a recipe step at dispatch. A task freezes its agent's recipe at its start (RECIPE, Task 15); every coding
 // operation the broker builds afterwards reads that snapshot, finds the step the operation is, and applies the step's model, instructions,
@@ -25,7 +34,7 @@ import { createCandidateManifest } from "../../packages/contracts/src/task-workf
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
+import { loadSlackBroker, registerSlackProject, call as httpCall } from "../support/slack-broker.js";
 
 // ---- the rules as plain functions
 
@@ -363,12 +372,19 @@ async function setup(options: SetupOptions = {}) {
   const chatgptViews = options.chatgpt;
   const chatgpt = chatgptViews === undefined ? undefined : {
     settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
-    view: async (developerId: string) => chatgptViews[developerId] ?? { connected: false },
+    view: async (developerId: string) => chatgptViews[developerId]===undefined?{connected:false}:{connectedAt:"2026-10-01T00:00:00.000Z",...chatgptViews[developerId]},
     accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }),
     markStatus: async () => undefined,
     refreshModels: async () => undefined,
   } as unknown as ChatGptConnections;
-  const h = await createSingleAnswerPlanBroker({ register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE }, ...(chatgpt === undefined ? {} : { chatgpt }) } });
+  const audit=capturingAuditDeps(),modelAccess=fakeModelAccess();
+  const h = await createSingleAnswerPlanBroker({ audit, register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE,modelSources:{launch:{kinds:["anthropic","openai"]}} },modelAccess:{access:modelAccess,proxyUrl:"http://test-proxy.invalid:4000"}, ...(chatgpt === undefined ? {} : { chatgpt }) } });
+  // Real stored-source shape: fixture credentials are presence metadata only, never key values.
+  const anthropic="src_aaaaaaaaaaaaaaaaaaaa",openai="src_bbbbbbbbbbbbbbbbbbbb";
+  h.db.set({...modelSourcesKey(TEST_ORG),revision:1,credentials:[anthropic,openai],removing:[],order:["personal-chatgpt",anthropic,openai,"rovara"],sources:[
+    {sourceId:anthropic,kind:"anthropic",label:"Fixture Anthropic",models:SERVABLE.filter(model=>model.provider==="anthropic").map(catalog=>({catalog}))},
+    {sourceId:openai,kind:"openai",label:"Fixture OpenAI",models:SERVABLE.filter(model=>model.provider==="openai").map(catalog=>({catalog}))},
+  ]});
   await registerSlackProject(h.handler, options.models === false ? {} : { models: PROJECT_MODELS });
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
   const call = async (method: string, path: string, body?: Record<string, unknown>) => {
@@ -411,10 +427,10 @@ async function setup(options: SetupOptions = {}) {
     };
     /** What the broker builds for the next operation of `mode`, as the engine's own calls would. */
     // The broker accepts the plan check's mode with Task 8 (the critic step); until then these tests drive the modes it already accepts.
-    const accept = async (mode: Exclude<DispatchMode, "PLAN_CRITIQUE" | "SETUP_DRAFT">, programStepId?: string) => {
+    const accept = async (mode: Exclude<DispatchMode, "PLAN_CRITIQUE" | "SETUP_DRAFT">, programStepId?: string,extra:()=>TransactItem[]=()=>[]) => {
       await endActive();
       const task = meta();
-      const accepted = await h.actions.acceptTask(developerTaskIdentity(task, TEST_ORG), workspaceId, { requestId: randomUUID(), conversationId: task.conversationId, prompt: `Do the ${mode} step` }, () => [],
+      const accepted = await h.actions.acceptTask(developerTaskIdentity(task, TEST_ORG), workspaceId, { requestId: randomUUID(), conversationId: task.conversationId, prompt: `Do the ${mode} step` }, extra,
         { workflowMode: mode, ...(programStepId === undefined ? {} : { programStepId }) });
       return { operation: operations(workspaceId).find((item) => item.id === accepted.operation.id)!, invocation: invocationOf(accepted.operation.id) };
     };
@@ -424,7 +440,7 @@ async function setup(options: SetupOptions = {}) {
     const current = await readGuardrailsWithRevision({ documentClient: h.db, tableName: "state" }, TEST_ORG);
     await store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...change }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(store, TEST_ORG, MAYA.developerId, true) });
   };
-  return { ...h, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails };
+  return { ...h, audit, modelAccess, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails };
 }
 
 describe("a custom coding agent's operations", () => {
@@ -474,14 +490,15 @@ describe("a custom coding agent's operations", () => {
   it("never gives a review the shell, even when the snapshot is edited to grant it", async () => {
     const t = await setup();
     const run = await t.start(await t.agentOf(CODER));
-    const item = t.db.get(`DEVTASK#${run.taskId}`, "RECIPE") as { recipe: ResolvedRecipe; digest: string };
+    const item = t.db.get(`DEVTASK#${run.taskId}`, "RECIPE") as { recipe: ResolvedRecipe; digest: string;modelPolicyPin:{recipeDigest:string} };
     const edited = structuredClone(item.recipe);
     const reviewStep = edited.steps.find((step) => step.id === "review")!;
     (reviewStep.settings as Record<string, unknown>).tools = ["bash", "read", "write", "grep"];
     // The snapshot and the task's record of it are edited together, as the worst case: the digest check is not what stops the shell.
     const digest = recipeDigest(edited);
-    t.db.set({ ...item, recipe: edited, digest });
+    t.db.set({ ...item, recipe: edited, digest,modelPolicyPin:{...item.modelPolicyPin,recipeDigest:digest} });
     t.db.set({ ...run.meta(), agent: { ...run.meta().agent!, digest } });
+    await run.accept("IMPLEMENT","build");
     const { invocation } = await run.accept("REVIEW", "review");
     expect((invocation.payload.agentStep as { tools: string[] }).tools).toEqual(["read", "grep"]);
   });
@@ -553,7 +570,7 @@ describe("a model the company forbids in the middle of a task", () => {
     const before = t.operations(run.workspaceId).length;
     await expect(run.accept("REVIEW", "review")).rejects.toMatchObject({
       code: "MODEL_NOT_ALLOWED",
-      message: "MODEL_NOT_ALLOWED: Strict coder's Review step uses anthropic/claude-haiku-4-5, which isn't allowed on payments. Ask the agent's owner to pick another model.",
+      message: "MODEL_NOT_ALLOWED: The task's pinned stage model is unavailable. Check How we work.",
     });
     expect(t.operations(run.workspaceId).length).toBe(before);
   });
@@ -561,10 +578,13 @@ describe("a model the company forbids in the middle of a task", () => {
   it("uses the step's fallback for a model forbidden since the start, and records it", async () => {
     const t = await setup({ models: false });
     const run = await t.start(await t.agentOf(CODER));
+    await run.accept("IMPLEMENT","build");
     await t.setGuardrails({ forbiddenModels: [HAIKU] });
     const { operation, invocation } = await run.accept("REVIEW", "review");
     expect(invocation.payload.model).toEqual(GPT55);
     expect(operation.model).toEqual(GPT55);
+    expect(run.meta().modelFallbacks).toContainEqual(expect.objectContaining({stage:"code_review",reasonCode:"CONFIGURED_FALLBACK"}));
+    expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(1);
   });
 
   it("applies the company's forbidden list to the project's own model for a task of Rovara Code", async () => {
@@ -631,7 +651,7 @@ describe("a ChatGPT-plan task", () => {
     await t.setGuardrails({ requireCrossCompanyReview: true });
     await expect(second.accept("REVIEW", "review")).rejects.toMatchObject({
       code: "MODEL_NOT_ALLOWED",
-      message: "MODEL_NOT_ALLOWED: Plain coder needs its Review step from a different AI company than its Build step, and none is allowed on payments. Ask an admin to add one.",
+      message: "MODEL_NOT_ALLOWED: The task's pinned stage model is unavailable. Check How we work.",
     });
   });
 });
@@ -670,7 +690,7 @@ describe("a step model the project does not approve, refused at the start", () =
 });
 
 describe("a refusal at dispatch is final and tells the owner", () => {
-  const REFUSAL = "Strict coder's Review step uses anthropic/claude-haiku-4-5, which isn't allowed on payments. Ask the agent's owner to pick another model.";
+  const REFUSAL = "The task's pinned stage model is unavailable. Check How we work.";
   const noFallback = recipeWithReview({ model: HAIKU, tools: ["read", "grep"] });
 
   it("blocks the task with the refusal's own words and removes the dispatch row, when a guardrail tightens before the first review", async () => {
@@ -696,7 +716,7 @@ describe("a refusal at dispatch is final and tells the owner", () => {
 
   it("ends the preparation FAILED with the refusal's words when the first operation is refused, answers the worker's repeated result, and keeps the instructions cleared", async () => {
     const t = await setup();
-    const planRefusal = "Plain coder's Plan step uses anthropic/claude-sonnet-4-6, which isn't allowed on payments. Ask the agent's owner to pick another model.";
+    const planRefusal = "The task's pinned stage model is unavailable. Check How we work.";
     const started = await t.begin(await t.agentOf(CODER, "Plain coder"));
     await t.setGuardrails({ forbiddenModels: [SONNET] });
     await started.finishPrepare();
@@ -722,12 +742,13 @@ describe("the cross-company rule when the earlier step ran on a model nobody rec
     ] };
     const run = await t.start(await t.agentOf(plain, "Open coder"));
     const implementing = await run.accept("IMPLEMENT", "build");
-    // The project lists no models and the build step names none: the build ran on the worker's default, which nothing recorded.
-    expect(implementing.operation).not.toHaveProperty("model");
+    // Simulate a legacy operation whose actual model was never recorded.
+    expect(implementing.operation.model).toBeDefined();
+    const unknownPrior={...implementing.operation};delete unknownPrior.model;t.db.set(unknownPrior);
     await t.setGuardrails({ requireCrossCompanyReview: true });
     await expect(run.accept("REVIEW", "review")).rejects.toMatchObject({
       code: "MODEL_NOT_ALLOWED",
-      message: "MODEL_NOT_ALLOWED: Open coder needs its Review step from a different AI company than its Build step, and none is allowed on payments. Ask an admin to add one.",
+      message: "MODEL_NOT_ALLOWED: The task's pinned stage model is unavailable. Check How we work.",
     });
   });
 });
@@ -760,7 +781,8 @@ describe("Rovara Code is unchanged", () => {
     for (const mode of ["IMPLEMENT", "CHECKS", "REVIEW"] as const) {
       const { operation, invocation } = await run.accept(mode);
       expect(invocation.payload, mode).not.toHaveProperty("agentStep");
-      expect(operation, mode).not.toHaveProperty("model");
+      if(mode==="CHECKS")expect(operation,mode).not.toHaveProperty("model");
+      else expect(operation.model,mode).toEqual(invocation.payload.model);
       expect(String(invocation.payload.prompt), mode).not.toContain("Instructions from your company's agent");
     }
   });
@@ -817,4 +839,104 @@ describe("a worker that does not know the new fields", () => {
     expect(post).toHaveBeenCalledTimes(1);
     expect(markDelivered).toHaveBeenCalledTimes(1);
   });
+});
+
+it("C53 dispatches the first coding operation on its pinned company Plan model",async()=>{
+ const t=await setup({models:false});
+ const model={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"};
+ t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{model,thinkingLevel:"low",locked:true}}});
+ const agentId=await t.agentOf({sequence:CODER.sequence!.map(step=>({...step,settings:{}}))});
+ const run=await t.start(agentId);
+ expect(run.planInvocation.payload.model).toEqual({...model,thinkingLevel:"low"});
+ expect(run.planning.model).toEqual({...model,thinkingLevel:"low"});
+ const policy=run.planInvocation.payload.modelPolicy;
+ expect(policy).toMatchObject({version:1,stage:"plan",companyRevision:1});
+ expect((policy as {recipeDigest:unknown}).recipeDigest).toMatch(/^[a-f0-9]{64}$/);
+ expect(run.planning.modelPolicy).toEqual(policy);
+ const claims=JSON.parse(Buffer.from(run.planInvocation.callbackCapability.split(".")[0]!,"base64url").toString()) as {actions:string[];modelPolicy:unknown};
+ expect(claims.modelPolicy).toEqual(policy);expect(claims.actions).toContain("model-fallback");
+ // A later lower-precedence live selection cannot repin this task or turn CHECKS into a model operation.
+ const {projectSelectionKey}=await import("../../packages/contracts/src/index.js");
+ t.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"openai",modelId:"unavailable-selection"}});
+ const continued=await run.accept("IMPLEMENT","build");
+ expect(continued.invocation.payload.modelPolicy).toMatchObject({stage:"build",companyRevision:1});
+ const checking=await run.accept("CHECKS","check");
+ expect(checking.operation).not.toHaveProperty("model");
+});
+
+it("C53 commits first-operation fallback history and digest-only audit with the operation",async()=>{
+ const t=await setup({models:false}),fallbackModel={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"};
+ t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{model:SONNET,fallbackModel,thinkingLevel:null,locked:false}}});
+ const agentId=await t.agentOf({sequence:CODER.sequence!.map(step=>({...step,settings:{}}))}),run=await t.begin(agentId);
+ const source=t.db.get(modelSourcesKey(TEST_ORG))!;t.db.set({...source,credentials:[],revision:2});t.audit.queueDown();
+ await run.finishPrepare();
+ const operation=t.operations(run.workspaceId).find(item=>item.workflowMode==="PLAN");
+ expect(operation?.model).toEqual(fallbackModel);
+ expect(run.meta().modelFallbacks).toEqual([{stage:"plan",used:`${fallbackModel.provider}/${fallbackModel.modelId}`,wanted:`${SONNET.provider}/${SONNET.modelId}`,reasonCode:"CONFIGURED_FALLBACK"}]);
+ const events=t.audit.recordedBy("model.fallback_used");expect(events).toHaveLength(1);expect(JSON.stringify(events[0]?.facts)).not.toContain("claude");
+ const ledger=new FakeDynamoDb(),keyId="arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555",kms=new FakeKms(keyId),clock=Date.now();
+ const documentClient=ledger as unknown as DynamoDBDocumentClient,keyring=new AuditKeyring({documentClient,keysTable:"keys",kms:kms.client,keyId,now:()=>clock});
+ const event=events[0]!,logs:Record<string,unknown>[]=[];
+ expect(await processAuditBatch({documentClient,ledgerTable:"ledger",keyring,now:()=>clock,log:entry=>logs.push(entry),sleep:async()=>{}},{Records:[{messageId:event.eventId,body:JSON.stringify(event),attributes:{MessageGroupId:TEST_ORG}}]})).toEqual({batchItemFailures:[]});
+ const record=ledger.find(row=>row.pk===`AUDIT#${TEST_ORG}`&&String(row.sk).startsWith("SEQ#"))[0]!;
+ expect(record.target).toEqual({kind:"project",id:await keyring.pseudonym(TEST_ORG,"project","payments")});expect(JSON.stringify(record)).not.toContain("payments");expect(JSON.stringify(logs)).not.toContain("payments");
+ const sealed=record.sealedDetails as Array<{subject:string;iv:string;ciphertext:string}>;
+ expect(await keyring.openDetails(TEST_ORG,1,sealed)).toMatchObject([{subject:"org",fields:{targetName:"payments"}}]);
+ ledger.set({pk:`ORG#${TEST_ORG}`,sk:"SHREDDED",at:new Date(clock).toISOString()});expect(await keyring.openDetails(TEST_ORG,1,sealed)).toEqual([{subject:"org",erased:true}]);
+
+});
+
+it("C53 normal fallback rolls back history and audit when the joined workflow fence loses",async()=>{
+ const t=await setup({models:false}),run=await t.start(await t.agentOf(CODER));
+ await run.accept("IMPLEMENT","build");await t.setGuardrails({forbiddenModels:[HAIKU]});
+ const before=t.operations(run.workspaceId).length;
+ const update=(condition:string):TransactItem[]=>[{Update:{TableName:"state",Key:{pk:`DEVTASK#${run.taskId}`,sk:"META"},UpdateExpression:"SET modelJoinProbe = :next",ConditionExpression:condition,ExpressionAttributeValues:{":next":true}}}];
+ await expect(run.accept("REVIEW","review",()=>update("attribute_exists(nonexistentWorkflowFence)"))).rejects.toThrow();
+ expect(t.operations(run.workspaceId)).toHaveLength(before);expect(run.meta().modelFallbacks).toBeUndefined();expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(0);
+ const accepted=await run.accept("REVIEW","review",()=>update("attribute_exists(pk)"));
+ expect(accepted.operation.model).toEqual(GPT55);expect(run.meta()).toMatchObject({modelJoinProbe:true,modelFallbackRevision:1});expect(run.meta().modelFallbacks).toHaveLength(1);expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(1);
+});
+it("C53 emitted capability authorizes a visible atomic fallback and exact retry through HTTP",async()=>{
+ const t=await setup({models:false,chatgpt:{[MAYA.developerId]:{connected:true,status:"connected",models:[SOL.modelId]}}});
+ const agentId=await t.agentOf({sequence:CODER.sequence!.map(step=>({...step,settings:{}}))});
+ const run=await t.start(agentId);
+ expect(run.planInvocation.payload.chatgpt).toBeDefined();
+ expect(t.modelAccess.mintKey).not.toHaveBeenCalled();
+ const request={version:1,binding:run.planInvocation.payload.modelPolicy,reason:"unavailable",failedModel:SOL};
+ const reply=await t.callback(run.workspaceId,String(run.planning.id),"model-fallback",request);
+ expect(reply).toMatchObject({version:1,binding:request.binding,model:{provider:"amazon-bedrock"}});
+ expect(run.meta().modelFallbacks).toHaveLength(1);
+ expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(1);
+ expect(t.db.get(`WORKSPACE#${run.workspaceId}`,`OPERATION#${String(run.planning.id)}`)?.modelRoute).toMatchObject({sourceId:"src_aaaaaaaaaaaaaaaaaaaa",alias:(reply.modelRoute as {alias:string}).alias});
+ const access=await httpCall(t.handler,{method:"GET",path:"/v1/internal/model-access",headers:{"x-agentx-callback-capability":run.planInvocation.callbackCapability}});
+ expect(access.status).toBe(200);
+ expect(t.modelAccess.mintKey).toHaveBeenCalledOnce();
+ expect(t.modelAccess.mintKey.mock.calls[0]?.[0].models).toEqual([(reply.modelRoute as {alias:string}).alias]);
+
+ const replay=await t.callback(run.workspaceId,String(run.planning.id),"model-fallback",request);
+ expect(replay.model).toEqual(reply.model);expect(run.meta().modelFallbacks).toHaveLength(1);expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(1);
+});
+
+it("C53 CHECKS ignores project models and unreadable source order because it calls no model",async()=>{
+ const t=await setup();const run=await t.start("rovara-code");
+ t.db.set({...modelSourcesKey(TEST_ORG),revision:2,sources:"unreadable",order:["rovara"],credentials:[]});
+ const checked=await run.accept("CHECKS","check");
+ expect(checked.operation).not.toHaveProperty("model");
+ expect(checked.invocation.payload).not.toHaveProperty("model");
+ expect(checked.invocation.payload).not.toHaveProperty("chatgpt");
+ expect(checked.invocation.payload).not.toHaveProperty("modelPolicy");
+ const key = await httpCall(t.handler,{method:"GET",path:"/v1/internal/model-access",headers:{"x-agentx-callback-capability":checked.invocation.callbackCapability}});
+ expect(key.status).toBe(401);
+ expect(t.modelAccess.mintKey).not.toHaveBeenCalled();
+});
+
+for(const explicit of [false,true])it(`C53 preserves the six-attempt critic ceiling for ${explicit?"explicit":"default"} choices`,async()=>{
+ const t=await setup();
+ if(explicit)t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan_check:{model:GPT55,thinkingLevel:null,locked:false}}});
+ const run=await t.start("rovara-code");
+ await t.finish(run.workspaceId,String(run.planning.id),"FAILED",{error:"ended by the test"});
+ for(let i=0;i<6;i++)t.db.set({pk:`WORKSPACE#${run.workspaceId}`,sk:`OPERATION#failed-critic-${i}`,entityType:"OPERATION",id:`failed-critic-${i}`,orgId:TEST_ORG,workspaceId:run.workspaceId,conversationId:run.meta().conversationId,kind:"task",workflowMode:"PLAN_CRITIQUE",status:"FAILED",error:"MODEL_NOT_ALLOWED: unavailable",model:{provider:"openai",modelId:`failed-model-${i}`},createdAt:new Date(Date.parse(String(run.planning.createdAt))+i+1).toISOString()});
+ const before=t.db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===run.workspaceId).length;
+ await expect(t.actions.acceptTask(developerTaskIdentity(run.meta(),TEST_ORG),run.workspaceId,{requestId:randomUUID(),conversationId:run.meta().conversationId,prompt:"Check this plan"},()=>[],{workflowMode:"PLAN_CRITIQUE"})).rejects.toThrow("plan check");
+ expect(t.db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===run.workspaceId)).toHaveLength(before);
 });

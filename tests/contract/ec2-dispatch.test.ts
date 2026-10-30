@@ -1158,6 +1158,17 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).readOnly).toBe(true);
       });
 
+      it("never drops a governed model policy binding for an older or unprobed worker",async()=>{
+        const modelPolicy={version:1,stage:"build",companyRevision:0,recipeDigest:"a".repeat(64)};
+        const record=taskRecord({model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},modelPolicy});
+        for(const older of [delivery(),delivery({workerFeatures:async()=>[]})]){
+          await expect(older.deliver(record,record.invocation)).rejects.toMatchObject(refusal);expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable=delivery({workerFeatures:async()=>["task.modelPolicy"]});
+        await expect(capable.deliver(record,record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).modelPolicy).toEqual(modelPolicy);
+      });
+
       it("refuses a model route on a worker that lacks model.route and sends it unchanged to one that has it", async () => {
         const record = taskRecord({ modelRoute });
         const older = delivery({ workerFeatures: async () => ["task.agentStep", "task.agentRun"] });

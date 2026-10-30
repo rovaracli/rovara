@@ -80,7 +80,7 @@ function anthropicText(value: string) {
   ]);
 }
 
-async function planWithFallback(openai: Array<() => Response>, options: { apiKey?: () => Promise<string> } = {}) {
+async function planWithFallback(openai: Array<() => Response>, options: { apiKey?: () => Promise<string>;authorizeFallback?:(reason:"limit"|"revoked"|"model")=>Promise<void> } = {}) {
   const { transport, requests } = recording(openai);
   const defaultCalls = vi.fn(async () => anthropicText("Finished on the default"));
   const defaultRuntime = await createConfiguredModelRuntime({ provider: "anthropic", modelId: "claude-sonnet-4-6" }, {
@@ -90,7 +90,7 @@ async function planWithFallback(openai: Array<() => Response>, options: { apiKey
   const onFallback = vi.fn();
   const fallback: ChatGptFallback = {
     stream: async (context, streamOptions) => defaultRuntime.streamSimple(defaultRuntime.getModel("anthropic", "claude-sonnet-4-6")!, context, streamOptions),
-    onFallback,
+    onFallback,...(options.authorizeFallback===undefined?{}:{authorize:options.authorizeFallback}),
   };
   const runtime = await createConfiguredModelRuntime({ provider: "openai", modelId: "gpt-6.1-sol" }, {
     fetch: transport, apiKey: options.apiKey ?? (async () => "chatgpt-access-1"), chatgptFallback: fallback, onUsage: vi.fn(),
@@ -142,4 +142,18 @@ describe("a ChatGPT plan that cannot serve the task (#342)", () => {
     expect(h.defaultCalls).not.toHaveBeenCalled();
     expect(h.onFallback).not.toHaveBeenCalled();
   });
+});
+
+it("C53 refuses a mid-session fallback when broker authorization rejects it",async()=>{
+ const authorize=vi.fn(async()=>{throw Error("pinned choice refused");});
+ const h=await planWithFallback([limited],{authorizeFallback:authorize});
+ expect(await h.ask()).toMatchObject({provider:"openai",stopReason:"error"});
+ expect(authorize).toHaveBeenCalledWith("limit");expect(h.defaultCalls).not.toHaveBeenCalled();expect(h.onFallback).not.toHaveBeenCalled();expect(h.fallback.reason).toBeUndefined();
+});
+it("C53 waits for fallback authorization before starting the replacement request",async()=>{
+ let allow:()=>void=()=>{throw Error("not ready");};
+ const authorize=vi.fn(()=>new Promise<void>(resolve=>{allow=resolve;}));
+ const h=await planWithFallback([limited],{authorizeFallback:authorize}),answer=h.ask();
+ await vi.waitFor(()=>expect(authorize).toHaveBeenCalledTimes(1));expect(h.defaultCalls).not.toHaveBeenCalled();expect(h.fallback.reason).toBeUndefined();
+ allow();expect(await answer).toMatchObject({provider:"anthropic",stopReason:"stop"});expect(h.onFallback).toHaveBeenCalledTimes(1);
 });

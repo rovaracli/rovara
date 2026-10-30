@@ -1,5 +1,6 @@
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
+import type {ModelFallback} from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
@@ -65,6 +66,11 @@ export interface WorkspaceCharge { member: CounterKey; organization: CounterKey 
 
 /** DEVTASK#<taskId> / META: the task. */
 export interface DeveloperTaskRecord {
+  /** Written together with model.fallback_used, never inferred by a reader. */
+  modelFallbacks?: ModelFallback[];
+  /** Internal bounded occurrence receipts and optimistic version, committed with the audit outbox. */
+  modelFallbackRevision?: number;
+  modelFallbackReceipts?: Array<{key:string;digest:string;eventId:string;at:string}>;
   pk: string;
   sk: "META";
   entityType: "DEVELOPER_TASK";

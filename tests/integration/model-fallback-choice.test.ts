@@ -68,3 +68,17 @@ describe("no silent fallback (test 41)", () => {
     expect(modelFallbackModel("us.made-up-model-v1")).toBeUndefined();
   });
 });
+
+it("C53 does not construct or report the environment fallback when broker authorization denies it",async()=>{
+ const create=vi.spyOn(ModelRuntime,"create"),onFallback=vi.fn(),authorizeFallback=vi.fn(async()=>{throw Error("model policy refuses replacement");});
+ vi.spyOn(console,"info").mockImplementation(()=>undefined);
+ const outcome=await createModelRuntimeWithFallback(selected,"worker",{environment:{AGENTX_MODEL_FALLBACK:CHOSEN},onFallback,authorizeFallback}).then(()=>"unauthorized fallback",(error:unknown)=>error instanceof Error?error.message:"unknown");
+ expect(outcome).toBe("model policy refuses replacement");
+ expect(create).toHaveBeenCalledTimes(1);expect(onFallback).not.toHaveBeenCalled();expect(authorizeFallback).toHaveBeenCalledWith(expect.objectContaining({requested:selected,effective:{provider:"amazon-bedrock",modelId:CHOSEN}}));
+});
+it("constructs only the server-authorized MODEL3 replacement when it differs from the environment candidate",async()=>{
+ const approved={provider:"amazon-bedrock",modelId:"us.anthropic.claude-haiku-4-5-20251001-v1:0"};
+ const onFallback=vi.fn(),log=vi.spyOn(console,"info").mockImplementation(()=>undefined);
+ const result=await createModelRuntimeWithFallback(selected,"worker",{environment:{AGENTX_MODEL_FALLBACK:CHOSEN},onFallback,authorizeFallback:async()=>({model:approved})});
+ expect(result.model).toEqual(approved);expect(onFallback).not.toHaveBeenCalled();expect(log).not.toHaveBeenCalled();
+});

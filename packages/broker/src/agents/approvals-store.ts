@@ -17,6 +17,8 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import type { ChainStore } from "../chains/store.js";
 import type { TriggerHookReader, TriggerHooks, TriggerLookup, TriggerScheduler } from "../triggers/ports.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
+import type { RoutingDependencies } from "../model-sources/routing.js";
+import type { ChatGptConnections } from "../chatgpt/connections.js";
 import type { ServableModels } from "./guardrails.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
 import type { ResolveOptions } from "./store.js";
@@ -27,6 +29,10 @@ import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
+  modelRouting?: RoutingDependencies;
+  /** Existing sign-in table, used only for global revocation ConditionChecks. */
+  modelSignInTableName?: string;
+  stageChatgpt?: Pick<ChatGptConnections,"settings"|"view">;
   /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
   chains?: ChainStore;
   /**
@@ -94,9 +100,9 @@ const APPROVAL_STATUSES = ["PENDING", "EXECUTING", "APPROVED", "APPROVED_DONE", 
 /** What a change record applies when it is confirmed. Each is bound to the exact version, revision or digest that was shown. */
 export type AgentChangeSubject =
   /** Publish `agentId`'s draft: only while the draft is still `draftRevision` with `digest`, and the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
+  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string} }
   /** Make `version` (whose recipe has `digest`) current, while the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number }
+  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string} }
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
@@ -372,8 +378,8 @@ const ApproverSpecSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rule"), rule: z.string(), candidates: z.array(z.string()) }).strict(),
 ]);
 const ChangeSubjectSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("agent_publish"), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal("agent_rollback"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
+  z.object({ kind: z.literal("agent_publish"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime()}).strict().optional(), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
   z.object({
     kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
