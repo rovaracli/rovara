@@ -1,3 +1,6 @@
+import { captureTaskStopAdmission } from "../org/task-stop-admission.js";
+import { checkedTaskStopSnapshot } from "../org/task-stop-window.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
 import type { BudgetSubject } from "./owner-total.js";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
@@ -1478,6 +1481,19 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   let task = status === "APPROVED" && record.taskId !== undefined ? await readTask(deps, record.orgId, record.taskId) : undefined;
   if (status === "APPROVED" && record.taskId !== undefined && task === undefined) throw notFound();
   if (task?.closedAt !== undefined) await closedTask();
+  if (status === "APPROVED" && approvedUsd !== undefined && task !== undefined && (record.kind === "run_limit" || record.kind === "max_per_run" || record.kind === "planning")) {
+    const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+    // This is a new approval, not a retrofit of the task's committed window.
+    // Disabled/unseeded orgs retain the existing decision path. Eligibility was
+    // checked above and is rechecked after source reads by the same decider.
+    await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+      if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
+    } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
+      agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+      pathLimitMicrousd: previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+      approvedRunLimitMicrousd: usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null,
+    });
+  }
   /** What the approval writes on `current`, and what follows it. */
   const plan = async (current: DeveloperTaskRecord | undefined) => {
     const change = current === undefined || approvedUsd === undefined ? undefined : await taskChange(deps, record, current, approvedUsd);
