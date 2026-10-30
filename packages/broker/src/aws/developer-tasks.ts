@@ -2600,10 +2600,12 @@ function refuseAutomaticWhilePaused(task: DeveloperTaskRecord): void {
 }
 
 /** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
-function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined, admission?: CapturedTaskStop): TransactItems {
+function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined, admission?: CapturedTaskStop, reference?: SpendingAdmissionReference): TransactItems {
   if (admission !== undefined) {
     const a = new Aliases(), values: Record<string, unknown> = { ":now": iso(deps), ":stop": admission, ":cap": admission.effectiveStopMicrousd / 1_000_000 };
     const sets = ["updatedAt = :now", "budgetUsd = :cap", "spendingStop = :stop"], removes: string[] = [];
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    sets.push("spendingAdmission = :admission"); values[":admission"] = reference;
     if (baseline !== undefined) { sets.push("budgetBaselineUsd = :baseline"); values[":baseline"] = baseline; }
     if (staleBudgetPause(task)) removes.push("budgetPause");
     const maxPerRun = taskMaxPerRunForAdmission(admission);
@@ -2613,7 +2615,7 @@ function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: Develo
       sets.push("maxPerRunUsd = :taskStop"); values[":taskStop"] = exactMaxUsd;
     } else if (task.maxPerRunUsd !== undefined) removes.push("maxPerRunUsd");
     const conditions = ["attribute_exists(pk)", "attribute_not_exists(closedAt)"];
-    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop"] as const) {
+    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop", "spendingAdmission"] as const) {
       const value = task[field]; conditions.push(value === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(value)}`);
     }
     return [{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: `SET ${sets.join(", ")}${removes.length === 0 ? "" : ` REMOVE ${removes.join(", ")}`}`,
@@ -2717,7 +2719,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
-      ...windowAndPauseUpdate(deps, task, baseline, windowStop),
+      ...windowAndPauseUpdate(deps, task, baseline, windowStop, { requestId: windowIdentity.requestId, actorId: windowIdentity.actorId, intentHash: windowIdentity.intentHash }),
       ...windowChecks,
       ...(windowStop === undefined ? [] : [taskStopWindowItem(deps.tableName, windowIdentity, windowStop, operation.id, receivedAt, baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline)]),
       ...(withdrawal?.items ?? []),
@@ -2969,7 +2971,8 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
   const reference = { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash }, pausedRevision = run === undefined ? null : run.revision + 1;
   return { authority, reference, receiptIndex: run === undefined ? 0 : 1,
     ...(task.workflow === undefined ? {} : { workflowRevision: task.workflow.revision }),
-    ...(run === undefined ? { taskReference: true as const } : { expectedPausedAgentRevision: run.revision + 1, runSourceIndex: 0 }),
+    taskReference: true,
+    ...(run === undefined ? {} : { expectedPausedAgentRevision: run.revision + 1, runSourceIndex: 0 }),
     items: [...(run === undefined ? [] : [{ Update: { TableName: deps.tableName, Key: runKey, UpdateExpression: "SET spendingAdmission = :admission, #revision = :nextRevision",
       ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
       ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
@@ -3043,7 +3046,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     const transitionAccess = await authorizeTaskAction(deps, caller, taskId, "work");
     const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, budgetBaselineUsd: baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline, payer, place, actorRole: caller.orgRole, peopleRevision: transitionAccess.peopleRevision ?? null,
       agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
-    const item = windowAndPauseUpdate(deps, task, baseline, captured)[0]?.Update;
+    const item = windowAndPauseUpdate(deps, task, baseline, captured, { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash })[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
     const source = ["origin", "budgetPause", "startedBy", "place", "workflow", "modelKeyIds"] as const;
     // Transition aliases must not collide with the window source aliases.
