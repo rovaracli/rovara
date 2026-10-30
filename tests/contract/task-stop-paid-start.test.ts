@@ -1,3 +1,4 @@
+import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
@@ -1570,4 +1571,47 @@ for (const state of ["valid", "lost_at_commit"] as const) it(`a real registered 
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(reply.status).toBe(state === "valid" ? 200 : 503);
   if (state === "lost_at_commit") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(taskId).modelKeyIds).toBeUndefined(); }
+});
+
+for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`registered OIDC PEOPLE identity remains current for model keys: ${state}`, async () => {
+  const issuer = "https://company-identity.example.com", subject = "m47-registered-owner", slackUserId = "U0M47OID1";
+  const creator = { developerId: ownerKeyForSubject(issuer, subject), name: "Maya Company", provider: "oidc" as const, sessionId: randomUUID(), slackUserId };
+  const f = await fixture(1_234_567, { developerExtra: {
+    taskPeopleConfiguration: { peopleChangesEnabled: true },
+    taskPersonProof: async input => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.channelIds }),
+    taskPeopleDisplayRead: async input => input.operation === "proof"
+      ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        user: { id: input.request.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.request.channelIds } }
+      : { operation: "directory" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        users: [{ id: slackUserId, teamId: SLACK_TEAM, name: creator.name, memberOf: input.request.channelIds }] } },
+  } });
+  await f.t.orgOf(creator); f.t.grantRole(creator, "maintainer");
+  const identityKey = { pk: `DEVELOPER#${creator.developerId}`, sk: "META" };
+  f.t.db.set({ ...identityKey, developerId: creator.developerId, provider: creator.provider, issuer, subject, displayName: creator.name,
+    slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+  f.t.db.set({ pk: `SESSION#${creator.sessionId}`, sk: "META", sessionId: creator.sessionId, developerId: creator.developerId, amr: creator.provider,
+    startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600 });
+  const agentId = await f.t.agentOf(CODING, { by: creator }), agent = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(agent)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId, { who: creator });
+  expect((await f.t.dev(creator, "POST", `/v1/dev/tasks/${task.taskId}/share`, { requestId: randomUUID() })).status).toBe(200);
+  expect((await f.t.dev(creator, "GET", `/v1/dev/tasks/${task.taskId}/people`)).status).toBe(200);
+  expect(f.t.db.get(`DEVTASK#${task.taskId}`, "PEOPLE")).toMatchObject({ orphaned: false, people: [{ developerId: creator.developerId, role: "owner" }] });
+  if (state === "revoked") f.t.db.set({ ...f.t.db.get(identityKey)!, revoked: true });
+  const plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (state === "revoked_at_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; f.t.db.set({ ...f.t.db.get(identityKey)!, revoked: true });
+    }
+    return send(command);
+  };
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  if (state === "valid") expect(reply.status).toBe(200);
+  else {
+    expect(reply.status).not.toBe(200);
+    if (state === "revoked") expect(f.t.access.mintedKeys().length).toBe(before);
+    else { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
+  }
 });
