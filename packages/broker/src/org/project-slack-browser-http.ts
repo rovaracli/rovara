@@ -1,19 +1,20 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalViewSchema, agentXError, orgScoped, projectPk, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalViewSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionSchema, agentXError, orgScoped, projectPk, type OrgId } from "@agentx/contracts";
 import { takeRateAt } from "../developer/page-comments.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import type { ProjectSlackChannelDependencies } from "./slack-binding.js";
 import { readRequestRecord } from "./request-records.js";
 import { commitProjectSlackUnbind, listProjectSlackBindings, readProjectSlackRequest, readProjectSlackTarget, requireProjectSlackAuthority } from "./project-slack-browser.js";
-import { proposeProjectSlackBinding, approveProjectSlackBinding, readProjectSlackProposal, readLiveProjectSlackProposal } from "./project-slack-proposals.js";
+import { proposeProjectSlackBinding, approveProjectSlackBinding, readProjectSlackProposal, readLiveProjectSlackProposal, decideProjectSlackProposal, readProjectSlackDecision } from "./project-slack-proposals.js";
 interface Caller { developerId: string; orgId: OrgId; browserSession?: true }
 type Dependencies = SecondPersonEvidenceDependencies & { audit?: AuditRuntime; orgs?: ProjectSlackChannelDependencies["orgs"] };
 type Request = { operation: "list"; expectedOrgId: unknown; cursor?: string }
  | { operation: "target"; expectedOrgId: unknown; teamId: string; channelId: string }
  | { operation: "proposal"; expectedOrgId: unknown; proposalId?: string }
  | { operation: "propose"; body: unknown } | { operation: "approve"; proposalId: string; body: unknown }
+ | { operation: "cancel"; proposalId: string; body: unknown } | { operation: "reject"; proposalId: string; body: unknown } | { operation: "decision-status"; expectedOrgId: unknown; requestId: string }
  | { operation: "status"; expectedOrgId: unknown; requestId: string } | { operation: "unbind"; body: unknown };
 async function budget(deps: Dependencies, caller: Caller, write: boolean) {
  const buckets = write ? [{ name: "SLACK_BINDING_WRITE_RATE", actor: caller.developerId, limit: 10 }, { name: "SLACK_BINDING_ORG_WRITE_RATE", actor: "ALL", limit: 60 }] : [{ name: "SLACK_BINDING_READ_RATE", actor: caller.developerId, limit: 30 }];
@@ -28,9 +29,23 @@ async function budget(deps: Dependencies, caller: Caller, write: boolean) {
  * cookie boundary. No bearer alias or token-driven Slack API call. */
 export async function projectSlackBrowserHttp(deps: Dependencies, caller: Caller, project: string, request: Request) {
  if (caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
- const company = z.object({ expectedOrgId: OrgIdSchema }).passthrough().safeParse(["unbind", "propose", "approve"].includes(request.operation) ? (request as { body: unknown }).body : request);
+ const company = z.object({ expectedOrgId: OrgIdSchema }).passthrough().safeParse(["unbind", "propose", "approve", "cancel", "reject"].includes(request.operation) ? (request as { body: unknown }).body : request);
  if (!company.success || company.data.expectedOrgId !== caller.orgId) throw agentXError("CHANGE_STALE", "Refresh your company before checking Slack links.");
  const scope = { orgId: caller.orgId, project, by: caller.developerId };
+ if (request.operation === "cancel" || request.operation === "reject" || request.operation === "decision-status") {
+  await requireProjectSlackAuthority(deps, scope);if (deps.orgs === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Slack linking is unavailable.");
+  const full = { ...deps, orgs: deps.orgs };
+  let row: Awaited<ReturnType<typeof readProjectSlackDecision>>;
+  if (request.operation === "decision-status") { await budget(deps, caller, false);row = await readProjectSlackDecision(full, { ...scope, requestId: request.requestId }); }
+  else {
+   const parsed = ReviewedSlackDecisionBodySchema.safeParse(request.body);if (!parsed.success || !z.string().uuid().safeParse(request.proposalId).success) throw agentXError("CONFIG_INVALID", "Review a valid Slack proposal decision.");
+   const prior = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: projectPk(caller.orgId, project), sk: `SLACK_BINDING_PROPOSAL#${parsed.data.requestId}` }, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+   await budget(deps, caller, prior === undefined);
+   row = await decideProjectSlackProposal(full, { ...scope, body: { requestId: parsed.data.requestId, proposalId: request.proposalId, decision: request.operation } });
+  }
+  return ProjectSlackDecisionSchema.parse({ kind: "decision", orgId: caller.orgId, project, decision: { requestId: row.requestId, proposalId: row.proposalId, state: row.state, createdAt: row.createdAt, expiresAt: row.expiresAt } });
+ }
+
  if (request.operation === "propose" || request.operation === "approve" || request.operation === "proposal") {
   await requireProjectSlackAuthority(deps, scope);
   if (deps.orgs === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Slack linking is unavailable.");
@@ -38,7 +53,7 @@ export async function projectSlackBrowserHttp(deps: Dependencies, caller: Caller
   const view = (proposal: Awaited<ReturnType<typeof readProjectSlackProposal>> | null) => ({ kind: "proposal" as const, orgId: caller.orgId, project,
    proposal: proposal === null ? null : ProjectSlackProposalViewSchema.parse({ proposalId: proposal.proposalId, by: proposal.by, teamId: proposal.teamId, channelId: proposal.channelId,
     state: proposal.state, createdAt: proposal.createdAt, expiresAt: proposal.expiresAt,
-    ...(proposal.mode === undefined ? {} : { mode: proposal.mode, decidedBy: proposal.decidedBy, decidedAt: proposal.decidedAt }) }) });
+    ...(proposal.mode === undefined ? {} : { mode: proposal.mode }), ...(proposal.decidedBy === undefined ? {} : { decidedBy: proposal.decidedBy, decidedAt: proposal.decidedAt }) }) });
   if (request.operation === "proposal") {
    await budget(deps, caller, false);
    return view(request.proposalId === undefined ? await readLiveProjectSlackProposal(full, scope) : await readProjectSlackProposal(full, { ...scope, proposalId: request.proposalId }));

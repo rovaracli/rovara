@@ -44,3 +44,32 @@ it("B34 real cookie proposes then explicitly approves a sole-owner bind with CSR
  const requestId = randomUUID(), approved = await f.call(`/proposals/${proposalId}/approve`, "POST", { expectedOrgId: TEST_ORG, requestId });expect(approved.status, JSON.stringify(approved.body)).toBe(200);expect(approved.body.receipt).toMatchObject({ requestId, operation: "bind", outcome: { changed: true } });
  expect(f.audit.recordedBy("slack_channel.bound")).toMatchObject([{ facts: { mode: "sole_owner_exception", proposalId } }]);
 });
+
+it("B35 real cookie cancels a pending proposal with CSRF and exposes only a safe decision receipt", async () => {
+ const f = await fixture();f.db.delete(slackBindingKey(TEST_ORG, teamId, channelId));
+ const review = await f.call(`/review?expectedOrgId=${TEST_ORG}&teamId=${teamId}&channelId=${channelId}`), proposalId = randomUUID();
+ expect((await f.call("/proposals", "POST", { expectedOrgId: TEST_ORG, requestId: proposalId, teamId, channelId, expectedContextDigest: review.body.contextDigest })).status).toBe(200);
+ const requestId = randomUUID(), body = { expectedOrgId: TEST_ORG, requestId };
+ expect((await f.call(`/proposals/${proposalId}/cancel`, "POST", body, { [APP_CSRF_HEADER]: undefined })).status).toBe(403);
+ const response = await f.handler({ version: "2.0", rawPath: `/v1/app/projects/payments/slack-channel/proposals/${proposalId}/cancel`, headers: { authorization: "Bearer synthetic" }, requestContext: { http: { method: "POST" } } });expect(response.statusCode).toBe(403);expect(f.tokenChecks()).toBe(0);
+ const cancelled = await f.call(`/proposals/${proposalId}/cancel`, "POST", body);expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+ expect(cancelled.body).toMatchObject({ kind: "decision", orgId: TEST_ORG, project: "payments", decision: { requestId, proposalId, state: "cancelled" } });
+ expect(JSON.stringify(cancelled.body)).not.toMatch(/bodyHash|indexExpiresAt|SLACK_BINDING_PROPOSAL/);
+ expect((await f.call(`/proposals/current?expectedOrgId=${TEST_ORG}`)).body.proposal).toBeNull();
+ const status = await f.call(`/decisions/${requestId}?expectedOrgId=${TEST_ORG}`);expect(status.status).toBe(200);expect(status.body.decision).toEqual(cancelled.body.decision);
+ expect((await f.call(`/proposals/${proposalId}?expectedOrgId=${TEST_ORG}`)).body.proposal).toMatchObject({ state: "cancelled", decidedBy: WHO });
+ expect(f.audit.recordedBy("slack_channel.cancelled")).toHaveLength(1);expect(f.db.get(slackBindingKey(TEST_ORG, teamId, channelId))).toBeUndefined();
+});
+
+it("B35 another live admin rejects through the real cookie path and the requester cannot reject", async () => {
+ const f = await fixture();f.db.delete(slackBindingKey(TEST_ORG, teamId, channelId));
+ const review = await f.call(`/review?expectedOrgId=${TEST_ORG}&teamId=${teamId}&channelId=${channelId}`), proposalId = randomUUID();
+ expect((await f.call("/proposals", "POST", { expectedOrgId: TEST_ORG, requestId: proposalId, teamId, channelId, expectedContextDigest: review.body.contextDigest })).status).toBe(200);
+ expect((await f.call(`/proposals/${proposalId}/reject`, "POST", { expectedOrgId: TEST_ORG, requestId: randomUUID() })).status).toBe(403);
+ const other = "b".repeat(64), sid = randomUUID();seedMembership(f.db, other, { orgId: TEST_ORG, role: "admin" });
+ f.db.set({ pk: `DEVELOPER#${other}`, sk: "META", developerId: other, provider: "cloud", revoked: false });f.db.set({ pk: `SESSION#${sid}`, sk: "META", sessionId: sid, developerId: other, amr: "cloud", startedAt: new Date(Date.now() - 60000).toISOString(), endsAt: Date.now() / 1000 + 3600, reviewExpiresAt: Date.now() / 1000 + 3600 });
+ const requestId = randomUUID(), headers = { cookie: `__Host-agentx_review_session=${sid}`, [APP_CSRF_HEADER]: appCsrfTokenFor(sid) };
+ const rejected = await f.call(`/proposals/${proposalId}/reject`, "POST", { expectedOrgId: TEST_ORG, requestId }, headers);expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);expect(rejected.body.decision).toMatchObject({ requestId, proposalId, state: "rejected" });
+ expect((await f.call(`/decisions/${requestId}?expectedOrgId=${TEST_ORG}`)).status).toBe(404);expect((await f.call(`/decisions/${requestId}?expectedOrgId=${TEST_ORG}`, "GET", undefined, headers)).status).toBe(200);
+ expect(f.audit.recordedBy("slack_channel.rejected")).toMatchObject([{ actor: { kind: "member", id: other } }]);expect(f.db.get(slackBindingKey(TEST_ORG, teamId, channelId))).toBeUndefined();
+});

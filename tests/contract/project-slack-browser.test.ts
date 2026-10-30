@@ -279,3 +279,60 @@ it("B34 browser adapter proposes and exposes the live pending bind for another c
  const live = await projectSlackBrowserHttp(f.deps, { developerId: by, orgId, browserSession: true }, project, { operation: "proposal", expectedOrgId: orgId } as never);expect(live).toEqual(proposed);
  expect(f.db.get(slackBindingKey(orgId, teamId, channelId))).toBeUndefined();
 });
+
+
+// B35 opening review fixes: terminal decisions must unblock a mistaken pending link.
+for (const [decision, actor, allowed] of [
+ ["cancel", by, true], ["cancel", "b".repeat(64), true], ["reject", "b".repeat(64), true], ["reject", by, false],
+] as const) it(`B35 ${decision} by ${actor === by ? "requester" : "another live admin"} is ${allowed ? "allowed" : "refused"}`, async () => {
+ const f = bindProposalFixture(), { policy } = await proposeBinding(f);
+ if (actor !== by) { f.db.set({ ...orgMemberKey(orgId, actor), orgId, developerId: actor, role: "admin" });f.db.set({ ...developerOrgKey(actor), orgId, role: "admin" });f.db.set({ pk: `DEVELOPER#${actor}`, sk: "META", developerId: actor, revoked: false }); }
+ const input = { ...f.input, by: actor, body: { requestId: "33333333-3333-4333-8333-333333333333", proposalId: requestId, decision } };
+ if (!allowed) { await expect(policy.decideProjectSlackProposal(f.deps, input)).rejects.toMatchObject({ code: "FORBIDDEN" });return; }
+ const result = await policy.decideProjectSlackProposal(f.deps, input), state = decision === "cancel" ? "cancelled" : "rejected";
+ expect(result).toMatchObject({ proposalId: requestId, state });expect(await policy.readLiveProjectSlackProposal(f.deps, f.input)).toBeNull();
+ expect(await policy.readProjectSlackProposal(f.deps, { ...f.input, proposalId: requestId })).toMatchObject({ state, decidedBy: actor });
+ expect(f.audit.recordedBy(`slack_channel.${state}`)).toMatchObject([{ actor: { kind: "member", id: actor }, facts: { proposalId: requestId } }]);
+ expect(await policy.decideProjectSlackProposal(f.deps, input)).toEqual(result);expect(f.audit.recordedBy(`slack_channel.${state}`)).toHaveLength(1);
+ expect(f.db.get(slackBindingKey(orgId, teamId, channelId))).toBeUndefined();
+ await expect(policy.decideProjectSlackProposal(f.deps, { ...input, body: { ...input.body, decision: decision === "cancel" ? "reject" : "cancel" } })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+});
+it("B35 cancellation allows an explicit new proposal without waiting 24 hours", async () => {
+ const f = bindProposalFixture(), { policy } = await proposeBinding(f);
+ await policy.decideProjectSlackProposal(f.deps, { ...f.input, body: { requestId: "33333333-3333-4333-8333-333333333333", proposalId: requestId, decision: "cancel" } });
+ const target = await f.read();await expect(policy.proposeProjectSlackBinding(f.deps, { ...f.input, body: { requestId: "44444444-4444-4444-8444-444444444444", teamId, channelId, expectedContextDigest: target.contextDigest } })).resolves.toMatchObject({ state: "pending" });
+});
+it("B35 cancellation fails closed after expiry or live actor revocation", async () => {
+ for (const expired of [true, false]) { const f = bindProposalFixture(), { policy } = await proposeBinding(f);
+  if (expired) f.deps.now = () => at + 86400000;else f.db.set({ pk: `DEVELOPER#${by}`, sk: "META", developerId: by, revoked: true });
+  await expect(policy.decideProjectSlackProposal(f.deps, { ...f.input, body: { requestId: "33333333-3333-4333-8333-333333333333", proposalId: requestId, decision: "cancel" } })).rejects.toMatchObject({ code: expired ? "CHANGE_STALE" : "FORBIDDEN" });
+  expect(f.audit.recorded().filter(e => e.action === "slack_channel.cancelled")).toHaveLength(0);
+ }
+});
+
+for (const race of ["actor", "project", "pointer", "proposal"] as const) it(`B35 cancel ${race} race rolls back terminal state, receipt and audit in one attempt`, async () => {
+ const f = bindProposalFixture(), { policy } = await proposeBinding(f), id = "33333333-3333-4333-8333-333333333333", key = { pk: projectMetaKey(orgId, project).pk, sk: `SLACK_BINDING_PROPOSAL#${requestId}` };
+ const send = f.db.send.bind(f.db);let attempts = 0;
+ f.db.send = async command => {
+  const items = (command as { input?: { TransactItems?: Array<{ Put?: { Item?: Record<string, unknown> } }> } }).input?.TransactItems;
+  if (items?.some(item => item.Put?.Item?.kind === "decision_receipt")) {
+   attempts++;if (race === "actor") f.db.set({ pk: `DEVELOPER#${by}`, sk: "META", developerId: by, revoked: true });
+   if (race === "project") f.db.set({ ...f.db.get(projectMetaKey(orgId, project))!, createdAt: "2026-10-30T06:51:00Z" });
+   if (race === "pointer") f.db.delete({ pk: key.pk, sk: "SLACK_BINDING_PROPOSAL_LIVE" });
+   if (race === "proposal") f.db.set({ ...f.db.get(key)!, state: "applied" });
+  }return send(command);
+ };
+ await expect(policy.decideProjectSlackProposal(f.deps, { ...f.input, body: { requestId: id, proposalId: requestId, decision: "cancel" } })).rejects.toBeDefined();
+ expect(attempts).toBe(1);expect(f.audit.recordedBy("slack_channel.cancelled")).toHaveLength(0);
+ expect(f.db.get({ pk: key.pk, sk: `SLACK_BINDING_PROPOSAL#${id}` })).toBeUndefined();expect(f.db.get(key)).toMatchObject({ state: race === "proposal" ? "applied" : "pending" });
+});
+
+it("B35 decisions fail closed without the ledger, for a non-admin or a foreign company", async () => {
+ for (const mode of ["audit", "role", "company"] as const) { const f = bindProposalFixture(), { policy } = await proposeBinding(f);
+  const deps: Omit<typeof f.deps, "audit"> & { audit?: typeof f.deps.audit } = { ...f.deps };if (mode === "audit") delete deps.audit;
+  if (mode === "role") f.db.set({ ...orgMemberKey(orgId, by), orgId, developerId: by, role: "member" });
+  const scope = mode === "company" ? { ...f.input, orgId: "org_bbbbbbbbbbbbbbbbbbbb" as OrgId } : f.input;
+  await expect(policy.decideProjectSlackProposal(deps, { ...scope, body: { requestId: "33333333-3333-4333-8333-333333333333", proposalId: requestId, decision: "cancel" } })).rejects.toMatchObject({ code: mode === "audit" ? "AUDIT_UNAVAILABLE" : "FORBIDDEN" });
+  expect(f.audit.recordedBy("slack_channel.cancelled")).toHaveLength(0);expect(f.db.get({ pk: projectMetaKey(orgId, project).pk, sk: "SLACK_BINDING_PROPOSAL_LIVE" })).toMatchObject({ proposalId: requestId });
+ }
+});
