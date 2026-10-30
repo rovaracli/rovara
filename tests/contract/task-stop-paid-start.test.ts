@@ -1510,3 +1510,24 @@ it("native key recording holds the actual currentOwner across a takeover race", 
   expect(raced).toBe(true); expect(reply.status).not.toBe(200);
   expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
 });
+
+for (const state of ["ownerless", "ownerless_race"] as const) it(`model keys retain canonical task-people work authority: ${state}`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db);
+  const people = { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: true, people: [] };
+  if (state === "ownerless") f.t.db.set(people);
+  let raced = false;
+  f.t.db.send = async command => {
+    if (state === "ownerless_race" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; f.t.db.set(people);
+    }
+    return send(command);
+  };
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).not.toBe(200);
+  if (state === "ownerless") expect(f.t.access.mintedKeys().length).toBe(before);
+  else { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
+});
