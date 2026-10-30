@@ -769,3 +769,35 @@ it("an enrolled approval cannot synthesize missing original request terms at dec
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });
+
+it("original approval request money terms remain native at the final approval commit", async () => {
+  const f = await approvalWindow(), send = f.t.db.send.bind(f.t.db), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "META" };
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
+      changed = true; f.t.db.set({ ...f.t.db.get(key)!, amountUsd: 35, newLimitUsd: 45 });
+    }
+    return send(command);
+  };
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" }); expect(changed).toBe(true);
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
+it("policy changes after an ask require a new approval request", async () => {
+  const f = await approvalWindow(), before = f.t.meta(f.task.taskId);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 100_000_000 } } });
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+});
+it("policy edits after approval capture apply to the next admission without recapturing the accepted approval", async () => {
+  const f = await approvalWindow(), send = f.t.db.send.bind(f.t.db); let changed = false, captures = 0;
+  f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) captures += 1;
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
+      changed = true; f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
+    }
+    return send(command);
+  };
+  expect((await f.t.decide(BEN, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED"); expect(changed).toBe(true); expect(captures).toBe(1);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 15, spendingStop: { effectiveStopMicrousd: 15_000_000, sourceRevisions: { company: 1 } } });
+});
