@@ -1,9 +1,10 @@
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
-import { call } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
@@ -14,8 +15,8 @@ import { MAYA } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { setup, PREPARED, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
-async function fixture(amount = 1_234_567) {
-  const t = await setup(), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
+async function fixture(amount = 1_234_567, options?: Parameters<typeof setup>[0]) {
+  const t = await setup(options), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
   t.db.set({ ...policy, entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: amount } }, enrollment: { version: 1, state: "enabled" } });
   t.db.set({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", orgId: TEST_ORG, entityType: "TASK_STOP_SEED", version: 1, source: "bootstrap", outcome: "created", policyRevision: 1 });
   t.db.set({ ...agentGuardrailsKey(TEST_ORG), orgId: TEST_ORG, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1 } });
@@ -1530,4 +1531,43 @@ for (const state of ["ownerless", "ownerless_race"] as const) it(`model keys ret
   expect(reply.status).not.toBe(200);
   if (state === "ownerless") expect(f.t.access.mintedKeys().length).toBe(before);
   else { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
+});
+
+for (const state of ["valid", "lost_at_commit"] as const) it(`a real registered PEOPLE owner retains model-key work authority: ${state}`, async () => {
+  const slackUserId = "U0M47PPL1", creator = { developerId: developerIdForSlackUser(slackUserId), name: "Maya Chen", provider: "slack" as const, sessionId: randomUUID(), slackUserId };
+  const f = await fixture(1_234_567, { developerExtra: {
+    taskPeopleConfiguration: { peopleChangesEnabled: true },
+    taskPersonProof: async input => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.channelIds }),
+    taskPeopleDisplayRead: async input => input.operation === "proof"
+      ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        user: { id: input.request.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.request.channelIds } }
+      : { operation: "directory" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
+        users: [{ id: slackUserId, teamId: SLACK_TEAM, name: creator.name, memberOf: input.request.channelIds }] } },
+  } });
+  await f.t.orgOf(creator); f.t.grantRole(creator, "maintainer");
+  f.t.db.set({ pk: `DEVELOPER#${creator.developerId}`, sk: "META", developerId: creator.developerId, provider: creator.provider,
+    displayName: creator.name, slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+  const started = await f.t.handler({ source: "agentx.slack-ingress", action: "start-workflow",
+    thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000047" }, userId: slackUserId,
+    instructions: "Verify the registered task owner", workflowPath: "QUICK", requestId: randomUUID() });
+  expect(started.statusCode).toBe(200);
+  const taskId = (JSON.parse(started.body) as { taskId: string }).taskId, workspaceId = String(f.t.meta(taskId).workspaceId);
+  const listed = await f.t.handler({ source: "agentx.slack-ingress", action: "task-people-read", taskId,
+    thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000047" }, userId: slackUserId });
+  expect(listed.statusCode, listed.body).toBe(200);
+  const peopleKey = { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" }, people = f.t.db.get(peopleKey)!;
+  expect(people).toMatchObject({ orphaned: false, people: [{ developerId: creator.developerId, role: "owner" }] });
+  const prepare = f.t.operations(workspaceId).find(op => op.kind === "prepare")!;
+  await f.t.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+  const plan = f.t.taskOps(workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (state === "lost_at_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; f.t.db.set({ ...people, revision: Number(people.revision) + 1, orphaned: true, people: [] });
+    }
+    return send(command);
+  };
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).toBe(state === "valid" ? 200 : 503);
+  if (state === "lost_at_commit") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(taskId).modelKeyIds).toBeUndefined(); }
 });

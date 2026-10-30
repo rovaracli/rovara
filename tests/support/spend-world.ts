@@ -52,6 +52,7 @@ export const month = () => new Date().toISOString().slice(0, 7);
 
 export async function setup(options: {
   decide?: boolean; secondAdmin?: boolean; plan?: "team" | "trial";
+  developerExtra?: NonNullable<Parameters<typeof createSingleAnswerPlanBroker>[0]>["developerExtra"];
   /** Task 36: which org each caller belongs to (default: every caller is in the install's org). */
   orgResolver?: OrgResolver;
   /** Task 36: the agent route dependencies' extras (default `{}`), such as `modelSources`. */
@@ -62,6 +63,7 @@ export async function setup(options: {
   const { createAgentRouteDependencies, createAgentRunStarter } = await brokerModule();
   const access = fakeModelAccess();
   const h = await createSingleAnswerPlanBroker({
+    ...(options.developerExtra === undefined ? {} : { developerExtra: options.developerExtra }),
     ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }),
     brokerExtra: { agents: options.agents ?? {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(options.decide === true ? { decide: {} } : {}), ...options.extra },
   });
