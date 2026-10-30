@@ -570,3 +570,23 @@ for (const loss of ["member", "closing", "people"] as const) it(`Continue-as-tas
   expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ state: "PAUSED_BUDGET" });
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
+
+for (const loss of ["closing", "people"] as const) it(`platform recovery retains the existing payer-window admission after ${loss} dispatch refusal`, async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      changed = true;
+      if (loss === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      else f.t.db.set({ pk: `DEVTASK#${f.task.taskId}`, sk: "PEOPLE", revision: 1, schemaVersion: 999 });
+    }
+    return send(command);
+  };
+  expect((await f.transition()).status).toBe(403); expect(changed).toBe(true);
+  const admitted = f.t.meta(f.task.taskId).spendingStop; expect(admitted).toBeDefined();
+  f.t.db.delete(f.policy);
+  const rows = f.t.db.find(row => row.pk === "WORKFLOW_DISPATCH" && row.taskId === f.task.taskId); expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) f.t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.meta(f.task.taskId).spendingStop).toEqual(admitted);
+});
