@@ -8,7 +8,8 @@ import { expect, it } from "vitest";
 import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { runCostKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
-import { setup, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
+import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { setup, PREPARED, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function fixture(amount = 1_234_567) {
   const t = await setup(), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
@@ -1036,4 +1037,37 @@ for (const source of ["valid", "closing", "cap_source"] as const) it(`a newly re
   if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
   if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+});
+
+for (const recovery of ["valid", "closing", "cap_source"] as const) it(`plan acceptance approval repair retains implementation intent and ${recovery} source`, async () => {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 40 } });
+  for (let index = 0; index < 5; index += 1) f.t.db.set({ ...runCostKey(TEST_ORG, "payments", ROVARA_CODE_AGENT_ID, "QUICK", new Date(Date.now() - index * 1000).toISOString(), randomUUID()), entityType: "RUN_COST", costUsd: 10 });
+  const started = await f.t.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" }); expect(started.status, JSON.stringify(started.body)).toBe(200);
+  const taskId = String((started.body.task as { taskId: string }).taskId), workspaceId = f.t.meta(taskId).workspaceId;
+  await f.t.finish(workspaceId, f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!.id, "SUCCEEDED", PREPARED);
+  const plan = f.t.taskOps(workspaceId).at(-1)!;
+  await f.t.artifact(workspaceId, plan.id, "plan.md", planAnswer(planDocument())); await f.t.finish(workspaceId, plan.id, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+  const workflow = f.t.meta(taskId).workflow as { revision: number; artifacts: Array<{ sha256: string }> };
+  expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
+  const request = f.t.requestOf(taskId, "run_limit")[0]!; expect(request).toMatchObject({ resume: "implement", newLimitUsd: 20 });
+  const decisionId = randomUUID(), send = f.t.db.send.bind(f.t.db); let lost = false, changed = false, captures = 0;
+  f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) captures += 1;
+    if (lost && !changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.workflowMode === "IMPLEMENT" && item.Put.Item.workspaceId === workspaceId)) {
+      changed = true;
+      if (recovery === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      if (recovery === "cap_source") f.t.db.set({ ...f.t.meta(taskId), budgetUsd: 99 });
+    }
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) { lost = true; throw new Error("test implementation approval acknowledgement lost"); }
+    return result;
+  };
+  await expect(f.t.decide(BEN, request.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test implementation approval acknowledgement lost");
+  f.t.db.delete(f.policy); captures = 0;
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(changed).toBe(true);
+  const implementations = () => f.t.taskOps(workspaceId).filter(operation => operation.workflowMode === "IMPLEMENT");
+  expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0); expect(captures).toBe(0);
 });
