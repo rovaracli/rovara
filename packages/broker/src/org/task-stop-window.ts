@@ -12,7 +12,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { SpendingAdmissionReferenceSchema, RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -110,6 +110,28 @@ export function taskStopTransitionItem(tableName: string, input: TaskStopWindowI
     entityType: "SPENDING_ADMISSION", version: 1, orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId,
     actorId: input.actorId, intentHash: input.intentHash, transitionKind: value.transitionKind ?? "continue-as-task", outcome: "transitioned" });
   return { Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } };
+}
+
+/** Validate persisted money context without recapturing current financial policy.
+ * Native commit-time authority and operation binding remain the caller's job. */
+export async function requireTaskStopWindowContext(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<void> {
+  if (task.spendingStop === undefined && task.spendingAdmission === undefined) return;
+  const reference = SpendingAdmissionReferenceSchema.safeParse(task.spendingAdmission);
+  if (!reference.success || task.orgId === undefined || task.agent === undefined || task.closedAt !== undefined) throw invalid();
+  const snapshot = checkedTaskStopSnapshot(task.spendingStop);
+  checkedTaskMaxPerRun(task);
+  const Key = taskStopWindowKey(task.orgId, task.taskId, reference.data.requestId);
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key, ConsistentRead: true })) as { Item?: unknown };
+  const parsed = z.union([receiptSchema, transitionSchema]).safeParse(response.Item);
+  if (!parsed.success) throw invalid();
+  const row = parsed.data;
+  if (row.pk !== Key.pk || row.sk !== Key.sk || row.orgId !== task.orgId || row.workId !== task.taskId
+    || row.requestId !== reference.data.requestId || row.actorId !== reference.data.actorId || row.intentHash !== reference.data.intentHash
+    || snapshot.orgId !== task.orgId || snapshot.project !== task.project || snapshot.agentId !== task.agent.agentId
+    || !isDeepStrictEqual(row.spendingStop, snapshot) || usdToWholeMicrodollars(task.budgetUsd) !== snapshot.effectiveStopMicrousd
+    || (task.budgetBaselineUsd ?? 0) !== row.budgetBaselineUsd) throw invalid();
+  if (row.outcome === "transitioned" && (!isDeepStrictEqual(task.payer, row.payer) || !isDeepStrictEqual(task.place, row.place)
+    || task.origin !== (row.transitionKind === "continue-as-task" ? "app" : row.origin))) throw invalid();
 }
 
 /** Restores current native authority from an existing accepted window. No
