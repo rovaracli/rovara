@@ -1,10 +1,11 @@
+import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
 import { requireAgentAccess } from "../agents/access.js";
-import { failedIndexes } from "../agents/table-writes.js";
+import { Aliases, failedIndexes } from "../agents/table-writes.js";
 // Spec 025 FR-016 to FR-021: the developer task routes. Every task has its own workspace, reached
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
@@ -2593,7 +2594,22 @@ function refuseAutomaticWhilePaused(task: DeveloperTaskRecord): void {
 }
 
 /** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
-function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined): TransactItems {
+function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined, admission?: CapturedTaskStop): TransactItems {
+  if (admission !== undefined) {
+    const a = new Aliases(), values: Record<string, unknown> = { ":now": iso(deps), ":stop": admission, ":cap": admission.effectiveStopMicrousd / 1_000_000 };
+    const sets = ["updatedAt = :now", "budgetUsd = :cap", "spendingStop = :stop"], removes: string[] = [];
+    if (baseline !== undefined) { sets.push("budgetBaselineUsd = :baseline"); values[":baseline"] = baseline; }
+    if (staleBudgetPause(task)) removes.push("budgetPause");
+    if (admission.calculationInput.agentStop.kind === "limited") {
+      sets.push("maxPerRunUsd = :agentStop"); values[":agentStop"] = Math.min(admission.calculationInput.agentStop.stopMicrousd, admission.approvalCapMicrousd) / 1_000_000;
+    } else if (task.maxPerRunUsd !== undefined) removes.push("maxPerRunUsd");
+    const conditions = ["attribute_exists(pk)", "attribute_not_exists(closedAt)"];
+    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "budgetBaselineUsd", "spendingStop"] as const) {
+      const value = task[field]; conditions.push(value === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(value)}`);
+    }
+    return [{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: `SET ${sets.join(", ")}${removes.length === 0 ? "" : ` REMOVE ${removes.join(", ")}`}`,
+      ConditionExpression: conditions.join(" AND "), ExpressionAttributeNames: a.names, ExpressionAttributeValues: { ...values, ...a.values } } }];
+  }
   const removes = staleBudgetPause(task) ? " REMOVE budgetPause" : "";
   if (baseline === undefined && removes === "") return [];
   return [{ Update: {
@@ -2631,6 +2647,9 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const { task } = access;
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
+  const windowIdentity = { orgId: deps.orgId, taskId: task.taskId, requestId: request.requestId, actorId: caller.developerId,
+    intentHash: hashJson({ taskId: task.taskId, actorId: caller.developerId, request }), project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID };
+  if (await readTaskStopWindow(deps, windowIdentity) !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   // Rovara Code asked questions and waits for answers: more instructions cannot answer them, and "approval steps" is not what it waits on.
   if (task.workflow !== undefined && openQuestions(task.workflow).length > 0) throw agentXError("WORKSPACE_BUSY", waitingForAnswersTurnRefusal(task.sessionId));
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
@@ -2647,6 +2666,36 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   }
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
+  let windowStop: CapturedTaskStop | undefined;
+  let windowChecks: TransactItem[] = [];
+  if (deps.spendResume === undefined) {
+    const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+    const pathLimitMicrousd = previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD);
+    if (pathLimitMicrousd === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task limit can't be checked exactly. Ask an admin to review Spending.");
+    const oldBounds = previous?.calculationInput;
+    const requestedMicrousd = oldBounds?.requestedMicrousd ?? (task.requestedRunLimitUsd === undefined ? undefined : usdToWholeMicrodollars(task.requestedRunLimitUsd));
+    if (task.requestedRunLimitUsd !== undefined && requestedMicrousd === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The requested limit can't be checked exactly. Ask an admin to review Spending.");
+    const authorize = async () => { await authorizeTaskAction(deps, caller, taskId, "work"); };
+    const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
+      orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+      pathLimitMicrousd, ...(requestedMicrousd === undefined ? {} : { requestedMicrousd }),
+      ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
+    });
+    if (captured.kind === "captured") {
+      if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending.");
+      if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+      windowStop = captured;
+      windowChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+        ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize)];
+      if (deps.agentRuns !== undefined && task.agent !== undefined) {
+        const agentId = task.agent.agentId, draft = task.agent.version === "draft";
+        windowChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId, draft, process: task.agent.process === true,
+          developerId: caller.developerId, role: caller.orgRole, ...(task.agent.draftRevision === undefined ? {} : { expectedDraftRevision: task.agent.draftRevision }) }, async () => {
+          await authorize(); if (deps.agentRuns === undefined) throw budgetActorRefused(); await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
+        }, async () => { if (deps.agentRuns === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, agentId); }));
+      }
+    }
+  }
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
   // say refuses the Continue before anything is written.
   const baseline = deps.modelAccess === undefined ? undefined
@@ -2658,7 +2707,9 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
-      ...windowAndPauseUpdate(deps, task, baseline),
+      ...windowAndPauseUpdate(deps, task, baseline, windowStop),
+      ...windowChecks,
+      ...(windowStop === undefined ? [] : [taskStopWindowItem(deps.tableName, windowIdentity, windowStop, operation.id, receivedAt)]),
       ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
@@ -2668,6 +2719,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
       accessFence(deps, access),
     ], { sharedTask: task.shared === true });
   } catch (error) {
+    if (await readTaskStopWindow(deps, windowIdentity) !== undefined) return { task: await taskView(deps, await loadOwnedTask(deps, caller, taskId), { events: 0, details: false }) };
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
