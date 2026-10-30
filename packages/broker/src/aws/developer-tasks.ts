@@ -2141,7 +2141,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         }
         const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
         if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
-        if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending."));
+        if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0."));
         spendingStop = captured; startLimitUsd = exactUsd;
         if (prepared !== undefined) prepared = { ...prepared, ...runLimitsOf(exactUsd, undefined, prepared.maxPerRunUsd) };
       }
@@ -2682,7 +2682,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
       ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
     });
     if (captured.kind === "captured") {
-      if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending.");
+      if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
       if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
       windowStop = captured;
       windowChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
