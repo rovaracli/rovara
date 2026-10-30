@@ -391,3 +391,19 @@ it("Continue refuses a zero current stop without changing the admitted old windo
   const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_ZERO", message: "Work can't start: the effective spending stop is $0." });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
 });
+
+for (const enrolled of [false, true]) for (const bound of ["path", "requested"] as const) it(`Continue preserves legacy submicro ${bound} only before enrollment=${enrolled}`, async () => {
+  const f = await continueWindow(), before = f.t.meta(f.task.taskId);
+  const { spendingStop: _stop, ...legacy } = before;
+  f.t.db.set({ ...legacy, ...(bound === "path" ? { budgetUsd: 0.0000001 } : { requestedRunLimitUsd: 0.0000001 }) });
+  if (!enrolled) f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const reply = await f.continue();
+  expect(reply.status, JSON.stringify(reply.body)).toBe(enrolled ? 409 : 200);
+  if (enrolled) {
+    expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+    expect(f.t.db.get(f.receipt)).toBeUndefined();
+  } else {
+    expect(f.t.meta(f.task.taskId).budgetUsd).toBe(bound === "path" ? 0.0000001 : before.budgetUsd);
+    expect(f.t.db.get(f.receipt)).toBeUndefined();
+  }
+});
