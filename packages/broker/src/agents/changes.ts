@@ -89,7 +89,7 @@ async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId,
 }
 
 /** Current model evidence for this exact server-resolved process draft, never the active process by accident. */
-async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,approvalId?:string,existingProof?:StageModelApprovalProof,deciderId?:string) {
+async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,approvalId?:string,existingProof?:StageModelApprovalProof,deciderId?:string,approvedTupleDigest?:string) {
   if(agent.purpose!=="process") return undefined;
   if(agent.owner.kind!=="project") throw agentXError("CONFIG_INVALID","A process must belong to its project.");
   const project=agent.owner.project;
@@ -101,24 +101,17 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
   if(projectRole===undefined || !projectAllows(projectRole,"edit_settings")) throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
   const snapshot=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project,undefined,{record:agent,recipe,overlay:draft.overlay});
   const readDeps={now:deps.now,projectFor:async()=>({name:project,canEdit:true}),snapshot:async()=>snapshot};
-  let result=await validateStageChoices(readDeps,effectiveCaller,project,{});
-  const exceptions:StageModelApprovalProof["exceptions"]=[];
-  for(const decision of result.stages) {
-    if(decision.kind!=="refusal" || decision.code!=="DIFFERENT_FROM_UNSATISFIABLE" && decision.code!=="LOCK_UNSATISFIABLE") continue;
-    if(decision.stage!=="plan_check" && decision.stage!=="code_review" && decision.stage!=="security_review") continue;
-    const row=snapshot.stages.find(row=>row.stage===decision.stage)!;
-    const model=row.companyLock?.model??row.projectChoice?.model??row.companyDefault?.model;
-    const reference=result.stages.find(row=>row.stage===(decision.stage==="plan_check"?"plan":"build"));
-    if(model===undefined || reference?.kind!=="resolved" || canonicalModelName(model)!==canonicalModelName(reference.model)) continue;
-    row.sameModelApproval={model,referenceModel:reference.model};
-    exceptions.push({stage:decision.stage,model,referenceModel:reference.model});
+  const result=await validateStageChoices(readDeps,effectiveCaller,project,{});
+  const exceptions:StageModelApprovalProof["exceptions"]=result.sameModelExceptions;
+  if(approvalId!==undefined) {
+    const confirmed=await validateStageChoices(readDeps,effectiveCaller,project,{}, {},{approvalId,tupleDigest:approvedTupleDigest??""});
+    if(!confirmed.ok) throw agentXError("AGENT_REVISION_CONFLICT","The approved model tuple changed. Publish again.");
   }
-  if(exceptions.length>0) result=await validateStageChoices(readDeps,effectiveCaller,project,{});
-  if(!result.ok) throw agentXError("CONFIG_INVALID","The model choice cannot be verified. Review How we work before publishing.");
+  if(!result.ok&&!result.requiresConfirmation) throw agentXError("CONFIG_INVALID","The model choice cannot be verified. Review How we work before publishing.");
   const revisions=new Set(snapshot.stages.map(row=>row.sourcesRevision));
   if(revisions.size!==1 || snapshot.registeredAt===undefined) throw agentXError("RUNTIME_UNAVAILABLE","The model settings changed while validating.");
   const modelRevisions={companyRevision:snapshot.companyRevision,sourcesRevision:snapshot.stages[0]!.sourcesRevision};
-  const modelContext={...modelRevisions,registeredAt:snapshot.registeredAt};
+  const modelContext={...modelRevisions,registeredAt:snapshot.registeredAt,...(exceptions.length===0?{}:{tupleDigest:result.approvalTupleDigest})};
   let priorProof:StageModelApprovalProof|undefined;
   if(existingProof!==undefined && existingProof.companyRevision===snapshot.companyRevision) {
     try {priorProof=parseStageModelApprovalProof(existingProof,{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,agentId:agent.agentId,recipeDigest:processApprovalRecipeDigest(recipe,agent.agentId)});} catch { /* A proof for another identity/version is not an approval. */ }
@@ -409,7 +402,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
   // The guardrails may have tightened since this was asked.
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
-  const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,draft,draftRecipe,record.approvalId,undefined,by);
+  const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,draft,draftRecipe,record.approvalId,undefined,by,subject.modelContext?.tupleDigest);
   if(modelValidation!==undefined && canonicalJson(modelValidation.modelContext)!==canonicalJson(subject.modelContext??null)) throw stale("The model policy, sources or project changed. Publish again.");
   const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,

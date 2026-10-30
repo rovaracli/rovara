@@ -105,3 +105,56 @@ for(const corrupt of ["registration","guardrails","company","project","digest"] 
  if(corrupt==="digest")f.snapshot.process.digest="invalid";
  await expect(requireSafeProjectModelSelection(f.deps,caller,"web",other)).rejects.toThrow("could not be read");
 });
+
+it("refuses an explicit conflicting project tuple beneath a company lock with its stage and repair link",async()=>{
+ const f=fixture();f.snapshot.stages.find(row=>row.stage==="build")!.companyLock={model,thinkingLevel:null};
+ const result=await validateStageChoices(f.deps,caller,"web",{build:{model:other}});
+ expect(result.ok).toBe(false);
+ expect(result.stages.find(row=>row.stage==="build")).toMatchObject({kind:"refusal",code:"STAGE_LOCKED",fixHref:"/app/admin/how-we-work"});
+});
+it("refuses an inherited published choice that conflicts with the lock even when omitted from the changed draft",async()=>{
+ const f=fixture(),build=f.snapshot.stages.find(row=>row.stage==="build")!;
+ build.companyLock={model,thinkingLevel:null};build.projectChoice={model:other};
+ const result=await validateStageChoices(f.deps,caller,"web",{});
+ expect(result.ok).toBe(false);expect(result.stages.find(row=>row.stage==="build")).toMatchObject({kind:"refusal",code:"STAGE_LOCKED"});
+});
+it("allows a project tuple matching the lock and points unverified source refusals to source settings",async()=>{
+ const f=fixture();f.snapshot.stages.find(row=>row.stage==="build")!.companyLock={model,thinkingLevel:null};
+ expect((await validateStageChoices(f.deps,caller,"web",{build:{model,thinkingLevel:null}})).ok).toBe(true);
+ const g=fixture();g.snapshot.stages.find(row=>row.stage==="build")!.candidates=[];
+ const result=await validateStageChoices(g.deps,caller,"web",{build:{model}});
+ expect(result.stages.find(row=>row.stage==="build")).toMatchObject({kind:"refusal",code:"MODEL_NOT_VERIFIED",fixHref:"/app/admin/models/sources"});
+ const read=await getStageModels(g.deps,caller,"web",{});
+ expect(read.stages.find(row=>row.stage==="build")).toMatchObject({refusal:{fixHref:"/app/admin/models/sources"}});
+});
+
+it("requires confirmation for an explicit same-model review and accepts only its exact server approval tuple",async()=>{
+ const f=fixture(),choices={build:{model},code_review:{model}};
+ const pending=await validateStageChoices(f.deps,caller,"web",choices);
+ expect(pending).toMatchObject({ok:false,requiresConfirmation:true,status:202});
+ expect(pending).toHaveProperty("approvalTupleDigest",expect.stringMatching(/^[a-f0-9]{64}$/u));
+ const digest=(pending as unknown as {approvalTupleDigest:string}).approvalTupleDigest;
+ const approved=await validateStageChoices(f.deps,caller,"web",choices,{}, {approvalId:"apr_aaaaaaaaaaaaaaaaaaaa",tupleDigest:digest});
+ expect(approved).toMatchObject({ok:true,requiresConfirmation:false,status:200});
+ expect(approved.stages.find(row=>row.stage==="code_review")).toMatchObject({kind:"resolved",model});
+ f.snapshot.stages.find(row=>row.stage==="build")!.projectChoice={model:other};
+ expect(await validateStageChoices(f.deps,caller,"web",{code_review:{model:other}},{},{approvalId:"apr_aaaaaaaaaaaaaaaaaaaa",tupleDigest:digest})).toMatchObject({ok:false});
+});
+it("does not offer approval for unavailable same-model choices or required vendor independence",async()=>{
+ for(const unavailable of [true,false]) {
+  const f=fixture();for(const stage of ["code_review","security_review"]){const row=f.snapshot.stages.find(row=>row.stage===stage)!;if(unavailable)row.candidates=[];else row.requireDifferentVendor=true;}
+  const result=await validateStageChoices(f.deps,caller,"web",{code_review:{model}});
+  expect(result.ok).toBe(false);expect(result).not.toMatchObject({requiresConfirmation:true});
+ }
+});
+
+for(const changed of ["company","source","registration","thinking"] as const)it(`refuses same-model approval after ${changed} tuple changes`,async()=>{
+ const f=fixture(),choices={build:{model},code_review:{model}};
+ const pending=await validateStageChoices(f.deps,caller,"web",choices);
+ const approval={approvalId:"apr_aaaaaaaaaaaaaaaaaaaa",tupleDigest:pending.approvalTupleDigest};
+ if(changed==="company")f.snapshot.companyRevision++;
+ if(changed==="source")for(const row of f.snapshot.stages){row.sourcesRevision++;for(const candidate of row.candidates)if(candidate.evidence!==undefined)candidate.evidence.sourcesRevision++;}
+ if(changed==="registration")f.snapshot.registeredAt="2026-10-02T00:00:00Z";
+ const next=changed==="thinking"?{...choices,code_review:{model,thinkingLevel:"high" as const}}:choices;
+ expect(await validateStageChoices(f.deps,caller,"web",next,{},approval)).toMatchObject({ok:false,requiresConfirmation:false});
+});

@@ -100,9 +100,9 @@ const APPROVAL_STATUSES = ["PENDING", "EXECUTING", "APPROVED", "APPROVED_DONE", 
 /** What a change record applies when it is confirmed. Each is bound to the exact version, revision or digest that was shown. */
 export type AgentChangeSubject =
   /** Publish `agentId`'s draft: only while the draft is still `draftRevision` with `digest`, and the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string} }
+  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string;tupleDigest?:string} }
   /** Make `version` (whose recipe has `digest`) current, while the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string} }
+  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string;tupleDigest?:string} }
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
@@ -378,8 +378,8 @@ const ApproverSpecSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rule"), rule: z.string(), candidates: z.array(z.string()) }).strict(),
 ]);
 const ChangeSubjectSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("agent_publish"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime()}).strict().optional(), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
+  z.object({ kind: z.literal("agent_publish"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
   z.object({
     kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
