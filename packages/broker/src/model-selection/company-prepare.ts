@@ -1,12 +1,17 @@
 // Read-only preparation for the company writer. These conditions authorize no
 // mutation by themselves: the writer must commit them with identity, receipt and audit.
-import {ModelSelectionPolicyPutSchema,STAGE_EDIT_GROUPS,agentXError,canonicalModelName,canonicalJson,type ModelIdentifier} from "@agentx/contracts";
+import {ModelSelectionPolicyPutSchema,STAGE_EDIT_GROUPS,STAGE_REFERENCE,AgentXError,agentXError,canonicalModelName,canonicalJson,type ModelIdentifier,type StageId} from "@agentx/contracts";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 import {readModelSelectionPolicy,modelSelectionRevisionChecks,type ModelPolicyReader} from "./policy-store.js";
 import {readStageModelEvidence,type StageEvidenceDependencies} from "./evidence.js";
 import {classifyStageChoiceChange} from "./classify.js";
 import type {StageModelCaller} from "./read.js";
+export class CompanySameModelPolicyRefusal extends AgentXError {
+ readonly reason="DIFFERENT_FROM_UNSATISFIABLE";
+ readonly fixHref="/app/admin/how-we-work";
+ constructor(){super("MODEL_NOT_ALLOWED","Company reviewer models must differ from the stage they check. Set same-model exceptions per project in How we work.",403);}
+}
 export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvidenceDependencies,caller:StageModelCaller,value:unknown){
  const authority=await requireCompanyModelPolicyAuthority(deps,caller);
  const parsed=ModelSelectionPolicyPutSchema.safeParse(value);
@@ -15,6 +20,11 @@ export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvid
  for(const group of STAGE_EDIT_GROUPS){
   const configured=group.map(stage=>body.stepOverrides[stage]).filter(row=>row!==undefined);
   if(configured.some(row=>canonicalJson(row)!==canonicalJson(configured[0])))throw agentXError("CONFIG_INVALID","Shared model stages must use the same company override.");
+ }
+ const companyModel=(stage:StageId)=>STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))?.map(member=>body.stepOverrides[member]).find(row=>row!==undefined)?.model;
+ for(const stage of ["plan_check","code_review","security_review"] as const){
+  const checking=companyModel(stage),reference=companyModel(STAGE_REFERENCE[stage]);
+  if(checking!==undefined&&reference!==undefined&&canonicalModelName(checking)===canonicalModelName(reference))throw new CompanySameModelPolicyRefusal();
  }
  const current=await readModelSelectionPolicy(deps,caller.orgId);
  if(current.revision!==body.expectedRevision)throw agentXError("CHANGE_STALE","The company model policy changed. Reload and review again.");

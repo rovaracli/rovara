@@ -1,3 +1,4 @@
+import {CompanySameModelPolicyRefusal} from "../model-selection/company-prepare.js";
 import {updateCompanyModelPolicy} from "../model-selection/company-approval.js";
 import {ModelSelectionPolicyAppliedSchema,ModelSelectionPolicyPendingSchema} from "@agentx/contracts";
 import {previewCompanyModelPolicy} from "../model-selection/policy-preview.js";
@@ -2153,9 +2154,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if([...url.searchParams].length!==0)throw agentXError("CONFIG_INVALID","The company model-policy query is invalid.");
     await requireCompanyModelPolicyAuthority({documentClient:deps.documentClient,tableName:deps.tableName},caller);
     if(deps.agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","Company model approvals are unavailable.");
-    const result=await updateCompanyModelPolicy(deps.agents,caller,jsonBody(request));
-    if(result.status==="NEEDS_CONFIRMATION")return new StatusReply(202,ModelSelectionPolicyPendingSchema.parse(result));
-    return ModelSelectionPolicyAppliedSchema.parse({status:result.status,revision:result.revision,requestId:result.requestId});
+    try {
+      const result=await updateCompanyModelPolicy(deps.agents,caller,jsonBody(request));
+      if(result.status==="NEEDS_CONFIRMATION")return new StatusReply(202,ModelSelectionPolicyPendingSchema.parse(result));
+      return ModelSelectionPolicyAppliedSchema.parse({status:result.status,revision:result.revision,requestId:result.requestId});
+    }catch(error){
+      if(error instanceof CompanySameModelPolicyRefusal)return new StatusReply(403,{error:{code:error.code,reason:error.reason,fixHref:error.fixHref,message:"Company reviewer models must differ. Configure same-model exceptions per project in How we work."}});
+      throw error;
+    }
   }
   if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
     if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");

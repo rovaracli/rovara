@@ -46,3 +46,9 @@ it("refuses conflicting values in shared editable stage groups",async()=>{
 it("does not collapse provider-specific verification into a canonical model alias",async()=>{
  const f=fixture();await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:0,stepOverrides:{build:{model:{provider:"anthropic",modelId:"claude-sonnet-4-6"}},pull_request:{model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"}}}})).rejects.toThrow();
 });
+it("refuses company same-as-Build reviewer defaults and locks with fixed repair metadata",async()=>{
+ for(const locked of [false,true]){
+  const f=fixture(),choice={model,thinkingLevel:null,locked};
+  await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:0,stepOverrides:{build:choice,code_review:choice,security_review:choice}})).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED",reason:"DIFFERENT_FROM_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});
+ }
+});

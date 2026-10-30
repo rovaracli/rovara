@@ -36,7 +36,8 @@ it("returns a bounded 202 summary when a seven-stage policy has many less-safe c
  const f=await fixture(),stages=["understand","plan","plan_check","build","code_review","security_review","pull_request"];
  const previous=Object.fromEntries(stages.map(stage=>[stage,{model:{provider:"anthropic",modelId:"claude-sonnet-4-6"},thinkingLevel:null,locked:true}]));
  f.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:previous});
- const next=Object.fromEntries(stages.map(stage=>[stage,{model,thinkingLevel:null,locked:true}]));
+ const reviewModel={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[1]!};
+ const next=Object.fromEntries(stages.map(stage=>[stage,{model:["plan_check","code_review","security_review"].includes(stage)?reviewModel:model,thinkingLevel:null,locked:true}]));
  const response=await f.call({version:1,requestId:"44444444-4444-4444-8444-444444444444",expectedRevision:1,stepOverrides:next});
  expect(response.status,JSON.stringify(response.body)).toBe(202);expect(response.body.changes).toBeInstanceOf(Array);expect((response.body.changes as unknown[]).length).toBeLessThanOrEqual(10);
 });
@@ -44,9 +45,14 @@ it("replays an identical successful cookie PUT once without another policy audit
  const f=await fixture(),one=await f.call(first),two=await f.call(first);
  expect(one.status).toBe(200);expect(two.status,JSON.stringify(two.body)).toBe(200);expect(two.body).toEqual(one.body);expect(f.audit.recordedBy("model_policy.changed")).toHaveLength(1);
 });
-it("requires confirmation when changing only Build makes existing review defaults use Build's model",async()=>{
+it("refuses company policy when changing only Build makes existing review defaults use Build's model",async()=>{
  const f=await fixture(),models=bedrockClaudeModelIds("us"),a={provider:"amazon-bedrock",modelId:models[0]!},b={provider:"amazon-bedrock",modelId:models[1]!};
  const old={build:{model:a,locked:false},code_review:{model:b,locked:false},security_review:{model:b,locked:false}};
  f.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:old});
- const response=await f.call({version:1,requestId:"55555555-5555-4555-8555-555555555555",expectedRevision:1,stepOverrides:{...old,build:{model:b,locked:false}}});expect(response.status,JSON.stringify(response.body)).toBe(202);
+ const response=await f.call({version:1,requestId:"55555555-5555-4555-8555-555555555555",expectedRevision:1,stepOverrides:{...old,build:{model:b,locked:false}}});expect(response.status,JSON.stringify(response.body)).toBe(403);expect(response.body.error).toMatchObject({reason:"DIFFERENT_FROM_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});
+});
+it("refuses company-level same-model review with a fixed code and How we work link",async()=>{
+ const f=await fixture(),choice={model,thinkingLevel:null,locked:true};
+ const response=await f.call({...first,stepOverrides:{build:choice,code_review:choice,security_review:choice}});
+ expect(response.status).toBe(403);expect(response.body.error).toMatchObject({code:"MODEL_NOT_ALLOWED",reason:"DIFFERENT_FROM_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});expect(f.audit.recordedBy("model_policy.changed")).toEqual([]);
 });
