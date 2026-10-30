@@ -9,6 +9,7 @@ import { captureSendBack, sendBackSourceKey } from "../../packages/broker/src/le
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
+import { orgMemberKey } from "../../packages/contracts/src/index.js";
 import { LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { planAnswer } from "../support/plan-documents.js";
@@ -226,8 +227,9 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
     t.takeOver(OMAR_CALLER);
     await t.page(OMAR_CALLER, NOTE);
     const stored = corrections(t.harness);
-    // Whatever the key layout, the person is no member: the correction (if kept) is an outsider's and never a member's.
-    expect(stored.every((c) => c.standing === "outsider")).toBe(true);
+    // The person is no member: the one correction kept is an outsider's, never a member's (and the set is not empty, so this cannot pass vacuously).
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ standing: "outsider", author: OMAR.developerId });
   });
 
   it("the standing is not taken from the decision's role: an outsider's correction never counts as a member's", async () => {
@@ -272,6 +274,188 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
     expect(demoted).toBe(true);
     expect(requested(t.harness, t.taskId, requestId)).toBe(true);
     expect(corrections(t.harness)).toEqual([]);
+  });
+});
+
+/** Runs `between` once, just before the learning correction's transaction is sent: the gap between capture's reads and its write. */
+function betweenReadAndWrite(t: Awaited<ReturnType<typeof waitingPlan>>, between: () => void): { fired: () => boolean } {
+  const send = t.harness.db.send.bind(t.harness.db);
+  let fired = false;
+  t.harness.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { entityType?: string } } }> } }) => {
+    if (!fired && command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "LEARNING_CORRECTION") === true) {
+      fired = true;
+      between();
+    }
+    return send(command as never);
+  });
+  return { fired: () => fired };
+}
+
+describe("send-back capture: changes between the read and the write store nothing, and leave a trace (review items 2 and 3)", () => {
+  const refusals = (logs: Array<Record<string, unknown>>) => logs.filter((entry) => entry.event === "learning.send_back_capture_refused");
+
+  it("a decider demoted in the gap: refused as stale, and the log carries ids and a reason only, never the text", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const gap = betweenReadAndWrite(t, () => seedPerson(t.harness.db, MAYA_CALLER, "viewer"));
+    const logs: Array<Record<string, unknown>> = [];
+    const requestId = randomUUID();
+    await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
+    expect(gap.fired()).toBe(true);
+    expect(corrections(t.harness)).toEqual([]);
+    const [entry, ...others] = refusals(logs);
+    expect(others).toEqual([]);
+    expect(entry).toEqual({ event: "learning.send_back_capture_refused", taskId: t.taskId, requestId, correctionId: expect.stringMatching(/^[0-9a-f]{32}$/) as string, reason: "stale" });
+    expect(JSON.stringify(logs)).not.toMatch(/retry|helper|loop/i);
+  });
+
+  it("a decider removed from the company in the gap stores nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const gap = betweenReadAndWrite(t, () => { t.harness.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId)); });
+    const logs: Array<Record<string, unknown>> = [];
+    const requestId = randomUUID();
+    await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
+    expect(gap.fired()).toBe(true);
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(corrections(t.harness)).toEqual([]);
+    expect(items(t.harness, "SOURCE#")).toEqual([]);
+    expect(refusals(logs)).toMatchObject([{ reason: "stale" }]);
+  });
+
+  it("a project archived in the gap stores nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const gap = betweenReadAndWrite(t, () => seedProject(t.harness.db, PROJECT, "archived"));
+    const logs: Array<Record<string, unknown>> = [];
+    const requestId = randomUUID();
+    await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
+    expect(gap.fired()).toBe(true);
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(corrections(t.harness)).toEqual([]);
+    expect(items(t.harness, "SOURCE#")).toEqual([]);
+    expect(refusals(logs)).toMatchObject([{ reason: "stale" }]);
+  });
+
+  it("a full store refuses the correction and logs store_full with ids only", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const { LEARNING_LIVE_CORRECTIONS_MAX } = await import("../../packages/contracts/src/project-learning.js");
+    const first = await captureCorrection(learningDeps(t.harness), scope, {
+      id: "earlier-correction", stage: "plan", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
+      text: "Always run the linter before committing.", signature: [], author: SAM_ID, standing: "member", limit: "automatic",
+    });
+    expect(first.ok).toBe(true);
+    const state = t.harness.db.find((item) => String(item.sk) === "STATE" && String(item.pk).endsWith(`#PROJECT_LEARNING#${PROJECT}`))[0]!;
+    // A counter at the limit that was just recounted: the cheap refusal, without counting the table.
+    t.harness.db.set({ ...state, liveCorrections: LEARNING_LIVE_CORRECTIONS_MAX, recountedAt: Date.now() });
+    const logs: Array<Record<string, unknown>> = [];
+    const requestId = randomUUID();
+    await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(corrections(t.harness).map((c) => c.id)).toEqual(["earlier-correction"]);
+    expect(refusals(logs)).toMatchObject([{ taskId: t.taskId, requestId, reason: "store_full" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/retry|helper|loop/i);
+  });
+});
+
+describe("send-back capture: a refused or stale decision stores nothing (review item 3)", () => {
+  it("a decision on a stale revision is refused and captures nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const requestId = randomUUID();
+    await expect(decideTaskWorkflow(routeDeps(t.harness), MAYA_CALLER, t.taskId, {
+      requestId, expectedRevision: workflowOf(t.harness, t.taskId).revision - 1, decision: "REQUEST_CHANGES", artifactDigest: workflowOf(t.harness, t.taskId).artifacts.at(-1)!.sha256, reason: NOTE,
+    }, { via: "PAGE", note: NOTE })).rejects.toBeDefined();
+    expect(requested(t.harness, t.taskId, requestId)).toBe(false);
+    expect(learningItems(t.harness.db)).toEqual([]);
+  });
+
+  it("a decision on a changed document (wrong digest) is refused and captures nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const requestId = randomUUID();
+    await expect(decideTaskWorkflow(routeDeps(t.harness), MAYA_CALLER, t.taskId, {
+      requestId, expectedRevision: workflowOf(t.harness, t.taskId).revision, decision: "REQUEST_CHANGES", artifactDigest: "0".repeat(64), reason: NOTE,
+    }, { via: "PAGE", note: NOTE })).rejects.toBeDefined();
+    expect(requested(t.harness, t.taskId, requestId)).toBe(false);
+    expect(learningItems(t.harness.db)).toEqual([]);
+  });
+
+  it("a viewer's refused API decision captures nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
+    t.takeOver(OMAR_CALLER);
+    expect((await t.api(OMAR, NOTE)).status).toBe(403);
+    expect(learningItems(t.harness.db)).toEqual([]);
+  });
+});
+
+describe("send-back capture: it runs after the index sync, within its own time budget (review item 1)", () => {
+  const indexRow = (t: Awaited<ReturnType<typeof waitingPlan>>) => t.harness.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("DEVELOPER#") && String(item.sk).startsWith("TASK#") && String(item.sk).endsWith(`#${t.taskId}`))[0]!;
+
+  it("the index is already synced when capture writes", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const before = indexRow(t).status;
+    let atCapture: unknown;
+    const gap = betweenReadAndWrite(t, () => { atCapture = indexRow(t).status; });
+    await t.page(MAYA_CALLER, NOTE);
+    expect(gap.fired()).toBe(true);
+    expect(atCapture).not.toBe(before);
+    expect(indexRow(t).status).toBe(atCapture);
+  });
+
+  it("a capture that never answers does not hold the send-back: the decision is committed, the index is synced, and the delay is logged", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const before = indexRow(t).status;
+    const send = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { entityType?: string } } }> } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "LEARNING_CORRECTION") === true) return new Promise(() => undefined);
+      return send(command as never);
+    });
+    const logs: Array<Record<string, unknown>> = [];
+    const requestId = randomUUID();
+    const started = Date.now();
+    const answer = await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(answer.task).toBeDefined();
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(indexRow(t).status).not.toBe(before);
+    expect(logs.some((entry) => entry.event === "learning.send_back_capture_failed" && entry.step === "timeout")).toBe(true);
+  });
+
+  it("a capture that throws leaves the decision committed and the index synced", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const before = indexRow(t).status;
+    const send = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { entityType?: string } } }> } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "LEARNING_CORRECTION") === true) throw new Error("table unavailable");
+      return send(command as never);
+    });
+    const requestId = randomUUID();
+    const answer = await t.page(MAYA_CALLER, NOTE, [], requestId);
+    expect(answer.task).toBeDefined();
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(indexRow(t).status).not.toBe(before);
+  });
+
+  it("a capture that rejects after the time limit is logged and never an unhandled rejection", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const send = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { entityType?: string } } }> } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "LEARNING_CORRECTION") === true) {
+        return new Promise((_, reject) => setTimeout(() => reject(new Error("late failure")), 1800));
+      }
+      return send(command as never);
+    });
+    const logs: Array<Record<string, unknown>> = [];
+    await t.page(MAYA_CALLER, NOTE, [], randomUUID(), (entry) => logs.push(entry));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(logs.filter((entry) => entry.event === "learning.send_back_capture_failed").map((entry) => entry.step)).toContain("timeout");
   });
 });
 

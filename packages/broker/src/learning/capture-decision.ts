@@ -67,6 +67,7 @@ async function standingOf(deps: CaptureDeps, cache: Map<string, Checked>, orgId:
 /** Writes one correction, holding the write to the author's standing and to the project as they were read: a change in between stores nothing (`stale`). Returns the new correction's id. */
 async function write(deps: CaptureDeps, scope: LearningScope, projectChecks: StandingCheck[], input: CaptureInput, who: Checked): Promise<string | undefined> {
   const result = await captureCorrection(learningDepsOf(deps), scope, input, { conditions: [...who.checks, ...projectChecks] });
+  if (!result.ok) logRefusal(deps, input, result.reason);
   return result.ok && result.created ? result.correction.id : undefined;
 }
 
@@ -139,11 +140,34 @@ function logFailure(deps: CaptureDeps, taskId: string, step: string, error: unkn
   }
 }
 
-/** The hook's entry point: capture, and never fail the send-back. A failure is logged with fixed words (no text, no ids but the task's). */
-export async function captureSendBackQuietly(deps: CaptureDeps, input: SendBackInput): Promise<void> {
+/** A correction the store refused (`stale` after a demotion, removal or archive in the gap, a cap, a full store) leaves a trace: ids and the fixed reason, never the text. */
+function logRefusal(deps: CaptureDeps, input: CaptureInput, reason: string): void {
+  const requestId = input.sourceRef.decisionRequestId;
+  const entry = { event: "learning.send_back_capture_refused", taskId: input.taskId, ...(requestId === undefined ? {} : { requestId }), correctionId: input.id, reason };
   try {
-    await captureSendBack(deps, input);
-  } catch (error) {
+    (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
+  } catch {
+    // Logging must not fail the send-back either.
+  }
+}
+
+/** How long the hook waits for a capture. The send-back never waits longer: the decision and the index are already done by then. */
+export const SEND_BACK_CAPTURE_BUDGET_MS = 1500;
+
+/**
+ * The hook's entry point: capture, and never fail or hold up the send-back. Call it after the decision has committed and the task index is synced. A failure is logged with fixed words
+ * (no text, no ids but the task's). A capture that runs past `SEND_BACK_CAPTURE_BUDGET_MS` is left to finish on its own (its writes are idempotent per request) and logged as `timeout`.
+ */
+export async function captureSendBackQuietly(deps: CaptureDeps, input: SendBackInput): Promise<void> {
+  const work = captureSendBack(deps, input).then(() => "done" as const, (error: unknown) => {
     logFailure(deps, input.taskId, "capture", error);
+    return "failed" as const;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), SEND_BACK_CAPTURE_BUDGET_MS); });
+  try {
+    if (await Promise.race([work, limit]) === "timeout") logFailure(deps, input.taskId, "timeout", undefined);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
