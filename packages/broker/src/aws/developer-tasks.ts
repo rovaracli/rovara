@@ -1,4 +1,4 @@
-import { AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
+import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
 import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
@@ -326,7 +326,7 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { setupDraftPointerItem } from "../rovara-code/setup-draft.js";
-import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { readTaskRecipe, prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, lazyTaskSessionRecord, sessionStarterFor } from "../agent-sessions/create.js";
@@ -2869,8 +2869,11 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
   // Agent-step windows are the first adapter. Other dispatch families keep their
   // existing path until their dedicated admission adapters are connected.
   if (task.agent === undefined || task.workflow !== undefined) return undefined;
+  const frozen = await readTaskRecipe(deps, task.taskId, deps.orgId);
+  if (frozen === undefined || frozen.digest !== task.agent.digest) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task's accepted recipe could not be checked.");
+  if (recipeRunner(frozen.recipe) !== "agent_steps") return undefined;
   const runKey = taskAgentRunKey(task.taskId), raw = await get<Record<string, unknown>>(deps, runKey);
-  if (raw === undefined) return undefined;
+  if (raw === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The paused run's admission state is missing.");
   const parsedRun = AgentRunStateSchema.safeParse(Object.fromEntries(Object.entries(raw).filter(([key]) => !["pk", "sk", "entityType"].includes(key))));
   if (!parsedRun.success || raw.pk !== runKey.pk || raw.sk !== runKey.sk || raw.entityType !== "AGENT_RUN" || parsedRun.data.orgId !== deps.orgId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The paused run's admission state could not be checked.");
   const run = parsedRun.data;
