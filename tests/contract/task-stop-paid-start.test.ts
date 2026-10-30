@@ -2079,3 +2079,18 @@ for (const race of ["none", "ceiling", "actor", "task", "company", "project", "a
   expect(f.t.meta(taskId)).toEqual(race === "task" ? { ...before, budgetUsd: 2 } : before);
   expect(f.t.db.get(f.policy)).toMatchObject({ enrollment: { state: "disabled" } });
 });
+
+for (const kind of ["run_limit", "max_per_run", "planning"] as const) it(`bounded task cutover expires above-cap ${kind} asks while preserving accepted caps`, async () => {
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, agentId: ROVARA_CODE_AGENT_ID, kind, scope: { kind: "task", taskId }, amountUsd: 5, newLimitUsd: 5, reason: "Complete unapprovable ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
+  expect(record.approvalTerms).toBeDefined(); f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const before = f.t.meta(taskId), policy = f.t.db.get(f.policy);
+  const fn: unknown = Reflect.get(spendRequests, "expireUnapprovableTaskStopRequests"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("bounded task cutover missing");
+  const invoke = fn as (deps: unknown, actor: unknown, input: unknown) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, { orgId: TEST_ORG, limit: 1 })).toMatchObject({ examined: 1, expired: 1, complete: true });
+  const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" };
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+  expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
+  expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy);
+});
