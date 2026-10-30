@@ -2014,3 +2014,15 @@ for (const laterPage of [false, true]) it(`legacy expiry retries its original pa
   expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", amountUsd: 2 }); expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
   expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), input)).toMatchObject({ expired: 1, complete: true });
 });
+
+for (const limit of [0.5, 5]) it(`unenrolled cutover review classifies complete approval ${limit} with the shared calculator`, async () => {
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: limit, newLimitUsd: limit, reason: "Pending reviewed approval", requestedBy: { kind: "member", developerId: MAYA.developerId } });
+  expect(record.approvalTerms).toBeDefined(); f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const before = f.t.meta(taskId), policy = f.t.db.get(f.policy);
+  const fn: unknown = Reflect.get(spendRequests, "reviewTaskStopCutoverApproval"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("cutover review missing");
+  const invoke = fn as (deps: unknown, actor: unknown, request: unknown) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record)).toMatchObject({ kind: limit === 5 ? "expire" : "retain", ...(limit === 5 ? { reason: "spending_rules_changed" } : {}) });
+  expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
+});
