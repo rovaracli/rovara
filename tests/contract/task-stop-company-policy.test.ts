@@ -235,3 +235,13 @@ it("exports the canonical ceiling micros constant used by both read DTOs", () =>
   const micros = (Web as unknown as Record<string, unknown>).DEFAULT_MAX_PER_RUN_CEILING_MICROUSD;
   expect(micros).toBe(100_000_000);
 });
+
+for (const mode of ["rovara_estimate", "limited"] as const) it(`reads typed company ${mode} without inventing a fixed default`, async () => {
+  const f = fixture(); f.record();
+  const defaultPolicy = mode === "rovara_estimate" ? { kind: mode } : { kind: mode, stopMicrousd: 1234567 };
+  f.policy(0, { policy: { schemaVersion: 2, defaultPolicy }, seedProvenance: { source: "upgrade", reviewRequired: true, seededAt: "2026-10-27T18:00:00.000Z", occurrence: "private-occurrence" } });
+  const result = await f.call(); expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ defaultPolicy, seedReview: { source: "upgrade", reviewRequired: true, seededAt: "2026-10-27T18:00:00.000Z" }, calculation: "unavailable", enforcement: "not_connected" });
+  expect(result.body).not.toHaveProperty("defaultStopMicrousd");
+  expect(JSON.stringify(result.body)).not.toContain("private-occurrence"); expect(f.db.transactions()).toHaveLength(0);
+});
