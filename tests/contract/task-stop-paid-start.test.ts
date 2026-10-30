@@ -29,7 +29,8 @@ for (const failure of ["zero", "missing_project", "deleted_policy"] as const) it
   if (failure === "missing_project") f.t.db.delete(f.project);
   if (failure === "deleted_policy") f.t.db.delete(f.policy);
   const reply = await f.start(); expect(reply.status).toBe(409);
-  expect(reply.body.error).toMatchObject({ code: failure === "zero" ? "TASK_STOP_BUDGET_EXCEEDED" : "TASK_STOP_CONFIG_MISSING" });
+  expect(reply.body.error).toMatchObject({ code: failure === "zero" ? "TASK_STOP_ZERO" : "TASK_STOP_CONFIG_MISSING" });
+  if (failure === "zero") expect(reply.body.error).toMatchObject({ message: "Work can't start: the effective spending stop is $0." });
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
 });
@@ -387,6 +388,6 @@ for (const corruption of ["version", "calculation"] as const) it(`Continue refus
 it("Continue refuses a zero current stop without changing the admitted old window", async () => {
   const f = await continueWindow(), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
-  const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_BUDGET_EXCEEDED" });
+  const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_ZERO", message: "Work can't start: the effective spending stop is $0." });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
 });
