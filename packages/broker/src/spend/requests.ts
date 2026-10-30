@@ -1199,7 +1199,7 @@ const fingerprintOf = (spendRequestId: string, body: DecideSpendBody) =>
  * request leaves out its new limit, which is the org's limit plus the amount (fix round 1, M-8).
  */
 export function spendRequestView(deps: Pick<SpendRequestDependencies, "confirmOrigin" | "now">, record: SpendRequestRecord, viewer?: Pick<AgentCaller, "orgRole">): Record<string, unknown> {
-  const { orgId: _orgId, change: _change, slotSubject: _slot, ownerVersion: _version, topUpMonth: _month, ...shown } = record as SpendRequestRecord & { slotSubject?: string; ownerVersion?: number; topUpMonth?: string }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the org is the caller's; the stored change, slot, version and month are the store's
+  const { orgId: _orgId, change: _change, slotSubject: _slot, ownerVersion: _version, topUpMonth: _month, approvalSource: _approvalSource, approvalTerms: _approvalTerms, ownerFinancialTerms: _financialTerms, ...shown } = record as SpendRequestRecord & { slotSubject?: string; ownerVersion?: number; topUpMonth?: string }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the org is the caller's; the stored change, slot, version and month are the store's
   // A request whose time ran out reads EXPIRED before the sweep has ended it: nobody can decide it any more.
   const expired = record.status === "PENDING" && Date.parse(record.expiresAt) <= deps.now();
   if (record.scope?.kind === "org" && viewer !== undefined && !isOrgAdminRole(viewer)) delete shown.newLimitUsd;

@@ -994,12 +994,14 @@ describe("fix round 1 (the Task 32 review)", () => {
       expect(t.ownerTotal(MAYA)).toBe(101);
     });
 
-    it("a merge rewrites the ids inside the stored change, and the approval gives the agent to the survivor", async () => {
+    it("a merge rewrites routing but expires approval of the original counted owner figures", async () => {
       const { t, agentId, id } = await heldTransfer();
       await onMembersMerged(t.deps(), { orgId: TEST_ORG, survivorId: CARL.developerId, duplicateId: OMAR.developerId });
       expect(recordOf(t, id)).toMatchObject({ status: "PENDING", newOwner: { developerId: CARL.developerId }, change: { op: "set_owner", owner: { kind: "member", developerId: CARL.developerId } } });
-      await t.decide(DEB, id);
-      expect(t.agentItem(agentId)!.owner).toEqual({ kind: "member", developerId: CARL.developerId });
+      const before = t.agentItem(agentId), totalBefore = t.ownerTotal(CARL);
+      await expect(t.decide(DEB, id)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+      expect(t.agentItem(agentId)).toEqual(before); expect(t.ownerTotal(CARL)).toBe(totalBefore);
     });
   });
 
