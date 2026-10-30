@@ -2042,3 +2042,29 @@ for (const failure of ["actor", "seed", "project"] as const) it(`unenrolled cuto
   await expect(invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record)).rejects.toBeDefined();
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
 });
+
+for (const race of ["none", "ceiling", "actor", "task"] as const) it(`cutover expiry binds reviewed native policy, actor and task: ${race}`, async () => {
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: 5, newLimitUsd: 5, reason: "Complete above-ceiling ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const before = f.t.meta(taskId), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" }, send = f.t.db.send.bind(f.t.db); let attempted = false;
+  f.t.db.send = async command => {
+    if (!attempted && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
+      attempted = true;
+      if (race === "ceiling") { const ceiling = agentGuardrailsKey(TEST_ORG), row = f.t.db.get(ceiling)!; f.t.db.set({ ...row, revision: Number(row.revision) + 1, guardrails: { ...(row.guardrails as Record<string, unknown>), maxPerRunCeilingUsd: 10 } }); }
+      if (race === "actor") { const actor = orgMemberKey(TEST_ORG, ADA.developerId); f.t.db.set({ ...f.t.db.get(actor)!, role: "member" }); }
+      if (race === "task") f.t.db.set({ ...f.t.db.get(taskKey(taskId))!, budgetUsd: 2 });
+    }
+    return send(command);
+  };
+  const fn: unknown = Reflect.get(spendRequests, "expireTaskStopCutoverApproval"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("fenced cutover expiry missing");
+  const invoke = fn as (deps: unknown, actor: unknown, id: string) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record.spendRequestId)).toMatchObject({ kind: race === "none" ? "expired" : "retry" });
+  expect(attempted).toBe(true);
+  expect(f.t.db.get(key)?.status).toBe(race === "none" ? "EXPIRED" : "PENDING");
+  if (race === "none") expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
+  else expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
+  expect(f.t.meta(taskId)).toEqual(race === "task" ? { ...before, budgetUsd: 2 } : before);
+  expect(f.t.db.get(f.policy)).toMatchObject({ enrollment: { state: "disabled" } });
+});
