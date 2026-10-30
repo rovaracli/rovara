@@ -835,3 +835,19 @@ it("corrupt original approval terms expire without synthesizing replacement term
   await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });
+
+it("an allowed agent run-limit approval replaces the previous window binding and resumes from the new committed admission", async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId).budgetUsd).toBe(4);
+  await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!; expect(request.newLimitUsd).toBe(9);
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), decisionId = randomUUID();
+  const result = await f.t.decide(MAYA, request.spendRequestId, "APPROVE", { requestId: decisionId }); expect(result.spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({
+    entityType: "SPENDING_ADMISSION", workKind: "task-window", workId: f.task.taskId, spendRequestId: request.spendRequestId, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
+});
