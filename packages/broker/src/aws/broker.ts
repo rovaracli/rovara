@@ -6099,9 +6099,9 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
+  frozen: Awaited<ReturnType<typeof readTaskRecipe>>,
 ): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true; reviewSameModel?: true;modelDecision?:Extract<StageModelResult,{kind:"resolved"}>;modelCompanyRevision?:number;modelPolicy?:TaskModelPolicyBinding }) | undefined> {
   if (task?.agent === undefined) return undefined;
-  const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
   if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
@@ -6282,24 +6282,33 @@ async function taskOperationParts(
   const resolvedModel:Awaited<ReturnType<typeof resolveProjectModel>> = input.workflowMode === "CHECKS" ? {} : await resolveProjectModel(dependencies, orgId, settings);
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
-  const planOwner = chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
+  const frozen=task?.agent===undefined?undefined:await readTaskRecipe(dependencies,task.taskId,orgId);
+  const governed=frozen?.modelPolicyPin!==undefined&&recipeRunner(frozen.recipe)==="coding"&&input.agentRun===undefined;
+  const planOwner = governed?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
   const planSelection = dependencies.chatgpt === undefined || input.workflowMode === "CHECKS" || input.agentRun !== undefined ? undefined
     : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
-  const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model);
+  const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
   // Governed stages resolve the pinned precedence themselves; an ungoverned coding choice cannot silently become the default.
   if(resolvedModel.selectionUnavailable===true&&applied?.modelDecision===undefined&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
   let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined ? undefined : planSelection;
+  // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
+  if(applied?.modelDecision?.sourceId==="personal-chatgpt") {
+    if(task?.payer?.kind!=="member"||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
+    chatgpt={developerId:task.payer.developerId,model:applied.model};
+  }
   // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
   // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
   const routing = routingOf(dependencies);
   const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(routing, {
     orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
     model: applied?.model ?? resolvedModel.model,
-    ...(chatgpt === undefined || planOwner === undefined ? {} : { plan: { developerId: planOwner, model: chatgpt.model } }),
+    ...(chatgpt === undefined ? {} : { plan: { developerId: chatgpt.developerId, model: chatgpt.model } }),
   });
+  // Fresh routing cannot silently replace a governed personal source after its resolver evidence changed.
+  if(applied?.modelDecision?.sourceId==="personal-chatgpt"&&routed?.keepChatgpt===false)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model changed. Reload and try again.");
   const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;

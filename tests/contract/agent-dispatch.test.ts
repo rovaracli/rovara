@@ -32,7 +32,7 @@ import type { ChatGptConnectionView } from "../../packages/contracts/src/index.j
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker, registerSlackProject, call as httpCall } from "../support/slack-broker.js";
 
@@ -366,14 +366,15 @@ function recipeWithReview(settings: Record<string, unknown>, base: RecipeOverlay
   return { ...base, sequence: base.sequence!.map((step) => (step.id === "review" ? { ...step, settings } : step)) };
 }
 
-interface SetupOptions { models?: boolean; chatgpt?: Record<string, ChatGptConnectionView> }
+interface SetupOptions { models?: boolean; chatgpt?: Record<string, ChatGptConnectionView>;chatgptView?:(developerId:string)=>ChatGptConnectionView }
 
 async function setup(options: SetupOptions = {}) {
   const chatgptViews = options.chatgpt;
+  const chatgptTokenOwners:string[]=[];
   const chatgpt = chatgptViews === undefined ? undefined : {
     settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
-    view: async (developerId: string) => chatgptViews[developerId]===undefined?{connected:false}:{connectedAt:"2026-10-01T00:00:00.000Z",...chatgptViews[developerId]},
-    accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }),
+    view: async (developerId: string) => {const view=options.chatgptView?.(developerId)??chatgptViews[developerId];return view===undefined?{connected:false}:{connectedAt:"2026-10-01T00:00:00.000Z",...view};},
+    accessToken: async (developerId:string) => {chatgptTokenOwners.push(developerId);return { access: "token", expiresAt: Date.now() + 3_600_000, models: [] };},
     markStatus: async () => undefined,
     refreshModels: async () => undefined,
   } as unknown as ChatGptConnections;
@@ -440,7 +441,7 @@ async function setup(options: SetupOptions = {}) {
     const current = await readGuardrailsWithRevision({ documentClient: h.db, tableName: "state" }, TEST_ORG);
     await store.putGuardrails({ ...({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...change }, expectedRevision: current.revision, by: MAYA.developerId }), by: fixtureActor(store, TEST_ORG, MAYA.developerId, true).developerId, actor: fixtureActor(store, TEST_ORG, MAYA.developerId, true) });
   };
-  return { ...h, audit, modelAccess, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails };
+  return { ...h, audit, modelAccess, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails,chatgptTokenOwners };
 }
 
 describe("a custom coding agent's operations", () => {
@@ -939,4 +940,37 @@ for(const explicit of [false,true])it(`C53 preserves the six-attempt critic ceil
  const before=t.db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===run.workspaceId).length;
  await expect(t.actions.acceptTask(developerTaskIdentity(run.meta(),TEST_ORG),run.workspaceId,{requestId:randomUUID(),conversationId:run.meta().conversationId,prompt:"Check this plan"},()=>[],{workflowMode:"PLAN_CRITIQUE"})).rejects.toThrow("plan check");
  expect(t.db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===run.workspaceId)).toHaveLength(before);
+});
+
+it("C53 personal plan payload keeps the company's locked tuple instead of the plan's preferred model",async()=>{
+ const t=await setup({models:false,chatgpt:{[MAYA.developerId]:{connected:true,status:"connected",models:[GPT55.modelId,SOL.modelId]}}});
+ t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{model:GPT55,thinkingLevel:"high",locked:true}}});
+ const run=await t.start("rovara-code");
+ expect(run.planning.model).toEqual({...GPT55,thinkingLevel:"high"});
+ expect(run.planInvocation.payload.chatgpt).toEqual({model:{...GPT55,thinkingLevel:"high"}});
+ expect(run.planInvocation.payload.model).toEqual(run.planning.model);
+ expect(run.meta().modelFallbacks).toBeUndefined();expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(0);
+});
+it("C53 personal-plan dispatch uses the verified member payer when the authorized run owner differs",async()=>{
+ const t=await setup({models:false,chatgpt:{[MAYA.developerId]:{connected:true,status:"connected",models:[SOL.modelId]},[OMAR.developerId]:{connected:true,status:"connected",models:[GPT55.modelId]}}});
+ t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{model:GPT55,thinkingLevel:null,locked:true}}});
+ const pending=await t.begin("rovara-code");
+ // Dispatch boundary fixture: coding-run admission separately authorizes owner and payer (agents/runs.ts).
+ t.db.set({...pending.meta(),payer:{kind:"member",developerId:OMAR.developerId}});
+ await pending.finishPrepare();
+ const operation=t.operations(pending.workspaceId).find(row=>row.workflowMode==="PLAN")!,invocation=t.invocationOf(String(operation.id));
+ expect(operation.model).toEqual(GPT55);expect(invocation.payload.chatgpt).toEqual({model:GPT55});
+ expect(operation.chatgptDeveloperId).toBe(OMAR.developerId);
+ await t.callback(pending.workspaceId,String(operation.id),"chatgpt-token",{});
+ expect(t.chatgptTokenOwners).toEqual([OMAR.developerId]);expect(t.modelAccess.mintKey).not.toHaveBeenCalled();
+});
+
+it("C53 refuses a personal-source transition during dispatch instead of silently using a company key",async()=>{
+ let reads=0;const connected={connected:true as const,status:"connected" as const,models:[GPT55.modelId,SOL.modelId]};
+ const t=await setup({models:false,chatgpt:{[MAYA.developerId]:connected},chatgptView:()=>++reads<=2?connected:{connected:false}});
+ t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{model:GPT55,thinkingLevel:null,locked:true}}});
+ const pending=await t.begin("rovara-code");reads=0;await pending.finishPrepare();
+ expect(reads).toBeGreaterThanOrEqual(3);
+ expect(t.operations(pending.workspaceId).filter(row=>row.workflowMode==="PLAN")).toHaveLength(0);
+ expect(pending.meta().modelFallbacks).toBeUndefined();expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(0);expect(t.modelAccess.mintKey).not.toHaveBeenCalled();
 });
