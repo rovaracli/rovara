@@ -87,7 +87,7 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   const refusal = (code: StageModelRefusalCode): StageModelResult => ({ kind: "refusal", code: locked ? "LOCK_UNSATISFIABLE" : code });
   const finish = (candidate: VerifiedStageCandidate, choice: StageModelChoice, reason: StageDecisionReason, wanted?: ModelIdentifier, fallbackCode?: ModelFallback["reasonCode"]): Extract<StageModelResult, { kind: "resolved" }> => ({
     kind: "resolved", model: candidate.model, sourceId: candidate.sourceId, thinkingLevel: choice.thinkingLevel ?? null, locked,
-    reason: checking(input.stage) && input.referenceModel !== undefined && same(candidate.model, input.referenceModel) ? "APPROVED_SAME_MODEL" : reason,
+    reason: fallbackCode !== "DEFAULT_MODEL_UNAVAILABLE" && checking(input.stage) && input.referenceModel !== undefined && input.sameModelApproval !== undefined && same(candidate.model, input.referenceModel) && same(input.sameModelApproval.model, candidate.model) && same(input.sameModelApproval.referenceModel, input.referenceModel) ? "APPROVED_SAME_MODEL" : reason,
     ...(fallbackCode === undefined ? {} : { fallback: { stage: input.stage, used: label(candidate.model), wanted: wanted === undefined ? null : label(wanted), reasonCode: fallbackCode } }),
   });
   let choice: StageModelChoice | undefined;
