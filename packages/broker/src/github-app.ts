@@ -205,6 +205,8 @@ export interface GitHubPullRequestDetails {
   baseBranch: string;
   headCommit: string;
   mergeCommit?: string;
+  /** When GitHub says it merged (a merged pull request only). */
+  mergedAt?: string;
   /** The login of the account that merged it, when GitHub says (a merged pull request only). */
   mergedBy?: string;
   title: string;
@@ -2310,6 +2312,7 @@ function parsePullRequestDetails(
     baseBranch: (base as Record<string, unknown>).ref as string,
     headCommit: (head as Record<string, unknown>).sha as string,
     ...(typeof candidate.merge_commit_sha === "string" ? { mergeCommit: candidate.merge_commit_sha } : {}),
+    ...(candidate.merged === true && typeof candidate.merged_at === "string" && Number.isFinite(Date.parse(candidate.merged_at)) ? { mergedAt: candidate.merged_at } : {}),
     ...(candidate.merged === true && typeof mergedByLogin(candidate.merged_by) === "string" ? { mergedBy: mergedByLogin(candidate.merged_by)! } : {}),
     title: candidate.title,
     body: candidate.body ?? "",

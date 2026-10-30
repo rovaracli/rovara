@@ -424,6 +424,7 @@ import { assessmentForTask } from "../rovara-code/explicit-path.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
 import { mergedStateItems } from "../rovara-code/merged-state.js";
+import { outcomeDepsOf, scoreEndedPullRequest } from "../rovara-code/outcome-hooks.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../rovara-code/proof-keep.js";
@@ -13380,6 +13381,7 @@ export async function processGithubWorkflowEvent(
     now: new Date().toISOString(),
   });
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
+  if (linked !== undefined) await scoreEndedPullRequestOutcomes(dependencies, linked.taskId, linked.repositoryId, event.number);
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
   // Plan 6 Task 20: the merged milestone this save wrote is told to the registered handlers now; one that was not told is told again by the sweep.
@@ -13457,12 +13459,37 @@ async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies
   return await planAutomaticFeedbackRound(routeDependencies, task) !== undefined;
 }
 
+/**
+ * Track record: a pull request the workflow now records as merged or closed has its candidate's samples scored, from GitHub's answer read now (its checks, its reviews, its merge commit and time), not
+ * from the tracking item. Only a version 2 task, and only once the workflow says the pull request ended. Best effort: it never throws, and scoring a pull request twice changes nothing.
+ */
+async function scoreEndedPullRequestOutcomes(dependencies: AwsBrokerDependencies, taskId: string, repositoryId: string, number: number): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    const github = dependencies.githubPullRequests;
+    const workflow = task?.workflow;
+    if (task === undefined || workflow === undefined || task.orgId === undefined || workflow.definitionVersion !== "1.1.0" || github.getPullRequestStatus === undefined) return;
+    const ended = workflow.pullRequests?.find((entry) => entry.repositoryId === repositoryId && entry.number === number);
+    if (ended === undefined || (ended.state !== "MERGED" && ended.state !== "CLOSED")) return;
+    const url = await webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (url === undefined) return;
+    const scope = githubScope(dependencies, task.orgId);
+    const status = await github.getPullRequestStatus.call(github, url, number, scope);
+    const details = status.state === "merged" && github.getPullRequest !== undefined ? await github.getPullRequest.call(github, url, number, scope).catch(() => undefined) : undefined;
+    await scoreEndedPullRequest(outcomeDepsOf(dependencies), { taskId, orgId: task.orgId, project: task.project, agent: task.agent, workflow }, {
+      repositoryId, number, status, mergeCommit: details?.mergeCommit, mergedAt: details?.mergedAt, now: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", level: "warn", event: "outcomes.merge_failed", taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 /** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
 function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
   const github = dependencies.githubPullRequests;
   if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.markPullRequestReady === undefined || github.requestReviewers === undefined) return undefined;
   return {
-    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, outcomes: outcomeDepsOf(dependencies),
     github: {
       getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
       getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),

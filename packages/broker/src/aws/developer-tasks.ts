@@ -342,7 +342,8 @@ import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFi
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { proofTableView } from "../rovara-code/proof-view.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
-import { loadTestProofLines } from "../developer/test-proof-lines.js";
+import { loadTestProofLines, readTestProofForCandidate } from "../developer/test-proof-lines.js";
+import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleTaskOutcomes } from "../rovara-code/outcome-hooks.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -2865,6 +2866,33 @@ async function decidableTask(deps: DeveloperTaskRouteDependencies, caller: Devel
   return access as AuthorizedTask;
 }
 
+/** Track record: the hooks' own table access and logger. */
+const outcomeDeps = (deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "log">) =>
+  outcomeDepsOf(deps, (event, fields) => deps.log?.({ event, ...fields }));
+
+/**
+ * Track record: the plan check's claim, written once the person's decision has committed (never for a stale or failed decision, or a repeat). `workflow` is the snapshot read before the decision, which still holds
+ * the plan check (a request for changes drops it); `committed` is the snapshot the decision produced. Best effort: it never throws.
+ */
+async function recordPlanDecisionOutcome(
+  deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, committed: WorkflowSnapshot, documentType: string | undefined,
+): Promise<void> {
+  const decision = committed.decisions.at(-1);
+  if (documentType !== "plan" || decision === undefined || decision.closedAs !== undefined) return;
+  await recordPlanOutcome(outcomeDeps(deps), task, { critique: workflow.critique, revision: workflow.revision, decision: decision.decision, at: decision.at });
+}
+
+/** Track record: the claims about a candidate the pull request is published with. Best effort: it never throws, and a proof that cannot be read is recorded as such. */
+async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, now: string): Promise<void> {
+  try {
+    if (workflow.definitionVersion !== "1.1.0") return;
+    const proof = await readTestProofForCandidate(deps.actions, task, workflow.candidate?.digest);
+    await recordPublicationOutcomes(outcomeDeps(deps), task, { workflow, proof, now });
+  } catch (error) {
+    deps.log?.({ event: "outcomes.publication_failed", error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 /**
  * The one transition for a plan decision, from Slack, MCP and the task page alike. A page decision (`via: "PAGE"`) carries
  * the owner's answer to every decision and the comments they chose to send; Slack and MCP send neither, so an approval
@@ -3057,6 +3085,7 @@ export async function decideTaskWorkflow(
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING" },
     } }, accessFence(deps, access), ...answeredItems]);
+    await recordPlanDecisionOutcome(deps, task, workflow, next, documentType);
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
     const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
@@ -3162,6 +3191,7 @@ export async function decideTaskWorkflow(
       }
       return busyOrClosing(deps, task, error);
     }
+    await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
     const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
     const view = await taskView(deps, fresh, { events: 0, details: false });
     await syncIndex(deps, fresh, view.status, view.updatedAt);
@@ -3214,6 +3244,7 @@ export async function decideTaskWorkflow(
     }
     return busyOrClosing(deps, task, error);
   }
+  await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
@@ -6528,6 +6559,7 @@ export async function startTaskWorkflowPublicationFromSystem(
       if (!isConditional(error)) throw error;
     }
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -6617,6 +6649,7 @@ async function startTaskWorkflowPullRequestUpdate(
     }
     throw error;
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -7917,6 +7950,7 @@ export async function finishTaskClose(
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
       await tellClosedTaskEnd(deps, task);
+      await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -7926,6 +7960,7 @@ export async function finishTaskClose(
       if (fresh?.closedAt !== undefined) {
         await endAgentRunOfClosedTask(deps, task);
         await tellClosedTaskEnd(deps, task);
+        await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
         return;
       }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.
@@ -8097,6 +8132,8 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
   await recordFinishedRunCost(deps, task);
+  // Track record: samples still open when the task ends have no outcome to be scored against. Best effort.
+  await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
   // Plan 6 Task 7: a version 2 task's duration, if the pull request's write didn't get there first.
   await noteFinishedTaskDuration({ documentClient: deps.documentClient, tableName: deps.tableName }, task);
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
