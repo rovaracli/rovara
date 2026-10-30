@@ -2354,3 +2354,18 @@ for (const origin of ["event", "schedule"] as const) it(`autonomous ${origin} st
   const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent", agentId } });
   expect(f.t.meta(started.taskId)).toMatchObject({ budgetUsd: 1.234567, spendingStop: { schemaVersion: 2, orgId: TEST_ORG, agentId, effectiveStopMicrousd: 1234567 } });
 });
+
+for (const origin of ["event", "schedule"] as const) for (const setting of ["zero", "missing"] as const) it(`autonomous ${origin} refuses ${setting} stop configuration before a task is accepted`, async () => {
+  const f = await fixture(setting === "zero" ? 0 : 1234567), agentId = await f.t.budgeted(40), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, orgId: TEST_ORG, agentId, revision: 1, stopKind: "inherit" });
+  if (setting === "missing") f.t.db.delete(f.policy);
+  const before = f.t.db.find(row => row.entityType === "DEVELOPER_TASK");
+  await expect(startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent", agentId } })).rejects.toMatchObject({ code: setting === "zero" ? "TASK_STOP_ZERO" : "TASK_STOP_CONFIG_MISSING" });
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toEqual(before);
+});
+for (const origin of ["event", "schedule"] as const) it(`unenrolled autonomous ${origin} retains its existing run limit`, async () => {
+  const f = await fixture(), agentId = await f.t.budgeted(40);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent", agentId } });
+  expect(f.t.meta(started.taskId)).toMatchObject({ budgetUsd: 4 }); expect(f.t.meta(started.taskId)).not.toHaveProperty("spendingStop");
+});
