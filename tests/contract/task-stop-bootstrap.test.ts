@@ -426,8 +426,9 @@ it("registered built-in inventory is bounded and resumes against the same regist
   const invoke = fn as (deps: unknown, input: unknown) => Promise<{ examined: number; updated: number; complete: boolean; cursor?: { agentId: string; registryDigest: string } }>;
   const deps = { documentClient: f.db, tableName: "state", now: () => now };
   const first = await invoke(deps, { orgId, limit: 1 });
-  expect(first).toMatchObject({ examined: 1, updated: 1, complete: false, cursor: { agentId: BUILTIN_AGENT_IDS[1], registryDigest: expect.stringMatching(/^[a-f0-9]{64}$/) } });
-  const secondKey = builtinSettingsKey(orgId, BUILTIN_AGENT_IDS[1]!); expect(f.db.get(secondKey.pk, secondKey.sk)).toBeUndefined();
+  expect(first).toMatchObject({ examined: 1, updated: 1, complete: false, cursor: { agentId: BUILTIN_AGENT_IDS[1] } });
+  expect(first.cursor?.registryDigest).toMatch(/^[a-f0-9]{64}$/);
+  const secondKey = builtinSettingsKey(orgId, BUILTIN_AGENT_IDS[1]); expect(f.db.get(secondKey.pk, secondKey.sk)).toBeUndefined();
   expect(await invoke(deps, { orgId, limit: 6, cursor: first.cursor })).toMatchObject({ examined: BUILTIN_AGENT_IDS.length - 1, updated: BUILTIN_AGENT_IDS.length - 1, complete: true });
   for (const agentId of BUILTIN_AGENT_IDS) {
     const key = builtinSettingsKey(orgId, agentId); expect(f.db.get(key.pk, key.sk)).toMatchObject({ orgId, agentId, stopKind: "inherit" });

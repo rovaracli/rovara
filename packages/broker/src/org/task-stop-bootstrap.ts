@@ -173,3 +173,19 @@ export async function upgradeTaskStopProjectInventoryPage(deps: { documentClient
   }
   return { examined: entries.length, updated, preserved, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
 }
+
+/** A bounded registry page, not a controller rollout/readiness assertion. */
+export async function upgradeTaskStopBuiltinInventoryPage(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }, input: { orgId: OrgId; limit: number; cursor?: { agentId: string; registryDigest: string } }): Promise<{ examined: number; updated: number; preserved: number; complete: boolean; cursor?: { agentId: string; registryDigest: string } }> {
+  const parsed = z.object({ orgId: OrgIdSchema, limit: z.number().int().min(1).max(6), cursor: z.object({ agentId: AgentIdSchema, registryDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional() }).strict().parse(input);
+  const registryDigest = createHash("sha256").update(JSON.stringify(BUILTIN_AGENT_IDS)).digest("hex");
+  const start = parsed.cursor === undefined ? 0 : BUILTIN_AGENT_IDS.findIndex(id => id === parsed.cursor?.agentId);
+  if (start < 0 || (parsed.cursor !== undefined && parsed.cursor.registryDigest !== registryDigest)) throw agentXError("CONFIG_INVALID", "The built-in spending inventory cursor changed.");
+  const page = BUILTIN_AGENT_IDS.slice(start, start + parsed.limit);
+  let updated = 0, preserved = 0;
+  for (const agentId of page) {
+    const result = await upgradeTaskStopInheritance(deps, { orgId: parsed.orgId, kind: "agent", agentId });
+    if (result.outcome === "updated") updated += 1; else preserved += 1;
+  }
+  const next = BUILTIN_AGENT_IDS[start + page.length];
+  return { examined: page.length, updated, preserved, complete: next === undefined, ...(next === undefined ? {} : { cursor: { agentId: next, registryDigest } }) };
+}
