@@ -981,16 +981,21 @@ for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", 
   expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(receiptState === "valid" ? 0 : 1);
 });
 
-it("workflow planning approval repairs its original stage from a committed admission after acknowledgement loss", async () => {
+for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow planning approval repair retains its original stage and native ${recovery} guard`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
   f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
   const task = await f.t.runOf(agentId); expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
   await f.t.pauseAndEnd(task, { kind: "planning", taskId: task.taskId });
-  const request = f.t.requestOf(task.taskId, "planning")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0;
+  const request = f.t.requestOf(task.taskId, "planning")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0, changed = false;
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
+    if (lost && !changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === task.workspaceId)) {
+      changed = true;
+      if (recovery === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      if (recovery === "cap_source") f.t.db.set({ ...f.t.meta(task.taskId), budgetUsd: 99 });
+    }
     const result = await send(command);
     if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
       lost = true; throw new Error("test workflow approval acknowledgement lost");
@@ -1002,6 +1007,7 @@ it("workflow planning approval repairs its original stage from a committed admis
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({ transitionKind: "spend-approval", spendRequestId: request.spendRequestId, agentRunRevision: null });
   f.t.db.delete(f.policy); captures = 0;
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
-  expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + 1); expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
-  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + 1); expect(captures).toBe(0);
+  expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(changed).toBe(true);
+  if (recovery === "valid") expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(captures).toBe(0);
 });
