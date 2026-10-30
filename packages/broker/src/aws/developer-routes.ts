@@ -1,3 +1,4 @@
+import { readOrgServiceStatus, type ServiceStatusDependencies } from "../org/service-status.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
 import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
@@ -259,6 +260,7 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus">;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   developer: DeveloperApiConfiguration;
@@ -2204,6 +2206,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/service-status") return readOrgServiceStatus({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...deps.serviceStatus }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
     if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
     return readSlackWorkspaceEvidence(deps, caller);

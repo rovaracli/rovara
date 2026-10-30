@@ -9,6 +9,7 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (!pathname.startsWith("/v1/web/")) return false;
  const relative = pathname.slice("/v1/web/".length), family = relative.split("/")[0]!;
  const read = method === "GET" || method === "HEAD";
+ if (relative === "org/service-status" || relative.startsWith("org/service-status/")) return read && relative === "org/service-status";
  if (family === "tasks") return method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative);
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.

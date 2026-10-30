@@ -1,3 +1,6 @@
+import { readServiceStatusEvidence } from "../../../packages/broker/src/aws/service-status-runtime.js";
+import { e2eRegisteredRuntimeKey } from "../../../packages/broker/src/aws/e2e-runtime-readiness.js";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@agentx/contracts";
 import { commitRegisteredProjectAllowedDomains } from "../../../packages/broker/src/org/project-allowed-domains.js";
 import { generateKeyPairSync } from "node:crypto";
 import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
@@ -140,6 +143,9 @@ export function createAdminDirectory() {
  })});
  const checkRepositories: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> = (orgId, definition) => requireRepositoriesConnected({documentClient,tableName:"mock-state",cloud:true,app:github},orgId,definition);
  return {
+  seedServiceStatus() {
+   for (const kind of ["web", "api"] as const) put({ ...e2eRegisteredRuntimeKey("fixture-health", WEB_API_RUNTIME_PROFILE_ID, kind), state: kind === "web" ? "READY" : "PARKED", qualifiedAt: new Date(Date.now() - 86400000).toISOString(), expiresAt: new Date(Date.now() + 72 * 3600000).toISOString(), endpoint: "https://not-disclosed.invalid" });
+  },
   seedSlackLinks() {
    const teamId = "T0123456789", channelId = "C0123456789";
    put({ ...orgSlackTeamKey(FIXTURE_ORG, teamId), teamId });put({ ...slackTeamOrgKey(teamId), teamId, orgId: FIXTURE_ORG });
@@ -158,7 +164,7 @@ export function createAdminDirectory() {
    // Only source routes use this seam; unused agent collaborators stay absent and fail closed if reached.
    const sourceAgents = {documentClient,tableName:"mock-state",now:Date.now,modelSources:{store:new ModelSourceStore({documentClient,tableName:"mock-state",now:Date.now,chatgptSwitch:async()=>true,audit:runtime}),access:{async upsertSource(){throw new Error("No proxy writes in order fixture.");},async removeSource(){throw new Error("No proxy writes in order fixture.");},async checkSource(){throw new Error("No proxy checks in order fixture.");}},egress:{documentClient,tableName:"mock-state",now:()=>new Date()}}} as unknown as NonNullable<DeveloperRouteDependencies["agents"]>;
    const projectAllowedDomains: NonNullable<DeveloperRouteDependencies["projectAllowedDomains"]> = { registerApproved: async (actor, value, proof) => commitRegisteredProjectAllowedDomains({ documentClient, tableName: "mock-state", signInTableName: base.developer.signInTableName, now: Date.now, audit: runtime }, { orgId: actor.orgId, project: value.definition.name, by: actor.ownerKey, definition: value.definition, runtimeBinding: value.runtimeBinding, proof }) };
-   const deps = { ...base, projectAllowedDomains, requireRepositoriesConnected: checkRepositories, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
+   const deps = { ...base, serviceStatus: { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId: "fixture-health", read: async key => (await documentClient.send(new GetCommand({ TableName: "mock-state", Key: key, ConsistentRead: true })) as { Item?: Row }).Item }) }, projectAllowedDomains, requireRepositoriesConnected: checkRepositories, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
    if (method === "GET" && (path.startsWith("/v1/app/agents") || path.startsWith("/v1/app/org/agent-guardrails"))) return readLaneBAgents(deps, caller, path);
    return routeDeveloperRequest(deps, { method, path, headers, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },

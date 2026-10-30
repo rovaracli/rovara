@@ -1,3 +1,4 @@
+import { readServiceStatusEvidence } from "./service-status-runtime.js";
 import { commitRegisteredProjectAllowedDomains, type AppliedDomainProposalProof } from "../org/project-allowed-domains.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 import { planLegacyDomainNarrowing } from "../org/legacy-domain-narrowing.js";
@@ -2483,6 +2484,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
           ...workingBranchPagesRoute(dependencies),
+          ...serviceStatusRouteDependencies(dependencies),
           ...workingBranchPreviewRoute(dependencies),
           projectAllowedDomains: {
             registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
@@ -19270,3 +19272,9 @@ export const handler = createAwsBrokerHandler({
       }
     : {}),
 });
+
+/** Stored qualification status only; no probe or qualification service is exposed. */
+function serviceStatusRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "serviceStatus"> {
+ const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId;if (runtimeCatalogId === undefined) return {};
+ return { serviceStatus: { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId, read: key => getItem<Record<string, unknown>>(dependencies, key) }) } };
+}
