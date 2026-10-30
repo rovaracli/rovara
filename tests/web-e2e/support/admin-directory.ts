@@ -1,3 +1,4 @@
+import { commitRegisteredProjectAllowedDomains } from "../../../packages/broker/src/org/project-allowed-domains.js";
 import { generateKeyPairSync } from "node:crypto";
 import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
 import { installationBindingCheck, requireRepositoriesConnected } from "../../../packages/broker/src/org/github-connection.js";
@@ -19,6 +20,8 @@ export function createAdminDirectory() {
  const rows = new Map<string, Row>(), audit: Row[] = [];
  const archiveUpdate = "SET entityType = :type, #name = :name, #status = :archived, archivedAt = :at, archivedBy = :by, archiveRevision = :next, createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)";
  const restoreUpdate = "SET #status = :active, archiveRevision = :next REMOVE archivedAt, archivedBy";
+ const membershipUpdate = "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)";
+ const companyLossUpdate = membershipUpdate + ", approvalLastCompanyEligibleLossAt = :lossAt";
  const put = (row: Row) => rows.set(keyOf(row), structuredClone(row));
  function setRole(id: string, role: OrgRole, org: string = FIXTURE_ORG) {
   put({ ...orgMemberKey(org, id), orgId: org, developerId: id, role, joinedAt: "2026-10-01T00:00:00.000Z" });put({ ...developerOrgKey(id), orgId: org, role });
@@ -27,7 +30,7 @@ export function createAdminDirectory() {
   setRole(id, role, org);put({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name, provider: "cloud" });
  }
  put({ ...orgMetaKey("org_bbbbbbbbbbbbbbbbbbbb"), orgId: "org_bbbbbbbbbbbbbbbbbbbb", name: "Other company", plan: "team" });
- put({ ...orgMetaKey(FIXTURE_ORG), orgId: FIXTURE_ORG, name: "Acme", plan: "team", createdBy: FIXTURE_DEVELOPER });
+ put({ ...orgMetaKey(FIXTURE_ORG), orgId: FIXTURE_ORG, name: "Acme", plan: "team", createdBy: FIXTURE_DEVELOPER, approvalMembershipVersion: 1, approvalTrackingSince: "2026-10-01T00:00:00.000Z" });
  put({ ...modelSourcesKey(FIXTURE_ORG),entityType:"ORG_MODEL_SOURCES",revision:1,sources:[],order:["personal-chatgpt","rovara"],credentials:[],removing:[],updatedBy:FIXTURE_DEVELOPER,updatedAt:"2026-10-27T12:00:00Z" });
  function condition(expression: string | undefined, row: Row | undefined, names: Record<string, string> = {}, values: Row = {}): boolean {
   if (expression === undefined) return true;
@@ -39,7 +42,7 @@ export function createAdminDirectory() {
    if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
    if (["attribute_not_exists(acceptedAt)", "attribute_not_exists(revokedAt)", "attribute_not_exists(revision)"].includes(part)) return row?.[part.slice("attribute_not_exists(".length, -1)] === undefined;
    if (part === "expiresAt > :now") return typeof row?.expiresAt === "string" && typeof values[":now"] === "string" && row.expiresAt > values[":now"];
-   const absent = /^attribute_not_exists\((archiveRevision|orgId|#status|#s[0-9]+)\)$/.exec(part);
+   const absent = /^attribute_not_exists\((archiveRevision|orgId|approvalLastCompanyEligibleLossAt|approvalLastMaintainerLossAt|#[A-Za-z][A-Za-z0-9]*)\)$/.exec(part);
    if (absent) return row?.[names[absent[1]!] ?? absent[1]!] === undefined;
    const equal = /^([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(part);
    if (equal === null) throw new Error("Unsupported fixture condition.");
@@ -82,21 +85,33 @@ export function createAdminDirectory() {
   const actions = command.input.TransactItems ?? [];
   if (actions.length > 100) throw new Error("Fixture transaction limit.");
   const checks = actions.map(action => {
-   const write = action.Update ?? action.ConditionCheck ?? action.Put;
+   const write = action.Update ?? action.ConditionCheck ?? action.Put ?? action.Delete;
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
-   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", "SET revokedAt = :at, revokedBy = :by, revision = :next", archiveUpdate, restoreUpdate, "SET latestRevision = :next"].includes(write.UpdateExpression ?? "")) throw new Error("Unsupported fixture update expression.");
-   const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write ? write.UpdateExpression ?? "" : ""}`;
+   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", "SET revokedAt = :at, revokedBy = :by, revision = :next", archiveUpdate, restoreUpdate, membershipUpdate, companyLossUpdate, "SET approvalLastMaintainerLossAt = :lossAt", "SET latestRevision = :next"].includes(typeof write.UpdateExpression === "string" ? write.UpdateExpression : "")) throw new Error("Unsupported fixture update expression.");
+   const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write && typeof write.UpdateExpression === "string" ? write.UpdateExpression : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
    for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
    for (const [token, value] of Object.entries({ ...write.ExpressionAttributeNames, ...write.ExpressionAttributeValues })) { if (!tokens.has(token) || value === undefined) throw new Error("Invalid fixture expression attribute."); }
    const key = "Key" in write ? write.Key : "Item" in write ? write.Item : undefined;
-   return condition(write.ConditionExpression, rows.get(keyOf(key ?? {})), write.ExpressionAttributeNames, write.ExpressionAttributeValues);
+   const previous = rows.get(keyOf(key ?? {}));
+   if ("UpdateExpression" in write && (write.UpdateExpression === membershipUpdate || write.UpdateExpression === companyLossUpdate)) {
+    const values = write.ExpressionAttributeValues ?? {};
+    if (previous === undefined || values[":zero"] !== 0 || values[":one"] !== 1 || typeof values[":at"] !== "string" || (previous.approvalMembershipVersion !== undefined && (!Number.isSafeInteger(previous.approvalMembershipVersion) || Number(previous.approvalMembershipVersion) < 0))) throw new Error("Invalid fixture approval generation.");
+    if (write.UpdateExpression === companyLossUpdate && typeof values[":lossAt"] !== "string") throw new Error("Invalid fixture approval loss.");
+   }
+   if ("UpdateExpression" in write && write.UpdateExpression === "SET approvalLastMaintainerLossAt = :lossAt" && (previous === undefined || typeof write.ExpressionAttributeValues?.[":lossAt"] !== "string")) throw new Error("Invalid fixture maintainer loss.");
+   return condition(write.ConditionExpression, previous, write.ExpressionAttributeNames, write.ExpressionAttributeValues);
   });
   if (checks.some(ok => !ok)) throw Object.assign(new Error("Fixture transaction cancelled."), { name: "TransactionCanceledException", CancellationReasons: checks.map(ok => ({ Code: ok ? "None" : "ConditionalCheckFailed" })) });
   for (const action of actions) {
+   if (action.Delete !== undefined) rows.delete(keyOf(action.Delete.Key));
    if (action.Put?.Item !== undefined) put(action.Put.Item);
    if (action.Update !== undefined) {
     const update = action.Update, values = update.ExpressionAttributeValues ?? {}, row = rows.get(keyOf(update.Key));
+    if (update.UpdateExpression === membershipUpdate || update.UpdateExpression === companyLossUpdate) {
+     put({ ...row, approvalMembershipVersion: Number(row?.approvalMembershipVersion ?? 0) + 1, approvalTrackingSince: row?.approvalTrackingSince ?? values[":at"], ...(update.UpdateExpression === companyLossUpdate ? { approvalLastCompanyEligibleLossAt: values[":lossAt"] } : {}) });continue;
+    }
+    if (update.UpdateExpression === "SET approvalLastMaintainerLossAt = :lossAt") { put({ ...row, approvalLastMaintainerLossAt: values[":lossAt"] });continue; }
     if (update.UpdateExpression === "SET latestRevision = :next") { if(row===undefined||!Number.isSafeInteger(values[":next"]))throw new Error("Invalid fixture catalog update.");put({...row,latestRevision:values[":next"]});continue; }
     if (update.UpdateExpression === archiveUpdate) { put({ ...update.Key, ...row, entityType: values[":type"], name: values[":name"], status: values[":archived"], archivedAt: values[":at"], archivedBy: values[":by"], archiveRevision: values[":next"], createdAt: row?.createdAt ?? values[":at"], createdBy: row?.createdBy ?? values[":unknown"] });continue; }
     if (update.UpdateExpression === restoreUpdate) { if (row === undefined) throw new Error("Missing restore fixture meta.");const next: Row = { ...row, status: values[":active"], archiveRevision: values[":next"] };delete next.archivedAt;delete next.archivedBy;put(next);continue; }
@@ -137,7 +152,8 @@ export function createAdminDirectory() {
    const runtime: AuditRuntime = { documentClient: documentClient as unknown as AuditRuntime["documentClient"], tableName: "mock-state", queueUrl: "https://queue.test/audit.fifo", now: Date.now, log: () => undefined, sqs: { async send(command: unknown) { const input = (command as { input: { Entries: Array<{ Id: string; MessageBody: string }> } }).input;for (const entry of input.Entries) audit.push(JSON.parse(entry.MessageBody) as Row);return { Successful: input.Entries.map(entry => ({ Id: entry.Id })) }; } } as unknown as AuditRuntime["sqs"] };
    // Only source routes use this seam; unused agent collaborators stay absent and fail closed if reached.
    const sourceAgents = {documentClient,tableName:"mock-state",now:Date.now,modelSources:{store:new ModelSourceStore({documentClient,tableName:"mock-state",now:Date.now,chatgptSwitch:async()=>true,audit:runtime}),access:{async upsertSource(){throw new Error("No proxy writes in order fixture.");},async removeSource(){throw new Error("No proxy writes in order fixture.");},async checkSource(){throw new Error("No proxy checks in order fixture.");}},egress:{documentClient,tableName:"mock-state",now:()=>new Date()}}} as unknown as NonNullable<DeveloperRouteDependencies["agents"]>;
-   const deps = { ...base, requireRepositoriesConnected: checkRepositories, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
+   const projectAllowedDomains: NonNullable<DeveloperRouteDependencies["projectAllowedDomains"]> = { registerApproved: async (actor, value, proof) => commitRegisteredProjectAllowedDomains({ documentClient, tableName: "mock-state", signInTableName: base.developer.signInTableName, now: Date.now, audit: runtime }, { orgId: actor.orgId, project: value.definition.name, by: actor.ownerKey, definition: value.definition, runtimeBinding: value.runtimeBinding, proof }) };
+   const deps = { ...base, projectAllowedDomains, requireRepositoriesConnected: checkRepositories, cloud: true, developer: { ...base.developer, webOrigin: "https://join.example.test" }, documentClient, audit: runtime, projectWorkingBranches: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchPageProvider(session),finish:()=>session.finish("list")};},projectWorkingBranchPreview: () => {const session=github.createWorkingBranchPreviewSession();return{...createWorkingBranchProvider(session),finish:()=>session.finish("preview")};}, orgs: new OrgStore({ documentClient, tableName: "mock-state", now: Date.now, audit: runtime }),...(path.startsWith("/v1/app/org/model-sources")?{agents:sourceAgents}:{}) };
    if (method === "GET" && (path.startsWith("/v1/app/agents") || path.startsWith("/v1/app/org/agent-guardrails"))) return readLaneBAgents(deps, caller, path);
    return routeDeveloperRequest(deps, { method, path, headers, requestId: "admin-browser-request", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(path, base.developer.issuer), { caller, csrf: appCsrfTokenFor(caller.sessionId) });
   },

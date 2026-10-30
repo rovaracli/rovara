@@ -320,7 +320,7 @@ describe("what is running", () => {
     for (let index = 0; index < LIVE_PAGE_MAX + 20; index += 1) w.open({ owner: ARJUN });
     const answer = await w.overview(PRIYA);
     expect(answer.running).toHaveLength(LIVE_PAGE_MAX);
-    expect(Object.keys(answer).sort()).toEqual(["agents", "project", "running", "you"]);
+    expect(Object.keys(answer).sort()).toEqual(["agents", "orgId", "project", "running", "you"]);
   });
 });
 

@@ -1,0 +1,10 @@
+.rv-websites-editor{display:grid;gap:var(--rv-space-4);margin:var(--rv-space-4) 0;max-width:76ch;min-width:0}
+.rv-websites-editor>p,.rv-websites-editor h3{margin:0}
+.rv-websites-editor>button{justify-self:start}
+.rv-websites-editor li,.rv-websites-editor p{overflow-wrap:anywhere}
+.rv-websites-defaults{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3)}
+.rv-websites-defaults summary{cursor:pointer;font-weight:550}
+.rv-websites-defaults summary:focus-visible{outline:2px solid var(--rv-focus);outline-offset:3px}
+.rv-websites-defaults ul{padding-left:var(--rv-space-5);columns:2;column-gap:var(--rv-space-5)}
+.rv-websites-defaults li{break-inside:avoid;margin:var(--rv-space-1) 0}
+@media(max-width:767px){.rv-websites-defaults ul{columns:1}}

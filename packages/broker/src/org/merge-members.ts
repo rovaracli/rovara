@@ -1,3 +1,4 @@
+import { approvalGrantChange } from "./approval-membership.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
 // packages/broker/src/org/merge-members.ts
 // Plan 2, Task 3: one person who signed in two ways before identity links became two members. Merging moves the duplicate's project
@@ -13,7 +14,7 @@ import { budgetDocumentFence } from "./budget-snapshot.js";
 // reads. Left in place on purpose: tasks and workspaces owned by the duplicate's id stay as history and no task record is changed, so a
 // task still running for the duplicate fails closed at its next dispatch (the grant it is checked against has moved). There are no
 // customers yet, and only staging holds such records.
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX, agentXError, developerOrgKey, memberGrantsPk, memberMergeQueueKey, orgMemberKey, orgMetaKey, orgPk, orgProjectCatalogPk, orgSettingsKey,
   projectMemberKey, trialGithubKey, type OrgId, type OrgRole,
@@ -213,16 +214,25 @@ async function moveGrants(deps: Deps, orgId: OrgId, survivorId: string, duplicat
   for (const grant of await queryPartition(deps, memberGrantsPk(orgId, duplicateId), MEMBER_GRANT_SK_PREFIX)) {
     const project = String(grant.sk).slice(MEMBER_GRANT_SK_PREFIX.length);
     try {
-      await deps.documentClient.send(new PutCommand({
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: {
         TableName: deps.tableName,
         Item: { ...grant, ...projectMemberKey(orgId, survivorId, project), ownerKey: survivorId },
         ConditionExpression: "attribute_not_exists(pk)",
-      }));
+      } }, { ConditionCheck: {
+        TableName: deps.tableName, Key: { pk: grant.pk, sk: grant.sk },
+        ConditionExpression: "attribute_exists(pk) AND #role = :sourceRole AND " + (grant.grantId === undefined ? "attribute_not_exists(grantId)" : "grantId = :sourceGrantId") + " AND " + (grant.projectRole === undefined ? "attribute_not_exists(projectRole)" : "projectRole = :sourceProjectRole"),
+        ExpressionAttributeNames: { "#role": "role" },
+        ExpressionAttributeValues: { ":sourceRole": grant.role, ...(grant.grantId === undefined ? {} : { ":sourceGrantId": grant.grantId }), ...(grant.projectRole === undefined ? {} : { ":sourceProjectRole": grant.projectRole }) },
+      } }, ...await approvalGrantChange({ ...deps, now: () => new Date(deps.now()) }, orgId, project, false)] }));
       moved += 1;
     } catch (error) {
-      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      if (errorName(error) !== "ConditionalCheckFailedException" && !(errorName(error) === "TransactionCanceledException" && (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed")) throw error;
     }
-    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: grant.pk, sk: grant.sk } }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: {
+      TableName: deps.tableName, Key: { pk: grant.pk, sk: grant.sk },
+      ConditionExpression: "attribute_exists(pk) AND " + (grant.grantId === undefined ? "attribute_not_exists(grantId)" : "grantId = :grantId") + " AND " + (grant.projectRole === undefined ? "attribute_not_exists(projectRole)" : "projectRole = :projectRole"),
+      ...((grant.grantId === undefined && grant.projectRole === undefined) ? {} : { ExpressionAttributeValues: { ...(grant.grantId === undefined ? {} : { ":grantId": grant.grantId }), ...(grant.projectRole === undefined ? {} : { ":projectRole": grant.projectRole }) } }),
+    } }, ...await approvalGrantChange({ ...deps, now: () => new Date(deps.now()) }, orgId, project, grant.projectRole === "maintainer")] }));
   }
   return moved;
 }
@@ -292,13 +302,14 @@ async function retire(
       { Delete: { TableName, Key: developerOrgKey(duplicateId), ConditionExpression: "attribute_exists(pk) AND orgId = :orgId", ExpressionAttributeValues: { ":orgId": state.duplicateOrgId } } },
       { Update: { TableName, Key: orgMemberKey(orgId, survivorId), UpdateExpression: "SET #role = :role, roleUpdatedAt = :at", ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":role": state.role, ":seen": state.survivorRole, ":at": state.at } } },
       { Update: { TableName, Key: developerOrgKey(survivorId), UpdateExpression: "SET #role = :role", ConditionExpression: "attribute_exists(pk) AND orgId = :orgId", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":role": state.role, ":orgId": orgId } } },
+      ...((race?.trial !== undefined && race.carryTrial) ? [] : await approvalGrantChange({ ...deps, now: () => new Date(deps.now()) }, orgId, "", false)),
       ...(race === undefined ? [] : [
         // Closed, not deleted: still disposable at this moment (its creator, a trial, no GitHub owner, and the trial claim as read).
         { Update: {
-          TableName, Key: orgMetaKey(race.orgId), UpdateExpression: "SET closedAt = :at, mergedIntoOrg = :survivorOrg",
+          TableName, Key: orgMetaKey(race.orgId), UpdateExpression: "SET closedAt = :at, mergedIntoOrg = :survivorOrg, approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one",
           ConditionExpression: `attribute_exists(pk) AND createdBy = :duplicate AND #plan = :trial AND attribute_not_exists(githubOwner) AND attribute_not_exists(closedAt) AND ${trial === undefined ? "attribute_not_exists(trialGithubUserId)" : "trialGithubUserId = :github"}`,
           ExpressionAttributeNames: { "#plan": "plan" },
-          ExpressionAttributeValues: { ":at": state.at, ":survivorOrg": orgId, ":duplicate": duplicateId, ":trial": "trial", ...(trial === undefined ? {} : { ":github": trial.githubUserId }) },
+          ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": state.at, ":survivorOrg": orgId, ":duplicate": duplicateId, ":trial": "trial", ...(trial === undefined ? {} : { ":github": trial.githubUserId }) },
         } },
         ...(trial === undefined || !race.carryTrial ? [] : [
           // The GitHub account keeps its one trial: its claim and the unlock move to the survivor's org.
@@ -307,8 +318,8 @@ async function retire(
             ConditionExpression: "attribute_not_exists(pk) OR orgId = :raceOrg", ExpressionAttributeValues: { ":raceOrg": race.orgId },
           } },
           { Update: {
-            TableName, Key: orgMetaKey(orgId), UpdateExpression: "SET trialUnlockedAt = :unlockedAt, trialGithubUserId = :github",
-            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(trialUnlockedAt)", ExpressionAttributeValues: { ":unlockedAt": trial.unlockedAt, ":github": trial.githubUserId },
+            TableName, Key: orgMetaKey(orgId), UpdateExpression: "SET trialUnlockedAt = :unlockedAt, trialGithubUserId = :github, approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(trialUnlockedAt)", ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": state.at, ":unlockedAt": trial.unlockedAt, ":github": trial.githubUserId },
           } },
         ]),
       ]),

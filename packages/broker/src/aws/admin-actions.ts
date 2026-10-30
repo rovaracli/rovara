@@ -1,8 +1,9 @@
 // packages/broker/src/aws/admin-actions.ts
 // Spec 025 E8, E9, E19: the admin actions 25e's change tools apply that no admin command had. Each
 // is called only by a confirmed change (Task 7) or by the CLI's own change path (Tasks 14, 15).
+import { approvalGrantChange } from "../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, workspaceLimitsKey } from "../developer/limits.js";
 import { emailIndexKey } from "../developer/store.js";
@@ -99,14 +100,14 @@ export async function grantProjectAccess(deps: AdminActionDependencies, orgId: O
   if (current?.role === "viewer") throw agentXError("CONFIG_INVALID", VIEWER_NOT_CHANGED(project));
   if (current?.role === "developer") return { granted: true, already: true };
   try {
-    await deps.documentClient.send(new PutCommand({
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: {
       TableName: deps.tableName,
       Item: { ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer", projectRole: "contributor",
         grantId: randomUUID(), grantedBy: { system: "admin" }, grantedByAdmin: admin, grantedAt: new Date(deps.now()).toISOString() },
       ConditionExpression: "attribute_not_exists(pk)",
-    }));
+    } }, ...await approvalGrantChange({ ...deps, now: () => new Date(deps.now()) }, orgId, project, false)] }));
   } catch (error) {
-    if (!conditional(error)) throw error;
+    if (!grantConditionFailed(error)) throw error;
     // A row appeared between the read and the write: say what it is rather than assume.
     const raced = await projectGrant(deps, orgId, project, developerId);
     if (raced?.role === "administrator") throw agentXError("CONFIG_INVALID", `that developer already administers ${project}, so there is nothing to grant`);
@@ -116,19 +117,26 @@ export async function grantProjectAccess(deps: AdminActionDependencies, orgId: O
   return { granted: true, already: false };
 }
 
+/** Only a failed grant condition is an idempotent race; authority failures are not. */
+function grantConditionFailed(error: unknown): boolean {
+  return conditional(error) || (error instanceof Error && error.name === "TransactionCanceledException"
+    && (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed");
+}
+
 export async function revokeProjectAccess(deps: AdminActionDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ revoked: boolean }> {
+  const key = projectMemberKey(orgId, developerId, project);
+  const observed = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  if (observed === undefined || (observed.role !== "developer" && observed.role !== "viewer")) return { revoked: false };
   try {
-    await deps.documentClient.send(new DeleteCommand({
-      TableName: deps.tableName,
-      Key: projectMemberKey(orgId, developerId, project),
-      // Only a grant (a maintainer's, contributor's or viewer's): an administrator row is never removed by revoking a developer's access.
-      ConditionExpression: "#role = :developer OR #role = :viewer",
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: {
+      TableName: deps.tableName, Key: key,
+      ConditionExpression: "#role = :role AND " + (observed.projectRole === undefined ? "attribute_not_exists(projectRole)" : "projectRole = :projectRole") + " AND " + (observed.grantId === undefined ? "attribute_not_exists(grantId)" : "grantId = :grantId"),
       ExpressionAttributeNames: { "#role": "role" },
-      ExpressionAttributeValues: { ":developer": "developer", ":viewer": "viewer" },
-    }));
+      ExpressionAttributeValues: { ":role": observed.role, ...(observed.projectRole === undefined ? {} : { ":projectRole": observed.projectRole }), ...(observed.grantId === undefined ? {} : { ":grantId": observed.grantId }) },
+    } }, ...await approvalGrantChange({ ...deps, now: () => new Date(deps.now()) }, orgId, project, observed.projectRole === "maintainer")] }));
     return { revoked: true };
   } catch (error) {
-    if (conditional(error)) return { revoked: false };
+    if (grantConditionFailed(error)) return { revoked: false };
     throw error;
   }
 }

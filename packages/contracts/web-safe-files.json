@@ -6,6 +6,7 @@
   "packages/contracts/src/agent-sessions.ts",
   "packages/contracts/src/agent-web-views.ts",
   "packages/contracts/src/agent.ts",
+  "packages/contracts/src/app-allowed-websites.ts",
   "packages/contracts/src/app-nav.ts",
   "packages/contracts/src/app-projects.ts",
   "packages/contracts/src/app-working-branches.ts",

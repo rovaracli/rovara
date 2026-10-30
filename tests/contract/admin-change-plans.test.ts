@@ -19,7 +19,7 @@ const MEMBER_ADMIN = "U0ADMIN001";
 const githubApp = { ref: "github-app", secretName: "arn:aws:secretsmanager:us-east-1:111122223333:secret:github-key" };
 const repository = { name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" };
 
-async function harness(options: { channelByName?: PlanDependencies["channelByName"]; secrets?: { read(name: string): Promise<string | undefined> } } = {}) {
+async function harness(options: { cloud?: boolean; channelByName?: PlanDependencies["channelByName"]; secrets?: { read(name: string): Promise<string | undefined> } } = {}) {
   const channelInfo = vi.fn(async (request: ChannelInfoRequest) => ({
     ok: true as const,
     channels: request.channelIds.map((channelId) => ({
@@ -31,6 +31,7 @@ async function harness(options: { channelByName?: PlanDependencies["channelByNam
   const channelMembers = vi.fn(async (request: ChannelMembersRequest) => ({ ok: true as const, memberOf: request.slackUserId === MEMBER_ADMIN ? request.channelIds.filter((id) => id === "C0PRIVATE01") : [] }));
   const broker = await createAdminReadBroker({
     channelInfo, channelMembers,
+    ...(options.cloud === true ? { brokerExtra: { cloud: true } } : {}),
     ...(options.secrets === undefined ? {} : { brokerExtra: { connectorCredentials: { secrets: options.secrets, githubApp } } }),
   });
   const module = await import("../../packages/broker/src/aws/broker.js") as unknown as { createPlanDependencies(input: never): PlanDependencies };
@@ -259,4 +260,12 @@ describe("the helpers", () => {
     expect(looksLikeSecret(`agentx/connectors/${"Ab3_".repeat(5)}${"x-9Z".repeat(5)}`)).toBe(true);
     expect(looksLikeSecret("agentx/connectors/linear.production.api.key.for.payments")).toBe(false);
   });
+});
+
+it("B33 Cloud change-plan apply cannot register a widening even after an administrator reviews the plan", async () => {
+ const { deps, identity, db } = await harness({ cloud: true });
+ const plan = await planChange(deps, identity, { kind: "register_project_revision", definition: { name: "payments", revision: 2, repositories: [repository], setup: [], readiness: [], orchestratorInstructions: "Delegate.", network: { allowedDomains: ["bypass.acme.dev"] } } });
+ const before = structuredClone(db.find(item => item.pk === projectRevisionKey(TEST_ORG, "payments", 1).pk));
+ const refusal = plan.apply(identity);await expect(refusal).rejects.toMatchObject({ code: "FORBIDDEN" });await expect(refusal).rejects.toHaveProperty("message", expect.stringContaining("proposal"));
+ expect(db.find(item => item.pk === projectRevisionKey(TEST_ORG, "payments", 1).pk)).toEqual(before);expect(db.get(projectRevisionKey(TEST_ORG, "payments", 2))).toBeUndefined();
 });

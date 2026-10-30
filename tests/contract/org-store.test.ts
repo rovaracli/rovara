@@ -1,3 +1,5 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { projectMetaKey, projectMemberKey, orgMemberKey } from "../../packages/contracts/src/index.js";
 import { describe, expect, it } from "vitest";
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
@@ -168,4 +170,98 @@ describe("OrgStore Slack team binding", () => {
     const { store } = setup();
     expect(await store.orgForSlackTeam("T9")).toBeUndefined();
   });
+});
+
+
+describe("B33 approval membership generation", () => {
+  it("changes generation atomically on sign-in join and invite acceptance", async () => {
+    const { store, db } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    const version = () => db.get(orgMetaKey(orgId).pk, "META")?.approvalMembershipVersion;
+    const initial = version();
+    expect(initial).toBeTypeOf("number");
+    await store.addMember({ orgId, developerId: "member", role: "member" });
+    expect(version()).toBe(Number(initial) + 1);
+    const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "admin" });
+    const beforeInvite = version();
+    await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "admin" });
+    expect(version()).toBe(Number(beforeInvite) + 1);
+  });
+
+  it("records eligible-role loss and moves generation on demotion", async () => {
+    const { store, db, clock } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.addMember({ orgId, developerId: "admin", role: "admin" });
+    const before = db.get(orgMetaKey(orgId).pk, "META")?.approvalMembershipVersion;
+    clock.now += 1_000;
+    await store.setRole({ orgId, developerId: "admin", role: "member" });
+    const meta = db.get(orgMetaKey(orgId).pk, "META");
+    expect(meta?.approvalMembershipVersion).toBe(Number(before) + 1);
+    expect(meta?.approvalLastCompanyEligibleLossAt).toBe(new Date(clock.now).toISOString());
+  });
+
+  it("records removal before the person can use the sole-owner exception", async () => {
+    const { store, db, clock } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.addMember({ orgId, developerId: "admin", role: "admin" });
+    const before = db.get(orgMetaKey(orgId).pk, "META")?.approvalMembershipVersion;
+    clock.now += 1_000;
+    await store.removeMember({ orgId, developerId: "admin", emails: [], ban: false });
+    const meta = db.get(orgMetaKey(orgId).pk, "META");
+    expect(meta?.approvalMembershipVersion).toBe(Number(before) + 1);
+    expect(meta?.approvalLastCompanyEligibleLossAt).toBe(new Date(clock.now).toISOString());
+  });
+});
+
+
+describe("B33 membership removal grant-loss boundary", () => {
+  it("retains generation and scoped loss when removal stops after grants go", async () => {
+    const { store, db, clock } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.addMember({ orgId, developerId: "member", role: "member" });
+    const grantKey = projectMemberKey(orgId, "member", "payments");
+    db.set({ ...projectMetaKey(orgId, "payments"), entityType: "PROJECT_META", status: "active" });
+    db.set({ ...grantKey, entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer", grantId: "grant1", projectName: "payments" });
+    const before = db.get(orgMetaKey(orgId))?.approvalMembershipVersion;
+    clock.now += 1_000;
+    const send = db.send.bind(db);
+    db.send = async command => {
+      if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Delete?.Key?.pk === orgMemberKey(orgId, "member").pk && item.Delete?.Key?.sk === orgMemberKey(orgId, "member").sk)) throw new Error("stopped before final membership removal");
+      return send(command);
+    };
+    await expect(store.removeMember({ orgId, developerId: "member", emails: [], ban: false })).rejects.toThrow("stopped");
+    expect(db.get(grantKey)).toBeUndefined();
+    expect(db.get(orgMemberKey(orgId, "member"))).toBeDefined();
+    expect(db.get(orgMetaKey(orgId))?.approvalMembershipVersion).toBe(Number(before) + 1);
+    expect(db.get(projectMetaKey(orgId, "payments"))?.approvalLastMaintainerLossAt).toBe(new Date(clock.now).toISOString());
+  });
+});
+
+it("never shortens company approver-loss cool-off under an older writer clock", async () => {
+  const { store, db, clock } = setup();
+  const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+  await store.addMember({ orgId, developerId: "admin", role: "admin" });
+  await store.setRole({ orgId, developerId: "admin", role: "member" });
+  const loss = db.get(orgMetaKey(orgId))?.approvalLastCompanyEligibleLossAt;
+  await store.setRole({ orgId, developerId: "admin", role: "admin" });
+  clock.now -= 60_000;
+  await store.setRole({ orgId, developerId: "admin", role: "member" });
+  expect(Date.parse(String(db.get(orgMetaKey(orgId))?.approvalLastCompanyEligibleLossAt))).toBeGreaterThanOrEqual(Date.parse(String(loss)));
+});
+
+it("classifies a closing-company generation refusal as stale rather than last-owner", async () => {
+ const { store, db } = setup();
+ const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+ await store.addMember({ orgId, developerId: "admin", role: "admin" });
+ db.set({ ...db.get(orgMetaKey(orgId)), closingAt: "2026-10-29T21:00:00Z" });
+ await expect(store.setRole({ orgId, developerId: "admin", role: "member" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+ expect((await store.listMembers(orgId)).find(member => member.developerId === "admin")?.role).toBe("admin");
+});
+
+it("reports a closing-company join as stale without creating a membership", async () => {
+ const { store, db } = setup();
+ const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+ db.set({ ...db.get(orgMetaKey(orgId)), closingAt: "2026-10-29T21:00:00Z" });
+ await expect(store.addMember({ orgId, developerId: "new", role: "member" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+ expect(await store.orgForDeveloper("new")).toBeUndefined();
 });
