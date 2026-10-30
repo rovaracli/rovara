@@ -134,6 +134,7 @@ it("requires confirmation for an explicit same-model review and accepts only its
  expect(pending).toMatchObject({ok:false,requiresConfirmation:true,status:202});
  expect(pending).toHaveProperty("approvalTupleDigest",expect.stringMatching(/^[a-f0-9]{64}$/u));
  const digest=(pending as unknown as {approvalTupleDigest:string}).approvalTupleDigest;
+ f.deps.verifySameModelApproval=async context=>context.approvalId==="apr_aaaaaaaaaaaaaaaaaaaa";
  const approved=await validateStageChoices(f.deps,caller,"web",choices,{}, {approvalId:"apr_aaaaaaaaaaaaaaaaaaaa",tupleDigest:digest});
  expect(approved).toMatchObject({ok:true,requiresConfirmation:false,status:200});
  expect(approved.stages.find(row=>row.stage==="code_review")).toMatchObject({kind:"resolved",model});
@@ -164,4 +165,9 @@ it("refuses implicit same-model validation even when production snapshot enables
  const result=await validateStageChoices(f.deps,caller,"web",{});
  expect(result).toMatchObject({ok:false,requiresConfirmation:false});
  for(const stage of ["plan_check","code_review","security_review"])expect(result.stages.find(row=>row.stage===stage)).toMatchObject({kind:"refusal",code:"DIFFERENT_FROM_UNSATISFIABLE"});
+});
+it("does not accept a formatted approval id and tuple digest without a verified approved record",async()=>{
+ const f=fixture(),choices={build:{model},code_review:{model}},pending=await validateStageChoices(f.deps,caller,"web",choices);
+ const result=await validateStageChoices(f.deps,caller,"web",choices,{}, {approvalId:"apr_bbbbbbbbbbbbbbbbbbbb",tupleDigest:pending.approvalTupleDigest});
+ expect(result).toMatchObject({ok:false,status:409});
 });

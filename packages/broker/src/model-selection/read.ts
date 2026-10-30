@@ -17,6 +17,8 @@ export interface StageModelSnapshot {
   stages: StageModelInput[];
 }
 export interface StageModelsReadDependencies {
+  /** Server-only lookup of the exact approved record and its immutable tuple binding. */
+  verifySameModelApproval?(context:{approvalId:string;tupleDigest:string},snapshot:StageModelSnapshot):Promise<boolean>;
   now(): number;
   projectFor(caller: StageModelCaller, rawProject: string): Promise<{name:string;canEdit:boolean}>;
   /** Server adapter: current policy, recipe, actual account/source evidence, bounded before work begins. */
@@ -85,7 +87,7 @@ export async function validateStageChoices(deps:StageModelsReadDependencies,call
  // Server-only confirmation context: callers supply it only after live approval authority checks.
  // Bind every effective tuple and reference plus identity, recipe and policy/source revisions.
  const approvalTupleDigest=createHash("sha256").update(canonicalJson({orgId:caller.orgId,project:snapshot.project,registeredAt:snapshot.registeredAt??null,process:snapshot.process,companyRevision:snapshot.companyRevision,projectRevision:snapshot.projectRevision,guardrailsRevision:snapshot.guardrailsRevision??null,stages:STAGE_IDS.map(stage=>{const input=inputs.get(stage)!;return {stage,sourcesRevision:input.sourcesRevision,choice:input.projectChoice??null,lock:input.companyLock??null,companyDefault:input.companyDefault??null,decision:stages.find(row=>row.stage===stage)};})})).digest("hex");
- const approved=approvalContext!==undefined&&ApprovalIdSchema.safeParse(approvalContext.approvalId).success&&approvalContext.tupleDigest===approvalTupleDigest;
+ const approved=approvalContext!==undefined&&ApprovalIdSchema.safeParse(approvalContext.approvalId).success&&approvalContext.tupleDigest===approvalTupleDigest&&await (deps.verifySameModelApproval?.(approvalContext,snapshot)??Promise.resolve(false));
  const resolved=stages.every(stage=>stage.kind==="resolved");
  const requiresConfirmation=resolved&&exceptions.length>0&&!approved&&approvalContext===undefined;
  const ok=resolved&&(exceptions.length===0||approved);

@@ -11,6 +11,7 @@ import { budgetActorRefused } from "./budget-authority.js";
 // then apply exactly that.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  ApprovalIdSchema,
   EMPTY_RECIPE,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   agentXError,
@@ -29,6 +30,7 @@ import {
 } from "@agentx/contracts";
 import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
+  getApproval,
   confirmUrlFor,
   createPendingChange,
   registerApprovalDecisionGuard,
@@ -101,7 +103,14 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
   const projectRole=await deps.projectMembers.roleOf(agent.orgId,project,{developerId,orgRole:role});
   if(projectRole===undefined || !projectAllows(projectRole,"edit_settings")) throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
   const snapshot=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project,undefined,{record:agent,recipe,overlay:draft.overlay});
-  const readDeps={now:deps.now,projectFor:async()=>({name:project,canEdit:true}),snapshot:async()=>snapshot};
+  const readDeps={now:deps.now,projectFor:async()=>({name:project,canEdit:true}),snapshot:async()=>snapshot,
+   verifySameModelApproval:async(context:{approvalId:string;tupleDigest:string})=>{
+    const record=await getApproval(deps,agent.orgId,ApprovalIdSchema.parse(context.approvalId));
+    if(record===undefined||!["EXECUTING","APPROVED","APPROVED_DONE"].includes(record.status)||record.requestedBy===undefined)return false;
+    const subject=record.subject;
+    if((subject.kind!=="agent_publish"&&subject.kind!=="agent_rollback")||subject.agentId!==agent.agentId||subject.modelContext?.tupleDigest!==context.tupleDigest)return false;
+    return await resolveSurvivor(deps,agent.orgId,record.requestedBy)===developerId;
+   }};
   const result=await validateStageChoices(readDeps,effectiveCaller,project,{});
   const exceptions:StageModelApprovalProof["exceptions"]=result.sameModelExceptions;
   if(approvalId!==undefined) {
