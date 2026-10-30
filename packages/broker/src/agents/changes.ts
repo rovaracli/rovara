@@ -1,3 +1,4 @@
+import {stageChoiceOf} from "../model-selection/stage-inputs.js";
 import {ProcessModelRefusal} from "../model-selection/process-refusal.js";
 import {registerCompanyModelPolicyApprovals} from "../model-selection/company-approval.js";
 import {processModelAuthorityChecks,mergeProcessModelAuthorityChecks,modelAuthorityRefused} from "../model-selection/authority.js";
@@ -13,6 +14,7 @@ import { budgetActorRefused } from "./budget-authority.js";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   ApprovalIdSchema,
+  STAGE_EDIT_RULES,
   EMPTY_RECIPE,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   agentXError,
@@ -104,6 +106,19 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
   const projectRole=await deps.projectMembers.roleOf(agent.orgId,project,{developerId,orgRole:role});
   if(projectRole===undefined || !projectAllows(projectRole,"edit_settings")) throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
   const snapshot=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project,undefined,{record:agent,recipe,overlay:draft.overlay});
+  // A later company lock governs runtime. It must not block an unrelated publish
+  // that preserves the exact choice already stored in this process's current version.
+  if(agent.currentVersion!==undefined&&snapshot.stages.some(row=>row.companyLock!==undefined&&row.projectChoice!==undefined)) {
+    const prior=await deps.store.getVersion(agent.orgId,agent.agentId,agent.currentVersion);
+    if(prior===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The published model choices could not be read.");
+    const priorRecipe=await resolveRecipe(deps,agent.orgId,agent.agentId,agent.currentVersion);
+    for(const row of snapshot.stages) {
+      if(row.companyLock===undefined||row.projectChoice===undefined)continue;
+      const step=priorRecipe.steps.find(step=>step.kind===STAGE_EDIT_RULES[row.stage].stepKind);
+      const priorChoice=step===undefined?undefined:stageChoiceOf(prior.overlay.steps?.[step.id],row.stage,priorRecipe);
+      if(priorChoice!==undefined&&canonicalJson(priorChoice)===canonicalJson(row.projectChoice))row.projectChoice=undefined;
+    }
+  }
   const readDeps={now:deps.now,projectFor:async()=>({name:project,canEdit:true}),snapshot:async()=>snapshot,
    verifySameModelApproval:async(context:{approvalId:string;tupleDigest:string})=>{
     const record=await getApproval(deps,agent.orgId,ApprovalIdSchema.parse(context.approvalId));

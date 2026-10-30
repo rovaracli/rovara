@@ -137,3 +137,19 @@ it("serializes only the structured process refusal fields used by HTTP adapters"
  expect(error.statusCode).toBe(409);
  expect(processModelRefusalBody(error)).toEqual({code:"STAGE_LOCKED",stage:"build",fixHref:"/app/admin/how-we-work",message:"build: STAGE_LOCKED"});
 });
+
+for(const changed of [false,true])it(`${changed?"refuses changed":"tolerates unchanged"} published choice beneath a newly locked company stage`,async()=>{
+ const {resolveRecipe}=await import("../../packages/broker/src/agents/changes.js");
+ const {recipeDigest,canonicalModelName}=await import("@agentx/contracts");
+ const w=fixture(),seen=new Set<string>(),models=bedrockClaudeModelIds("us").filter(modelId=>{const name=canonicalModelName({provider:"amazon-bedrock",modelId});if(seen.has(name))return false;seen.add(name);return true;});
+ expect(models.length).toBeGreaterThanOrEqual(3);
+ const model={provider:"amazon-bedrock",modelId:models[0]!},lock={provider:"amazon-bedrock",modelId:models[1]!};
+ let agent=await w.store.create({orgId:ORG_A,name:"web locked publication",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{build:{model}}},purpose:"process",createdBy:MAX});
+ await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(await resolveRecipe(w.deps,ORG_A,agent.agentId,"draft")),by:MAX});
+ await w.store.saveDraft({orgId:ORG_A,agentId:agent.agentId,expectedRevision:agent.draftRevision,overlay:{steps:{build:{model:changed?{provider:"amazon-bedrock",modelId:models[2]!}:model,instructions:"Include the unrelated documentation update."}}},by:MAX});
+ agent=(await w.store.get(ORG_A,agent.agentId))!;
+ w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:ORG_A,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:lock,thinkingLevel:null,locked:true}}});
+ const action=publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision});
+ if(changed)await expect(action).rejects.toMatchObject({code:"STAGE_LOCKED",stage:"build"});
+ else { const result=await action;expect(typeof result.applied).toBe("boolean"); }
+});
