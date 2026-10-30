@@ -1,7 +1,7 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
-import { withAdmittedTaskSource, requireTaskStopWindowContext } from "../org/task-stop-window.js";
+import { taskStopKeyActorChecks, withAdmittedTaskSource, requireTaskStopWindowContext } from "../org/task-stop-window.js";
 import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../org/project-working-branch-provider.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
 import { withDecideIsolation } from "../developer/confirm-page.js";
@@ -7115,6 +7115,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
       await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
       await requireTaskStopWindowContext(dependencies, task);
+      const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined);
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
@@ -7129,7 +7130,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
-        ...(task.spendingStop === undefined ? {} : { guardRecord: items => guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items) }),
+        ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal

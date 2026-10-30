@@ -12,7 +12,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { SpendingAdmissionReferenceSchema, RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { orgMetaKey, orgMemberKey, projectMetaKey, SpendingAdmissionReferenceSchema, RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -132,6 +132,37 @@ export async function requireTaskStopWindowContext(deps: Pick<TableInput, "docum
     || (task.budgetBaselineUsd ?? 0) !== row.budgetBaselineUsd) throw invalid();
   if (row.outcome === "transitioned" && (!isDeepStrictEqual(task.payer, row.payer) || !isDeepStrictEqual(task.place, row.place)
     || task.origin !== (row.transitionKind === "continue-as-task" ? "app" : row.origin))) throw invalid();
+}
+
+/** Current owner and payer membership plus live project work authority.
+ * Numeric spending policy is intentionally absent from these native fences. */
+export async function taskStopKeyActorChecks(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord,
+  ownerId: string, payerId?: string): Promise<TransactItem[]> {
+  if (task.orgId === undefined) throw invalid();
+  const orgId = task.orgId;
+  const read = async (Key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> => {
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    return response.Item;
+  };
+  const org = await read(orgMetaKey(orgId));
+  if (org?.orgId !== orgId || org.closingAt !== undefined || org.closedAt !== undefined) throw invalid();
+  const checks: TransactItem[] = [];
+  let ownerRole: z.infer<typeof OrgRoleSchema> | undefined;
+  for (const developerId of new Set([ownerId, ...(payerId === undefined ? [] : [payerId])])) {
+    const member = await read(orgMemberKey(orgId, developerId)), role = OrgRoleSchema.safeParse(member?.role);
+    if (!role.success || member?.orgId !== orgId || member.developerId !== developerId) throw invalid();
+    if (developerId === ownerId) ownerRole = role.data;
+    const native = budgetActorChecks(deps.tableName, orgId, { developerId, role: role.data });
+    checks.push(...(checks.length === 0 ? native : native.slice(0, 2)));
+  }
+  if (ownerRole === undefined) throw invalid();
+  const actor = { orgId, developerId: ownerId, orgRole: ownerRole };
+  checks.push(...await taskStartProjectAuthorityChecks(deps, { orgId, developerId: ownerId, role: ownerRole, project: task.project }, async () => {
+    await requireNativeProjectWorkRole(deps, task, actor);
+    const project = await read(projectMetaKey(orgId, task.project));
+    if (project !== undefined && (project.status !== "active" || project.archivedAt !== undefined)) throw invalid();
+  }));
+  return checks;
 }
 
 /** Restores current native authority from an existing accepted window. No
