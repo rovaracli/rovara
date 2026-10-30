@@ -7,8 +7,10 @@ import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/de
 import type { ConnectorCredentialsConfiguration, CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import type { GitHubMcpDependencies } from "../../packages/broker/src/github-mcp.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
+import { capturingAuditDeps } from "./audit-capture.js";
 import { FakeDynamoDb, type FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { TEST_ENV } from "./orgs.js";
+import { orgSlackTeamKey, slackTeamOrgKey, slackBindingKey } from "../../packages/contracts/src/index.js";
 
 export const issuer = "https://identity.example.test";
 export const account = "111122223333";
@@ -54,6 +56,31 @@ export interface SlackBrokerModule {
 }
 
 let loaded: SlackBrokerModule | undefined;
+const legacyFixtureTables = new WeakMap<Handler, FakeDynamoDb>();
+const historicalFixtureTables = new WeakMap<Handler, FakeDynamoDb>();
+/** Historical setup, not an operator operation: keep unrelated audit captures
+ * empty and consume the one trace UUID the former setup call consumed. */
+function seedHistoricalBinding(db: FakeDynamoDb, channelId: string, projectName?: string): boolean {
+ const name = projectName ?? "payments";
+ const projects = [...new Set(db.find(row => row.entityType === "PROJECT" && (row.definition as { name?: unknown } | undefined)?.name === name)
+  .map(row => /^ORG#(org_[a-z0-9]{20})#PROJECT#/.exec(String(row.pk))?.[1]).filter((org): org is string => org !== undefined))];
+ const holder = db.get(slackTeamOrgKey(SLACK_TEAM))?.orgId;
+ const orgId = typeof holder === "string" && projects.includes(holder) ? holder : projects.length === 1 ? projects[0] : undefined;
+ if (orgId === undefined) throw new Error("Historical Slack fixture needs one registered project company or an existing workspace owner.");
+ randomUUID();
+ const key = slackBindingKey(orgId, SLACK_TEAM, channelId);
+ if (projectName === undefined) { db.delete(key);return true; }
+ const boundAt = new Date().toISOString();
+ db.set({ ...orgSlackTeamKey(orgId, SLACK_TEAM), entityType: "ORG_SLACK_TEAM", teamId: SLACK_TEAM, orgId, boundAt });
+ db.set({ ...slackTeamOrgKey(SLACK_TEAM), entityType: "SLACK_TEAM_ORG", teamId: SLACK_TEAM, orgId, boundAt });
+ const member = db.find(row => row.entityType === "MEMBERSHIP" && row.role === "administrator" && String(row.pk).startsWith(`ORG#${orgId}#`) && row.projectName === projectName)[0];
+ db.set({ ...key, entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId, projectName, updatedAt: boundAt, updatedBy: member?.ownerKey ?? "historical-fixture" });return true;
+}
+/** Mutating operator tests with a ledger continue through their real writer. */
+export function seedLegacySlackBinding(handler: Handler, channelId: string, projectName?: string): boolean {
+ const db = legacyFixtureTables.get(handler);return db === undefined ? false : seedHistoricalBinding(db, channelId, projectName);
+}
+
 
 /**
  * The broker module reads its bootstrap environment when it is first imported, so the environment
@@ -135,7 +162,17 @@ export function createBroker(options: {
     ...options.extra,
   };
   const handler = loaded.createAwsBrokerHandler(brokerInput as never);
+  historicalFixtureTables.set(handler, brokerInput.documentClient);
+  if (options.extra?.audit === undefined) legacyFixtureTables.set(handler, brokerInput.documentClient);
   return { db, handler, deleteEc2Session, brokerInput };
+}
+
+/** Real operator mutation fixtures have a ledger, as required by B34. */
+export function createAuditedSlackBroker(options: Parameters<typeof createBroker>[0] = {}) {
+ const audit = capturingAuditDeps();
+ const harness = createBroker({ ...options, extra: { ...options.extra, audit: audit.audit } });
+ audit.attach(harness.db);audit.audit.documentClient = harness.db as never;
+ return { ...harness, audit };
 }
 
 export interface CallOptions {
@@ -224,6 +261,8 @@ export async function registerSlackProject(
   });
   if (registered.status !== 201) throw new Error(`project registration failed: ${JSON.stringify(registered.body)}`);
   if (options.bind === false) return;
+  const historical = historicalFixtureTables.get(handler);
+  if (historical !== undefined && seedHistoricalBinding(historical, SLACK_CHANNEL, "payments")) return;
   const bound = await call(handler, {
     method: "PUT",
     path: `/v1/admin/slack/bindings/${SLACK_TEAM}/${SLACK_CHANNEL}`,

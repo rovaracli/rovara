@@ -144,6 +144,7 @@ describe("the event catalog", () => {
   "project.allowed_domains_changed",
   "project_member.changed",
   "project_member.removed",
+  "slack_channel.proposed",
   "slack_channel.bound",
   "slack_channel.unbound",
   "slack_team.connected",

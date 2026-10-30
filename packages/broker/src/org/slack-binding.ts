@@ -113,13 +113,46 @@ async function commit(deps: ProjectSlackChannelDependencies, items: RequestTrans
   return true;
 }
 
+/** Server-only atomic approval context. Never derived from public JSON. */
+export interface ReviewedSlackBind {
+ teamId: string; proposalId: string; proposerId: string; expiresAt: string;
+ mode: "second_person" | "sole_owner_exception";
+ conditions: RequestTransactItem[]; transitions: RequestTransactItem[];
+ revalidate(): Promise<void>;
+}
+async function bindReviewed(deps: ProjectSlackChannelDependencies, orgId: OrgId, project: string,
+ input: { requestId: string; channelId: string; teamId?: string | undefined; actor: ProjectSlackChannelActor }, reviewed: ReviewedSlackBind) {
+ if (deps.audit === undefined || deps.audit.tableName !== deps.tableName || deps.audit.documentClient !== deps.documentClient) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+ if (input.teamId !== reviewed.teamId) throw STALE();
+ const expected = { by: input.actor.developerId, action: "bind", bodyHash: createHash("sha256").update(JSON.stringify([reviewed.teamId, input.channelId, reviewed.proposalId])).digest("hex") };
+ const key = requestKey(orgId, project, input.requestId);
+ const replay = async () => { const row = await readRequestRecord(deps.documentClient, deps.tableName, key, deps.now().getTime());if (row === undefined) return undefined;requireSameRequest(row, expected);return row.response as { binding: SlackChannelBinding; changed: boolean }; };
+ await reviewed.revalidate();const previous = await replay();if (previous !== undefined) return previous;
+ const at = deps.now();if (!Number.isFinite(Date.parse(reviewed.expiresAt)) || at.getTime() >= Date.parse(reviewed.expiresAt)) throw STALE();
+ const binding = SlackChannelBindingSchema.parse({ teamId: reviewed.teamId, channelId: input.channelId, projectName: project, updatedAt: at.toISOString() }), response = { binding, changed: true };
+ const event = auditSlackChannelBound({ orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: at.toISOString(),
+  occurrence: auditOccurrence(input.requestId, project, reviewed.teamId, input.channelId), projectName: project, teamId: reviewed.teamId, channelId: input.channelId,
+  mode: reviewed.mode, proposalId: reviewed.proposalId, related: [reviewed.proposerId, input.actor.developerId],
+ });
+ const pending = auditPending(deps, event);if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+ const items: RequestTransactItem[] = [...reviewed.conditions,
+  { Put: { TableName: deps.tableName, Item: slackBindingItem(orgId, binding, input.actor.developerId), ConditionExpression: "attribute_not_exists(pk)" } },
+  ...reviewed.transitions, requestRecordPut(deps.tableName, key, "SLACK_BINDING_REQUEST", { ...expected, response }, at.getTime()), ...pending];
+ if (items.length > 100) throw agentXError("CONFIG_INVALID", "This Slack approval cannot fit one transaction.");
+ try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
+ catch (error) { await reviewed.revalidate();const recovered = await replay();if (recovered !== undefined) return recovered;if (error instanceof Error && error.name === "TransactionCanceledException") throw STALE();throw agentXError("RUNTIME_UNAVAILABLE", "Check the Slack request status before sending again."); }
+ await flushAuditEvents(deps, [event]);return response;
+}
+
 /** `PUT /v1/app/projects/{name}/slack-channel`, after the route's checks of the caller's role and the body. */
 export async function bindProjectChannel(
   deps: ProjectSlackChannelDependencies,
   orgId: OrgId,
   project: string,
   input: { requestId: string; channelId: string; teamId?: string | undefined; actor: ProjectSlackChannelActor },
+  reviewed?: ReviewedSlackBind,
 ): Promise<{ binding: SlackChannelBinding; changed: boolean }> {
+  if (reviewed !== undefined) return bindReviewed(deps, orgId, project, input, reviewed);
   const teamId = await resolveBindTeam(deps, orgId, input.teamId);
   const expected = { by: input.actor.developerId, action: "bind", bodyHash: bodyHashOf(teamId, input.channelId) };
   const key = requestKey(orgId, project, input.requestId);
@@ -149,13 +182,46 @@ export async function bindProjectChannel(
   throw STALE();
 }
 
+/** Server-only reviewed context; never parsed from a public request body. */
+export interface ReviewedSlackUnbind {
+  teamId: string;
+  observed?: SlackChannelBinding;
+  conditions: RequestTransactItem[];
+  revalidate(): Promise<void>;
+}
+async function unbindReviewed(deps: ProjectSlackChannelDependencies, orgId: OrgId, project: string,
+ input: { requestId: string; channelId: string; teamId?: string | undefined; actor: ProjectSlackChannelActor }, reviewed: ReviewedSlackUnbind): Promise<{ teamId: string; channelId: string; removed: boolean }> {
+  if (deps.audit === undefined || deps.audit.tableName !== deps.tableName || deps.audit.documentClient !== deps.documentClient) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+  const teamId = reviewed.teamId;
+  if (input.teamId !== teamId || (reviewed.observed !== undefined && (reviewed.observed.projectName !== project || reviewed.observed.teamId !== teamId || reviewed.observed.channelId !== input.channelId))) throw STALE();
+  const key = requestKey(orgId, project, input.requestId), expected = { by: input.actor.developerId, action: "unbind", bodyHash: bodyHashOf(teamId, input.channelId) };
+  const replay = async () => { const stored = await readRequestRecord(deps.documentClient, deps.tableName, key, deps.now().getTime());if (stored === undefined) return undefined;requireSameRequest(stored, expected);return stored.response as { teamId: string; channelId: string; removed: boolean }; };
+  await reviewed.revalidate();const previous = await replay();if (previous !== undefined) return previous;
+  const at = deps.now(), response = { teamId, channelId: input.channelId, removed: reviewed.observed !== undefined };
+  const bindingKey = slackBindingKey(orgId, teamId, input.channelId);
+  const mutation: RequestTransactItem = reviewed.observed === undefined
+    ? { ConditionCheck: { TableName: deps.tableName, Key: bindingKey, ConditionExpression: "attribute_not_exists(pk)" } }
+    : { Delete: { TableName: deps.tableName, Key: bindingKey, ConditionExpression: "projectName = :project AND updatedAt = :at AND teamId = :team AND channelId = :channel",
+      ExpressionAttributeValues: { ":project": project, ":at": reviewed.observed.updatedAt, ":team": teamId, ":channel": input.channelId } } };
+  const event = reviewed.observed === undefined ? undefined : auditSlackChannelUnbound({ orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: at.toISOString(),
+    occurrence: auditOccurrence(input.requestId, project, teamId, input.channelId), projectName: project, teamId, channelId: input.channelId });
+  const pending = event === undefined ? [] : auditPending(deps, event);if (event !== undefined && pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+  const items = [...reviewed.conditions, mutation, requestRecordPut(deps.tableName, key, "SLACK_BINDING_REQUEST", { ...expected, response }, at.getTime()), ...pending];
+  if (items.length > 100) throw agentXError("CONFIG_INVALID", "This Slack change cannot fit one transaction.");
+  try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
+  catch (error) { await reviewed.revalidate();const recovered = await replay();if (recovered !== undefined) return recovered;if (error instanceof Error && error.name === "TransactionCanceledException") throw STALE();throw error; }
+  if (event !== undefined) await flushAuditEvents(deps, [event]);return response;
+}
+
 /** `DELETE /v1/app/projects/{name}/slack-channel`, after the route's checks. `removed` is false for a channel that was not bound (the request is still recorded). */
 export async function unbindProjectChannel(
   deps: ProjectSlackChannelDependencies,
   orgId: OrgId,
   project: string,
   input: { requestId: string; channelId: string; teamId?: string | undefined; actor: ProjectSlackChannelActor },
+  reviewed?: ReviewedSlackUnbind,
 ): Promise<{ teamId: string; channelId: string; removed: boolean }> {
+  if (reviewed !== undefined) return unbindReviewed(deps, orgId, project, input, reviewed);
   const teamId = await resolveBindTeam(deps, orgId, input.teamId);
   const expected = { by: input.actor.developerId, action: "unbind", bodyHash: bodyHashOf(teamId, input.channelId) };
   const key = requestKey(orgId, project, input.requestId);

@@ -13,7 +13,7 @@ import { developerTokenVerifier } from "../../packages/broker/src/developer/veri
 import type { AuditCapture } from "./audit-capture.js";
 import { localSigner } from "./developer-fakes.js";
 import type { FakeDynamoDb, FakeDynamoDbOptions } from "./fake-dynamodb.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
+import { seedLegacySlackBinding, SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
 import { TEST_ENV, TEST_ORG } from "./orgs.js";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
@@ -221,13 +221,15 @@ export async function createDeveloperTaskBroker(options: {
 
 const ADMIN = { subject: "admin-subject", admin: true };
 
-/** Binds another Slack channel of the test team to a project, as `agentx admin slack bind` does. */
+/** Seeds a historical binding without a ledger, or uses the real audited operator writer when configured. */
 export async function bindChannel(handler: Handler, channelId: string, projectName = "payments"): Promise<void> {
+  if (seedLegacySlackBinding(handler, channelId, projectName)) return;
   const response = await call(handler, { method: "PUT", path: `/v1/admin/slack/bindings/${SLACK_TEAM}/${channelId}`, user: ADMIN, body: { projectName } });
   if (response.status !== 200) throw new Error(`binding failed: ${JSON.stringify(response.body)}`);
 }
 
 export async function unbindChannel(handler: Handler, channelId: string): Promise<void> {
+  if (seedLegacySlackBinding(handler, channelId)) return;
   const response = await call(handler, { method: "DELETE", path: `/v1/admin/slack/bindings/${SLACK_TEAM}/${channelId}`, user: ADMIN });
   if (response.status !== 200) throw new Error(`unbinding failed: ${JSON.stringify(response.body)}`);
 }

@@ -201,8 +201,8 @@ export function auditProjectMemberRemoved(input: AuditBuilderBase & { projectNam
  * `occurrence`: `auditOccurrence(requestId, project, teamId, channelId)` (release 0.4.17). A request id is remembered per project, so the same id can reach
  * another project or channel; each makes its own occurrence. The project is a name-keyed target; the Slack team and channel are opaque ids, related.
  */
-export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string }): AuditEventInput {
-  return build("slack_channel.bound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
+export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; mode?: "second_person" | "sole_owner_exception"; proposalId?: string }): AuditEventInput {
+  return build("slack_channel.bound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { mode: input.mode, proposalId: input.proposalId });
 }
 
 /** `occurrence`: as for `auditSlackChannelBound`. */
@@ -531,4 +531,9 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
+}
+
+/** A pending approval is an observation and request, never an applied binding. */
+export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
+ return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
 }

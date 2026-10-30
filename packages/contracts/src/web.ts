@@ -97,3 +97,5 @@ export * from "./org-slack-workspace-evidence.js";
 
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 export * from "./app-allowed-websites.js";
+
+export * from "./app-project-slack.js";

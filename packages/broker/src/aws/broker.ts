@@ -378,7 +378,7 @@ import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditOccurrence, auditPullRequestOpened, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
+import { auditOccurrence, auditPullRequestOpened, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { auditedWrite, modelSelectionAuditEvent, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
@@ -1695,7 +1695,7 @@ function adminReadDependencies(dependencies: AwsBrokerDependencies): AdminReadDe
 function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHandlers {
   return {
     requireAdministrator: (identity, project) => requireAdministrator(dependencies, identity, project),
-    bindChannel: async (identity, teamId, channelId, project) => putSlackBinding(dependencies, identity, teamId, channelId, { projectName: project }),
+    bindChannel: async () => { throw agentXError("FORBIDDEN", "Use the browser Slack approval flow to link a channel."); },
     unbindChannel: async (identity, teamId, channelId) => deleteSlackBinding(dependencies, identity, teamId, channelId),
     checkRevision: async (identity, definitionValue, runtimeBindingValue, options) => {
       if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -4671,13 +4671,22 @@ async function putSlackBinding(
     await requireAdministrator(dependencies, identity, existing.projectName);
   }
   const latest = await requireLatestProject(dependencies, orgId, binding.projectName);
+  const event = auditSlackChannelBound({ orgId,
+    actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) },
+    occurredAt: binding.updatedAt, occurrence: auditOccurrence(randomUUID(), binding.projectName, binding.teamId, binding.channelId),
+    projectName: binding.projectName, teamId: binding.teamId, channelId: binding.channelId,
+  });
+  const pending = auditPending(dependencies, event);
+  if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
   // The team joins the org first; a team another org already holds is refused here (SLACK_TEAM_TAKEN).
   await ensureInstallOrg(dependencies, orgId);
   await orgStoreOf(dependencies).bindSlackTeam({ orgId, teamId: binding.teamId });
-  await dependencies.documentClient.send(new PutCommand({
-    TableName: dependencies.tableName,
-    Item: slackBindingItem(orgId, binding, identity.ownerKey),
-  }));
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: {
+    TableName: dependencies.tableName, Item: slackBindingItem(orgId, binding, identity.ownerKey),
+    ConditionExpression: existing === undefined ? "attribute_not_exists(pk)" : "projectName = :project AND updatedAt = :at",
+    ...(existing === undefined ? {} : { ExpressionAttributeValues: { ":project": existing.projectName, ":at": existing.updatedAt } }),
+  } }, ...pending] }));
+  await flushAuditEvents(dependencies, [event]);
   return { binding, latestRevision: latest.definition.revision };
 }
 
@@ -4693,10 +4702,20 @@ async function deleteSlackBinding(
   const binding = await getSlackBinding(dependencies, orgId, teamId, channelId);
   if (!binding) throw agentXError("NOT_FOUND", "Slack channel binding not found");
   await requireAdministrator(dependencies, identity, binding.projectName);
-  await dependencies.documentClient.send(new DeleteCommand({
-    TableName: dependencies.tableName,
-    Key: slackBindingKey(orgId, teamId, channelId),
-  }));
+  const occurredAt = new Date().toISOString();
+  const event = auditSlackChannelUnbound({ orgId,
+    actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt,
+    occurrence: auditOccurrence(randomUUID(), binding.projectName, teamId, channelId),
+    projectName: binding.projectName, teamId, channelId,
+  });
+  const pending = auditPending(dependencies, event);
+  if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: {
+    TableName: dependencies.tableName, Key: slackBindingKey(orgId, teamId, channelId),
+    ConditionExpression: "projectName = :project AND updatedAt = :at",
+    ExpressionAttributeValues: { ":project": binding.projectName, ":at": binding.updatedAt },
+  } }, ...pending] }));
+  await flushAuditEvents(dependencies, [event]);
   return { deleted: true, binding };
 }
 

@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { isAssumedRoleOf } from "../../packages/broker/src/aws/lambda.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import {
-  account, call, createBroker, ensureWorkspace, issuer, loadSlackBroker, markReady, orchestratorPrincipal, orchestratorRoleArn,
+  account, call, createAuditedSlackBroker as createBroker, ensureWorkspace, issuer, loadSlackBroker, markReady, orchestratorPrincipal, orchestratorRoleArn,
   type Handler,
 } from "../support/slack-broker.js";
 import { GitHubMcpCatalogSchema, GitHubMcpResultSchema } from "../../packages/contracts/src/github-mcp.js";
