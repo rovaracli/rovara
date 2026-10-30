@@ -1361,4 +1361,5 @@ it("model key record refuses a competing admitted cap write and returns no key",
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(raced).toBe(true); expect(reply.status).not.toBe(200);
   expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined();
+  expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
 });

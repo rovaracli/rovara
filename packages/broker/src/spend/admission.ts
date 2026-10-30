@@ -10,7 +10,7 @@ import {
   type AgentId, type AgentXError, type AgentXErrorCode, type BudgetScope, type OrgId, type Payer, type PauseScope,
 } from "@agentx/contracts";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { failedIndexes } from "../agents/table-writes.js";
+import { type TransactItem, failedIndexes } from "../agents/table-writes.js";
 import type { MintTags, MintedKey } from "../model-proxy/access.js";
 import {
   MINIMUM_REMAINING_USD, budgetExceeded, clean, dollars, ensureSynced, figuresFor, keyIdOf, mintKeyHealing, orgBudgetExceeded, recordMintedKey, remaining, viaProxy,
@@ -219,6 +219,8 @@ export interface MintOperationKeyInput {
    * the whole remainder) and the operation. Nothing is recorded when absent.
    */
   recordOn?: ReadonlyArray<{ key: { pk: string; sk: string }; knownCount?: number | undefined }> | undefined;
+  /** Internal native source conditions, merged into the same key-record transaction. */
+  guardRecord?: ((items: readonly TransactItem[]) => TransactItem[]) | undefined;
 }
 
 export type MintedOperationKey =
@@ -312,11 +314,11 @@ async function closeUnrecorded(deps: MintOperationDependencies, minted: MintedKe
  * Notes the key on every record that owns it, in one write. False when a record no longer holds the count the caller read (another mint recorded first). A
  * single record is written as `recordMintedKey` always did.
  */
-async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string): Promise<boolean> {
+async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string, guardRecord?: MintOperationKeyInput["guardRecord"]): Promise<boolean> {
   const [only] = recordOn;
   if (only === undefined) return true;
-  if (recordOn.length === 1 && only.knownCount !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownCount);
-  const items = recordOn.map(({ key, knownCount }) => ({
+  if (guardRecord === undefined && recordOn.length === 1 && only.knownCount !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownCount);
+  const items: TransactItem[] = recordOn.map(({ key, knownCount }) => ({
     Update: {
       TableName: deps.tableName, Key: key,
       UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
@@ -326,7 +328,7 @@ async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOpe
     },
   }));
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: guardRecord === undefined ? items : guardRecord(items) }));
     return true;
   } catch (error) {
     if (failedIndexes(error) !== undefined) return false;
@@ -380,7 +382,7 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
       }
     }
     try {
-      if (await recordKey(deps, input.recordOn ?? [], keyId)) return { outcome: "minted", key: minted.key, keyId, expiresAt: minted.expiresAt, maxBudgetUsd: capUsd };
+      if (await recordKey(deps, input.recordOn ?? [], keyId, input.guardRecord)) return { outcome: "minted", key: minted.key, keyId, expiresAt: minted.expiresAt, maxBudgetUsd: capUsd };
     } catch (error) {
       await closeUnrecorded({ ...deps, ledger }, minted, keyId, input.orgId);
       throw error;
