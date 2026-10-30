@@ -317,3 +317,28 @@ describe("the sign-in function signs it", () => {
     }
   });
 });
+
+// Member removal (v1.1), task 3, §5 row 16: the person is read live, on connect and on every subscribe, so a removed person's old token (900 s) opens nothing.
+describe("a person removed from the company", () => {
+  it("cannot connect or subscribe with a token made before the removal, and a member still can", async () => {
+    const t = world();
+    const gone = await tokenFor(ORG_A, PRIYA, []);
+    const kept = await tokenFor(ORG_A, ARJUN, []);
+    expect(await t.connect(gone)).toEqual(ALLOWED);
+    expect(await t.subscribe(gone, userChannel(ORG_A, PRIYA))).toEqual(ALLOWED);
+    t.w.db.delete({ pk: `ORG#${ORG_A}`, sk: `MEMBER#${PRIYA}` });
+    expect(await t.connect(gone)).toEqual(REFUSED);
+    expect(await t.subscribe(gone, userChannel(ORG_A, PRIYA))).toEqual(REFUSED);
+    expect(await t.connect(kept)).toEqual(ALLOWED);
+    expect(await t.subscribe(kept, userChannel(ORG_A, ARJUN))).toEqual(ALLOWED);
+  });
+
+  it("cannot subscribe to a project channel the token lists", async () => {
+    const t = world();
+    const channel = projectChannel(ORG_A, "web");
+    const token = await tokenFor(ORG_A, PRIYA, [projectSegment(ORG_A, "web")]);
+    expect(await t.subscribe(token, channel)).toEqual(ALLOWED);
+    t.w.db.delete({ pk: `ORG#${ORG_A}`, sk: `MEMBER#${PRIYA}` });
+    expect(await t.subscribe(token, channel)).toEqual(REFUSED);
+  });
+});
