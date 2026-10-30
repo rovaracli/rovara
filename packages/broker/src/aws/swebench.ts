@@ -322,6 +322,14 @@ export async function startSwebenchRun(
       Body: JSON.stringify(launch),
       ContentType: "application/json",
     }));
+    // Accepted numeric stops remain pinned; live authority is rechecked at actual dispatch.
+    if (authority.length > 0) {
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: authority })); }
+      catch (error) {
+        if (isConditionFailure(error)) throw agentXError("FORBIDDEN", "Your eval start authority changed.");
+        throw error;
+      }
+    }
     const subnets = deployment.settings.subnetIds;
     const execution = await dependencies.startExecution({
       stateMachineArn: deployment.settings.stateMachineArn,
