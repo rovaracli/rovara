@@ -274,3 +274,49 @@ for (const phase of ["before_policy_capture", "at_native_commit"] as const) it(`
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
+async function continueWindow() {
+  const f = await fixture(), task = await f.t.plainTask();
+  await f.t.finish(task.workspaceId, task.operationId, "SUCCEEDED");
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
+  const request = { requestId: randomUUID(), instructions: "Continue the accepted task." };
+  const receipt = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${request.requestId}` };
+  return { ...f, task, request, receipt, continue: () => f.t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/continue`, request) };
+}
+it("Continue opens a newly captured exact window and commits its receipt with the operation", async () => {
+  const f = await continueWindow(), reply = await f.continue(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 0.5, spendingStop: { effectiveStopMicrousd: 500_000 }, budgetBaselineUsd: 0 });
+  expect(f.t.db.get(f.receipt)).toMatchObject({ entityType: "SPENDING_ADMISSION", orgId: TEST_ORG, workKind: "task-window", workId: f.task.taskId, requestId: f.request.requestId, spendingStop: { effectiveStopMicrousd: 500_000 } });
+});
+it("Continue refuses a missing enrolled policy without adding an operation or changing the old cap", async () => {
+  const f = await continueWindow(), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.db.delete(f.policy);
+  const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get(f.receipt)).toBeUndefined();
+});
+it("Continue receipt replay does not recapture or overwrite its committed window", async () => {
+  const f = await continueWindow(); expect((await f.continue()).status).toBe(200);
+  const receipt = f.t.db.get(f.receipt); expect(receipt).toBeDefined();
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.db.delete(f.policy);
+  expect((await f.continue()).status).toBe(200);
+  expect(f.t.db.get(f.receipt)).toEqual(receipt); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
+  f.request.instructions = "Different instructions under the same request.";
+  const changed = await f.continue(); expect(changed.status).toBe(409); expect(changed.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+});
+it("a Continue capture survives a later numeric edit while the next window sees it", async () => {
+  const f = await continueWindow(), send = f.t.db.send.bind(f.t.db); let edited = false;
+  f.t.db.send = async command => {
+    if (!edited && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.Key.sk === "META")) {
+      edited = true; f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 250_000 } } });
+    }
+    return send(command);
+  };
+  const first = await f.continue(); expect(first.status, JSON.stringify(first.body)).toBe(200); expect(edited).toBe(true);
+  expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
+  const operation = f.t.taskOps(f.task.workspaceId).at(-1); expect(operation).toBeDefined();
+  await f.t.finish(f.task.workspaceId, operation!.id, "SUCCEEDED");
+  f.request.requestId = randomUUID(); expect((await f.continue()).status).toBe(200);
+  expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.25);
+});
