@@ -37,3 +37,12 @@ it("fences policy, source and guardrail changes after preparation without a part
   expect(f.db.get({pk:"POLICY_APPLIED",sk:"META"})).toBeUndefined();
  }
 });
+it("refuses conflicting values in shared editable stage groups",async()=>{
+ const other={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[1]!};
+ for(const group of [["understand","plan"],["code_review","security_review"]]){
+  const f=fixture();await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:0,stepOverrides:{[group[0]!]:{model},[group[1]!]:{model:other}}})).rejects.toThrow();
+ }
+});
+it("does not collapse provider-specific verification into a canonical model alias",async()=>{
+ const f=fixture();await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:0,stepOverrides:{build:{model:{provider:"anthropic",modelId:"claude-sonnet-4-6"}},pull_request:{model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"}}}})).rejects.toThrow();
+});

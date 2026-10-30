@@ -15,7 +15,7 @@ it.each([auditModelPolicyChanged,auditModelPolicyLockSet,auditModelPolicyLockRem
  const now=()=>Date.parse(at),log=()=>{};
  const keyring=new AuditKeyring({documentClient:db.client,keysTable:"keys",kms:kms.client,keyId,now});
  const deps={documentClient:db.client,ledgerTable:"ledger",sealsTable:"seals",keyring,now,log};
- const event=builder({orgId,actor:{kind:"member",id:person},occurredAt:at,occurrence:"request-policy-1",revision:2,policyDigest:"b".repeat(64),previousDigest:"c".repeat(64),stage:"build"});
+ const event=builder({orgId,actor:{kind:"member",id:person},occurredAt:at,occurrence:"request-policy-1",revision:2,policyDigest:"b".repeat(64),previousDigest:"c".repeat(64),stage:"build",mode:"sole_owner_exception"});
  event.details=[{subject:person,fields:{name:"ERASABLE_POLICY_PERSON",email:"private@example.test"}}];
  expect(await processAuditBatch(deps,{Records:[{messageId:"policy-1",body:JSON.stringify(event),attributes:{MessageGroupId:orgId}}]})).toEqual({batchItemFailures:[]});expect(await appendEvent(deps,event)).toMatchObject({result:"duplicate"});
  const before=await readAuditRecords(deps,orgId);

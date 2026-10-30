@@ -1,5 +1,7 @@
+import {updateCompanyModelPolicy} from "../model-selection/company-approval.js";
+import {ModelSelectionPolicyAppliedSchema,ModelSelectionPolicyPendingSchema} from "@agentx/contracts";
 import {previewCompanyModelPolicy} from "../model-selection/policy-preview.js";
-import { getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
+import { requireCompanyModelPolicyAuthority,getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
 import { getStageModels } from "../model-selection/read.js";
 import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
@@ -1940,6 +1942,7 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"&&authenticated?.caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session to change company model policy.");
   // Website proposal routes accept only the trusted opaque-cookie adapter.
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -2145,6 +2148,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return previewCompanyModelPolicy({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,...(deps.agentSessions?.cursorKey===undefined?{}:{cursorKey:deps.agentSessions.cursorKey}),
       loadSnapshot:(who,name,policy)=>loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,store:deps.agents?.store,routing:deps.agents?.modelRouting??{}},who,name,undefined,undefined,policy),
     },caller,jsonBody(request));
+  }
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"){
+    if([...url.searchParams].length!==0)throw agentXError("CONFIG_INVALID","The company model-policy query is invalid.");
+    await requireCompanyModelPolicyAuthority({documentClient:deps.documentClient,tableName:deps.tableName},caller);
+    if(deps.agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","Company model approvals are unavailable.");
+    const result=await updateCompanyModelPolicy(deps.agents,caller,jsonBody(request));
+    if(result.status==="NEEDS_CONFIRMATION")return new StatusReply(202,ModelSelectionPolicyPendingSchema.parse(result));
+    return ModelSelectionPolicyAppliedSchema.parse({status:result.status,revision:result.revision,requestId:result.requestId});
   }
   if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
     if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");

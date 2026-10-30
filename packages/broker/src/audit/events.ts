@@ -541,9 +541,9 @@ export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:strin
  const facts=ModelFallbackAuditFactsSchema.parse({stage:input.stage,usedModelDigest:digest(input.used),...(input.wanted===undefined?{}:{wantedModelDigest:digest(input.wanted)}),cause:input.reasonCode,companyRevision:input.companyRevision});
  return build("model.fallback_used",input,{kind:"project",name:input.projectName},facts,[input.stage]);
 }
-type ModelPolicyAuditInput=AuditBuilderBase&{revision:number;policyDigest:string;previousDigest?:string;stage?:StageId};
+type ModelPolicyAuditInput=AuditBuilderBase&{revision:number;policyDigest:string;previousDigest?:string;stage?:StageId;mode?:"second_person"|"sole_owner_exception"};
 function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|"model_policy.lock_removed",input:ModelPolicyAuditInput):AuditEventInput {
- const facts=ModelPolicyAuditFactsSchema.parse({revision:input.revision,policyDigest:input.policyDigest,...(input.previousDigest===undefined?{}:{previousDigest:input.previousDigest}),...(input.stage===undefined?{}:{stage:input.stage})});
+ const facts=ModelPolicyAuditFactsSchema.parse({revision:input.revision,policyDigest:input.policyDigest,...(input.previousDigest===undefined?{}:{previousDigest:input.previousDigest}),...(input.stage===undefined?{}:{stage:input.stage}),...(input.mode===undefined?{}:{mode:input.mode})});
  return build(action,input,{kind:"org",id:input.orgId},facts,input.stage===undefined?[]:[input.stage]);
 }
 export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);

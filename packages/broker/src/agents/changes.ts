@@ -1,3 +1,4 @@
+import {registerCompanyModelPolicyApprovals} from "../model-selection/company-approval.js";
 import {processModelAuthorityChecks,mergeProcessModelAuthorityChecks,modelAuthorityRefused} from "../model-selection/authority.js";
 import {parseStageModelApprovalProof,processApprovalRecipeDigest,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
 import {loadStageModelSnapshot} from "../model-selection/snapshot.js";
@@ -490,6 +491,7 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
  * guardrail relaxations), and the handlers for each subject kind. Safe to call more than once.
  */
 export function registerAgentApprovals(): void {
+  registerCompanyModelPolicyApprovals();
   registerApproverRule("agent_publish", managesAgent);
   registerApproverRule("agent_manager", managesAgent);
   // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).

@@ -56,6 +56,7 @@ const TITLES: Record<string, string> = {
   agent_rollback: "Roll an agent back",
   builtin_adopt: "Use a new version of a built-in agent",
   agent_share: "Share an agent with the whole company",
+  model_selection_policy: "Change company model policy",
   guardrails: "Relax the company's agent guardrails",
   chain_publish: "Publish a chain",
   chain_rollback: "Roll a chain back",
@@ -84,6 +85,7 @@ const prefix = (digest: string) => digest.slice(0, 12);
  */
 async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subject: AgentChangeSubject): Promise<Array<{ label: string; value: string }>> {
   if (subject.kind === "guardrails") return [];
+  if(subject.kind === "model_selection_policy")return [fact("Company policy revision it replaces",String(subject.body.expectedRevision))];
   const agentId = subject.agentId;
   const builtin = isBuiltinAgentId(agentId);
   const live = builtin ? undefined : await deps.store.get(orgId, agentId).catch(() => undefined);

@@ -312,9 +312,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "model_source.saved": ["kind", "change"],
   "model_source.removed": ["kind"],
   "model_source.order_changed": ["count"],
-  "model_policy.changed": ["revision","policyDigest","previousDigest","stage"],
-  "model_policy.lock_set": ["revision","policyDigest","previousDigest","stage"],
-  "model_policy.lock_removed": ["revision","policyDigest","previousDigest","stage"],
+  "model_policy.changed": ["revision","policyDigest","previousDigest","stage","mode"],
+  "model_policy.lock_set": ["revision","policyDigest","previousDigest","stage","mode"],
+  "model_policy.lock_removed": ["revision","policyDigest","previousDigest","stage","mode"],
   "model.fallback_used": ["stage","usedModelDigest","wantedModelDigest","cause","companyRevision"],
   "audit.read": ["fromSeq", "toSeq", "count", "via"],
   "audit.exported": ["fromSeq", "toSeq", "withDetails"],
@@ -402,7 +402,7 @@ const AuditFactValueSchema = z.union([
 ]);
 
 const ModelAuditDigest=z.string().regex(/^[a-f0-9]{64}$/u);
-export const ModelPolicyAuditFactsSchema=z.object({revision:z.number().int().min(1),policyDigest:ModelAuditDigest,previousDigest:ModelAuditDigest.optional(),stage:StageIdSchema.optional()}).strict();
+export const ModelPolicyAuditFactsSchema=z.object({revision:z.number().int().min(1),policyDigest:ModelAuditDigest,previousDigest:ModelAuditDigest.optional(),stage:StageIdSchema.optional(),mode:z.enum(["second_person","sole_owner_exception"]).optional()}).strict();
 export const ModelFallbackAuditFactsSchema=z.object({stage:StageIdSchema,usedModelDigest:ModelAuditDigest,wantedModelDigest:ModelAuditDigest.optional(),cause:ModelFallbackReasonCodeSchema,companyRevision:z.number().int().min(0)}).strict();
 export const AuditEventInputSchema = z.object({
   eventId: AuditEventIdSchema,

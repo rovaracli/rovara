@@ -1,6 +1,7 @@
 // Plan 3 Task 7 and Task 21: the approvals' records and everything that writes or reads them one at a time: the three record kinds and their schemas, the
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
+import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -109,6 +110,7 @@ export type AgentChangeSubject =
   | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number }
+  | {kind:"model_selection_policy";body:ModelSelectionPolicyPut;sourcesRevision:number;guardrailsRevision:number}
   /**
    * Start the run `runRequestId` asked for on `version` of the agent (an older version than the one that runs now, `expectedCurrentVersion`; for a built-in the
    * org's pin), which is less safe than it: only while the version that runs now and the recipe of `version` (`digest`) are still what was shown. Approving it
@@ -385,6 +387,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
+  z.object({kind:z.literal("model_selection_policy"),body:ModelSelectionPolicyPutSchema,sourcesRevision:z.number().int().min(0),guardrailsRevision:z.number().int().min(0)}).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
