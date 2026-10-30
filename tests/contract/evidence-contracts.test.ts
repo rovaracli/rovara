@@ -7,7 +7,6 @@ import { ProofTableViewSchema } from "../../packages/contracts/src/rovara-code.j
 import { WorkflowCheckSchema } from "../../packages/contracts/src/task-workflow.js";
 import * as evidence from "../../packages/contracts/src/evidence.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
-import type { DeveloperTaskView } from "../../packages/contracts/src/developer-tasks.js";
 
 const sha = (letter: string) => letter.repeat(64);
 const ref = (kind: evidence.EvidenceArtifactKind, letter = "a", bytes = 1_000): evidence.ArtifactRef => ({ kind, sha256: sha(letter), bytes, retentionClass: evidence.EVIDENCE_ARTIFACT_RETENTION[kind] });
@@ -144,7 +143,7 @@ describe("EvidenceView on the task view", () => {
 });
 
 describe("the version 1 task view projection", () => {
-  const task = { taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", evidence: view() } as unknown as DeveloperTaskView;
+  const task = { taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", evidence: view() } as unknown as Parameters<typeof taskViewForClient>[0];
   it("leaves the evidence out for a client that does not ask for version 2, and keeps it for one that does", () => {
     expect("evidence" in taskViewForClient(task, {})).toBe(false);
     expect("evidence" in taskViewForClient(task, { "x-agentx-task-view": "1" })).toBe(false);
