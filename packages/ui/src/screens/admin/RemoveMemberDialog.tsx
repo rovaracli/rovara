@@ -73,7 +73,7 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
  const duties = preview === undefined ? [] : [
   preview.duties.wasRole !== "member" && `Was ${preview.duties.wasRole === "owner" ? "an Owner" : "an Admin"}. Company roles are never moved automatically.`,
   preview.duties.maintainerProjects > 0 && `Was a maintainer of ${plural(preview.duties.maintainerProjects, "project")}.`,
-  preview.duties.invitesCreated > 0 && `${plural(preview.duties.invitesCreated, "open invite")} they created ${preview.duties.invitesCreated === 1 ? "is" : "are"} kept.`,
+  preview.duties.invitesCreated > 0 && `${preview.duties.invitesCreatedAtLeast === true ? "At least " : ""}${plural(preview.duties.invitesCreated, "open invite")} they created ${preview.duties.invitesCreated === 1 && preview.duties.invitesCreatedAtLeast !== true ? "is" : "are"} kept.`,
  ].filter((line): line is string => line !== false);
  return <Dialog title="Remove from company" description="Review who takes over and what ends before confirming." open={open} onOpenChange={changeOpen} trigger={<Button aria-disabled={checking || staleData} aria-describedby={checking || staleData ? checkingReasonId : undefined} aria-label={`Remove ${member.name} from company`}>Remove from company</Button>}>
   <div className="rv-admin-role-review" aria-busy={busy || loading}>

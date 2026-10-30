@@ -67,6 +67,8 @@ const RemovalDutiesSchema = z.object({
   maintainerProjects: RemovalCountSchema,
   /** Invites they created that are still open (the first page of the invite list): shown, never revoked here. */
   invitesCreated: RemovalCountSchema,
+  /** True when the invite list had more than the first page, so `invitesCreated` is "at least". */
+  invitesCreatedAtLeast: z.boolean().optional(),
 }).strict();
 
 /** `GET /v1/app/org/members/{id}/removal-preview`: who is removed, who takes over, what moves to them, what ends and what is left for an admin. */

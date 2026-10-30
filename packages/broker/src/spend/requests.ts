@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -34,7 +34,6 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
-import { orgMemberKey } from "@agentx/contracts";
 import { memberGoneSince, taskWorkStart } from "../developer/creator-member.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { effectiveLimits, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";

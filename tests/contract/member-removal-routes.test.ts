@@ -3,7 +3,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { memberRemovalRecordKey, orgEmailKey, orgMemberKey, type OrgRole } from "@agentx/contracts";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { memberGithubKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -67,6 +68,34 @@ describe("GET /v1/app/org/members/{id}/removal-preview", () => {
     expect((await h.dev(MAYA, "GET", `/v1/app/org/members/${bea.developerId}/removal-preview`)).status).toBe(403);
     expect((await h.dev(OMAR, "GET", `/v1/app/org/members/${OMAR.developerId}/removal-preview`)).status).toBe(403);
     expect((await h.dev(OMAR, "GET", `/v1/app/org/members/${"e".repeat(63)}9/removal-preview`)).status).toBe(404);
+  });
+});
+
+describe("what the preview and the status say", () => {
+  it("lists the GitHub unlink only when the person has a link, and counts the open invites they created", async () => {
+    const h = await org();
+    const bea = person(h, "Bea", "admin");
+    const plain = await h.dev(OMAR, "GET", `/v1/app/org/members/${bea.developerId}/removal-preview`);
+    expect((plain.body.ends as string[]).join(" ")).not.toMatch(/GitHub/);
+    h.db.set({ ...memberGithubKey(TEST_ORG, bea.developerId), entityType: "MEMBER_GITHUB", orgId: TEST_ORG, githubUserId: "4711", developerId: bea.developerId, linkedAt: "x" });
+    await new OrgStore({ documentClient: h.db, tableName: "state", now: () => Date.now() }).createInvite({ orgId: TEST_ORG, createdBy: bea.developerId, role: "member", requestId: randomUUID() });
+    const linked = await h.dev(OMAR, "GET", `/v1/app/org/members/${bea.developerId}/removal-preview`);
+    expect((linked.body.ends as string[]).join(" ")).toMatch(/GitHub link is removed/);
+    expect(linked.body).toMatchObject({ duties: { invitesCreated: 1 } });
+    const body = { requestId: randomUUID(), expectedRole: "admin" };
+    expect((await h.dev(OMAR, "POST", `/v1/app/org/members/${bea.developerId}/removal`, body)).status).toBe(200);
+    const status = await h.dev(OMAR, "GET", `/v1/app/org/removals/${body.requestId}`);
+    expect(status.body).toMatchObject({ duties: { wasRole: "admin", invitesCreated: 1 } });
+  });
+
+  it("treats a role it cannot read as owner for the admin rule, and asks an owner to review again", async () => {
+    const h = await org();
+    const adm = person(h, "Ana", "admin");
+    const odd = person(h, "Odd", "member");
+    h.db.set({ ...h.db.get(orgMemberKey(TEST_ORG, odd.developerId))!, role: "mystery" });
+    expect((await h.dev(adm, "GET", `/v1/app/org/members/${odd.developerId}/removal-preview`)).status).toBe(403);
+    expect((await h.dev(adm, "POST", `/v1/app/org/members/${odd.developerId}/removal`, { requestId: randomUUID(), expectedRole: "member" })).status).toBe(403);
+    expect(errorOf(await h.dev(OMAR, "GET", `/v1/app/org/members/${odd.developerId}/removal-preview`))?.code).toBe("CHANGE_STALE");
   });
 });
 
