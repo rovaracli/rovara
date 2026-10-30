@@ -61,7 +61,7 @@ async function processLayer(w: MergeWorld, overlay: Record<string, unknown> = {}
 }
 async function setDraft(w: MergeWorld, agentId: AgentId, overlay: Record<string, unknown>, by = MAX) {
   const agent = (await w.store.get(ORG_A, agentId))!;
-  await w.store.saveDraft({ orgId: ORG_A, agentId, overlay: overlay as never, expectedRevision: agent.draftRevision, by });
+  await w.store.saveDraft({ orgId: ORG_A, agentId, overlay: overlay, expectedRevision: agent.draftRevision, by });
 }
 const overlayOf = async (w: MergeWorld, agentId: AgentId, version: number) => (await w.store.getVersion(ORG_A, agentId, version))!.overlay;
 
@@ -76,7 +76,7 @@ async function suggest(w: MergeWorld, options: SuggestOptions = {}): Promise<str
     const text = source.text ?? RETRY_A;
     const kind = source.source ?? "comment";
     const result = await captureCorrection(learning(w), SCOPE, {
-      id: `c${randomUUID().slice(0, 8)}${n}`, stage: (options.stage ?? "build") as never, source: kind, sourceKey: `key-${randomUUID()}`, sourceRef: { taskId: source.task }, taskId: source.task, text,
+      id: `c${randomUUID().slice(0, 8)}${n}`, stage: (options.stage ?? "build"), source: kind, sourceKey: `key-${randomUUID()}`, sourceRef: { taskId: source.task }, taskId: source.task, text,
       signature: [...signatureOf(text, learningSalt(SCOPE))], author: source.author, standing: "member", limit: kind === "pr_comment" ? "automatic_pr" : "automatic",
     });
     expect(result).toMatchObject({ ok: true, created: true });
@@ -89,7 +89,7 @@ const acceptBody = (w: MergeWorld, id: string, text = RULE, stage?: string) => (
 const approvalIdOf = (w: MergeWorld, answer: { outcome: string; confirmUrl?: string }) => w.approvalIdOf(answer.confirmUrl!);
 const decide = (w: MergeWorld, who: string, approvalId: string, decision: "APPROVE" | "DECLINE" = "APPROVE") => decideApproval(w.deps, callerOf(w, who), approvalId, { requestId: randomUUID(), decision });
 const setApprovalStatus = (w: MergeWorld, approvalId: string, status: string) => {
-  const record = w.db.get(approvalKey(ORG_A, approvalId as never))!;
+  const record = w.db.get(approvalKey(ORG_A, approvalId))!;
   w.db.set({ ...record, status });
 };
 const eventsOf = (w: MergeWorld, action: Parameters<MergeWorld["audit"]["recordedBy"]>[0]) => w.audit.recordedBy(action);
@@ -190,7 +190,7 @@ describe("I7: a rule for a reviewing stage waits for a second person, through th
     const id = await suggest(w, { stage: "review" });
     const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
     expect(answer.outcome).toBe("awaiting_approval");
-    const approvalId = approvalIdOf(w, answer as never);
+    const approvalId = approvalIdOf(w, answer);
     const ruleId = suggestionOf(w, id).ruleId as string;
     expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "awaiting_approval", approvalId });
     expect(suggestionOf(w, id)).toMatchObject({ status: "awaiting_approval" });
@@ -205,7 +205,7 @@ describe("I7: a rule for a reviewing stage waits for a second person, through th
     const layer = await processLayer(w);
     const id = await suggest(w, { stage: "review" });
     const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
-    await decide(w, OLA, approvalIdOf(w, answer as never));
+    await decide(w, OLA, approvalIdOf(w, answer));
     expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
     expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
     expect(item(w, `RULE#${suggestionOf(w, id).ruleId as string}`)).toMatchObject({ status: "active", processVersion: 2 });
@@ -219,7 +219,7 @@ describe("I7: a rule for a reviewing stage waits for a second person, through th
     const layer = await processLayer(w);
     const id = await suggest(w, { stage: "review" });
     const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
-    const approvalId = approvalIdOf(w, answer as never);
+    const approvalId = approvalIdOf(w, answer);
     await w.decide(approvalId, await w.browser(MAX, approvalId));
     expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
     expect(w.audit.recordedBy("process.published").at(-1)).toMatchObject({ facts: { selfConfirmedSoleOwner: true } });
@@ -231,7 +231,7 @@ describe("settlement of a rule that waited", () => {
     const layer = await processLayer(w);
     const id = await suggest(w, { stage: "review" });
     const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
-    return { layer, id, approvalId: approvalIdOf(w, answer as never), ruleId: suggestionOf(w, id).ruleId as string };
+    return { layer, id, approvalId: approvalIdOf(w, answer), ruleId: suggestionOf(w, id).ruleId as string };
   }
   const state = (w: MergeWorld) => item(w, "STATE")!;
 
@@ -566,13 +566,13 @@ describe("Remove one rule", () => {
     const layer = await processLayer(w);
     const id = await suggest(w, { stage: "review" });
     const waiting = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
-    await decide(w, OLA, approvalIdOf(w, waiting as never));
+    await decide(w, OLA, approvalIdOf(w, waiting));
     await settleProject(decideDeps(w), SCOPE);
     const ruleId = suggestionOf(w, id).ruleId as string;
     const removing = await remove(w, ruleId);
     expect(removing.outcome).toBe("awaiting_approval");
     expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active", removalApprovalId: expect.any(String) as unknown });
-    await decide(w, OLA, approvalIdOf(w, removing as never));
+    await decide(w, OLA, approvalIdOf(w, removing));
     await settleProject(decideDeps(w), SCOPE);
     expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "removed", removedInVersion: 3 });
     expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(3);
@@ -581,9 +581,9 @@ describe("Remove one rule", () => {
   it("the overlay helpers: exact paragraph, no guessing", () => {
     const overlay = { steps: { build: { instructions: `A\n\n${RULE}\n\nB` } } } as never;
     expect(removeRuleFromOverlay(overlay, "build", RULE)).toMatchObject({ matches: 1, overlay: { steps: { build: { instructions: "A\n\nB" } } } });
-    expect(removeRuleFromOverlay({ steps: { build: { instructions: RULE } } } as never, "build", RULE).overlay).toEqual({});
+    expect(removeRuleFromOverlay({ steps: { build: { instructions: RULE } } }, "build", RULE).overlay).toEqual({});
     expect(removeRuleFromOverlay(overlay, "build", "A\n\nB").matches).toBe(0);
-    expect(() => appendRuleToOverlay({ instructions: "y".repeat(3_995) } as never, "*", RULE)).toThrow(/rules are full/);
+    expect(() => appendRuleToOverlay({ instructions: "y".repeat(3_995) }, "*", RULE)).toThrow(/rules are full/);
   });
 });
 
@@ -647,7 +647,7 @@ describe("audit: every learning path emits", () => {
 
 describe("the routes", () => {
   const route = (w: MergeWorld, who: string, method: string, path: string, body: unknown, decide: LearningDecideDeps | null = decideDeps(w)) =>
-    routeLearning({ task: {} as never, projectFor: decideDeps(w).projectFor, ...(decide === null ? {} : { decide }), audit: w.audit.audit }, callerOf(w, who), method, new URL(`https://cell.example.com/v1/app/projects/web/learning/${path}`), () => body);
+    routeLearning({ task: {} as never, projectFor: (who, rawName) => decideDeps(w).projectFor(who, rawName), ...(decide === null ? {} : { decide }), audit: w.audit.audit }, callerOf(w, who), method, new URL(`https://cell.example.com/v1/app/projects/web/learning/${path}`), () => body);
 
   it("accept, dismiss, reopen and remove are reached under /learning, with strict bodies", async () => {
     const w = world();

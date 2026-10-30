@@ -12,14 +12,14 @@ function withStageText(overlay: RecipeOverlay, stage: string, text: string): Rec
   const next = structuredClone(overlay) as Record<string, unknown>;
   if (stage === "*") {
     if (text === "") delete next["instructions"]; else next["instructions"] = text;
-    return next as RecipeOverlay;
+    return next;
   }
   const steps: Record<string, StepSettings> = { ...((next["steps"] as Record<string, StepSettings> | undefined) ?? {}) };
   const settings: StepSettings = { ...(steps[stage] ?? {}) };
   if (text === "") delete settings.instructions; else settings.instructions = text;
   if (Object.keys(settings).length === 0) delete steps[stage]; else steps[stage] = settings;
   if (Object.keys(steps).length === 0) delete next["steps"]; else next["steps"] = steps;
-  return next as RecipeOverlay;
+  return next;
 }
 
 /** The overlay with `rule` appended as its own paragraph. The resulting stage text is checked against 4,000 characters BEFORE anything is written. */

@@ -94,11 +94,11 @@ const sameBase = (a: AgentDraft["extends"], b: AgentDraft["extends"]) => canonic
 
 async function readLayer(deps: LearningDecideDeps, orgId: string, agentId: string): Promise<Layer> {
   const store = deps.approvals.store;
-  const agent = await store.get(orgId as never, agentId as never);
+  const agent = await store.get(orgId, agentId);
   if (agent === undefined || agent.status === "archived") throw failure("AGENT_UNAVAILABLE", "How we work isn't available for this project right now.");
-  const draft = await store.getDraft(orgId as never, agentId as never);
+  const draft = await store.getDraft(orgId, agentId);
   if (draft === undefined) throw failure("AGENT_UNAVAILABLE", "How we work isn't available for this project right now.");
-  const published = agent.currentVersion === undefined ? undefined : await store.getVersion(orgId as never, agentId as never, agent.currentVersion);
+  const published = agent.currentVersion === undefined ? undefined : await store.getVersion(orgId, agentId, agent.currentVersion);
   return { agent, draft, published, publishedOverlay: published?.overlay ?? {} };
 }
 
@@ -195,12 +195,12 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
 
   try {
     if (!sameOverlay(layer.draft.overlay, built)) {
-      await store.saveDraft({ orgId: caller.orgId, agentId: agentId as never, overlay: built, expectedRevision: layer.draft.revision, by: caller.developerId });
+      await store.saveDraft({ orgId: caller.orgId, agentId: agentId, overlay: built, expectedRevision: layer.draft.revision, by: caller.developerId });
       layer = await readLayer(deps, caller.orgId, agentId);
     }
     const result = await publishDraft(deps.approvals, caller, layer.agent, { requestId, expectedRevision: layer.draft.revision, note: acceptNote(ruleId) });
     if (result.applied) {
-      await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: agentId as never });
+      await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: agentId });
       const rule = await readRule(learning, scope, ruleId);
       if (rule === undefined) throw stale();
       await commitApplied(deps, scope, ruleId, result.value.version, caller.developerId);
@@ -384,7 +384,7 @@ export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCall
     return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl };
   }
   await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: rule.processAgentId });
-  const audited = await learningEvents(learning, () => [rolledBackEvent(learning, scope, memberActor(caller.developerId), { ruleId: rule!.id, processAgentId: rule!.processAgentId, processVersion: result.value.version })]);
+  const audited = await learningEvents(learning, () => [rolledBackEvent(learning, scope, memberActor(caller.developerId), { ruleId: rule.id, processAgentId: rule.processAgentId, processVersion: result.value.version })]);
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [ruleTransition(learning, scope, ruleId, ["active"], "removed", { removedInVersion: result.value.version }, ["removalApprovalId"]), ...audited.items] }));
     await flushLearningEvents(learning, audited.events);

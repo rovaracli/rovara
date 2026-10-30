@@ -261,7 +261,7 @@ export async function settleRule(deps: LearningSettleDeps, scope: LearningScope,
   if (rule.status === "active" && rule.removalApprovalId !== undefined) return settleRemoval(deps, scope, rule);
   if (rule.status === "awaiting_approval") {
     if (rule.approvalId === undefined) return "waiting";
-    const record = await getAnyApproval(deps.approvals, orgId, rule.approvalId as never);
+    const record = await getAnyApproval(deps.approvals, orgId, rule.approvalId);
     if (record === undefined) return "waiting";
     switch (record.status) {
       case "APPROVED_DONE": {

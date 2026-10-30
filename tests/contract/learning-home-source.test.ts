@@ -204,7 +204,7 @@ describe("settlement of waiting rules from Home", () => {
       // The source has 400 ms, so approvals may be read in the first 200 ms of it. The batch read alone takes 250 ms, so no approval is read at all.
       const slow = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "BatchGetCommand") await new Promise((resolve) => setTimeout(resolve, 250)); return w.db.send(command as never); } };
       const c = counting(w);
-      const answer = await w.home(MAX, ORG_A, { approvals: c.approvals, homeSourceTimeoutMs: 400, documentClient: slow as never });
+      const answer = await w.home(MAX, ORG_A, { approvals: c.approvals, homeSourceTimeoutMs: 400, documentClient: slow });
       expect(answer.cards.filter((card) => card.kind === "rule_suggestion")).toHaveLength(1);
       expect(c.reads).toEqual([]);
       expect(settled).toEqual([]);
