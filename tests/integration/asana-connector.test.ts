@@ -8,7 +8,7 @@ import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-
 import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
 import { startFakeAsana, type FakeAsana } from "../support/fake-asana.js";
 import { memorySecretStore } from "../support/refresh-token-fakes.js";
-import { call, createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
+import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 
 const team = "T0BSHLLUGBD";
 const channel = "C0123456789";

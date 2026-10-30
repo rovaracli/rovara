@@ -1,3 +1,4 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 2, Task 3: one person who signed in two ways before identity links is two members of the same org. The duplicate's next
 // sign-in merges it into the member the verified email names: grants, budget override and role move over, and the duplicate retires.
 import { describe, expect, it } from "vitest";
@@ -147,7 +148,11 @@ describe("mergeDuplicateMember", () => {
     const { orgId } = w;
     w.db.set(grant(orgId, D2, "api", "grant-api"));
     w.db.set({ ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: { [D2]: 50 } });
-    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    w.db.injectFault({ command: "TransactWriteCommand", match: input => {
+      const items = input.TransactItems as Array<{ Delete?: { Key?: { pk?: string; sk?: string } } }>;
+      const key = orgMemberKey(orgId, D2);
+      return items.some(item => item.Delete?.Key?.pk === key.pk && item.Delete?.Key?.sk === key.sk);
+    }, error: { name: "InternalServerError" } });
 
     await expect(w.merge(orgId)).rejects.toThrow();
     expect(grantsOf(w.db, orgId, D1).map((item) => item.grantId)).toEqual(["grant-api"]);
@@ -446,4 +451,41 @@ describe("the duplicate's real GitHub sign-in", () => {
     expect(h.db.get(orgMetaKey(raceOrg))).toHaveProperty("closedAt");
     expect(h.db.get(developerOrgKey(D2))).toBeUndefined();
   });
+});
+
+describe("B33 identity merge approval invalidation", () => {
+  it("invalidates the survivor company's approval generation when duplicate membership retires", async () => {
+    const w = await world();
+    const before = w.db.get(orgMetaKey(w.orgId))?.approvalMembershipVersion;
+    await w.merge(w.orgId);
+    expect(w.db.get(orgMetaKey(w.orgId))?.approvalMembershipVersion).toBe(Number(before) + 1);
+  });
+
+  it("fences maintainer grant movement before the duplicate identity is retired", async () => {
+    const w = await world();
+    w.db.set({ ...grant(w.orgId, D2, "api", "grant-api"), projectRole: "maintainer" });
+    w.db.set({ pk: `ORG#${w.orgId}#PROJECT#api`, sk: "META", entityType: "PROJECT_META", status: "active" });
+    const before = w.db.get(orgMetaKey(w.orgId))?.approvalMembershipVersion;
+    await w.merge(w.orgId);
+    expect(w.db.get(orgMetaKey(w.orgId))?.approvalMembershipVersion).toBeGreaterThan(Number(before) + 1);
+    expect(w.db.get({ pk: `ORG#${w.orgId}#PROJECT#api`, sk: "META" })?.approvalLastMaintainerLossAt).toBe(new Date(T0).toISOString());
+    expect(grantsOf(w.db, w.orgId, D2)).toEqual([]);
+  });
+});
+
+
+it("B33 never copies a stale maintainer grant after its source was demoted", async () => {
+ const w = await world();
+ const source = { ...grant(w.orgId, D2, "api", "grant-api"), projectRole: "maintainer" };
+ w.db.set(source);
+ const send = w.db.send.bind(w.db);let race = true;
+ w.db.send = async command => {
+  if (race && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.ownerKey === D1 && item.Put?.Item?.projectName === "api")) {
+   race = false;w.db.set({ ...source, projectRole: "contributor" });
+  }
+  return send(command);
+ };
+ await expect(w.merge(w.orgId)).rejects.toThrow();
+ expect(grantsOf(w.db, w.orgId, D1)).toEqual([]);
+ expect(w.db.get(projectMemberKey(w.orgId, D2, "api"))?.projectRole).toBe("contributor");
 });

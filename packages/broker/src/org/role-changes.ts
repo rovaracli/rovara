@@ -1,3 +1,4 @@
+import { approvalCompanyChange } from "./approval-membership.js";
 // Reviewed console writes: authority, result receipt and audit commit together.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -56,6 +57,10 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
   if (otherOwner === undefined) throw agentXError("LAST_OWNER", "Add another company owner before changing your own role.");
   add("owner", roleFence(otherOwner, "owner"));
  }
+ if (changing) {
+  const generation = await approvalCompanyChange({ ...deps, now: () => new Date(deps.now()) }, orgId, (change.expectedRole === "owner" || change.expectedRole === "admin") && change.role === "member");
+  for (const item of generation) add("membership_generation", item);
+ }
  add("receipt", { Put: { TableName: deps.tableName, Item: { ...receiptKey, digest, developerId: target, role: change.role, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + 30 * 86400 }, ConditionExpression: "attribute_not_exists(pk)" } });
  const event = changing ? auditMemberRoleChanged({ orgId, actor: { kind: "member", id: actor }, memberId: target, fromRole: change.expectedRole, toRole: change.role, occurredAt: at, occurrence: auditOccurrence("reviewed-role", orgId, change.requestId, target, change.role) }) : undefined;
  if (event !== undefined) {
@@ -70,7 +75,7 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
    const failed = labels.filter((_, index) => reasons[index]?.Code === "ConditionalCheckFailed");
    if (failed.includes("actor") || (actor === target && failed.includes("target"))) throw forbidden();
    if (failed.includes("owner")) throw agentXError("LAST_OWNER", "Another owner changed. Reload before changing your own role.");
-   if (failed.includes("target") || failed.includes("pointer")) throw stale();
+   if (failed.includes("target") || failed.includes("pointer") || failed.includes("membership_generation")) throw stale();
   }
   throw unavailable();
  }

@@ -1,3 +1,9 @@
+import { commitRegisteredProjectAllowedDomains, type AppliedDomainProposalProof } from "../org/project-allowed-domains.js";
+import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
+import { planLegacyDomainNarrowing } from "../org/legacy-domain-narrowing.js";
+import { planInitialProjectDomains } from "../org/project-domain-initial.js";
+import { isAllowedDomainWidening, refuseAllowedDomainWidening } from "../org/allowed-domain-policy.js";
+import { approvalGrantChange } from "../org/approval-membership.js";
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
@@ -373,7 +379,7 @@ import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditOccurrence, auditPullRequestOpened, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
+import { auditOccurrence, auditPullRequestOpened, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { auditedWrite, modelSelectionAuditEvent, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
@@ -1690,7 +1696,7 @@ function adminReadDependencies(dependencies: AwsBrokerDependencies): AdminReadDe
 function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHandlers {
   return {
     requireAdministrator: (identity, project) => requireAdministrator(dependencies, identity, project),
-    bindChannel: async (identity, teamId, channelId, project) => putSlackBinding(dependencies, identity, teamId, channelId, { projectName: project }),
+    bindChannel: async () => { throw agentXError("FORBIDDEN", "Use the browser Slack approval flow to link a channel."); },
     unbindChannel: async (identity, teamId, channelId) => deleteSlackBinding(dependencies, identity, teamId, channelId),
     checkRevision: async (identity, definitionValue, runtimeBindingValue, options) => {
       if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -2479,8 +2485,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...repositoriesGateRoute(dependencies),
           ...workingBranchPagesRoute(dependencies),
           ...workingBranchPreviewRoute(dependencies),
+          projectAllowedDomains: {
+            registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
+          },
           projectSettings: {
-            registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
+            registerRevision: async (actor, input, extraItems) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none", ...(extraItems === undefined ? {} : { extraItems, expectedBaseRevision: input.definition.revision - 1 }) }); },
             // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
             ...(repositoryGateOf(dependencies) === undefined ? {} : {
               requireRepositoryConnected: (orgId: OrgId, owner: string, repository: string) => requireRepositoryConnected(repositoryGateOf(dependencies)!, orgId, owner, repository),
@@ -3248,11 +3257,24 @@ export async function registerProjectFor(
   dependencies: AwsBrokerDependencies,
   actor: RegistrationActor,
   value: unknown,
-  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
+  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; expectedBaseRevision?: number; appliedDomainProposal?: AppliedDomainProposalProof; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
 ): Promise<RegistrationResult> {
   const checked = options.checked;
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval, takeover } = parseRegistrationInput(value);
+  if (options.appliedDomainProposal !== undefined) {
+    // This trusted option is never accepted from a registration JSON body. It
+    // dispatches to the shared reviewed transaction, not the legacy retry path.
+    if (dependencies.cloud !== true || actor.auditActor?.kind === "operator" || options.creatorMembership !== "none") throw agentXError("FORBIDDEN", "Website proposal approval requires a live company person.");
+    if (wantsPreflight || setupApproval !== undefined || takeover !== undefined || options.requireNewName === true || options.description !== undefined
+      || options.extraItems !== undefined || options.expectedBaseRevision !== undefined || options.checked !== undefined || options.credentialsChecked !== undefined) throw agentXError("CONFIG_INVALID", "A website proposal cannot authorize other registration changes.");
+    const result = await commitRegisteredProjectAllowedDomains({ ...dependencies, signInTableName: dependencies.developer?.signInTableName ?? "", now: Date.now }, {
+      orgId, project: definition.name, by: actor.ownerKey, definition, runtimeBinding, proof: options.appliedDomainProposal,
+    });
+    const registered = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, definition.name, result.receipt.resultRevision));
+    if (registered === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The approved website revision could not be read.");
+    return { project: withoutKeys(registered), duplicate: result.duplicate };
+  }
   if (options.requireNewName === true && await getItem(dependencies, orgProjectCatalogKey(orgId, definition.name)) !== undefined) {
     throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
   }
@@ -3324,6 +3346,10 @@ export async function registerProjectFor(
     throw agentXError("FORBIDDEN", `only an administrator of project ${definition.name} can register a new revision of it. An instance administrator who is not one can take the project over by asking explicitly: send takeOwnership: true with a takeOwnershipReason (agentx admin project register --take-ownership --reason "...")`);
   };
   const readCatalogSnapshot = () => readProjectCatalogSnapshot(dependencies, orgId, definition.name);
+  const domainWideningFence = (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>) => {
+    if (dependencies.cloud === true && snapshot.newestRevision > 0
+      && isAllowedDomainWidening(snapshot.newestDefinition?.network?.allowedDomains ?? [], definition.network?.allowedDomains ?? [])) refuseAllowedDomainWidening();
+  };
   // Legacy registration cannot carry or revalidate reviewed branch selections. Refuse rather than
   // silently discard them; even malformed/present metadata needs its own reviewed migration.
   const selectionFence = async (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>): Promise<TransactItems> => {
@@ -3340,8 +3366,16 @@ export async function registerProjectFor(
       ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(workingBranchSelections)" } }];
   };
   const repairCatalogPointerFromHistory = () => repairProjectCatalogPointerFromHistory(dependencies, orgId, definition.name);
+  const requireExpectedBase = (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>) => {
+    if (options.expectedBaseRevision !== undefined && (!Number.isSafeInteger(options.expectedBaseRevision) || options.expectedBaseRevision < 1
+      || definition.revision !== options.expectedBaseRevision + 1 || snapshot.newestRevision !== options.expectedBaseRevision)) {
+      throw agentXError("PROJECT_REVISION_MISMATCH", "project changed after its atomic change was planned");
+    }
+  };
   const existing = await getItem<RegisteredProjectRecord>(dependencies, key);
   if (existing) {
+    // Extra transaction effects require their own receipt recovery; matching revision content is insufficient.
+    if (options.expectedBaseRevision !== undefined) throw agentXError("PROJECT_REVISION_MISMATCH", "atomic project revision already exists");
     // The stored revision is read back from DynamoDB, which keeps no map's attribute order: compare content, not text.
     if (!sameJsonContent(existing.definition, definition) || !sameJsonContent(existing.runtimeBinding, runtimeBinding) || !sameJsonContent(existing.setupApproval, setupApprovalBinding)) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "registered project revisions and runtime bindings are immutable");
@@ -3357,9 +3391,28 @@ export async function registerProjectFor(
   // Refused before any vendor is contacted for a registrant who may not store this revision; the commit judges it again.
   const initialSnapshot = await readCatalogSnapshot();
   await judgeAuthority(initialSnapshot.newestRevision);
+  requireExpectedBase(initialSnapshot);
+  domainWideningFence(initialSnapshot);
   await selectionFence(initialSnapshot);
-  const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight, options.credentialsChecked);
   const now = new Date().toISOString();
+  const beforeDomains = [...new Set(initialSnapshot.newestDefinition?.network?.allowedDomains ?? [])].sort();
+  const afterDomains = [...new Set(definition.network?.allowedDomains ?? [])].sort();
+  const commonDomainNarrowing = dependencies.cloud === true && initialSnapshot.newestRevision > 0 && options.expectedBaseRevision === undefined
+    && canonicalJson(beforeDomains) !== canonicalJson(afterDomains);
+  let commonDomainPlan: Awaited<ReturnType<typeof planLegacyDomainNarrowing>> | undefined;
+  if (commonDomainNarrowing) {
+    if (definition.revision !== initialSnapshot.newestRevision + 1) throw agentXError("PROJECT_REVISION_MISMATCH", "website narrowing requires the next canonical revision");
+    const isOperator = actor.auditActor?.kind === "operator";
+    if (isOperator && options.creatorMembership !== "administrator") throw agentXError("FORBIDDEN", "Operator website changes require project registration authority.");
+    const authority: TransactItems = isOperator
+      ? [{ ConditionCheck: { TableName: dependencies.tableName, Key: orgMetaKey(orgId), ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)" } }]
+      : await readAllowedDomainActorConditions({ ...dependencies, signInTableName: dependencies.developer?.signInTableName ?? "", now: Date.now }, { orgId, project: definition.name, actorId: actor.ownerKey });
+    commonDomainPlan = await planLegacyDomainNarrowing({ ...dependencies, cloud: true, now: () => new Date(now) }, {
+      orgId, project: definition.name, by: actor.ownerKey, ...(actor.auditActor === undefined ? {} : { auditActor: actor.auditActor }),
+      body: { requestId: randomUUID(), expectedRevision: initialSnapshot.newestRevision, allowedDomains: afterDomains }, before: beforeDomains, after: afterDomains, authority,
+    });
+  }
+  const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight, options.credentialsChecked);
   const record: RegisteredProjectRecord = {
     ...key,
     entityType: "PROJECT",
@@ -3405,9 +3458,15 @@ export async function registerProjectFor(
       throw error;
     }
   };
+  const initialDomainPlan = dependencies.cloud === true && initialSnapshot.newestRevision === 0 && (definition.network?.allowedDomains.length ?? 0) > 0
+    ? await planInitialProjectDomains(dependencies, { orgId, project: definition.name, actorId: actor.ownerKey, actor: actor.auditActor ?? auditActorOf(actor.ownerKey),
+      revision: definition.revision, domains: definition.network!.allowedDomains, at: now }) : undefined;
   const maxRegistrationAttempts = 3;
   for (let attempt = 0; attempt < maxRegistrationAttempts; attempt += 1) {
     const snapshot = await readCatalogSnapshot();
+    requireExpectedBase(snapshot);
+    if (commonDomainPlan !== undefined && snapshot.newestRevision !== initialSnapshot.newestRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "website plan lost its canonical base");
+    if (initialDomainPlan !== undefined && snapshot.newestRevision !== 0) throw agentXError("PROJECT_REVISION_MISMATCH", "initial website plan requires a new project");
     const latestRevision = Math.max(definition.revision, snapshot.newestRevision);
     const updateCatalog = snapshot.catalog?.latestRevision !== latestRevision;
     // Plan 4 Task 21: GitHub's events find this project by each pinned repository's id. The rows are written with the revision that pins the repository (a repeat heals a missing one)
@@ -3424,8 +3483,13 @@ export async function registerProjectFor(
     // An existing project changes (its test accounts included) only at the hand of one of its administrators, or of an instance administrator who takes it over explicitly.
     // Judged against the project as it is on this attempt: an administrator who raced a first registration and lost finds the project there on the next one.
     const authority = await judgeAuthority(snapshot.newestRevision);
+    domainWideningFence(snapshot);
     const selectionsAbsent = await selectionFence(snapshot);
     const accounts = await planAccounts();
+    const previousCreatorGrant = membership === undefined || authority === "administrator" ? undefined : await getMembership(dependencies, orgId, actor.ownerKey, definition.name);
+    const membershipGeneration = membership === undefined || authority === "administrator" ? []
+      : await approvalGrantChange({ ...dependencies, now: () => new Date(now) }, orgId, definition.name,
+        previousCreatorGrant?.projectRole === "maintainer" && membership.projectRole !== "maintainer");
     // H6: the models, checks and E2E capture this revision changes against the newest one are audited in this transaction. A revision registered late (older than the newest) changes nothing the project runs.
     const audit = definition.revision < snapshot.newestRevision ? { items: [] as TransactItems, events: [] as AuditEventInput[] } : await auditedWrite(dependencies, () => projectDefinitionAuditEvents({
       orgId, actor: actor.auditActor ?? auditActorOf(actor.ownerKey), occurredAt: now, before: snapshot.newestDefinition, after: definition,
@@ -3433,7 +3497,25 @@ export async function registerProjectFor(
     // One transaction holds at most 100 items; the project revision, its membership, the catalog and the setup admission take the rest.
     if (accounts.items.length > 60) throw agentXError("CONFIG_INVALID", "the setup declares more synthetic test accounts than one registration can store");
     try {
-      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      // DynamoDB allows one action per item. Keep the narrowing snapshot AND
+    // eligibility-loss fence when a takeover updates that same META row.
+    const commonDomainItems = commonDomainPlan?.items.filter(item => {
+      const check = item.ConditionCheck;if (check === undefined) return true;
+      const update = membershipGeneration.find(generation => generation.Update?.TableName === check.TableName
+        && generation.Update?.Key?.pk === check.Key?.pk && generation.Update?.Key?.sk === check.Key?.sk)?.Update;
+      if (update === undefined) return true;
+      for (const [token, value] of Object.entries(check.ExpressionAttributeNames ?? {})) {
+        if (update.ExpressionAttributeNames?.[token] !== undefined && update.ExpressionAttributeNames[token] !== value) throw agentXError("CONFIG_INVALID", "Website transaction condition conflicts.");
+      }
+      for (const [token, value] of Object.entries(check.ExpressionAttributeValues ?? {})) {
+        if (update.ExpressionAttributeValues?.[token] !== undefined && canonicalJson(update.ExpressionAttributeValues[token]) !== canonicalJson(value)) throw agentXError("CONFIG_INVALID", "Website transaction condition conflicts.");
+      }
+      update.ConditionExpression = [update.ConditionExpression, check.ConditionExpression].filter(Boolean).join(" AND ");
+      if (check.ExpressionAttributeNames !== undefined) update.ExpressionAttributeNames = { ...update.ExpressionAttributeNames, ...check.ExpressionAttributeNames };
+      if (check.ExpressionAttributeValues !== undefined) update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
+      return false;
+    }) ?? [];
+    const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       // The operator's first registration and a takeover write the registrant's administrator membership; an administrator's own is left as it is (its grant is not reissued)
       // but must still hold when the revision commits. A registration the caller authorized writes the creator's grant (or none), as it always did.
@@ -3478,9 +3560,14 @@ export async function registerProjectFor(
       ...repositoryIndex,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
+      ...membershipGeneration,
+      ...(initialDomainPlan?.items ?? []),
+      ...commonDomainItems,
       ...audit.items,
-      ] }));
-      await flushAuditEvents(dependencies, audit.events);
+      ];
+      if (registrationItems.length > 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
+      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: registrationItems }));
+      await flushAuditEvents(dependencies, [...audit.events, ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
@@ -3505,6 +3592,9 @@ export async function registerProjectFor(
         }
         // Anything else (a setup row's condition) is handled as it is without requireNewName, below.
       }
+      // A composed authority/egress/receipt plan is single-attempt. Never replan or
+      // report another writer's same-content revision as this transaction's success.
+      if (options.expectedBaseRevision !== undefined || initialDomainPlan !== undefined || commonDomainPlan !== undefined) throw agentXError("PROJECT_REVISION_MISMATCH", "atomic project change lost its original conditions");
       // A same-revision registration may have won concurrently. Validate the immutable record and
       // catalog before returning duplicate success; otherwise retry only a catalog/history advance.
       const winner = await getItem<RegisteredProjectRecord>(dependencies, key);
@@ -4235,6 +4325,8 @@ async function newWorkspacePreparation(
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       // The target's membership is created here only when absent, recording who granted it; an existing row is required to be as it was read, never rewritten.
       membershipPreparationItem(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName, existingMembership, options.grantedBy),
+      ...(existingMembership === undefined || typeof existingMembership.grantId !== "string"
+        ? await approvalGrantChange({ ...dependencies, now: () => new Date(now) }, requireOrgId(identity.orgId), projectName, false) : []),
     ],
   };
 }
@@ -4586,13 +4678,22 @@ async function putSlackBinding(
     await requireAdministrator(dependencies, identity, existing.projectName);
   }
   const latest = await requireLatestProject(dependencies, orgId, binding.projectName);
+  const event = auditSlackChannelBound({ orgId,
+    actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) },
+    occurredAt: binding.updatedAt, occurrence: auditOccurrence(randomUUID(), binding.projectName, binding.teamId, binding.channelId),
+    projectName: binding.projectName, teamId: binding.teamId, channelId: binding.channelId,
+  });
+  const pending = auditPending(dependencies, event);
+  if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
   // The team joins the org first; a team another org already holds is refused here (SLACK_TEAM_TAKEN).
   await ensureInstallOrg(dependencies, orgId);
   await orgStoreOf(dependencies).bindSlackTeam({ orgId, teamId: binding.teamId });
-  await dependencies.documentClient.send(new PutCommand({
-    TableName: dependencies.tableName,
-    Item: slackBindingItem(orgId, binding, identity.ownerKey),
-  }));
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: {
+    TableName: dependencies.tableName, Item: slackBindingItem(orgId, binding, identity.ownerKey),
+    ConditionExpression: existing === undefined ? "attribute_not_exists(pk)" : "projectName = :project AND updatedAt = :at",
+    ...(existing === undefined ? {} : { ExpressionAttributeValues: { ":project": existing.projectName, ":at": existing.updatedAt } }),
+  } }, ...pending] }));
+  await flushAuditEvents(dependencies, [event]);
   return { binding, latestRevision: latest.definition.revision };
 }
 
@@ -4608,10 +4709,20 @@ async function deleteSlackBinding(
   const binding = await getSlackBinding(dependencies, orgId, teamId, channelId);
   if (!binding) throw agentXError("NOT_FOUND", "Slack channel binding not found");
   await requireAdministrator(dependencies, identity, binding.projectName);
-  await dependencies.documentClient.send(new DeleteCommand({
-    TableName: dependencies.tableName,
-    Key: slackBindingKey(orgId, teamId, channelId),
-  }));
+  const occurredAt = new Date().toISOString();
+  const event = auditSlackChannelUnbound({ orgId,
+    actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt,
+    occurrence: auditOccurrence(randomUUID(), binding.projectName, teamId, channelId),
+    projectName: binding.projectName, teamId, channelId,
+  });
+  const pending = auditPending(dependencies, event);
+  if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+  await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: {
+    TableName: dependencies.tableName, Key: slackBindingKey(orgId, teamId, channelId),
+    ConditionExpression: "projectName = :project AND updatedAt = :at",
+    ExpressionAttributeValues: { ":project": binding.projectName, ":at": binding.updatedAt },
+  } }, ...pending] }));
+  await flushAuditEvents(dependencies, [event]);
   return { deleted: true, binding };
 }
 
@@ -5190,6 +5301,8 @@ async function createUnpreparedThreadWorkspace(
           ExpressionAttributeNames: { "#creator": "creator" },
           ExpressionAttributeValues: { ":creator": { userId: identity.slack!.requester.userId, ...(identity.slack!.requesterName === undefined ? {} : { name: identity.slack!.requesterName }) } },
         } },
+        ...(existingMembership === undefined || typeof existingMembership.grantId !== "string"
+          ? await approvalGrantChange({ ...dependencies, now: () => new Date() }, orgId, projectName, false) : []),
       ] }));
       workspace = attempted;
       break;

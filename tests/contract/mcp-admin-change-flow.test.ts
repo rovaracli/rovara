@@ -24,13 +24,24 @@ const stateOf = (db: { items: Map<string, Record<string, unknown>> }) => JSON.st
   .sort(([left], [right]) => left.localeCompare(right)));
 
 describe("an admin changes AgentX from an AI tool (US6)", () => {
-  it("binds a channel after the pop-up's yes, and the record says who, how, when and with which trace ID (SC-011)", async () => {
+  it("refuses bind tools with browser approval guidance without changing bindings", async () => {
     const broker = await createAdminChangeBroker();
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "#ledger-dev", project: "payments" });
+    const before = stateOf(broker.db);
+    const answer = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
+    // MCP maps HTTP 403 to ADMIN_REQUIRED; retain the broker's fixed browser guidance.
+    expect(answer.error).toMatchObject({ code: "ADMIN_REQUIRED", message: "AgentX refused: Use the browser Slack approval flow to link a channel" });
+    expect(stateOf(broker.db)).toBe(before);
+  });
+
+  it("unbinds a channel after the pop-up's yes, and the record says who, how, when and with which trace ID (SC-011)", async () => {
+    const broker = await createAdminChangeBroker();
+    const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "#ledger-dev" });
     expect(bound.value).toMatchObject({ outcome: "applied", method: "elicitation" });
-    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
     const record = ((await mcp.tool("agentx_admin_changes")).value.changes as Array<Record<string, unknown>>)[0]!;
     expect(record).toMatchObject({
       change_id: bound.value.change_id, outcome: "confirmed", admin: "Ada", client: { cliVersion: expect.any(String) as unknown, mcpClientName: "claude-code", mcpClientVersion: "2.1.0" },
@@ -52,7 +63,7 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_set_workspace_limits")).toBe(true);
     const calls: Array<[string, Record<string, unknown>]> = [
       ["agentx_admin_register_project_revision", { definition: { name: "payments", revision: 2, repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." } }],
-      ["agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" }],
+      ["agentx_admin_unbind_channel", { channel: "C0LEDGER01" }],
       ["agentx_admin_unbind_channel", { channel: SLACK_CHANNEL }],
       ["agentx_admin_register_credential", { ref: "linear", type: "static-secret", secret_name: "agentx/connectors/linear" }],
       ["agentx_admin_stop_workspace", { workspace_id: task.workspaceId }],
@@ -115,15 +126,15 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
   it("answers awaiting_confirmation after five minutes, and the record reads expired after ten", async () => {
     const broker = await createAdminChangeBroker();
     const mcp = await adminSignedInClient(broker, { elicitation: false, clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
     const before = broker.clock.now();
-    const waiting = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
+    const waiting = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01" });
     expect(waiting.value).toMatchObject({ outcome: "awaiting_confirmation" });
     expect(broker.clock.now() - before).toBeGreaterThanOrEqual(5 * 60_000);
     broker.clock.advance(6 * 60_000);
     const record = ((await mcp.tool("agentx_admin_changes")).value.changes as Array<Record<string, unknown>>)[0];
     expect(record).toMatchObject({ change_id: waiting.value.change_id, outcome: "expired" });
-    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
   });
 
   it("offers no change tool, and refuses a direct call, when neither method is available (FR-041, US6 scenario 4)", async () => {
@@ -131,7 +142,7 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
     const mcp = await adminSignedInClient(broker, { elicitation: false, clock: broker.clock, config: CONFIG });
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_changes")).toBe(true);
     expect((await mcp.names()).filter((name) => name.startsWith("agentx_admin_") && !["agentx_admin_changes", "agentx_admin_health", "agentx_admin_failed_tasks", "agentx_admin_turns", "agentx_admin_usage", "agentx_admin_list_projects", "agentx_admin_list_channels", "agentx_admin_list_credentials", "agentx_admin_list_workspaces"].includes(name))).toEqual([]);
-    expect((await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" })).error).toMatchObject({ code: "CONFIRMATION_UNAVAILABLE" });
+    expect((await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01" })).error).toMatchObject({ code: "CONFIRMATION_UNAVAILABLE" });
   });
 
   it("changes the per-person limit with no stack update, and the next creation uses it (SC-013, US6 scenario 7)", async () => {
@@ -185,8 +196,8 @@ describe("one trace ID from the MCP server to the stored change (SC-011, FR-052,
   it("stores the trace ID agentx mcp sent, and sends it on every call of that change", async () => {
     const broker = await createAdminChangeBroker();
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01" });
     expect(bound.value).toMatchObject({ outcome: "applied" });
     const changeId = String(bound.value.change_id);
     const calls = mcp.sent.filter((request) => (request.path === "/v1/admin/changes" && request.method === "POST") || request.path.startsWith(`/v1/admin/changes/${changeId}`));
@@ -243,8 +254,8 @@ describe("a private channel in the confirmation, end to end (B4, R4, Q7)", () =>
   it("names it in the pop-up for a member admin; the audit record and another admin's read show its ID only", async () => {
     const broker = await createAdminChangeBroker({ channelInfo, channelMembers: memberAdmin });
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0PRIVATE01", project: "payments" });
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0PRIVATE01" });
     expect(bound.value).toMatchObject({ outcome: "applied", method: "elicitation" });
     expect(mcp.asked).toHaveLength(1);
     expect(mcp.asked[0]).toContain("#secret-launch (C0PRIVATE01, a private channel)");
@@ -272,8 +283,8 @@ describe("a private channel in the confirmation, end to end (B4, R4, Q7)", () =>
         await broker.press(String(waiting.changeId), "confirm");
       },
     });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0PRIVATE01", project: "payments" });
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0PRIVATE01" });
     expect(bound.value).toMatchObject({ outcome: "applied", method: "slack" });
     expect(slack.posts).toHaveLength(1);
     expect(slack.posts[0]).toMatchObject({ channel: ADMIN_SLACK, text: expect.stringContaining("#secret-launch") as unknown });
@@ -286,8 +297,8 @@ describe("a private channel in the confirmation, end to end (B4, R4, Q7)", () =>
   it("shows a non-member admin its ID in the pop-up and in the Slack message", async () => {
     const broker = await createAdminChangeBroker({ channelInfo, channelMembers: nonMember });
     const popUp = await adminSignedInClient(broker, { elicitation: "decline", clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await popUp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    expect((await popUp.tool("agentx_admin_bind_channel", { channel: "C0PRIVATE01", project: "payments" })).error).toMatchObject({ code: "CONFIRMATION_DECLINED" });
+    await expect.poll(async () => (await popUp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    expect((await popUp.tool("agentx_admin_unbind_channel", { channel: "C0PRIVATE01" })).error).toMatchObject({ code: "CONFIRMATION_DECLINED" });
     expect(popUp.asked).toHaveLength(1);
     expect(popUp.asked[0]).toContain("C0PRIVATE01 (a private channel)");
     expect(popUp.asked[0]).not.toContain("secret-launch");
@@ -299,8 +310,8 @@ describe("a private channel in the confirmation, end to end (B4, R4, Q7)", () =>
         if (waiting !== undefined && slack.posts.length === 0) await slack.deliver(String(waiting.changeId), "admin_change_dm");
       },
     });
-    await expect.poll(async () => (await noPopUp.names()).includes("agentx_admin_bind_channel")).toBe(true);
-    expect((await noPopUp.tool("agentx_admin_bind_channel", { channel: "C0PRIVATE01", project: "payments" })).value).toMatchObject({ outcome: "awaiting_confirmation" });
+    await expect.poll(async () => (await noPopUp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
+    expect((await noPopUp.tool("agentx_admin_unbind_channel", { channel: "C0PRIVATE01" })).value).toMatchObject({ outcome: "awaiting_confirmation" });
     expect(slack.posts).toHaveLength(1);
     expect(slack.posts[0]?.text).toContain("C0PRIVATE01 (a private channel)");
     expect(JSON.stringify(slack.posts)).not.toContain("secret-launch");
@@ -361,29 +372,29 @@ describe("an apply's own failures and a reused request ID, through the tools (25
   it("answers applied when the change applied but its applied record could not be written", async () => {
     const broker = await createAdminChangeBroker();
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
     const send = broker.db.send;
     broker.db.send = async (command) => {
       if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes('":to":"applied"')) throw unexpected();
       return send(command);
     };
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01" });
     broker.db.send = send;
     expect(bound.value).toMatchObject({ outcome: "applied" });
-    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
     expect(mcp.answers.join("\n")).not.toContain(PLANTED);
   });
 
   it("says a change whose apply failed has failed, and what to do", async () => {
     const broker = await createAdminChangeBroker();
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
-    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
+    await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
     const send = broker.db.send;
     broker.db.send = async (command) => {
       if (command.constructor.name !== "GetCommand" && command.constructor.name !== "QueryCommand" && JSON.stringify(command.input).includes("SLACK_BINDING#")) throw unexpected();
       return send(command);
     };
-    const failed = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
+    const failed = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01" });
     broker.db.send = send;
     const changeId = String((broker.db.find((item) => item.entityType === "ADMIN_CHANGE")[0] as { changeId: string }).changeId);
     expect(broker.pending(changeId)).toMatchObject({ status: "failed" });
@@ -400,12 +411,12 @@ describe("an apply's own failures and a reused request ID, through the tools (25
     const mcp = await adminSignedInClient(broker, { elicitation: "accept", clock: broker.clock, config: CONFIG });
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
     const requestId = "12121212-1212-4121-8121-121212121212";
-    const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments", request_id: requestId });
+    const bound = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01", request_id: requestId });
     expect(bound.value).toMatchObject({ outcome: "applied", request_id: requestId });
-    const reused = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01", request_id: requestId });
+    const reused = await mcp.tool("agentx_admin_unbind_channel", { channel: SLACK_CHANNEL, request_id: requestId });
     expect(reused.error).toMatchObject({ code: "INVALID_REQUEST", next_step: "use a new request_id or leave it out" });
     expect(String(reused.error?.message)).toContain(requestId);
-    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
     expect(broker.db.find((item) => item.entityType === "ADMIN_CHANGE")).toHaveLength(1);
   });
 });

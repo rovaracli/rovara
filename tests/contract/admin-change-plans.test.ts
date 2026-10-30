@@ -1,14 +1,14 @@
 // tests/contract/admin-change-plans.test.ts
 // Spec 025 E6, E7, E11, E12: a plan says exactly what will happen, against current state, and
 // changes nothing; its hash moves when the state it covers moves.
+import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { redactSecrets, type ChannelInfoRequest, type ChannelMembersRequest } from "@agentx/contracts";
-import { fieldDiff, looksLikeSecret, planChange, stateHash, type PlanDependencies } from "../../packages/broker/src/aws/admin-change-plans.js";
+import { fieldDiff, looksLikeSecret, planChange, resolveChannel, stateHash, type PlanDependencies } from "../../packages/broker/src/aws/admin-change-plans.js";
 import { CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
-import { bindChannel, registerRevision } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -19,7 +19,7 @@ const MEMBER_ADMIN = "U0ADMIN001";
 const githubApp = { ref: "github-app", secretName: "arn:aws:secretsmanager:us-east-1:111122223333:secret:github-key" };
 const repository = { name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" };
 
-async function harness(options: { channelByName?: PlanDependencies["channelByName"]; secrets?: { read(name: string): Promise<string | undefined> } } = {}) {
+async function harness(options: { audit?: AuditCapture; cloud?: boolean; channelByName?: PlanDependencies["channelByName"]; secrets?: { read(name: string): Promise<string | undefined> } } = {}) {
   const channelInfo = vi.fn(async (request: ChannelInfoRequest) => ({
     ok: true as const,
     channels: request.channelIds.map((channelId) => ({
@@ -30,7 +30,9 @@ async function harness(options: { channelByName?: PlanDependencies["channelByNam
   }));
   const channelMembers = vi.fn(async (request: ChannelMembersRequest) => ({ ok: true as const, memberOf: request.slackUserId === MEMBER_ADMIN ? request.channelIds.filter((id) => id === "C0PRIVATE01") : [] }));
   const broker = await createAdminReadBroker({
+    audit: options.audit ?? capturingAuditDeps(),
     channelInfo, channelMembers,
+    ...(options.cloud === true ? { brokerExtra: { cloud: true } } : {}),
     ...(options.secrets === undefined ? {} : { brokerExtra: { connectorCredentials: { secrets: options.secrets, githubApp } } }),
   });
   const module = await import("../../packages/broker/src/aws/broker.js") as unknown as { createPlanDependencies(input: never): PlanDependencies };
@@ -42,52 +44,29 @@ async function harness(options: { channelByName?: PlanDependencies["channelByNam
 }
 
 describe("binding and unbinding (E7, E12)", () => {
-  it("shows the channel, its current binding and the revision new threads use, and changes nothing", async () => {
-    const { deps, identity, db, handler } = await harness({ channelByName: async () => ({ ok: true, channel: { channelId: "C0LEDGER01", name: "ledger-dev" } }) });
-    await registerRevision(handler, 7, {});
-    const plan = await planChange(deps, identity, { kind: "bind_channel", channel: "#ledger-dev", project: "payments" });
-    expect(plan.effect).toBe("Bind channel #ledger-dev (C0LEDGER01) to project payments. It is bound to nothing today. New threads in #ledger-dev will use payments revision 7.");
-    expect(plan.confirmationEffect).toBeUndefined();
-    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
-    // E12: with or without the "#".
-    const bare = await planChange(deps, identity, { kind: "bind_channel", channel: "ledger-dev", project: "payments" });
-    expect(bare.effect).toBe(plan.effect);
-    const again = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
-    expect(stateHash(again.snapshot)).toBe(stateHash(plan.snapshot));
-    await bindChannel(handler, "C0LEDGER01", "payments");
-    await expect(planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: channel #ledger-dev (C0LEDGER01) is already bound to payments; there is nothing to change" });
+  it("resolves public names with or without # and exact IDs without changing state", async () => {
+    const { deps, db } = await harness({ channelByName: async () => ({ ok: true, channel: { channelId: "C0LEDGER01", name: "ledger-dev" } }) });
+    const before = db.find(() => true);
+    const named = await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "#ledger-dev");
+    expect(named).toEqual({ channelId: "C0LEDGER01", label: "#ledger-dev (C0LEDGER01)", confirmationLabel: "#ledger-dev (C0LEDGER01)" });
+    expect(await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "ledger-dev")).toEqual(named);
+    expect(await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "C0LEDGER01")).toEqual(named);expect(db.find(() => true)).toEqual(before);
   });
-
-  it("moves the hash when the binding moves, and applies through the binding handler", async () => {
-    const { deps, identity, db, handler } = await harness();
-    const before = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
-    await registerRevision(handler, 2, {});
-    const after = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
-    expect(stateHash(after.snapshot)).not.toBe(stateHash(before.snapshot));
-    await after.apply(identity);
-    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+  it("B34 refuses every new bind plan before channel lookup or changes", async () => {
+    const channelByName = vi.fn(async () => ({ ok: true as const })), { deps, identity, db } = await harness({ channelByName });const before = db.find(() => true);
+    for (const channel of ["#ledger-dev", "ledger-dev", "C0LEDGER01", "C0PRIVATE01", "#secret-launch"]) await expect(planChange(deps, identity, { kind: "bind_channel", channel, project: "payments" })).rejects.toMatchObject({ code: "FORBIDDEN", message: "FORBIDDEN: Use the browser Slack approval flow to link a channel." });
+    expect(channelByName).not.toHaveBeenCalled();expect(db.find(() => true)).toEqual(before);
   });
-
-  it("names a private channel by ID only, and refuses a private channel's name", async () => {
-    const { deps, identity } = await harness({ channelByName: async () => ({ ok: true }) });
-    const plan = await planChange(deps, identity, { kind: "bind_channel", channel: "C0PRIVATE01", project: "payments" });
-    expect(plan.effect).toContain("Bind channel C0PRIVATE01 (a private channel) to project payments.");
-    expect(JSON.stringify(plan)).not.toContain("secret-launch");
-    await expect(planChange(deps, identity, { kind: "bind_channel", channel: "#secret-launch", project: "payments" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: no public channel with that name in this Slack workspace; give a private channel by its ID" });
+  it("resolves private IDs safely and refuses private channel names", async () => {
+    const { deps } = await harness({ channelByName: async () => ({ ok: true }) });
+    const resolved = await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "C0PRIVATE01");expect(resolved.label).toBe("C0PRIVATE01 (a private channel)");expect(JSON.stringify(resolved)).not.toContain("secret-launch");
+    await expect(resolveChannel(deps, TEST_ORG, SLACK_TEAM, "#secret-launch")).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: no public channel with that name in this Slack workspace; give a private channel by its ID" });
   });
-
-  it("names a private channel to a member admin in the confirmation only; the stored effect, details and hash keep the ID (B4, R4)", async () => {
-    const { deps, identity, channelMembers } = await harness();
-    const member = await planChange(deps, identity, { kind: "bind_channel", channel: "C0PRIVATE01", project: "payments" }, { slackUserId: MEMBER_ADMIN });
-    expect(member.confirmationEffect).toBe("Bind channel #secret-launch (C0PRIVATE01, a private channel) to project payments. It is bound to nothing today. New threads in #secret-launch will use payments revision 1.");
-    expect(member.effect).toBe("Bind channel C0PRIVATE01 (a private channel) to project payments. It is bound to nothing today. New threads in C0PRIVATE01 will use payments revision 1.");
-    expect(JSON.stringify([member.effect, member.details, member.snapshot])).not.toContain("secret-launch");
+  it("reveals a private channel name only in a member's separate confirmation label", async () => {
+    const { deps, channelMembers } = await harness();
+    const member = await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "C0PRIVATE01", { slackUserId: MEMBER_ADMIN });expect(member.confirmationLabel).toBe("#secret-launch (C0PRIVATE01, a private channel)");expect(member.label).toBe("C0PRIVATE01 (a private channel)");
     expect(channelMembers).toHaveBeenCalledWith({ kind: "channel-members", slackUserId: MEMBER_ADMIN, channelIds: ["C0PRIVATE01"] });
-    const outsider = await planChange(deps, identity, { kind: "bind_channel", channel: "C0PRIVATE01", project: "payments" }, { slackUserId: "U0OUTSIDE1" });
-    expect(outsider.effect).toBe(member.effect);
-    expect(outsider.confirmationEffect).toBeUndefined();
-    expect(JSON.stringify(outsider)).not.toContain("secret-launch");
-    expect(stateHash(outsider.snapshot)).toBe(stateHash(member.snapshot));
+    const outsider = await resolveChannel(deps, TEST_ORG, SLACK_TEAM, "C0PRIVATE01", { slackUserId: "U0OUTSIDE1" });expect(outsider.label).toBe(member.label);expect(outsider.confirmationLabel).toBe(outsider.label);expect(JSON.stringify(outsider)).not.toContain("secret-launch");
   });
 
   it("unbinds a bound channel, saying new messages there get no reply, and refuses an unbound one", async () => {
@@ -100,12 +79,10 @@ describe("binding and unbinding (E7, E12)", () => {
     expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
   });
 
-  it("rechecks project administration at apply: a bind or unbind by an admin who lost it changes nothing (E6, FR-015)", async () => {
+  it("rechecks project administration at apply: an unbind by an admin who lost it changes nothing (E6, FR-015)", async () => {
     const { deps, identity, db } = await harness();
-    const bind = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
     const unbind = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });
     db.delete(projectMemberKey(TEST_ORG, identity.ownerKey, "payments"));
-    await expect(bind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
     await expect(unbind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
     expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
     expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toMatchObject({ projectName: "payments" });
@@ -259,4 +236,22 @@ describe("the helpers", () => {
     expect(looksLikeSecret(`agentx/connectors/${"Ab3_".repeat(5)}${"x-9Z".repeat(5)}`)).toBe(true);
     expect(looksLikeSecret("agentx/connectors/linear.production.api.key.for.payments")).toBe(false);
   });
+});
+
+it("B33 Cloud change-plan apply cannot register a widening even after an administrator reviews the plan", async () => {
+ const { deps, identity, db } = await harness({ cloud: true });
+ const plan = await planChange(deps, identity, { kind: "register_project_revision", definition: { name: "payments", revision: 2, repositories: [repository], setup: [], readiness: [], orchestratorInstructions: "Delegate.", network: { allowedDomains: ["bypass.acme.dev"] } } });
+ const before = structuredClone(db.find(item => item.pk === projectRevisionKey(TEST_ORG, "payments", 1).pk));
+ const refusal = plan.apply(identity);await expect(refusal).rejects.toMatchObject({ code: "FORBIDDEN" });await expect(refusal).rejects.toHaveProperty("message", expect.stringContaining("proposal"));
+ expect(db.find(item => item.pk === projectRevisionKey(TEST_ORG, "payments", 1).pk)).toEqual(before);expect(db.get(projectRevisionKey(TEST_ORG, "payments", 2))).toBeUndefined();
+});
+it("B34 owner release refuses a bind change plan while an unbind plan can apply", async () => {
+ const { deps, identity } = await harness({ audit: capturingAuditDeps() });
+ await expect(planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" })).rejects.toMatchObject({ code: "FORBIDDEN", message: "FORBIDDEN: Use the browser Slack approval flow to link a channel." });
+ const unlink = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });await expect(unlink.apply(identity)).resolves.toBeDefined();
+});
+it("B34 a previously stored bind plan cannot apply through the current handler", async () => {
+ const { deps, identity, db } = await harness(), before = db.find(() => true);
+ const storedApply = () => deps.handlers.bindChannel(identity, SLACK_TEAM, "C0LEDGER01", "payments");
+ await expect(storedApply()).rejects.toMatchObject({ code: "FORBIDDEN", message: "FORBIDDEN: Use the browser Slack approval flow to link a channel." });expect(db.find(() => true)).toEqual(before);
 });

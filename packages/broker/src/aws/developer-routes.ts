@@ -1,3 +1,6 @@
+import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
+import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
+import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 // Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
 import { getTaskStopProject } from "../org/task-stop-project.js";
 // Lane A G1: existing agent money limit, no initialization or management.
@@ -60,7 +63,6 @@ import {
   TaskPeopleDisplayReadResponseSchema,
   AgentXError,
   agentXError,
-  projectArchivedMessage,
   LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
@@ -122,7 +124,6 @@ import {
   OrgRoleSchema,
   ProjectSetupCheckBodySchema,
   PutProjectMemberBodySchema,
-  PutProjectSlackChannelBodySchema,
   RemoveProjectSlackChannelBodySchema,
   RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
@@ -148,7 +149,7 @@ import { releaseOrgModelSources } from "../model-sources/release.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects, applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
-import { bindProjectChannel, unbindProjectChannel, type ProjectSlackChannelDependencies } from "../org/slack-binding.js";
+import { unbindProjectChannel, type ProjectSlackChannelDependencies } from "../org/slack-binding.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
@@ -316,6 +317,7 @@ export interface DeveloperRouteDependencies {
    * GitHub's view of it. Without it the route answers NOT_FOUND.
    */
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
+  projectAllowedDomains?: Pick<AllowedDomainBrowserDependencies, "registerApproved">;
   /** Lane B: pinned, explicitly org-bound read-only branch provider; absent fails closed. */
   projectWorkingBranches?: () => Required<Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">> & { finish: () => Promise<void> };
   projectWorkingBranchPreview?: () => Required<Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">> & { finish: () => Promise<void> };
@@ -1044,7 +1046,7 @@ function archiveDepsOf(deps: DeveloperRouteDependencies): ProjectArchiveDependen
 
 /** Where egress items are kept and how a change reaches the firewall (Plan 2, Task 18). */
 function egressDepsOf(deps: DeveloperRouteDependencies): EgressDomainsDependencies {
-  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })) };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })), ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
 }
 
 /** `GET /v1/app/projects/{name}`: no access, no such project and another org's project all answer the same 404 PROJECT_NOT_FOUND. */
@@ -1372,16 +1374,10 @@ const SLACK_BIND_ROLE_MESSAGE = "only an organization owner or admin can bind a 
  * project's `administrator` membership, which a project's own maintainer does not hold, so a project maintainer who is only an org member is 403.
  * No access to the project is the usual 404. The team and channel checks, the replay and the audit are `bindProjectChannel`'s.
  */
-async function putProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<ProjectSlackChannelResponse> {
-  const { name } = await projectRoleForRoute(deps, caller, rawName);
+async function putProjectSlackChannel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectSlackChannelResponse> {
+  await projectRoleForRoute(deps, caller, rawName);
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", SLACK_BIND_ROLE_MESSAGE);
-  const parsed = PutProjectSlackChannelBodySchema.safeParse(body);
-  if (!parsed.success) throw bodyError(parsed.error);
-  // Slack must not route new work to an archived project (an unbind is still allowed).
-  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
-  const result = await bindProjectChannel(slackChannelDepsOf(deps), caller.orgId, name, { ...parsed.data, actor: { developerId: caller.developerId } });
-  if (result.changed) logDeveloperEvent({ event: "developer.slack_channel_bound", orgId: caller.orgId, project: name });
-  return result;
+  throw agentXError("FORBIDDEN", "Use the browser Slack approval flow to link a channel.");
 }
 
 /** `DELETE /v1/app/projects/{name}/slack-channel`: the same people unbind one of the project's channels. `removed` is false when it was not bound. */
@@ -1442,6 +1438,7 @@ async function putProjectSettings(deps: DeveloperRouteDependencies, caller: Deve
     cloud: deps.cloud === true,
     egress: egressDepsOf(deps),
     ...deps.projectSettings,
+    allowedDomainAuthorityConditions: (who, project) => readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer?.signInTableName ?? "", now: deps.now }, { orgId: who.orgId, project, actorId: who.developerId }),
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
   }, caller, name, body);
@@ -1939,6 +1936,15 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
+  // Website proposal routes accept only the trusted opaque-cookie adapter.
+  // Reject token callers before authentication or any project/proposal lookup.
+  if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
+  }
+  // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
+  if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
+  }
   // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
   const authenticateSession = async (sessionId: string) => {
     try { return await authenticateDeveloperSessionId(deps, sessionId); }
@@ -2039,6 +2045,37 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
   }
+  const websiteReview = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites$/.exec(url.pathname);
+  if (request.method === "GET" && websiteReview !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteReview[1]!, { operation: "review", expectedOrgId: url.searchParams.get("expectedOrgId") });
+  if (request.method === "POST" && websiteReview !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteReview[1]!, { operation: "save", body: jsonBody(request) });
+  const websiteProposalCreate = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals$/.exec(url.pathname);
+  if (request.method === "POST" && websiteProposalCreate !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalCreate[1]!, { operation: "propose", body: jsonBody(request) });
+  const websiteProposalStatus = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && websiteProposalStatus !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalStatus[1]!, { operation: "status", proposalId: websiteProposalStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
+  const websiteProposalDecision = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals\/([^/]+)\/(approve|cancel|reject)$/.exec(url.pathname);
+  if (request.method === "POST" && websiteProposalDecision !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalDecision[1]!, { operation: websiteProposalDecision[3] as "approve" | "cancel" | "reject", proposalId: websiteProposalDecision[2]!, body: jsonBody(request) });
+  const websiteRequestStatus = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/requests\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && websiteRequestStatus !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteRequestStatus[1]!, { operation: "request-status", requestId: websiteRequestStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
+  const slackProposal = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/proposals(?:\/([^/]+)(?:\/(approve))?)?$/.exec(url.pathname);
+  if (slackProposal !== null) {
+    let project: string;try { project = decodeURIComponent(slackProposal[1]!); } catch { throw agentXError("NOT_FOUND", "route not found"); }
+    const slackDeps = { ...deps, signInTableName: deps.developer.signInTableName };
+    if (request.method === "POST" && slackProposal[2] === undefined) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "propose", body: jsonBody(request) });
+    if (request.method === "POST" && slackProposal[3] === "approve") return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "approve", proposalId: slackProposal[2]!, body: jsonBody(request) });
+    if (request.method === "GET" && slackProposal[2] !== undefined && slackProposal[3] === undefined) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "proposal", expectedOrgId: url.searchParams.get("expectedOrgId"), ...(slackProposal[2] === "current" ? {} : { proposalId: slackProposal[2] }) });
+    throw agentXError("NOT_FOUND", "route not found");
+  }
+  const reviewedSlack = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/(links|review|unbind|requests\/([^/]+))$/.exec(url.pathname);
+  if (reviewedSlack !== null) {
+    let project: string;try { project = decodeURIComponent(reviewedSlack[1]!); } catch { throw agentXError("NOT_FOUND", "route not found"); }
+    const slackDeps = { ...deps, signInTableName: deps.developer.signInTableName };
+    const expectedOrgId = url.searchParams.get("expectedOrgId");
+    if (request.method === "GET" && reviewedSlack[2] === "links") return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "list", expectedOrgId, ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}) });
+    if (request.method === "GET" && reviewedSlack[2] === "review") return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "target", expectedOrgId, teamId: url.searchParams.get("teamId") ?? "", channelId: url.searchParams.get("channelId") ?? "" });
+    if (request.method === "GET" && reviewedSlack[3] !== undefined) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "status", expectedOrgId, requestId: reviewedSlack[3] });
+    if (request.method === "POST" && reviewedSlack[2] === "unbind") return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "unbind", body: jsonBody(request) });
+    throw agentXError("NOT_FOUND", "route not found");
+  }
   const workingBranchContextRoute = /^\/v1\/app\/projects\/([^/]+)\/working-branches$/.exec(url.pathname);
   if (request.method === "POST" && workingBranchContextRoute !== null) {
     if(caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session for working branch settings.");
@@ -2072,7 +2109,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const projectSlackChannelRoute = /^\/v1\/app\/projects\/([^/]+)\/slack-channel$/.exec(url.pathname);
   if (projectSlackChannelRoute !== null) {
-    if (request.method === "PUT") return putProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
+    if (request.method === "PUT") return putProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!);
     if (request.method === "DELETE") return deleteProjectSlackChannel(deps, caller, projectSlackChannelRoute[1]!, jsonBody(request));
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OrgIdSchema } from "./browser-ids.js";
 import { AGENT_SESSION_CONTRACT_VERSION, SessionIdSchema, SESSION_KINDS, SESSION_MODES, SessionAgentSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SESSION_LEVELS, SessionActionSchema, SESSION_ACTIONS, SessionLegSchema, SESSION_LEGS_MAX, SessionAnchorRefSchema, SESSION_ANCHORS_MAX, LocalToolSchema, SESSION_SHARES_MAX, SessionWhereSchema, LIVE_FILTERS, LIVE_VIEWING_MAX, LIVE_PAGE_MAX, SessionEventSchema, SessionMessageSchema, SESSION_EVENTS_PAGE_MAX, SESSION_MESSAGES_PAGE_MAX } from "./agent-sessions.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
@@ -292,6 +293,8 @@ export const ProjectOverviewBudgetSchema = z
  */
 export const ProjectOverviewSchema = z
   .object({
+    // Optional during rollout; mutation entry points require a company pin.
+    orgId: OrgIdSchema.optional(),
     project: ProjectOverviewProjectSchema,
     you: ProjectOverviewYouSchema,
     agents: z.array(ProjectOverviewAgentSchema).max(PROJECT_OVERVIEW_AGENTS_MAX),

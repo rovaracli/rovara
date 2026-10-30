@@ -18,6 +18,7 @@ import {
 import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { approvalGrantChange } from "./approval-membership.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, type GrantedBy } from "../developer/project-roles.js";
 
 /** A person in a project, as Plan 3 reads one: `grant` for a person holding a grant, `org_role` for an org owner or admin. */
@@ -207,6 +208,15 @@ function newGrantItem(orgId: OrgId, project: string, developerId: string, role: 
   };
 }
 
+/** The logical project role and immutable grant identity must still be the
+ * ones used to classify eligibility loss, not just the coarse storage role. */
+function grantSnapshot(existing: Item): { condition: string; values: Item } {
+  return {
+    condition: ["projectRole", "grantId"].map(field => existing[field] === undefined ? `attribute_not_exists(${field})` : `${field} = :seen_${field}`).join(" AND "),
+    values: Object.fromEntries(["projectRole", "grantId"].flatMap(field => existing[field] === undefined ? [] : [[`:seen_${field}`, existing[field]]])),
+  };
+}
+
 /**
  * The write that gives `developerId` the role in the project, as a transaction item. A new person gets a new grant; a person who has one
  * keeps its `grantId`, who added them and when, and gets the new role (an old row that lacks `entityType`, `ownerKey` or `grantId` gains
@@ -224,10 +234,10 @@ async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgI
     TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
     UpdateExpression: "SET #role = :role, projectRole = :projectRole, entityType = if_not_exists(entityType, :entity), ownerKey = if_not_exists(ownerKey, :owner), projectName = if_not_exists(projectName, :project), grantId = if_not_exists(grantId, :grantId)",
     // Only the row that was read: an operator's row that appeared in between is not overwritten.
-    ConditionExpression: "attribute_exists(pk) AND #role = :seen",
+    ConditionExpression: "attribute_exists(pk) AND #role = :seen AND " + grantSnapshot(existing).condition,
     ExpressionAttributeNames: { "#role": "role" },
     ExpressionAttributeValues: {
-      ":role": role === "viewer" ? "viewer" : "developer", ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role,
+      ":role": role === "viewer" ? "viewer" : "developer", ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role, ...grantSnapshot(existing).values,
     },
   } } };
 }
@@ -247,7 +257,7 @@ async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, proje
   if (existing === undefined || (existing.role !== "developer" && existing.role !== "viewer")) return undefined;
   return { role: grantRoleOf(existing), write: { Delete: {
     TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
-    ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role },
+    ConditionExpression: "attribute_exists(pk) AND #role = :seen AND " + grantSnapshot(existing).condition, ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role, ...grantSnapshot(existing).values },
   } } };
 }
 
@@ -347,7 +357,7 @@ export async function setProjectMember(
       orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId, input.role),
       projectName: project, memberId: developerId, ...(fromRole === undefined ? {} : { fromRole }), toRole: input.role,
     }));
-    if (await commitWithRequest(deps, [write, stillMember(deps, orgId, developerId), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
+    if (await commitWithRequest(deps, [write, stillMember(deps, orgId, developerId), ...await approvalGrantChange(deps, orgId, project, fromRole === "maintainer" && input.role !== "maintainer"), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
   }
   throw STALE();
 }
@@ -370,7 +380,7 @@ export async function removeProjectMember(
       orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId),
       projectName: project, memberId: developerId, role: revoke.role!,
     }));
-    if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke.write]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
+    if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke.write, ...await approvalGrantChange(deps, orgId, project, revoke.role === "maintainer")]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
   }
   throw STALE();
 }

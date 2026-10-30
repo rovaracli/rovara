@@ -14,7 +14,7 @@ import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatche
 import { createOutboxPublisherHandler } from "../../packages/broker/src/aws/outbox-publisher.js";
 import { cliRuntimeBinding, registerProject } from "../../packages/cli/src/admin/register.js";
 import {
-  SLACK_CHANNEL, SLACK_TEAM, account, call, createBroker, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady,
+  SLACK_CHANNEL, SLACK_TEAM, account, call, createAuditedSlackBroker as createBroker, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady,
   prepareThread, serviceCall,
 } from "../support/slack-broker.js";
 

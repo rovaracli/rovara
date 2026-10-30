@@ -90,3 +90,12 @@ it("a concurrent close safely wins while the stale cleanup caller retains no abi
  expect(f.remaining()).toEqual([]); expect(f.db.get(foreign)).toEqual(foreign); expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeDefined(); expect(f.db.get(orgMetaKey(f.orgId))?.closingAt).toBeUndefined();
  await f.close(); expect(f.remaining()).toEqual([]);
 });
+
+it("invalidates approval generation in the final company-close transaction", async () => {
+ const f = await fixture();
+ const before = f.db.get(orgMetaKey(f.orgId))?.approvalMembershipVersion;
+ await f.close();
+ const meta = f.db.get(orgMetaKey(f.orgId));
+ expect(meta?.closedAt).toBeDefined();
+ expect(meta?.approvalMembershipVersion).toBe(Number(before) + 1);
+});

@@ -2291,13 +2291,29 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
-  const spendingActorStart = items.length;
-  if (spendingStop !== undefined) items.push(...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks);
+  const spendingAuthorityIndexes = new Set<number>();
+  if (spendingStop !== undefined) for (const guard of [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks]) {
+    const check = guard.ConditionCheck;
+    if (check?.Key === undefined) throw budgetActorRefused();
+    const checkKey = check.Key;
+    const index = items.findIndex(item => {
+      const action = item.Update ?? item.ConditionCheck;
+      return action?.Key?.pk === checkKey.pk && action?.Key?.sk === checkKey.sk;
+    });
+    if (index < 0) { spendingAuthorityIndexes.add(items.length); items.push(guard); continue; }
+    const item = items[index]!, action = item.Update ?? item.ConditionCheck!;
+    for (const [name, value] of Object.entries(check.ExpressionAttributeNames ?? {})) if (action.ExpressionAttributeNames?.[name] !== undefined && action.ExpressionAttributeNames[name] !== value) throw budgetActorRefused();
+    for (const [name, value] of Object.entries(check.ExpressionAttributeValues ?? {})) if (action.ExpressionAttributeValues?.[name] !== undefined && !isDeepStrictEqual(action.ExpressionAttributeValues[name], value)) throw budgetActorRefused();
+    const names = { ...action.ExpressionAttributeNames, ...check.ExpressionAttributeNames }, values = { ...action.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
+    const combined = { ConditionExpression: action.ConditionExpression === undefined ? check.ConditionExpression : `(${action.ConditionExpression}) AND (${check.ConditionExpression})`, ...(Object.keys(names).length === 0 ? {} : { ExpressionAttributeNames: names }), ...(Object.keys(values).length === 0 ? {} : { ExpressionAttributeValues: values }) };
+    items[index] = item.Update === undefined ? { ConditionCheck: { ...item.ConditionCheck!, ...combined } } : { Update: { ...item.Update, ...combined } };
+    spendingAuthorityIndexes.add(index);
+  }
   try {
     await deps.actions.transact(items);
   } catch (error) {
     if (!isConditional(error)) throw error;
-    if (spendingStop !== undefined && [...(failedIndexes(error) ?? [])].some(index => index >= spendingActorStart)) return refused(budgetActorRefused());
+    if (spendingStop !== undefined && [...(failedIndexes(error) ?? [])].some(index => spendingAuthorityIndexes.has(index))) return refused(budgetActorRefused());
     const conflict = paused ? undefined : await chargeFailure(deps, charge, taskId, error);
     // This task's own charge is there: the transaction committed and only its answer was lost.
     if (conflict === "already_charged") return returning({ taskId, payloadHash });

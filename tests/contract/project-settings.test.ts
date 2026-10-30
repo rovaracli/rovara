@@ -17,6 +17,7 @@ import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { call } from "../support/slack-broker.js";
+import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -70,16 +71,19 @@ function seedInstallation(db: FakeDynamoDb, installationId: number, accountLogin
   db.set({ ...githubInstallationKey(installationId), entityType: "GITHUB_INSTALLATION", ...record, orgId: globalOrgId });
 }
 
-async function install(options: { cloud?: boolean; owner?: OrgRole } = {}) {
+async function install(options: { cloud?: boolean; owner?: OrgRole; audit?: AuditCapture } = {}) {
   const github = githubFake();
   const h = await createDeveloperTaskBroker({
     register: false,
+    ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
       ...(options.cloud === false ? {} : { cloud: true }), cloudProjects: CLOUD_PROJECTS,
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: github.getRepositoryIdentity },
       checkRepositoryAccess: github.checkRepositoryAccess,
     },
   });
+  // The atomic website writer requires the outbox and revision to use the same client.
+  if (options.audit !== undefined) options.audit.audit.documentClient = h.db as unknown as typeof options.audit.audit.documentClient;
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: options.owner ?? "admin" });
   seedProject(h.db);
   const put = (who: Developer, body: Record<string, unknown>, name = "web") => h.dev(who, "PUT", `/v1/app/projects/${name}/settings`, { requestId: randomUUID(), expectedRevision: 1, ...body });
@@ -252,58 +256,43 @@ describe("allowed domains", () => {
     expect(h.revisions()).toHaveLength(1);
   });
 
-  it("accepts foo.github.io, *.acme.co.uk and a wildcard over an exception rule's registrable name, and stores them in the revision", async () => {
-    const h = await install();
-    const saved = await h.put(OMAR, { allowedDomains: ["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"] });
-    expect(saved.status).toBe(200);
-    // Each is a new request: on cloud a domain waits for Rovara's approval (Task 18).
-    expect(saved.body.warnings).toEqual(["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"].map((domain) => `${domain} is waiting for Rovara to approve it`));
-    expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"] } });
-    expect((await h.detail()).settings.allowedDomains).toEqual(["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"].map((domain) => ({ domain, status: "pending" })));
+  it("validates registrable hostnames and wildcard exceptions but refuses bearer widening", async () => {
+    const domains = ["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"];
+    expect(ProjectSettingsBodySchema.parse({ requestId: randomUUID(), expectedRevision: 1, allowedDomains: domains }).allowedDomains).toEqual(domains);
+    const h = await install(), reply = await h.put(OMAR, { allowedDomains: domains });
+    expect(reply.status).toBe(403);expect(reply.body.error).toMatchObject({ code: "FORBIDDEN", message: "Widening allowed websites requires the browser proposal flow." });expect(h.revision(2)).toBeUndefined();
   });
 
-  it("stores Artifacts.ACME.dev as artifacts.acme.dev, once", async () => {
-    const h = await install();
-    expect((await h.put(OMAR, { allowedDomains: ["Artifacts.ACME.dev", "artifacts.acme.dev", "*.ACME.dev"] })).status).toBe(200);
-    expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["artifacts.acme.dev", "*.acme.dev"] } });
+  it("normalizes hostname case before refusing an unapproved widening", async () => {
+    const domains = ["Artifacts.ACME.dev", "artifacts.acme.dev", "*.ACME.dev"];
+    expect(ProjectSettingsBodySchema.parse({ requestId: randomUUID(), expectedRevision: 1, allowedDomains: domains }).allowedDomains).toEqual(["artifacts.acme.dev", "artifacts.acme.dev", "*.acme.dev"]);
+    const h = await install();expect((await h.put(OMAR, { allowedDomains: domains })).status).toBe(403);expect(h.revision(2)).toBeUndefined();
   });
 
-  it("says a domain every project already has is already allowed, and still saves it", async () => {
-    const h = await install();
-    expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("registry.npmjs.org");
-    expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("*.amazonaws.com");
+  it("keeps mandatory defaults separate and refuses adding an unapproved project website through bearer settings", async () => {
+    const h = await install();expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("registry.npmjs.org");expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("*.amazonaws.com");
     const saved = await h.put(OMAR, { allowedDomains: ["registry.npmjs.org", "*.amazonaws.com", "artifacts.acme.dev"] });
-    expect(saved.status).toBe(200);
-    expect(saved.body.warnings).toEqual(["registry.npmjs.org is already allowed for every project", "*.amazonaws.com is already allowed for every project", "artifacts.acme.dev is waiting for Rovara to approve it"]);
-    expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["registry.npmjs.org", "*.amazonaws.com", "artifacts.acme.dev"] } });
+    expect(saved.status).toBe(403);expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toBeUndefined();
   });
 
-  it("clears the list with an empty one, leaving no network key behind, and leaves it alone when not given", async () => {
-    const h = await install();
-    await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
-    await h.put(OMAR, { testCommands: ["npm run check"], expectedRevision: 2 });
-    expect(h.revision(3)!.definition).toMatchObject({ network: { allowedDomains: ["artifacts.acme.dev"] } });
-    expect((await h.put(OMAR, { allowedDomains: [], expectedRevision: 3 })).status).toBe(200);
-    expect(h.revision(4)!.definition).not.toHaveProperty("network");
-    expect((await h.detail()).settings.allowedDomains).toEqual([]);
+  it("preserves a configured list when omitted and atomically clears it when explicitly empty", async () => {
+    const audit = capturingAuditDeps(), h = await install({ audit });seedB33Domain(h);
+    expect((await h.put(OMAR, { testCommands: ["npm run check"] })).status).toBe(200);
+    expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["old.acme.dev"] } });
+    expect((await h.put(OMAR, { allowedDomains: [], expectedRevision: 2 })).status).toBe(200);
+    expect(h.revision(3)!.definition).not.toHaveProperty("network");expect((await h.detail()).settings.allowedDomains).toEqual([]);
   });
 
-  // Ruling C29: the egress item is written BEFORE the revision, so a failure of the second leaves state the schedule repairs (final review I2).
-  it("writes the egress item before the new revision, so a revision that fails to land is repaired by the schedule, not left unseen", async () => {
-    const h = await install();
-    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"entityType":"PROJECT"') && !JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
-    const failed = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
-    expect(failed.status).toBeGreaterThanOrEqual(500);
-    expect(h.revisions()).toHaveLength(1);
-    expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toMatchObject({ domains: [{ domain: "artifacts.acme.dev", status: "pending" }] });
+  it("leaves egress unchanged if the combined revision and narrowing transaction fails", async () => {
+    const audit = capturingAuditDeps(), h = await install({ audit }), key = seedB33Domain(h), before = structuredClone(h.db.get(key));
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes('"entityType":"PROJECT"') && JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.put(OMAR, { allowedDomains: [] });expect(failed.status).toBeGreaterThanOrEqual(500);expect(h.revisions()).toHaveLength(1);expect(h.db.get(key)).toEqual(before);
   });
 
-  it("makes no revision when the egress item cannot be written", async () => {
-    const h = await install();
-    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
-    const failed = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
-    expect(failed.status).toBeGreaterThanOrEqual(500);
-    expect(h.revisions()).toHaveLength(1);
+  it("makes no revision when the atomic egress narrowing cannot be written", async () => {
+    const audit = capturingAuditDeps(), h = await install({ audit }), key = seedB33Domain(h), before = structuredClone(h.db.get(key));
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.put(OMAR, { allowedDomains: [] });expect(failed.status).toBeGreaterThanOrEqual(500);expect(h.revisions()).toHaveLength(1);expect(h.db.get(key)).toEqual(before);
   });
 
   it("refuses more than 50 domains", async () => {
@@ -609,7 +598,7 @@ describe("agentx project show and agentx project settings", () => {
     createdAt: "2026-10-02T00:00:00.000Z", createdBy: { developerId: "d", name: "Maya Chen" },
   };
 
-  async function signedIn(answer: (request: { method: string; path: string; body: unknown }) => Response) {
+  async function signedIn(answer: (request: { method: string; path: string; body: unknown }) => Response | Promise<Response>) {
     const home = await mkdtemp(join(tmpdir(), "agentx-project-settings-"));
     dirs.push(home);
     await saveDeveloperEnvironment(home, "staging", entry);
@@ -626,6 +615,17 @@ describe("agentx project show and agentx project settings", () => {
     const run = (argv: string[]) => executeCli(argv, { fetchImplementation, tokenStore, environments: { home }, stdout: { write: (text: string) => out.push(text) }, stderr: { write: (text: string) => err.push(text) } });
     return { out, err, run, requests };
   }
+
+  it("B33 CLI allow-domain reaches the bearer settings refusal without a new revision", async () => {
+    const broker = await install();
+    const cli = await signedIn(async request => {
+      const reply = await broker.dev(OMAR, request.method, request.path, request.body);
+      return Response.json(reply.body, { status: reply.status });
+    });
+    expect(await cli.run(["project", "settings", "web", "--allow-domain", "new.acme.dev"])).not.toBe(0);
+    expect(cli.err.join(" ")).toContain("browser proposal flow");expect(broker.revision(2)).toBeUndefined();
+    expect(cli.requests.filter(request => request.method === "PUT")).toHaveLength(1);
+  });
 
   it("shows a project: its revision, commands, devcontainer, repositories and each domain's status", async () => {
     const h = await signedIn(() => Response.json(detail));
@@ -709,3 +709,178 @@ describe("GitHub's events find a project by repository (Plan 4 Task 21)", () => 
 });
 
 it("refuses the cloud settings registration path with a fixed409 when latest has working branch selections",async()=>{const h=await install(),key=projectRevisionKey(TEST_ORG,"web",1),before=h.db.get(key)!;h.db.set({...before,workingBranchSelections:{web:{branch:"release/current"}}});const result=await h.put(OMAR,{setupCommands:["npm run changed"]});expect(result.status,JSON.stringify(result.body)).toBe(409);expect(result.body.error).toMatchObject({code:"PROJECT_REVISION_MISMATCH",message:STALE});expect(h.revision(2)).toBeUndefined();expect(h.db.get(key)?.workingBranchSelections).toEqual({web:{branch:"release/current"}});});
+
+it("B33 refuses bearer settings widening before egress or revision mutation", async () => {
+ const h = await install();
+ const before = h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }));
+ const result = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
+ expect(result.status).toBe(403);
+ expect(result.body.error).toMatchObject({ code: "FORBIDDEN", message: "Widening allowed websites requires the browser proposal flow." });
+ expect(h.revision(2)).toBeUndefined();
+ expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toEqual(before);
+});
+it("B33 common Cloud registration refuses widening without an applied proposal", async () => {
+ const h = await install();
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const before = h.revision(1)!;
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2, network: { allowedDomains: ["artifacts.acme.dev"] } });
+ await expect(registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+ expect(h.revision(2)).toBeUndefined();
+});
+
+
+function seedB33Domain(h: Awaited<ReturnType<typeof install>>) {
+ const key = projectRevisionKey(TEST_ORG, "web", 1), row = h.db.get(key)!;
+ h.db.set({ ...row, definition: { ...(row.definition as Record<string, unknown>), network: { allowedDomains: ["old.acme.dev"] } } });
+ const egressKey = egressDomainsKey(TEST_ORG, { kind: "project", project: "web" });
+ h.db.set({ ...egressKey, entityType: "EGRESS_DOMAINS", orgId: TEST_ORG, owner: { kind: "project", project: "web" }, active: true, updatedAt: "2026-10-29T20:00:00.000Z", domains: [{ domain: "old.acme.dev", status: "approved", requestedAt: "2026-10-01T00:00:00.000Z", requestedBy: OMAR.developerId, decidedAt: "2026-10-01T00:00:00.000Z" }] });
+ return egressKey;
+}
+it("B33 direct narrowing commits exactly one summary audit with its revision", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit });seedB33Domain(h);
+ const response = await h.put(OMAR, { allowedDomains: [] });
+ expect(response.status, JSON.stringify(response.body)).toBe(200);
+ expect(h.revision(2)).toBeDefined();
+ expect(audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "direct_narrowing", fromRevision: 1, toRevision: 2, added: 0, removed: 1 } }]);
+});
+it("B33 narrowing cannot change egress when the revision transaction fails", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), egressKey = seedB33Domain(h), before = h.db.get(egressKey);
+ let revisionCommitAttempted = false;
+ h.db.injectFault({ command: "TransactWriteCommand", match: input => {
+  const items = input.TransactItems as Array<{ Put?: { Item?: Record<string, unknown> } }>;
+  const matches = items.some(item => item.Put?.Item?.pk === projectRevisionKey(TEST_ORG, "web", 2).pk && item.Put?.Item?.sk === projectRevisionKey(TEST_ORG, "web", 2).sk);
+  revisionCommitAttempted ||= matches;return matches;
+ }, error: { name: "InternalServerError" } });
+ const response = await h.put(OMAR, { allowedDomains: [] });
+ expect(response.status).toBeGreaterThanOrEqual(400);expect(revisionCommitAttempted).toBe(true);
+ expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressKey)).toEqual(before);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toEqual([]);
+});
+
+// A late older revision cannot carry website side effects past a newer canonical head.
+it("B33 atomic narrowing refuses a concurrent advance rather than retrying its old plan", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), egressKey = seedB33Domain(h), before = h.db.get(egressKey);
+ let raced = false;
+ h.db.injectFault({ command: "TransactWriteCommand", match: input => {
+  const items = input.TransactItems as Array<{ Put?: { Item?: Record<string, unknown> } }>;
+  if (raced || !items.some(item => item.Put?.Item?.sk === projectRevisionKey(TEST_ORG, "web", 2).sk && item.Put?.Item?.pk === projectRevisionKey(TEST_ORG, "web", 2).pk)) return false;
+  raced = true;
+  const first = h.db.get(projectRevisionKey(TEST_ORG, "web", 1))!;
+  h.db.set({ ...first, ...projectRevisionKey(TEST_ORG, "web", 3), definition: { ...(first.definition as Record<string, unknown>), revision: 3 } });
+  h.db.set({ ...h.db.get(orgProjectCatalogKey(TEST_ORG, "web"))!, latestRevision: 3 });
+  return false; // Let the real conditional catalog write detect the race.
+ }, error: { name: "InternalServerError" } });
+ const response = await h.put(OMAR, { allowedDomains: [] });
+ expect(raced).toBe(true);expect(response.status, JSON.stringify(response.body)).toBe(409);
+ expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressKey)).toEqual(before);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toEqual([]);
+});
+
+it("B33 recovers its owned receipt after a committed transaction loses its response without another write", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit });seedB33Domain(h);
+ const send = h.db.send.bind(h.db);let lost = false, attempts = 0;
+ vi.spyOn(h.db, "send").mockImplementation(async command => {
+  const input = command.input as { TransactItems?: Array<{ Put?: { Item?: Record<string, unknown> } }> };
+  const writesRevision = command.constructor.name === "TransactWriteCommand" && input.TransactItems?.some(item => item.Put?.Item?.pk === projectRevisionKey(TEST_ORG, "web", 2).pk && item.Put?.Item?.sk === projectRevisionKey(TEST_ORG, "web", 2).sk);
+  if (writesRevision) attempts += 1;
+  const result = await send(command);
+  if (writesRevision && !lost) { lost = true;throw Object.assign(new Error("response lost after commit"), { name: "InternalServerError" }); }
+  return result;
+ });
+ const requestId = randomUUID(), response = await h.put(OMAR, { requestId, allowedDomains: [] });
+ expect(lost).toBe(true);expect(response.status, JSON.stringify(response.body)).toBe(200);
+ expect(response.body.project).toMatchObject({ latestRevision: 2 });expect(attempts).toBe(1);
+ const replay = await h.put(OMAR, { requestId, allowedDomains: [] });
+ expect(replay.status).toBe(200);expect(attempts).toBe(1);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toHaveLength(1);
+ expect((await h.put(OMAR, { requestId, allowedDomains: [], description: "different" })).body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+});
+
+it("B33 rejects a matching existing revision instead of claiming uncommitted extra effects", async () => {
+ const h = await install(), before = h.revision(1)!;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2 });
+ const actor = { orgId: TEST_ORG, ownerKey: OMAR.developerId };
+ await registerProjectFor(h.brokerInput as never, actor, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none" });
+ const extra = { pk: "B33_UNCOMMITTED", sk: "RECEIPT" };
+ await expect(registerProjectFor(h.brokerInput as never, actor, { definition, runtimeBinding: before.runtimeBinding }, {
+  creatorMembership: "none", expectedBaseRevision: 1, extraItems: [{ Put: { TableName: "state", Item: extra } }],
+ })).rejects.toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
+ expect(h.db.get(extra)).toBeUndefined();
+});
+it("B33 refuses an atomic registration above 100 actions before sending any transaction", async () => {
+ const h = await install(), before = h.revision(1)!, count = h.db.transactions().length;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2 });
+ await expect(registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, {
+  creatorMembership: "none", expectedBaseRevision: 1,
+  extraItems: Array.from({ length: 100 }, (_, i) => ({ Put: { TableName: "state", Item: { pk: `B33_BOUND#${i}`, sk: "EXTRA" } } })),
+ })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+ expect(h.db.transactions()).toHaveLength(count);expect(h.revision(2)).toBeUndefined();
+});
+
+it("B33 new Cloud project websites commit with one initial audit and pending staff decisions", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), before = h.revision(1)!;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, name: "initial-websites", network: { allowedDomains: ["xn--bcher-kva.de", DEFAULT_AGENT_ALLOW_DOMAINS[0]!] } });
+ await registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none", requireNewName: true });
+ expect(h.revision(1, "initial-websites")?.definition.network).toEqual(definition.network);
+ const domainAudit = audit.recordedBy("project.allowed_domains_changed");
+ expect(domainAudit).toMatchObject([{ facts: { mode: "initial", fromRevision: 0, toRevision: 1, added: 2, removed: 0 } }]);
+ expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "initial-websites" }))?.domains).toMatchObject([{ domain: "xn--bcher-kva.de", status: "pending" }]);
+ const tx = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: Record<string, unknown> } | undefined)?.Item?.pk === projectRevisionKey(TEST_ORG, "initial-websites", 1).pk));
+ expect(tx?.filter(item => (item.Put as { Item?: Record<string, unknown> } | undefined)?.Item?.entityType === "EGRESS_DOMAINS")).toHaveLength(1);
+ expect(tx?.some(item => String((item.Put as { Item?: Record<string, unknown> } | undefined)?.Item?.pk).startsWith("AUDIT_PENDING#"))).toBe(true);
+});
+it("B33 initial Cloud websites fail closed when the summary audit ledger is unavailable", async () => {
+ const h = await install(), before = h.revision(1)!;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, name: "initial-no-audit", network: { allowedDomains: ["artifacts.acme.dev"] } });
+ await expect(registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none", requireNewName: true })).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+ expect(h.revision(1, "initial-no-audit")).toBeUndefined();
+});
+
+it("B33 common Cloud registration narrows websites with its revision, receipt and one summary audit", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), egressKey = seedB33Domain(h), before = h.revision(1)!;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2 });delete definition.network;
+ await registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none" });
+ expect(h.db.get(egressKey)?.domains).toEqual([]);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "direct_narrowing", fromRevision: 1, toRevision: 2, removed: 1 } }]);
+ const receipts = h.db.find(row => row.entityType === "EGRESS_PROPOSAL");expect(receipts).toHaveLength(1);expect(receipts[0]).toMatchObject({ state: "applied", by: OMAR.developerId, mode: "direct_narrowing" });
+});
+it("B33 common registration narrowing does not replan after another revision wins", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), egressKey = seedB33Domain(h), egressBefore = h.db.get(egressKey), before = h.revision(1)!;
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2 });delete definition.network;
+ let raced = false;
+ h.db.injectFault({ command: "TransactWriteCommand", match: input => {
+  if (raced || !(input.TransactItems as Array<{ Put?: { Item?: Record<string, unknown> } }>).some(item => item.Put?.Item?.sk === projectRevisionKey(TEST_ORG, "web", 2).sk && item.Put?.Item?.pk === projectRevisionKey(TEST_ORG, "web", 2).pk)) return false;
+  raced = true;const original = h.db.get(projectRevisionKey(TEST_ORG, "web", 1))!;
+  h.db.set({ ...original, ...projectRevisionKey(TEST_ORG, "web", 3), definition: { ...(original.definition as Record<string, unknown>), revision: 3 } });
+  h.db.set({ ...h.db.get(orgProjectCatalogKey(TEST_ORG, "web"))!, latestRevision: 3 });return false;
+ }, error: { name: "InternalServerError" } });
+ await expect(registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none" })).rejects.toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
+ expect(raced).toBe(true);expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressKey)).toEqual(egressBefore);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toEqual([]);
+});
+
+it("B33 authorized operator registration can narrow but keeps the operator audit identity", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit }), egressKey = seedB33Domain(h), before = h.revision(1)!, ownerKey = "operator:registered";
+ const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ h.db.set({ ...projectMemberKey(TEST_ORG, ownerKey, "web"), entityType: "MEMBERSHIP", ownerKey, projectName: "web", role: "administrator", grantId: randomUUID() });
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, revision: 2 });delete definition.network;
+ await registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey, auditActor: { kind: "operator", id: "op_aaaaaaaaaaaaaaaaaaaaaaaa" } }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "administrator" });
+ expect(h.db.get(egressKey)?.domains).toEqual([]);
+ expect(audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ actor: { kind: "operator", id: "op_aaaaaaaaaaaaaaaaaaaaaaaa" }, facts: { mode: "direct_narrowing" } }]);
+});
+
+it("B33 direct narrowing cancels the pending widening and clears its pointer in the same audited commit", async () => {
+ const audit = capturingAuditDeps(), h = await install({ audit });seedB33Domain(h);
+ const proposalId = randomUUID(), pk = projectRevisionKey(TEST_ORG, "web", 1).pk;
+ const pointer = { pk, sk: "EGRESS_PROPOSAL_LIVE", entityType: "EGRESS_PROPOSAL_LIVE", orgId: TEST_ORG, project: "web", proposalId, expiresAt: "2026-10-31T20:00:00.000Z" };
+ h.db.set(pointer);h.db.set({ pk, sk: `EGRESS_PROPOSAL#${proposalId}`, entityType: "EGRESS_PROPOSAL", kind: "widening", orgId: TEST_ORG, project: "web", proposalId, by: OMAR.developerId, state: "pending", baseRevision: 1, bodyHash: "a".repeat(64), afterDigest: "b".repeat(64), afterDomains: ["new.acme.dev"] });
+ const result = await h.put(OMAR, { allowedDomains: [] });expect(result.status, JSON.stringify(result.body)).toBe(200);
+ expect(h.db.get(pointer)).toBeUndefined();expect(h.db.get({ pk, sk: `EGRESS_PROPOSAL#${proposalId}` })).toMatchObject({ state: "cancelled", supersededByRevision: 2 });
+ expect(audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "direct_narrowing", proposalId } }]);expect(audit.recordedBy("project.allowed_domains_cancelled")).toEqual([]);
+});

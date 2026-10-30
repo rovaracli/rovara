@@ -100,3 +100,21 @@ it("skips a stale listed owner and consistently verifies the next owner before s
  const listed = await f.deps.orgs!.listMembers(org);f.member(org, target, "member");f.deps.orgs!.listMembers = async () => listed;
  expect(await f.request({ requestId: id, expectedRole: "owner", role: "member" }, actor)).toEqual({ result: { developerId: actor, role: "member" } });expect(f.role(actor)).toBe("member");expect(f.role(third)).toBe("owner");
 });
+
+it("B33 invalidates approval generation on console role changes and not on replay", async () => {
+ const f = fixture();f.db.set({ ...f.db.get(orgMetaKey(org)), approvalMembershipVersion: 8 });
+ expect((await f.request()).result).toBeTruthy();
+ expect(f.db.get(orgMetaKey(org))?.approvalMembershipVersion).toBe(9);
+ expect((await f.request()).result).toBeTruthy();
+ expect(f.db.get(orgMetaKey(org))?.approvalMembershipVersion).toBe(9);
+});
+it("B33 records console demotion eligibility loss in the same transaction", async () => {
+ const f = fixture();f.member(org, target, "admin");
+ expect((await f.request({ requestId: id, expectedRole: "admin", role: "member" })).result).toBeTruthy();
+ expect(f.db.get(orgMetaKey(org))?.approvalLastCompanyEligibleLossAt).toBe(new Date(f.deps.now()).toISOString());
+});
+it("B33 refuses a console role change when the company starts closing at commit", async () => {
+ const f = fixture();f.beforeCommit(() => f.db.set({ ...f.db.get(orgMetaKey(org)), closingAt: "now" }));
+ expect(await f.request()).toEqual({ code: "CHANGE_STALE" });
+ expect(f.role()).toBe("member");expect(f.audit.recorded()).toEqual([]);
+});
