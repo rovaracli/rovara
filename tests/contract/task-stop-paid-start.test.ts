@@ -1,7 +1,7 @@
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { TransactWriteCommand, TransactGetCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup, CODING, DEB, ADA } from "../support/spend-world.js";
@@ -319,4 +319,45 @@ it("a Continue capture survives a later numeric edit while the next window sees 
   await f.t.finish(f.task.workspaceId, operation!.id, "SUCCEEDED");
   f.request.requestId = randomUUID(); expect((await f.continue()).status).toBe(200);
   expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.25);
+});
+
+for (const loss of ["member", "pointer", "closing"] as const) it(`Continue classifies native ${loss} loss as forbidden and commits no window`, async () => {
+  const f = await continueWindow(), send = f.t.db.send.bind(f.t.db), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.Key.sk === "META")) {
+      changed = true;
+      if (loss === "member") f.t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+      else if (loss === "pointer") f.t.db.delete(developerOrgKey(MAYA.developerId));
+      else f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+    }
+    return send(command);
+  };
+  const reply = await f.continue(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(reply.body.error).toMatchObject({ code: "FORBIDDEN" }); expect(f.t.meta(f.task.taskId)).toEqual(before);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
+});
+it("a Continue receipt that commits after an absent early read wins over the busy preflight", async () => {
+  const f = await continueWindow(), send = f.t.db.send.bind(f.t.db), before = f.t.taskOps(f.task.workspaceId).length; let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof GetCommand && command.input.Key?.pk === f.receipt.pk && command.input.Key.sk === f.receipt.sk) {
+      raced = true; const response = await send(command); expect(response).toMatchObject({ Item: undefined });
+      const winner = await f.continue(); expect(winner.status, JSON.stringify(winner.body)).toBe(200);
+      return response;
+    }
+    return send(command);
+  };
+  const reply = await f.continue(); expect(raced).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(before + 1); expect(f.t.db.get(f.receipt)).toBeDefined();
+  expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
+});
+for (const field of ["payer", "budgetUsd"] as const) it(`Continue refuses concurrent native task ${field} drift without overwriting it`, async () => {
+  const f = await continueWindow(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false, winner = f.t.meta(f.task.taskId);
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.Key.sk === "META")) {
+      changed = true; f.t.db.set({ ...winner, ...(field === "payer" ? { payer: { kind: "member", developerId: DEB.developerId } } : { budgetUsd: 2 }) }); winner = f.t.meta(f.task.taskId);
+    }
+    return send(command);
+  };
+  const reply = await f.continue(); expect(changed).toBe(true); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "CHANGE_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(winner); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
 });
