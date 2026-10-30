@@ -1075,3 +1075,31 @@ for (const recovery of ["valid", "closing", "cap_source", "invalid_limit", "wron
   expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0);
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0); expect(captures).toBe(0);
 });
+for (const source of ["valid", "changed_operation", "changed_readonly"] as const) it(`held preparation approval lost acknowledgement retains ${source} original dispatch terms`, async () => {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app",
+    owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, runLimitUsd: 0 });
+  const old = f.t.requestOf(started.taskId)[0]!; await f.t.decide(MAYA, old.spendRequestId, "DENY");
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "enabled" }, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: started.taskId, kind: "run_limit", scope: { kind: "task", taskId: started.taskId }, amountUsd: 5, newLimitUsd: 5,
+    requestedBy: { kind: "system" }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "Review the held preparation under current spending rules." });
+
+  const task = f.t.meta(started.taskId), prepare = f.t.operations(task.workspaceId).find(operation => operation.kind === "prepare")!, send = f.t.db.send.bind(f.t.db), decisionId = randomUUID(); let lost = false, captures = 0;
+  f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) captures += 1;
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) { lost = true; throw new Error("test held approval acknowledgement lost"); }
+    return result;
+  };
+  await expect(f.t.decide(MAYA, record.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test held approval acknowledgement lost");
+  const before = f.t.meta(started.taskId), pause = before.budgetPause as { scope: unknown; at: string; firstDispatch: { operationId: string; checkout?: unknown[]; readOnly?: true } };
+  if (source === "changed_operation") f.t.db.set({ ...before, budgetPause: { ...pause, firstDispatch: { ...pause.firstDispatch, operationId: randomUUID() } } });
+  if (source === "changed_readonly") f.t.db.set({ ...before, budgetPause: { ...pause, firstDispatch: { ...pause.firstDispatch, readOnly: true } } });
+  f.t.db.delete(f.policy); captures = 0;
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(captures).toBe(0);
+  if (source !== "valid") expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(1);
+});
