@@ -227,6 +227,8 @@ describe("the health route's grants (A13)", () => {
       // B34: existing request retention reads and bounded Slack pending approval cleanup retention.
       "packages/broker/src/org/project-slack-browser.ts",
       "packages/broker/src/org/project-slack-proposals.ts",
+      // Track record (v1.2 slice 1): a pending outcome sample lasts a year, a scored one and its scored copy 180 days after the score; only outcomes.ts writes and reads them.
+      "packages/broker/src/rovara-code/outcomes.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

@@ -9,6 +9,7 @@ import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RET
 import { ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { WORKFLOW_OUTCOME_KEYS_MAX, type WorkflowOutcomeSampleKey } from "./outcomes.js";
 import { WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS } from "./workflow-check-input.js";
 import { E2EQualifiedRoundSchema } from "./e2e.js";
 import { isNoCodeChangedReason, type NoChangeFindings } from "./no-change-findings.js";
@@ -1154,6 +1155,16 @@ export function blockWorkflowPullRequestUpdate(currentInput: unknown, input: { n
     ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
     blockReason: WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed, pullRequestUpdateFailure: failure.data, updatedAt: input.now,
   });
+}
+
+/**
+ * The workflow with the keys of pending outcome samples added (track record). An entry for a claim and round already listed replaces it; only the newest `WORKFLOW_OUTCOME_KEYS_MAX` are kept.
+ * The revision does not move: the keys say nothing a decision depends on. A caller that saves it holds the revision it read, so a write that lost to another is made again from a fresh read.
+ */
+export function withOutcomeSampleKeys(currentInput: unknown, added: readonly WorkflowOutcomeSampleKey[]): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const kept = (current.outcomeSampleKeys ?? []).filter((entry) => !added.some((other) => other.claim === entry.claim && other.round === entry.round));
+  return WorkflowSnapshotSchema.parse({ ...current, outcomeSampleKeys: [...kept, ...added].slice(-WORKFLOW_OUTCOME_KEYS_MAX) });
 }
 
 /** A snapshot without the marks of a fix in flight (the fix is over: pushed, given up or merged past). */
