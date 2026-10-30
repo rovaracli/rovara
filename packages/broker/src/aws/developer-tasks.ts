@@ -1,3 +1,8 @@
+import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
+import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
+import { requireAgentAccess } from "../agents/access.js";
+import { failedIndexes } from "../agents/table-writes.js";
 // Spec 025 FR-016 to FR-021: the developer task routes. Every task has its own workspace, reached
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
@@ -2092,10 +2097,41 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   }
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
-  const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
+  let startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
+  let spendingStop: CapturedTaskStop | undefined;
+  // Human task starts capture once after live scope checks and before monthly
+  // admission, workspace creation or key effects. Other paid starter adapters
+  // must be connected before the controller can enable enrollment.
+  if (run?.autonomous !== true) {
+    try {
+      const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
+      const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
+      if (pathLimitMicrousd === undefined || (run?.runLimitUsd !== undefined && requestedMicrousd === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task limit can't be represented exactly. Ask an admin to review Spending.");
+      const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
+        requireScopeAccess: async input => {
+          const fresh = await deps.checkAccess(input.project);
+          await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
+          if (deps.agentRuns !== undefined) await requireAgentAccess(deps.agentRuns, caller, input.agentId, "use");
+        },
+      }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
+        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd,
+        ...(requestedMicrousd === undefined ? {} : { requestedMicrousd }),
+      });
+      if (captured.kind === "captured") {
+        const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
+        if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+        if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending."));
+        spendingStop = captured; startLimitUsd = exactUsd;
+        if (prepared !== undefined) prepared = { ...prepared, ...runLimitsOf(exactUsd, undefined, prepared.maxPerRunUsd) };
+      }
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
   const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): after the agent is resolved, before the limit's counters are read
@@ -2135,9 +2171,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const title = redactedTitle(request);
   // The run limit is the task's budget. A task keeps one when the proxy admitted it or the run limit is not the usual one (a lower limit, or 0).
   const budgetUsd = prepared?.runLimitUsd ?? startLimitUsd ?? PER_TASK_BUDGET_USD;
-  const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
+  const keepsBudget = spendingStop !== undefined || admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
+    ...(spendingStop === undefined ? {} : { spendingStop }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
@@ -2232,10 +2269,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
+  const spendingActorStart = items.length;
+  if (spendingStop !== undefined) items.push(...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }));
   try {
     await deps.actions.transact(items);
   } catch (error) {
     if (!isConditional(error)) throw error;
+    if (spendingStop !== undefined && [...(failedIndexes(error) ?? [])].some(index => index >= spendingActorStart)) return refused(budgetActorRefused());
     const conflict = paused ? undefined : await chargeFailure(deps, charge, taskId, error);
     // This task's own charge is there: the transaction committed and only its answer was lost.
     if (conflict === "already_charged") return returning({ taskId, payloadHash });

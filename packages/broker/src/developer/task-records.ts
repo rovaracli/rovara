@@ -1,3 +1,4 @@
+import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
 import { createHash } from "node:crypto";
@@ -73,6 +74,8 @@ export interface DeveloperTaskRecord {
   orgId?: OrgId;
   /** What the task's model proxy key may spend, in US dollars (ruling R29); a task without one gets PER_TASK_BUDGET_USD. */
   budgetUsd?: number;
+  /** Immutable numeric capture for this accepted admission; not an authority lease. */
+  spendingStop?: CapturedTaskStop;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */
   budgetBaselineUsd?: number;
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */
