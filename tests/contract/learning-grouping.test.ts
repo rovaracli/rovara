@@ -6,7 +6,7 @@ import {
 } from "../../packages/broker/src/learning/grouping.js";
 import { metricMonth, readMetric } from "../../packages/broker/src/learning/metric.js";
 import { compareSignatures, signatureOf } from "../../packages/broker/src/learning/similarity.js";
-import { captureCorrection, closeSuggestion, openSuggestion, readLearningState } from "../../packages/broker/src/learning/store.js";
+import { captureCorrection, closeSuggestion, openSuggestion, readLearningState, sourceSk } from "../../packages/broker/src/learning/store.js";
 import { LEARNING_OPEN_SUGGESTIONS_MAX, LearningCorrectionSchema, LearningSuggestionSchema } from "../../packages/contracts/src/project-learning.js";
 import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DAY_MS, NOW_MS, PROJECT_CREATED, makeWorld, seedItem, type World } from "../support/learning-world.js";
@@ -339,7 +339,8 @@ describe("W7: forget", () => {
     const suggestionId = openOnes(world)[0]!.id as string;
     expect(await forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, b), sourceKey: "key-2" })).toEqual({ ok: true });
     expect(correction(world, b)).toBeUndefined();
-    expect(partition(world).find((item) => item.sk === "SOURCE#key-2")).toBeUndefined();
+    expect(partition(world).find((item) => item.sk === sourceSk(PROJECT_CREATED, "key-2"))).toBeUndefined();
+    expect(partition(world).filter((item) => String(item.sk).startsWith("SOURCE#"))).toHaveLength(1);
     expect(correction(world, a)).toBeDefined();
     const stored = world.db.get(projectLearningKey(world.scope.orgId, world.scope.project, `SUGGESTION#${suggestionId}`))!;
     expect(stored).toMatchObject({ status: "withdrawn" });
@@ -542,6 +543,97 @@ describe("PR capture off: PR corrections are skipped, and suggestions left with 
     await group(world);
     expect(await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false })).toMatchObject({ memberCorrections: 2, repeats: 1 });
     expect(await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: true })).toMatchObject({ memberCorrections: 1, repeats: 0 });
+  });
+});
+
+describe("B5 review fixes", () => {
+  it("Forget with a source key deletes the epoch-scoped source record, so the same comment can be remembered again", async () => {
+    const world = makeWorld();
+    const first = await add(world, LINT_A);
+    const input = (id: string) => ({
+      id, stage: "build", source: "comment" as const, sourceKey: "key-1", sourceRef: { taskId: "t1" }, taskId: "t1", text: LINT_A,
+      signature: [...signatureOf(LINT_A, SALT)], author: "dev1", standing: "member" as const, limit: "automatic" as const,
+    });
+    expect(await captureCorrection(world.deps, world.scope, input("again"))).toMatchObject({ ok: true, created: false, correctionId: first });
+    expect(await forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, first), sourceKey: "key-1" })).toEqual({ ok: true });
+    expect(partition(world).filter((item) => String(item.sk).startsWith("SOURCE#"))).toEqual([]);
+    expect(await captureCorrection(world.deps, world.scope, input("again"))).toMatchObject({ ok: true, created: true });
+    expect(correction(world, "again")).toBeDefined();
+  });
+
+  it("a live suggestion past the first 300 suggestions (many of them terminal) keeps its members: they are not free and not taken into a new suggestion", async () => {
+    const world = makeWorld();
+    settingsOn(world);
+    for (let n = 0; n < 310; n += 1) {
+      const id = `a${String(n).padStart(4, "0")}`;
+      expect(await openSuggestion(world.deps, world.scope, { id, stage: "build", correctionIds: [`x${n}`, `y${n}`], allFromOnePerson: false, proposedText: "Old.", signature: ["h"], lessSafe: false, kinds: [], overlaps: [] })).toMatchObject({ ok: true });
+      expect(await closeSuggestion(world.deps, world.scope, { id, expectedRevision: 0, status: "withdrawn" })).toMatchObject({ ok: true });
+    }
+    const a = await add(world, LINT_A);
+    const b = await add(world, LINT_B);
+    expect((await group(world, { newId: () => "zzz-live" })).opened).toEqual(["zzz-live"]);
+    const again = await group(world, { newId: () => "zzz-second" });
+    expect(again).toMatchObject({ opened: [], joined: [] });
+    expect(openOnes(world).map((item) => item.id)).toEqual(["zzz-live"]);
+    expect(correction(world, a)).toMatchObject({ suggestionId: "zzz-live" });
+    expect(correction(world, b)).toMatchObject({ suggestionId: "zzz-live" });
+    expect((await readLearningState(world.deps, world.scope))!.openSuggestions).toBe(1);
+  });
+
+  it("reads the older members of open suggestions once per run, not once per round", async () => {
+    const world = makeWorld();
+    settingsOn(world);
+    let n = 0;
+    await add(world, LINT_A); await add(world, LINT_B); await add(world, ZOD_A); await add(world, ZOD_B);
+    await group(world, { newId: () => `s${++n}` });
+    expect(openOnes(world)).toHaveLength(2);
+    world.clock.ms += 40 * DAY_MS;
+    await add(world, LINT_B);
+    await add(world, ZOD_A);
+    const queries: Array<Record<string, unknown>> = [];
+    const send = world.db.send;
+    world.deps.documentClient = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") queries.push(command.input); return send(command as never); } } as never;
+    const result = await group(world);
+    expect(result.joined).toHaveLength(2);
+    const fallback = queries.filter((input) => JSON.stringify(input.ExpressionAttributeValues ?? {}).includes('":prefix":"CORRECTION#"'));
+    expect(fallback).toHaveLength(1);
+  });
+
+  it("Forget takes a repeat of a rule out of the counters even when the rule item is gone", async () => {
+    const world = makeWorld();
+    settingsOn(world);
+    await add(world, ZOD_A);
+    await add(world, ZOD_B);
+    await group(world);
+    const suggestion = LearningSuggestionSchema.parse(openOnes(world)[0]);
+    await closeSuggestion(world.deps, world.scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "accepted", decidedBy: "dev1", ruleId: "rule-1" });
+    seedItem(world.db, world.scope.orgId, world.scope.project, "RULE#rule-1", {
+      entityType: "LEARNING_RULE", id: "rule-1", suggestionId: suggestion.id, stage: "build", text: "Validate.", processAgentId: "agent-1", requestId: "req-1", status: "active", processVersion: 3, projectCreatedAt: PROJECT_CREATED,
+    });
+    const c = await add(world, ZOD_A);
+    await group(world);
+    expect(correction(world, c)).toMatchObject({ repeatOf: "rule-1" });
+    expect(metricItem(world)).toMatchObject({ repeatsOfAcceptedRules: 1 });
+    world.db.delete(projectLearningKey(world.scope.orgId, world.scope.project, "RULE#rule-1"));
+    expect(await forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, c) })).toEqual({ ok: true });
+    expect(metricItem(world)).toMatchObject({ repeatsOfAcceptedRules: 0, repeats: 0 });
+  });
+
+  it("a Forget whose write fails leaves its suggestion open (the withdrawal is part of the same transaction)", async () => {
+    const world = makeWorld();
+    settingsOn(world);
+    const a = await add(world, LINT_A);
+    const b = await add(world, LINT_B);
+    await group(world);
+    const before = openOnes(world)[0]!;
+    world.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("CORRECTION#"), error: { name: "InternalServerError", message: "boom" } });
+    await expect(forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, b) })).rejects.toBeDefined();
+    expect(correction(world, b)).toBeDefined();
+    expect(correction(world, a)).toBeDefined();
+    expect(openOnes(world).map((item) => item.id)).toEqual([before.id]);
+    expect((await readLearningState(world.deps, world.scope))!.openSuggestions).toBe(1);
+    expect(await forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, b) })).toEqual({ ok: true });
+    expect(suggestions(world)[0]).toMatchObject({ status: "withdrawn" });
   });
 });
 
