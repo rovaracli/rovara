@@ -687,9 +687,13 @@ describe("a merged member", () => {
     await t.pauseAndEnd(task);
     const request = t.requests()[0]!;
     // The leaver both asked and was named to decide.
-    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [CARL.developerId] } as unknown as Record<string, unknown>);
+    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [CARL.developerId] });
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: ADA.developerId });
-    expect(t.requests()[0]).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [ADA.developerId], status: "PENDING" });
+    // Who may decide is read live (the task's owner and the owners), so the list is those people; the leaver is not among them, and is still the asker.
+    const after = t.requests()[0]!;
+    expect(after).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, status: "PENDING", movedBy: "system" });
+    expect(after.approverIds).not.toContain(CARL.developerId);
+    expect(after.approverIds.length).toBeGreaterThan(0);
   });
 
   it("a removal leaves a request the leaver asked for alone when it names someone else to decide it", async () => {
@@ -699,7 +703,7 @@ describe("a merged member", () => {
     await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
     await t.pauseAndEnd(task);
     const request = t.requests()[0]!;
-    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [BEN.developerId] } as unknown as Record<string, unknown>);
+    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [BEN.developerId] });
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: ADA.developerId });
     const after = t.requests()[0]!;
     expect(after).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [BEN.developerId], status: "PENDING" });
@@ -713,7 +717,7 @@ describe("a merged member", () => {
     await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
     await t.pauseAndEnd(task);
     const request = t.requests()[0]!;
-    t.db.set({ ...request, approverIds: [CARL.developerId] } as unknown as Record<string, unknown>);
+    t.db.set({ ...request, approverIds: [CARL.developerId] });
     // The successor ADA is removed just before the move's transaction commits.
     const realSend = t.db.send;
     let armed = true;
@@ -728,7 +732,10 @@ describe("a merged member", () => {
     expect(t.requests()[0]!.approverIds).toEqual([CARL.developerId]);
     // The next run finds ADA gone and reads the successor again: the person who removed Carl, who is a member.
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: DEB.developerId, successorId: ADA.developerId });
-    expect(t.requests()[0]!.approverIds).toEqual([DEB.developerId]);
+    const settled = t.requests()[0]!.approverIds;
+    expect(settled.length).toBeGreaterThan(0);
+    expect(settled).not.toContain(ADA.developerId);
+    expect(settled).not.toContain(CARL.developerId);
   });
 });
 

@@ -551,6 +551,9 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: RemovalEvent
         } else {
           lastSuccessor = successorId;
           for (const owner of await mover.removed?.(deps, { orgId, developerId, by, successorId }) ?? []) owners.add(owner);
+          // The movers that write item by item (agents, skills, chains, triggers) read the successor once per page: one removed since got what moved. Their own removal moves it on
+          // when it has not finished; otherwise this line is what an admin finds it by.
+          if (!await isMember(deps, orgId, successorId)) log(deps, "member_removal.moved_to_removed", { ...fields, successorId, mover: mover.name });
         }
       } catch (error) {
         failures.push(error);

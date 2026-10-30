@@ -34,6 +34,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
+import { orgMemberKey } from "@agentx/contracts";
 import { memberGoneSince, taskWorkStart } from "../developer/creator-member.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { effectiveLimits, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
@@ -2017,7 +2018,8 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
   const stored = await getItem(deps, spendRequestKey(record.orgId, record.spendRequestId));
   const revision = typeof stored?.["moveRevision"] === "number" ? stored["moveRevision"] : 0;
   const ids = [...new Set(record.approverIds.map((id) => (id === from ? to : id)))].sort();
-  const requestedBy = record.requestedBy.kind === "member" && record.requestedBy.developerId === from ? { kind: "member" as const, developerId: to } : record.requestedBy;
+  // A merge makes the survivor the asker; a removal never does (member removal): the leaver stays the one who asked, so the successor is never the asker of a request they decide.
+  const requestedBy = mode === "merged" && record.requestedBy.kind === "member" && record.requestedBy.developerId === from ? { kind: "member" as const, developerId: to } : record.requestedBy;
   const newOwner = record.newOwner?.developerId === from ? { developerId: to } : record.newOwner;
   // A merge: the person the change names is the survivor now (a removal ends such a request instead, `moveRequests`).
   const change = mode === "merged" ? movedChange(record.change, from, to) : undefined;
@@ -2041,6 +2043,8 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
       },
     },
     { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(record.orgId, record.createdAt, record.spendRequestId), entityType: "SPEND_REQUEST_OPEN", orgId: record.orgId, spendRequestId: record.spendRequestId, approverIds: ids } } },
+    // A removal gives it to the successor only while they are still a member when it commits (one removed since is refused, and the next run reads the successor again).
+    ...(mode === "removed" ? [{ ConditionCheck: { TableName: deps.tableName, Key: orgMemberKey(record.orgId, to), ConditionExpression: "attribute_exists(pk)" } }] : []),
     ...events.flatMap((event) => auditPending(deps, event)),
   ] }));
   await flushAuditEvents(deps, events);
@@ -2064,7 +2068,8 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
       await expireOne(deps, record, "target_left");
       continue;
     }
-    const names = named || record.approverIds.includes(from) || (record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from || (mode === "merged" && record.forOwner === from);
+    // (A removal does not touch a request only because the leaver asked for it: only who may decide moves.)
+    const names = named || record.approverIds.includes(from) || (mode === "merged" && record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from || (mode === "merged" && record.forOwner === from);
     if (!names && !(Array.isArray(ids) && ids.includes(from))) continue;
     for (let tried = 0; ; tried += 1) {
       try {

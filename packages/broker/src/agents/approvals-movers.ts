@@ -2,7 +2,7 @@
 // APPROVER# items and the run owner of PENDING approvals; a removal re-routes them to the successor. Conditional, repeatable, audited as `approval.rerouted`.
 // `approvals.ts` re-exports it.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, orgPk, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, orgMemberKey, orgPk, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
 import { auditApprovalRerouted, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
@@ -101,6 +101,9 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
     if (listedFor({ kind: record.kind, approvers, owner: owner ?? currentOwner }).includes(to)) {
       items.push({ Put: { TableName: deps.tableName, Item: { ...approverIndexKey(orgId, to, approvalId), entityType: "APPROVER_INDEX", approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt) } } });
     }
+    // A removal hands this to the successor only while the successor is still a member when the move commits: one removed since the run chose them gets nothing (the transaction is
+    // refused, the run fails and the next run reads the successor again), so no approval is left naming only a person who has gone.
+    if (mode === "removed") items.push({ ConditionCheck: { TableName: deps.tableName, Key: orgMemberKey(orgId, to), ConditionExpression: "attribute_exists(pk)" } });
     items.push(...events.flatMap((event) => auditPending(deps, event)));
     if (await commitOrLost(deps, items)) {
       await flushAuditEvents(deps, events);

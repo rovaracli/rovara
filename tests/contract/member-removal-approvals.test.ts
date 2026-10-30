@@ -15,7 +15,7 @@ async function pending(w: World, ids: string[], requestedBy: string) {
     orgId: w.orgId, requestId: randomUUID(), requestedBy, subject, changes: ["Publishes a new version"], approvers: { kind: "ids", ids },
   } as never);
 }
-const idsOf = async (w: World, approvalId: string) => ((await getAnyApproval(w.deps as never, w.orgId, approvalId as never))!.approvers as { ids: string[] }).ids;
+const idsOf = async (w: World, approvalId: string) => ((await getAnyApproval(w.deps, w.orgId, approvalId))!.approvers as unknown as { ids: string[] }).ids;
 
 describe("approvals that list the leaver", () => {
   it("swap the leaver for the chosen successor, and the leaver's own request keeps its requester", async () => {
@@ -29,7 +29,7 @@ describe("approvals that list the leaver", () => {
     expect(w.db.get(approverIndexKey(w.orgId, SAM, listed.approvalId))).toBeUndefined();
     expect(w.db.get(approverIndexKey(w.orgId, OWNER, listed.approvalId))).toBeDefined();
     // The leaver's own pending request is not closed and still names them as the one who asked.
-    const kept = (await getAnyApproval(w.deps as never, w.orgId, own.approvalId as never))!;
+    const kept = (await getAnyApproval(w.deps, w.orgId, own.approvalId))!;
     expect(kept).toMatchObject({ status: "PENDING", requestedBy: SAM });
     expect(await idsOf(w, own.approvalId)).toEqual([ANA]);
   });
@@ -39,7 +39,7 @@ describe("approvals that list the leaver", () => {
     await w.join(SAM, "Sam", "member");
     const mine = await pending(w, [SAM], OWNER);
     await w.remove(SAM, { successorId: OWNER });
-    const record = (await getAnyApproval(w.deps as never, w.orgId, mine.approvalId as never))!;
+    const record = (await getAnyApproval(w.deps, w.orgId, mine.approvalId))!;
     expect(record).toMatchObject({ requestedBy: OWNER });
     expect(await idsOf(w, mine.approvalId)).toEqual([OWNER]);
   });
@@ -49,6 +49,7 @@ describe("approvals that list the leaver", () => {
     await w.join(ANA, "Ana", "admin");
     await w.join(SAM, "Sam", "member");
     const old = await pending(w, [SAM, ANA], PAT);
+    w.tick(1000);
     await w.remove(SAM, { successorId: OWNER });
     w.tick(HOUR);
     await w.join(SAM, "Sam", "member");
