@@ -18,10 +18,15 @@ export const TaskApprovalTermsSchema = z.object({
   sourceRevision: z.string().datetime().nullable(), sourceDigest: sha,
   firstDispatch: z.object({ operationId: z.string().uuid(), checkout: z.array(RunCheckoutSchema).optional(), readOnly: z.literal(true).optional() }).strict().nullable(),
   originalFields: z.record(z.string(), z.unknown()).refine(value => Object.keys(value).every(key => fields.some(field => field === key))),
-  askedFiguresMicrousd: z.object({ budget: micros, amount: micros }).strict(), proposedFiguresMicrousd: z.object({ budget: micros }).strict(),
+  askedFiguresMicrousd: z.object({ budget: micros, amount: micros, maxPerRun: micros.nullable(), baseline: micros }).strict(), proposedFiguresMicrousd: z.object({ budget: micros, maxPerRun: micros.nullable(), window: z.enum(["keep", "reset"]) }).strict(),
   countedOwner: sha.nullable(), totalsRevision: z.null(), policyDigest: sha, admissionId: z.string().min(1).max(256), operation: z.enum(["run_limit", "max_per_run", "planning"]),
 }).strict().superRefine((value, context) => {
   if (digest({ originalFields: value.originalFields, firstDispatch: value.firstDispatch }) !== value.sourceDigest) context.addIssue({ code: "custom", message: "Original source digest does not agree." });
+  const fields = value.originalFields, asked = value.askedFiguresMicrousd, proposed = value.proposedFiguresMicrousd;
+  if (asked.budget !== usdToWholeMicrodollars(fields.budgetUsd === undefined ? PER_TASK_BUDGET_USD : fields.budgetUsd)
+    || asked.baseline !== usdToWholeMicrodollars(fields.budgetBaselineUsd === undefined ? 0 : fields.budgetBaselineUsd)
+    || asked.maxPerRun !== (fields.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(fields.maxPerRunUsd))) context.addIssue({ code: "custom", message: "Asked figures do not agree with the original source." });
+  if (value.operation === "max_per_run" ? proposed.budget !== asked.budget || proposed.maxPerRun === null || proposed.window !== "keep" : proposed.maxPerRun !== asked.maxPerRun) context.addIssue({ code: "custom", message: "The proposed figures change another spending limit." });
 });
 export type TaskApprovalTerms = z.infer<typeof TaskApprovalTermsSchema>;
 /** Financial policy evidence excludes path/approved/request amounts, which are
@@ -34,15 +39,19 @@ export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: Captu
   const originalFields = taskApprovalFields(task), firstDispatch = task.budgetPause?.firstDispatch ?? null;
   return TaskApprovalTermsSchema.parse({ version: 1, sourcePresence: true, sourceKey: taskKey(task.taskId), sourceRevision: task.spendingStop?.capturedAt ?? null,
     sourceDigest: digest({ originalFields, firstDispatch }), originalFields, firstDispatch,
-    askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), amount: usdToWholeMicrodollars(record.amountUsd) },
-    proposedFiguresMicrousd: { budget: usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd) },
+    askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), amount: usdToWholeMicrodollars(record.amountUsd),
+      maxPerRun: task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd), baseline: usdToWholeMicrodollars(task.budgetBaselineUsd ?? 0) },
+    proposedFiguresMicrousd: { budget: usdToWholeMicrodollars(record.kind === "max_per_run" ? task.budgetUsd ?? PER_TASK_BUDGET_USD : record.newLimitUsd ?? record.amountUsd),
+      maxPerRun: record.kind === "max_per_run" ? usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd) : task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd),
+      window: record.kind === "planning" || record.resume === "implement" ? "reset" : "keep" },
     countedOwner: tryEffectiveTaskOwner(task)?.developerId ?? null, totalsRevision: null, policyDigest: taskApprovalPolicyDigest(snapshot),
     admissionId: `task:${task.taskId}:${task.spendingStop?.capturedAt ?? "existing"}`, operation: record.kind });
 }
 export const taskApprovalSourceMatches = (terms: TaskApprovalTerms, task: DeveloperTaskRecord): boolean => terms.sourceKey.pk === taskKey(task.taskId).pk && digest({ originalFields: taskApprovalFields(task), firstDispatch: task.budgetPause?.firstDispatch ?? null }) === terms.sourceDigest;
 export function taskApprovalRecordMatches(terms: TaskApprovalTerms, record: SpendRequestRecord): boolean {
   return terms.operation === record.kind && terms.askedFiguresMicrousd.amount === usdToWholeMicrodollars(record.amountUsd)
-    && terms.proposedFiguresMicrousd.budget === usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd);
+    && (record.kind === "max_per_run" ? terms.proposedFiguresMicrousd.maxPerRun : terms.proposedFiguresMicrousd.budget) === usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd)
+    && terms.proposedFiguresMicrousd.window === (record.kind === "planning" || record.resume === "implement" ? "reset" : "keep");
 }
 /** Merge the original source into the request's existing task write, or append
  * one condition when it has none. Never duplicate a DynamoDB key. */

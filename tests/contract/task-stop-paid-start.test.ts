@@ -1149,7 +1149,7 @@ it("a max-per-run ask retains distinct original/proposed run limit, per-run stop
   const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
   f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
   expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
-  const inherited = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
   await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
   const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!; expect(request.newLimitUsd).toBe(9);
   expect(request.approvalTerms).toMatchObject({ operation: "max_per_run", askedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 4_000_000, baseline: 0, amount: 5_000_000 },

@@ -343,7 +343,7 @@ export interface SpendRequestRecord {
   approvalTerms?: {
     version: 1; sourcePresence: true; sourceKey: { pk: string; sk: string }; sourceRevision: string | null; sourceDigest: string;
     firstDispatch: { operationId: string; checkout?: RunCheckout[] | undefined; readOnly?: true | undefined } | null;
-    originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; amount: number }; proposedFiguresMicrousd: { budget: number };
+    originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; amount: number; maxPerRun: number | null; baseline: number }; proposedFiguresMicrousd: { budget: number; maxPerRun: number | null; window: "keep" | "reset" };
     countedOwner: string | null; totalsRevision: null; policyDigest: string; admissionId: string; operation: "run_limit" | "max_per_run" | "planning";
   };
   /** Original native money-source state; absence is meaningful. */
