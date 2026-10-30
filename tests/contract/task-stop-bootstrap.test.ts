@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, builtinSettingsKey, ROVARA_CODE_AGENT_ID, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -238,4 +238,18 @@ for (const failure of ["missing_catalog", "missing_settings", "corrupt_policy", 
   const saved = f.db.get(key.pk, key.sk);
   expect(saved).toEqual(failure === "missing_settings" ? undefined : { ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : failure === "policy_commit" ? { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } } : {}) });
   if (saved !== undefined) expect(saved).not.toHaveProperty("seedProvenance");
+});
+
+for (const explicit of [false, true]) it(`built-in inheritance upgrade preserves the real org bootstrap pin: explicit=${explicit}`, async () => {
+  const f = fixture(true); await f.store.createOrgWithOwner({ name: "Company", developerId: who });
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), before = f.db.get(key.pk, key.sk)!;
+  const original = { ...before, ...(explicit ? { maxPerRunUsd: 0.123456 } : {}) }; f.db.set(original);
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, kind: "agent" as const, agentId: ROVARA_CODE_AGENT_ID };
+  expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "updated" });
+  const saved = f.db.get(key.pk, key.sk);
+  expect(saved).toMatchObject({ ...original, orgId, agentId: ROVARA_CODE_AGENT_ID, revision: 1, stopKind: explicit ? "limited" : "inherit" });
+  if (!explicit) expect(saved).not.toHaveProperty("maxPerRunUsd");
+  const count = f.db.transactions().length;
+  expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "preserved" });
+  expect(f.db.get(key.pk, key.sk)).toEqual(saved); expect(f.db.transactions()).toHaveLength(count);
 });
