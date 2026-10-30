@@ -7,7 +7,7 @@ import { taskStartAgentAuthorityChecks } from "./task-start-agent-authority.js";
 import { isDeepStrictEqual } from "node:util";
 import { budgetActorChecks } from "../agents/budget-authority.js";
 import { taskAccessFence } from "../developer/task-people.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { ownerFenceOf, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 // An accepted-operation receipt is durable replay evidence, never a free-standing
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -210,17 +210,25 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
 const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "spendingAdmission", "budgetPause", "closedAt"] as const;
 export async function admittedTaskSourceUnchanged(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<boolean> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(task.taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
-  return response.Item !== undefined && admittedTaskFields.every(field => isDeepStrictEqual(response.Item?.[field], task[field]));
+  if (response.Item === undefined) return false;
+  try {
+    return admittedTaskFields.every(field => isDeepStrictEqual(response.Item?.[field], task[field]))
+      && isDeepStrictEqual(ownerFenceOf(response.Item as unknown as DeveloperTaskRecord), ownerFenceOf(task));
+  } catch { return false; }
 }
 /** DynamoDB allows one action per key. Keep a task-notes update and the money
  * source condition on the same action rather than adding a duplicate key. */
 export function withAdmittedTaskSource(tableName: string, task: DeveloperTaskRecord, input: readonly TransactItem[], prefix = "admitted"): { items: TransactItem[]; sourceIndex: number } {
   const Key = taskKey(task.taskId), names: Record<string, string> = {}, values: Record<string, unknown> = {};
+  const owner = ownerFenceOf(task), tokens: Record<string, string> = {};
+  for (const [token, field] of Object.entries(owner.names)) { const renamed = `#${prefix}_owner_${token.slice(1)}`; tokens[token] = renamed; names[renamed] = field; }
+  for (const [token, value] of Object.entries(owner.values)) { const renamed = `:${prefix}_owner_${token.slice(1)}`; tokens[token] = renamed; values[renamed] = value; }
+  const ownerCondition = owner.expression.replace(/[#:]\w+/gu, token => tokens[token] ?? token);
   const condition = admittedTaskFields.map(field => {
     const name = `#${prefix}_${field}`; names[name] = field;
     if (task[field] === undefined) return `attribute_not_exists(${name})`;
     const value = `:${prefix}_${field}`; values[value] = task[field]; return `${name} = ${value}`;
-  }).join(" AND ");
+  }).join(" AND ") + ` AND (${ownerCondition})`;
   const items = [...input];
   const sourceIndex = items.findIndex(item => {
     const key = item.Update?.Key ?? item.ConditionCheck?.Key ?? item.Put?.Item ?? item.Delete?.Key;
