@@ -60,7 +60,7 @@ it("a bootstrap transaction failure leaves no org or membership without its poli
 
 for (const existing of [false, true]) it(`upgrading an existing company records one audited outcome without overwriting policy: existing=${existing}`, async () => {
   const f = fixture();
-  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open", name: "Existing company" });
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", name: "Existing company" });
   if (existing) f.db.set({ ...policyKey, orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 7,
     policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1234567 } }, enrollment: { state: "disabled", version: 1 } });
   const original = f.db.get(policyKey.pk, policyKey.sk);
@@ -84,7 +84,7 @@ for (const existing of [false, true]) it(`upgrading an existing company records 
 
 for (const missing of ["occurrenceId", "sourceDigest", "completedAt", "policyRevision", "auditOccurrence"] as const) it(`upgrade replay refuses a receipt missing ${missing}`, async () => {
   const f = fixture();
-  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open" });
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
   const deps = { documentClient: f.db, tableName: "state", now: () => now };
   await taskStopBootstrap.bootstrapTaskStopPolicy(deps, orgId);
   const key = { pk: seedKey.pk, sk: "V1#upgrade" }, receipt = f.db.get(key.pk, key.sk)!;
@@ -96,14 +96,14 @@ for (const missing of ["occurrenceId", "sourceDigest", "completedAt", "policyRev
 
 for (const race of ["policy", "ceiling", "closed"] as const) it(`upgrade rolls back atomically when native ${race} changes at commit`, async () => {
   const f = fixture(); const orgKey = orgMetaKey(orgId), guardKey = agentGuardrailsKey(orgId);
-  f.db.set({ ...orgKey, orgId, entityType: "ORG", status: "open" });
+  f.db.set({ ...orgKey, orgId, entityType: "ORG" });
   const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand) {
       raced = true;
       if (race === "policy") f.db.set({ ...policyKey, orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 9, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 314159 } } });
       if (race === "ceiling") f.db.set({ ...guardKey, orgId, entityType: "AGENT_GUARDRAILS", revision: 9, guardrails: { maxPerRunCeilingUsd: 42 } });
-      if (race === "closed") f.db.set({ ...orgKey, orgId, entityType: "ORG", status: "closed" });
+      if (race === "closed") f.db.set({ ...orgKey, orgId, entityType: "ORG", closedAt: new Date(now).toISOString() });
     }
     return send(command);
   };
@@ -118,9 +118,25 @@ for (const source of ["bootstrap", "upgrade"] as const) it(`new ${source} ceilin
   const f = fixture();
   if (source === "bootstrap") await f.store.ensureOrg(orgId, "Company");
   else {
-    f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open" });
+    f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
     await taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId);
   }
   const key = agentGuardrailsKey(orgId);
   expect(f.db.get(key.pk, key.sk)).toMatchObject({ seedProvenance: { source, reviewRequired: true, seededAt: new Date(now).toISOString(), occurrence: `task-stop-${source}-v1#${orgId}` } });
+});
+
+for (const invalid of ["missing_enrollment", "bad_enrollment", "competing_ceiling"] as const) it(`upgrade refuses ambiguous existing configuration: ${invalid}`, async () => {
+  const f = fixture(); await f.store.ensureOrg(orgId, "Company");
+  // Exercise the distinct upgrade occurrence against existing bootstrap/admin rows.
+  const key = invalid === "competing_ceiling" ? agentGuardrailsKey(orgId) : policyKey;
+  const original = f.db.get(key.pk, key.sk)!;
+  const changed = { ...original };
+  if (invalid === "missing_enrollment") delete changed.enrollment;
+  if (invalid === "bad_enrollment") changed.enrollment = { version: 1, state: "maybe" };
+  if (invalid === "competing_ceiling") changed.ceilingMicrousd = 1;
+  f.db.set(changed);
+  const count = f.db.transactions().length;
+  await expect(taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId)).rejects.toThrow();
+  expect(f.db.transactions()).toHaveLength(count);
+  expect(f.db.get(seedKey.pk, "V1#upgrade")).toBeUndefined(); expect(f.db.get(key.pk, key.sk)).toEqual(changed);
 });
