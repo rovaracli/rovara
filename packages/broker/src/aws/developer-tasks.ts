@@ -295,6 +295,7 @@ import { pageCommentViews, type CommentViewContext, type PageCommentView } from 
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import type { AuditRuntime } from "../audit/outbox.js";
 import { captureSendBackQuietly } from "../learning/capture-decision.js";
 import { getTaskPeoplePresentation, loadTaskPeople, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
@@ -460,6 +461,8 @@ export interface DeveloperTaskRouteDependencies {
    * agents are not set up.
    */
   pausedTaskGate?(caller: { orgId: OrgId; developerId: string }, task: DeveloperTaskRecord): Promise<{ allowed: true } | { allowed: false; who: string }>;
+  /** v1.2 learning loop: the Audit Ledger, so a send-back that opens a suggested rule emits `rule.suggested` (learning/capture-decision.ts). Absent on a legacy install. Its own name: other code reads `audit` of the dependencies it is handed. */
+  learningAudit?: AuditRuntime;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */

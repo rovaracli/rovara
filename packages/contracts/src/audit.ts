@@ -191,6 +191,7 @@ export const AUDIT_ACTIONS = [
   "rule.accepted",
   "rule.not_applied",
   "rule.dismissed",
+  "rule.withdrawn",
   "rule.rolled_back",
   "rule.correction_remembered",
   "project.learning_changed",
@@ -337,6 +338,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "rule.accepted": ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"],
   "rule.not_applied": ["suggestionId", "ruleId", "approvalOutcome"],
   "rule.dismissed": ["suggestionId", "stage", "dismissKind"],
+  // Rovara withdrew a suggestion whose sources went away (system actor); `cause` is a fixed word: forgotten, sources_gone, pr_capture_off, erased.
+  "rule.withdrawn": ["suggestionId", "stage", "cause"],
   "rule.rolled_back": ["ruleId", "processAgentId", "processVersion"],
   "rule.correction_remembered": ["correctionId", "stage", "standing", "op"],
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
