@@ -95,7 +95,7 @@ async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId,
 }
 
 /** Current model evidence for this exact server-resolved process draft, never the active process by accident. */
-async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,approvalId?:string,existingProof?:StageModelApprovalProof,deciderId?:string,approvedTupleDigest?:string,strictPointerLocks=false) {
+async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,approvalId?:string,existingProof?:StageModelApprovalProof,deciderId?:string,approvedTupleDigest?:string) {
   if(agent.purpose!=="process") return undefined;
   if(agent.owner.kind!=="project") throw agentXError("CONFIG_INVALID","A process must belong to its project.");
   const project=agent.owner.project;
@@ -106,24 +106,14 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
   const projectRole=await deps.projectMembers.roleOf(agent.orgId,project,{developerId,orgRole:role});
   if(projectRole===undefined || !projectAllows(projectRole,"edit_settings")) throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
   const snapshot=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project,undefined,{record:agent,recipe,overlay:draft.overlay});
-  if(strictPointerLocks&&snapshot.stages.some(row=>row.companyLock!==undefined)) {
-    const active=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project);
-    if(active.companyRevision!==snapshot.companyRevision||active.registeredAt!==snapshot.registeredAt)throw agentXError("POLICY_STALE","The active process model settings changed. Reload and review again.");
-    for(const row of snapshot.stages) {
-      if(row.companyLock===undefined)continue;
-      const prior=active.stages.find(value=>value.stage===row.stage);
-      if(prior===undefined||canonicalJson(prior.projectChoice??null)!==canonicalJson(row.projectChoice??null))throw new ProcessModelRefusal("STAGE_LOCKED",row.stage,"/app/admin/how-we-work");
-      row.projectChoice=undefined;
-    }
-  }
   // A later company lock governs runtime. It must not block an unrelated publish
   // that preserves the exact choice already stored in this process's current version.
-  if(!strictPointerLocks&&agent.currentVersion!==undefined&&snapshot.stages.some(row=>row.companyLock!==undefined&&row.projectChoice!==undefined)) {
+  if(agent.currentVersion!==undefined&&snapshot.stages.some(row=>row.companyLock!==undefined&&row.projectChoice!==undefined)) {
     const prior=await deps.store.getVersion(agent.orgId,agent.agentId,agent.currentVersion);
     if(prior===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The published model choices could not be read.");
     const priorRecipe=await resolveRecipe(deps,agent.orgId,agent.agentId,agent.currentVersion);
     for(const row of snapshot.stages) {
-      if(row.companyLock===undefined)continue;
+      if(row.companyLock===undefined||row.projectChoice===undefined)continue;
       const step=priorRecipe.steps.find(step=>step.kind===STAGE_EDIT_RULES[row.stage].stepKind);
       const priorChoice=step===undefined?undefined:stageChoiceOf(prior.overlay.steps?.[step.id],row.stage,priorRecipe);
       if(priorChoice!==undefined&&canonicalJson(priorChoice)===canonicalJson(row.projectChoice))row.projectChoice=undefined;
@@ -182,13 +172,22 @@ export async function assertProcessModelsResolvable(
  deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,
  options:{approvalBinding?:{approvalId:string;tupleDigest:string};existingProof?:StageModelApprovalProof;deciderId?:string}={},
 ) {
- const result=await processModelRevisions(deps,caller,agent,draft,recipe,options.approvalBinding?.approvalId,options.existingProof,options.deciderId,options.approvalBinding?.tupleDigest,true);
+ const result=await processModelRevisions(deps,caller,agent,draft,recipe,options.approvalBinding?.approvalId,options.existingProof,options.deciderId,options.approvalBinding?.tupleDigest);
  if(result===undefined)throw agentXError("CONFIG_INVALID","A project process is required.");
  if(result.changes.length>0&&result.proof===undefined) {
   const exception=result.exceptions[0];
   if(exception!==undefined)throw new ProcessModelRefusal("DIFFERENT_FROM_UNSATISFIABLE",exception.stage,"/app/admin/how-we-work");
  }
  return result;
+}
+
+/** A stored version is about to become what the project runs (a pointer write): lane C's check on that version's own overlay and resolved recipe, as for its publish. A version published under a same-model approval keeps it. */
+export async function assertStoredVersionModelsResolvable(
+ deps:ApprovalDependencies,caller:AgentCaller,agentId:AgentId,version:number,options:{approvalBinding?:{approvalId:string;tupleDigest:string};deciderId?:string}={},
+) {
+ const [agent,stored]=await Promise.all([deps.store.get(caller.orgId,agentId),deps.store.getVersion(caller.orgId,agentId,version)]);
+ if(agent===undefined||stored===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The published model choices could not be read.");
+ return assertProcessModelsResolvable(deps,caller,agent,stored,await resolveRecipe(deps,caller.orgId,agentId,version),{...options,...(stored.modelApproval===undefined?{}:{existingProof:stored.modelApproval})});
 }
 
 // ---- who is asked
@@ -300,7 +299,7 @@ export async function publishDraft(
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
     // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
-    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt });
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt, before: async () => { await assertStoredVersionModelsResolvable(deps, caller, agent.agentId, running.version); } });
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
@@ -450,7 +449,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
     if (landed !== undefined && landed.digest === subject.digest) {
-      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt });
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt, before: async () => { await assertStoredVersionModelsResolvable(deps, { orgId: record.orgId, developerId: record.requestedBy, orgRole: "member" }, subject.agentId, landed.version, { deciderId: by, approvalBinding: { approvalId: record.approvalId, tupleDigest: subject.modelContext?.tupleDigest ?? "" } }); } });
       return;
     }
     throw stale("The published version changed after this was asked. Publish again.");

@@ -173,7 +173,7 @@ describe("publishing a process layer", () => {
   // Final review I1 (and H3 m1): the repair after a lost playbook write only applies while nobody has written the playbook since version 1 was published.
   const writer = (w: MergeWorld) => ({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
   const redrive = (w: MergeWorld, agentId: AgentId, draftRevision: number, digest: string) => getApprovalSubjectHandler("agent_publish")!(w.deps, {
-    orgId: ORG_A, approvalId: "apr_r", decidedBy: OLA, subject: { kind: "agent_publish", agentId, draftRevision, digest },
+    orgId: ORG_A, approvalId: "apr_r", decidedBy: OLA, requestedBy: MAX, subject: { kind: "agent_publish", agentId, draftRevision, digest },
   } as unknown as ApprovalRecord);
 
   it("a no-op republish of version 1, or a confirmation redriven, after the project was set back to the built-in leaves it on the built-in", async () => {
