@@ -235,6 +235,13 @@ export const LearningRuleRemoveBodySchema = z.object({ requestId: RequestIdSchem
 export const LearningSettingsBodySchema = z.object({ expectedRevision: RevisionSchema, prComments: z.enum(LEARNING_PR_COMMENT_SETTINGS) }).strict();
 export const LearningProposalDecisionBodySchema = z.object({ decision: z.enum(["approve", "decline"]) }).strict();
 
+/**
+ * The task page's comment listing (`GET /review/<task>/task/api/comments`), for a person with standing in the project only: whether a comment is already remembered, and its correction. Both
+ * this and `canRemember` are absent for everyone else, and when the read fails or is slow. `correctionId` is present only when `remembered` is true.
+ */
+export const TaskCommentLearningSchema = z.object({ remembered: z.boolean(), correctionId: IdSchema.optional() }).strict();
+export type TaskCommentLearning = z.infer<typeof TaskCommentLearningSchema>;
+
 export const LearningCorrectionViewSchema = z.object({ id: IdSchema, standing: LearningStandingSchema, stage: LearningStageSchema }).strict();
 export const LearningRememberAnswerSchema = z.object({ correction: LearningCorrectionViewSchema }).strict();
 export const LearningForgetAnswerSchema = z.object({ forgotten: z.literal(true) }).strict();
