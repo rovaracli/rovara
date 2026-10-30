@@ -28,6 +28,7 @@ import { listOrganizationInvites } from "../org/invite-directory.js";
 import { changeReviewedMemberRole } from "../org/role-changes.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
+import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute, type RemovalHelpers } from "../org/member-removal/routes.js";
 import { navigationReadCache } from "../app-nav/read-cache.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../app-nav/nav.js";
 import { navigationLive } from "../agent-sessions/live.js";
@@ -2215,6 +2216,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
+  // Member removal (v1.1): a preview of what moves and what ends, the removal with a receipt per request id, and its status.
+  const removalPreview = /^\/v1\/app\/org\/members\/([a-f0-9]{64})\/removal-preview$/.exec(url.pathname);
+  if (removalPreview !== null && request.method === "GET") return previewMemberRemoval(deps, caller, removalPreview[1]!, url);
+  const removalStart = /^\/v1\/app\/org\/members\/([a-f0-9]{64})\/removal$/.exec(url.pathname);
+  if (removalStart !== null && request.method === "POST") return startMemberRemovalRoute(deps, caller, removalStart[1]!, jsonBody(request), removalHelpers(deps), deps.cloud === true);
+  const removalStatus = /^\/v1\/app\/org\/removals\/([^/]+)$/.exec(url.pathname);
+  if (removalStatus !== null && request.method === "GET") return getMemberRemoval(deps, caller, removalStatus[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
   if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) {
     const body = jsonBody(request);
@@ -2444,6 +2452,13 @@ async function emailsOf(store: DeveloperSignInStore, developerId: string): Promi
   const [record, identities] = await Promise.all([store.getDeveloper(developerId), store.identitiesOf(developerId)]);
   return [...new Set([record?.email, ...identities.map((identity) => identity.email)].filter((email): email is string => typeof email === "string"))];
 }
+
+/** What the removal routes need from here: the person's addresses, the legacy session end, and the sentence about running tasks. */
+const removalHelpers = (deps: DeveloperRouteDependencies): RemovalHelpers => ({
+  emailsOf: (developerId) => emailsOf(signInStoreOf(deps), developerId),
+  afterRemoval: (developerId, removedAt) => endSessionsAfterRemoval(deps, developerId, removedAt),
+  stops: (name) => STOPS_AFTER_STEP(name),
+});
 
 const STOPS_AFTER_STEP = (name: string) => `${name}'s running tasks will stop after their current step. None of them will open a pull request.`;
 

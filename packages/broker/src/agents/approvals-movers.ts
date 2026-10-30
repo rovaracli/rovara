@@ -136,7 +136,7 @@ async function moveApprovals(deps: LifecycleDeps, orgId: OrgId, from: string, to
 // ---- a take-over (Plan 5 Task 12b)
 
 /** The ids of the approvals `developerId` is listed for, every page. */
-async function listedApprovalIds(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string): Promise<ApprovalId[]> {
+export async function listedApprovalIds(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string): Promise<ApprovalId[]> {
   const ids: ApprovalId[] = [];
   let start: Record<string, unknown> | undefined;
   do {
