@@ -418,3 +418,19 @@ it("project inventory replays its original page after a missing later settings r
   expect(await taskStopBootstrap.upgradeTaskStopProjectInventoryPage(deps, input)).toMatchObject({ examined: 2, updated: 1, preserved: 1, complete: true });
   expect(f.db.get(key.pk, key.sk)).toEqual(first);
 });
+
+it("registered built-in inventory is bounded and resumes against the same registry", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopBuiltinInventoryPage"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("builtin inventory missing");
+  const invoke = fn as (deps: unknown, input: unknown) => Promise<{ examined: number; updated: number; complete: boolean; cursor?: { agentId: string; registryDigest: string } }>;
+  const deps = { documentClient: f.db, tableName: "state", now: () => now };
+  const first = await invoke(deps, { orgId, limit: 1 });
+  expect(first).toMatchObject({ examined: 1, updated: 1, complete: false, cursor: { agentId: BUILTIN_AGENT_IDS[1], registryDigest: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  const secondKey = builtinSettingsKey(orgId, BUILTIN_AGENT_IDS[1]!); expect(f.db.get(secondKey.pk, secondKey.sk)).toBeUndefined();
+  expect(await invoke(deps, { orgId, limit: 6, cursor: first.cursor })).toMatchObject({ examined: BUILTIN_AGENT_IDS.length - 1, updated: BUILTIN_AGENT_IDS.length - 1, complete: true });
+  for (const agentId of BUILTIN_AGENT_IDS) {
+    const key = builtinSettingsKey(orgId, agentId); expect(f.db.get(key.pk, key.sk)).toMatchObject({ orgId, agentId, stopKind: "inherit" });
+  }
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toBeUndefined();
+});
