@@ -56,7 +56,7 @@ export function ReviewChangesDialog({ project, agentId, from, revision, disabled
   </>}
   <TextArea label="Version note" maxLength={200} value={note} disabled={busy || pending !== undefined || published !== undefined} onChange={event => setNote(event.target.value)} />
   <Button variant="primary" busy={busy} disabled={pending !== undefined || published !== undefined || diff.isPending || diff.isError || empty} onClick={() => { void publish(); }}>Publish</Button>
-  {error !== undefined && (refusals === undefined ? <p role="alert"><VisibleText text={error} /></p> : <div role="alert"><p>These model choices can't be published yet.</p><ul>{refusals.map(refusal => <li key={refusal.stage}><strong>{STAGE_LABELS[refusal.stage]}</strong> <VisibleText text={refusalText(refusal.code)} />{refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) && <> <Link to={refusal.fixHref}>How to fix this</Link></>}</li>)}</ul></div>)}
+  {error !== undefined && (refusals === undefined ? <p role="alert"><VisibleText text={error} /></p> : <div role="alert"><p>These model choices can't be published yet.</p><ul>{refusals.map(refusal => <li key={refusal.stage}><VisibleText text={`${STAGE_LABELS[refusal.stage]}: ${refusalText(refusal.code)}`} />{refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) && <> <Link to={refusal.fixHref}>How to fix this</Link></>}</li>)}</ul></div>)}
   {published !== undefined && <p role="status">{publishedMessage(published)}</p>}
   {pending !== undefined && <PendingConfirmation result={pending} checking={checking} onCheck={() => { void check(); }} />}
  </Dialog>;

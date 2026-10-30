@@ -46,8 +46,7 @@ test("a publish refused for a model choice says which stage and why, with the pa
  const dialog = page.getByRole("dialog", { name: "Review changes" });
  await dialog.getByRole("button", { name: "Publish" }).click();
  const refusal = dialog.getByRole("alert");
- await expect(refusal.getByText("Your company locked this stage's model choice.")).toBeVisible();
- await expect(refusal.getByText("Build", { exact: true })).toBeVisible();
+ await expect(refusal.getByText("Build: Your company locked this stage's model choice.")).toBeVisible();
  await expect(refusal.getByRole("link", { name: "How to fix this" })).toHaveAttribute("href", "/app/admin/how-we-work");
  await expect(refusal).not.toContainText("STAGE_LOCKED");
  await checkA11y(page, { theme: "dark" });

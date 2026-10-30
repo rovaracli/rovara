@@ -19,7 +19,7 @@ export function HowWeWorkCard({ stage, view, filter, showUnchanged, editor, acti
    <dt>{row.title}</dt>
    <dd>
     {row.id === "who" && models !== undefined ? models : row.values.length === 0 ? (row.id === "who" ? null : <p className="rv-muted">None</p>) : <ul>{row.values.map((value, index) => <li key={index} className={value.block ? "rv-hww-block" : undefined}>{value.label !== undefined && <span className="rv-muted">{value.label}: </span>}<span className="rv-hww-text"><VisibleText text={value.text} /></span> <HowWeWorkMarker mark={value.mark} /></li>)}</ul>}
-    {row.id === "who" && models === undefined && <p className="rv-muted">{MODEL_NOTE}</p>}
+    {row.id === "who" && models === undefined && EDITABLE_KINDS.has(stage.kind) && <p className="rv-muted">{MODEL_NOTE}</p>}
     {row.id === "knows" && stage.knows.note !== undefined && <p className="rv-hww-note"><VisibleText text={stage.knows.note} /></p>}
     {row.id === "knows" && editor}
    </dd>

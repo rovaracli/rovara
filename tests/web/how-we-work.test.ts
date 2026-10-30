@@ -251,10 +251,9 @@ describe("a publish refused for its model choices", () => {
  it("shows each stage's fixed sentence, with the page that fixes it, instead of the codes", async () => {
   const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build /app/admin/models/sources; STAGE_LOCKED code_review /app/admin/how-we-work; MODEL_FORBIDDEN plan_check");
   const alert = await within(dialog).findByRole("alert");
-  expect(within(alert).getByText("Build")).toBeTruthy();
-  expect(within(alert).getByText("This account has no fresh verified access to this model.")).toBeTruthy();
-  expect(within(alert).getByText("Your company locked this stage's model choice.")).toBeTruthy();
-  expect(within(alert).getByText("Your company's rules do not allow this model.")).toBeTruthy();
+  expect(within(alert).getByText("Build: This account has no fresh verified access to this model.")).toBeTruthy();
+  expect(within(alert).getByText("Code review: Your company locked this stage's model choice.")).toBeTruthy();
+  expect(within(alert).getByText("Plan check: Your company's rules do not allow this model.")).toBeTruthy();
   expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/models/sources", "/app/admin/how-we-work"]);
   expect(alert.textContent).not.toContain("MODEL_NOT_VERIFIED");
  });

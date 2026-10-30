@@ -2,7 +2,7 @@
 // The layer is a project's own (the project comes from the layer record the server loaded, never from a request); the recipe checked is the one that would become effective, resolved by
 // the server from the draft or the stored version. A refusal stores nothing and asks nobody: it carries the resolver's fixed codes (and the page to fix each on) in the existing error
 // shape. A draft save never asks (an unresolved draft may hold a choice that is valid but not yet verified); a layer with no model choice, and any other agent, is not read at all.
-import { STAGE_IDS, AgentXError, agentXError, canonicalJson, stageRefusalMessage, type RecipeOverlay, type ResolvedRecipe, type StageId, type StageModelChoice, type StageModelRefusalCode, type StageRefusal } from "@agentx/contracts";
+import { STAGE_IDS, AgentXError, type AgentId, type OrgId, agentXError, canonicalJson, stageRefusalMessage, type RecipeOverlay, type ResolvedRecipe, type StageId, type StageModelChoice, type StageModelRefusalCode, type StageRefusal } from "@agentx/contracts";
 import type { ApprovalDependencies } from "../agents/approvals-store.js";
 import { resolveAgent, type AgentRecord } from "../agents/store.js";
 import { validateStageChoices } from "../model-selection/read.js";
@@ -10,6 +10,8 @@ import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { frozenRecipeModelInputs } from "../model-selection/stage-inputs.js";
 
 type Choices = Partial<Record<StageId, StageModelChoice>>;
+/** What the guard reads with: the table, the agent store and the sources the model rows read. */
+export type StageGuardDependencies = Pick<ApprovalDependencies, "documentClient" | "tableName" | "now" | "store" | "modelRouting" | "chatgpt">;
 
 /** The page that helps fix each refusal: the company's AI models for access problems, the company's How we work for locks. Only same-origin app paths, and none when there is no such page. */
 const MODELS_PAGE = "/app/admin/models/sources";
@@ -59,11 +61,12 @@ async function lockConflicts(locks: ReadonlyMap<StageId, StageModelChoice>, choi
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "The model settings could not be read. Reload and try again.");
 
 /** Refuses (CONFIG_INVALID, with the resolver's codes) when a model choice of the process layer can't be resolved or disagrees with a company lock. Nothing for any other agent or a layer without choices. */
-export async function requireResolvableStageChoices(deps: ApprovalDependencies, input: StageChoicePublication): Promise<void> {
+export async function requireResolvableStageChoices(deps: StageGuardDependencies, input: StageChoicePublication): Promise<void> {
   const { layer } = input;
   if (layer.purpose !== "process" || layer.owner.kind !== "project") return;
   const projectChoices = frozenRecipeModelInputs(input.recipe, input.overlay).projectChoices;
   if (Object.keys(projectChoices).length === 0) return;
+  // `canEdit: true` only satisfies the read's draft gate: the edit right was checked by the route that asked (and, on a confirm, by the approval's own rules).
   const project = layer.owner.project, caller = { orgId: layer.orgId, developerId: input.developerId };
   let refusals: StageRefusal[];
   try {
@@ -90,8 +93,20 @@ export async function requireResolvableStageChoices(deps: ApprovalDependencies, 
 }
 
 /** The choices of the version of `layer` that runs now (none before a first publish). */
-export const runningChoices = (deps: ApprovalDependencies, layer: AgentRecord): (() => Promise<Choices>) => async () => {
+export const runningChoices = (deps: StageGuardDependencies, layer: AgentRecord): (() => Promise<Choices>) => async () => {
   if (layer.currentVersion === undefined) return {};
   const [recipe, version] = [await resolveAgent(deps.store, layer.orgId, layer.agentId, layer.currentVersion), await deps.store.getVersion(layer.orgId, layer.agentId, layer.currentVersion)];
   return frozenRecipeModelInputs(recipe, version?.overlay).projectChoices;
 };
+
+/**
+ * The layer's stored version `version` is about to be made what the project runs (the playbook is pointed at it): its model choices must resolve, as for a publish. Nothing is
+ * checked for the person who is not asking, and a version that holds no choice is not read further.
+ */
+export async function requireVersionStageChoices(deps: StageGuardDependencies, orgId: OrgId, agentId: AgentId, version: number, developerId: string): Promise<void> {
+  const layer = await deps.store.get(orgId, agentId);
+  const stored = await deps.store.getVersion(orgId, agentId, version);
+  if (layer === undefined || stored === undefined) throw unavailable();
+  const recipe = await resolveAgent(deps.store, orgId, agentId, version);
+  await requireResolvableStageChoices(deps, { layer, recipe, overlay: stored.overlay, version, developerId });
+}

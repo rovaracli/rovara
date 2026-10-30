@@ -3,14 +3,17 @@
 // ordinary agent) publishes exactly as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectRevisionKey, ROVARA_CODE_AGENT_ID, type AgentId } from "../../packages/contracts/src/index.js";
+import { projectRevisionKey, recipeDigest, ROVARA_CODE_AGENT_ID, type AgentId } from "../../packages/contracts/src/index.js";
 import { parseStageRefusalMessage } from "../../packages/contracts/src/stage-model-publish-refusal.js";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
-import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
+import { decideApproval, getAnyApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { diffLessSafe } from "../../packages/broker/src/playbook/process-diff.js";
+import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
+import { writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
+import { putProjectPlaybook } from "../../packages/broker/src/playbook/routes.js";
 import { MAX, OLA, ORG_A } from "../support/agent-session-world.js";
-import { callerOf, failure, layerWith, world as baseWorld } from "../support/process-switch-world.js";
+import { callerOf, failure, layerWith, playbook, playbookDeps, world as baseWorld } from "../support/process-switch-world.js";
 import type { MergeWorld } from "../support/rovara-code-merge-world.js";
 
 const [MODEL_A, MODEL_B] = bedrockClaudeModelIds("us").map((modelId) => ({ provider: "amazon-bedrock", modelId }));
@@ -227,5 +230,98 @@ describe("the refusal text", () => {
     expect(parseStageRefusalMessage("Model choices can't be published: STAGE_LOCKED build //evil.example")).toBeUndefined();
     expect(parseStageRefusalMessage("Model choices can't be published: STAGE_LOCKED nowhere")).toBeUndefined();
     expect(parseStageRefusalMessage("Model choices can't be published: STAGE_LOCKED build /app/admin/how-we-work; MODEL_FORBIDDEN code_review")).toEqual([{ code: "STAGE_LOCKED", stage: "build", fixHref: "/app/admin/how-we-work" }, { code: "MODEL_FORBIDDEN", stage: "code_review" }]);
+  });
+});
+
+describe("pointing the playbook at a process layer checks the layer's model choices too", () => {
+  const writer = (w: MergeWorld) => ({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+  /** A layer whose current version holds a model choice, with the project set back to the built-in (so the layer is not what runs). */
+  async function chosenLayerOnBuiltin(w: MergeWorld): Promise<AgentId> {
+    const layer = await layerWith(w);
+    await setDraft(w, layer, { build: { model: MODEL_B } });
+    const second = await publish(w, layer);
+    if (!second.applied) await decide(w, OLA, approvalIdOf(w, second));
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
+    const current = await playbook(w);
+    await writeProjectPlaybook(writer(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: current.revision, defaultProcess: { kind: "builtin" } });
+    return layer;
+  }
+  const putAt = async (w: MergeWorld, defaultProcess: unknown) => putProjectPlaybook(playbookDeps(w), callerOf(w, MAX), "web", { expectedRevision: (await playbook(w)).revision, defaultProcess });
+
+  it("refuses to point at a layer whose current version no longer resolves, and leaves the playbook as it was", async () => {
+    const w = world();
+    const layer = await chosenLayerOnBuiltin(w);
+    setProject(w, { approved: [MODEL_A], default: MODEL_A });
+    const before = await playbook(w);
+    const refused = await failure(putAt(w, { kind: "project_process", agentId: layer }));
+    expect(refusalOf(refused)).toEqual({ code: "CONFIG_INVALID", items: [{ code: "MODEL_NOT_ALLOWED_IN_PROJECT", stage: "build", fixHref: "/app/projects/web" }] });
+    expect(await playbook(w)).toEqual(before);
+  });
+
+  it("still points at a layer whose choices resolve", async () => {
+    const w = world();
+    const layer = await chosenLayerOnBuiltin(w);
+    expect(await failure(putAt(w, { kind: "project_process", agentId: layer }))).toBeUndefined();
+    expect((await playbook(w)).defaultProcess).toEqual({ kind: "project_process", agentId: layer });
+  });
+
+  it("checks a personal-plan model for the person who points the playbook", async () => {
+    const w = world();
+    const plan = { provider: "openai", modelId: "gpt-5.5" };
+    (w.deps as { servableModels?: unknown }).servableModels = async () => [...bedrockClaudeModelIds("us").map((modelId) => ({ provider: "amazon-bedrock", modelId })), plan];
+    (w.deps as { chatgpt?: unknown }).chatgpt = {
+      settings: async () => ({ enabled: true }),
+      view: async (developerId: string) => developerId === MAX ? { connected: true, status: "connected", connectedAt: "2026-10-01T00:00:00Z", models: ["gpt-5.5"] } : { connected: false },
+    };
+    const layer = await layerWith(w);
+    await setDraft(w, layer, { build: { model: plan } });
+    const second = await publish(w, layer);
+    if (!second.applied) await decide(w, OLA, approvalIdOf(w, second));
+    const current = await playbook(w);
+    await writeProjectPlaybook(writer(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: current.revision, defaultProcess: { kind: "builtin" } });
+    const asOla = await failure(putProjectPlaybook(playbookDeps(w), callerOf(w, OLA), "web", { expectedRevision: (await playbook(w)).revision, defaultProcess: { kind: "project_process", agentId: layer } }));
+    expect(refusalOf(asOla)).toMatchObject({ code: "CONFIG_INVALID", items: [{ code: "MODEL_NOT_VERIFIED", stage: "build" }] });
+    expect(await failure(putAt(w, { kind: "project_process", agentId: layer }))).toBeUndefined();
+  });
+
+  it("does not stop a switch to the built-in, whatever the layer holds", async () => {
+    const w = world();
+    const layer = await chosenLayerOnBuiltin(w);
+    await putAt(w, { kind: "project_process", agentId: layer });
+    setProject(w, { approved: [MODEL_A], default: MODEL_A });
+    expect(await failure(putAt(w, { kind: "builtin" }))).toBeUndefined();
+  });
+
+  /** Version 1 (with a model choice) committed, then the broker died before the playbook write. */
+  async function lostPointer(w: MergeWorld) {
+    const { agentId } = await postProjectProcess(playbookDeps(w), w.caller(MAX), "web");
+    await setDraft(w, agentId, { build: { model: MODEL_B } });
+    const agent = (await w.store.get(ORG_A, agentId))!;
+    const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, agentId, "draft"));
+    await w.store.publish({ orgId: ORG_A, agentId, expectedDraftRevision: agent.draftRevision, digest, by: MAX, expectedCurrentVersion: null });
+    return { agentId, draftRevision: agent.draftRevision, digest };
+  }
+  const redrive = (w: MergeWorld, x: { agentId: AgentId; draftRevision: number; digest: string }) => getApprovalSubjectHandler("agent_publish")!(w.deps, {
+    orgId: ORG_A, approvalId: "apr_r", decidedBy: OLA, requestedBy: MAX, subject: { kind: "agent_publish", agentId: x.agentId, draftRevision: x.draftRevision, digest: x.digest },
+  } as unknown as ApprovalRecord);
+  const pointed = async (w: MergeWorld) => (await playbook(w)).defaultProcess.kind;
+
+  it("repairs a lost first-version pointer, by a republish or a redriven confirmation, only while the choices resolve", async () => {
+    for (const how of ["republish", "redrive"] as const) {
+      const ok = world();
+      const x = await lostPointer(ok);
+      if (how === "republish") await publishDraft(ok.deps, callerOf(ok, MAX), (await ok.store.get(ORG_A, x.agentId))!, { requestId: randomUUID(), expectedRevision: x.draftRevision });
+      else await redrive(ok, x);
+      expect(await pointed(ok), `${how} control`).toBe("project_process");
+
+      const w = world();
+      const lost = await lostPointer(w);
+      setProject(w, { approved: [MODEL_A], default: MODEL_A });
+      const refused = how === "republish"
+        ? await failure(publishDraft(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, lost.agentId))!, { requestId: randomUUID(), expectedRevision: lost.draftRevision }))
+        : await failure(redrive(w, lost));
+      expect(refusalOf(refused), how).toMatchObject({ code: "CONFIG_INVALID", items: [{ code: "MODEL_NOT_ALLOWED_IN_PROJECT", stage: "build" }] });
+      expect(await pointed(w), how).toBe("builtin");
+    }
   });
 });
