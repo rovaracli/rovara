@@ -18529,7 +18529,7 @@ function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDep
 function swebenchSlackContext(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): SwebenchSlackContext {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "Slack thread context is required");
-  return { thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
+  return { orgId: requireOrgId(identity.orgId), developerId: developerIdForSlackUser(slack.requester.userId), thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
 }
 
 /** The project and its approved models, for a run or batch whose thread and requester the caller supplies. */

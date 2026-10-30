@@ -93,6 +93,9 @@ export interface SwebenchStartOptions {
 
 /** The Slack context a service route acts in: the thread, its requester and the channel's project. */
 export interface SwebenchSlackContext {
+  /** Trusted server context, never copied from the request body. */
+  orgId?: string;
+  developerId?: string;
   thread: SlackThread;
   requester: SlackRequester;
   projectName: string;
@@ -212,6 +215,9 @@ export async function startSwebenchRun(
   const createdAt = now(dependencies).toISOString();
   const run: SwebenchRun = SwebenchRunSchema.parse({
     runId,
+    ...(context.orgId === undefined ? {} : { orgId: context.orgId }),
+    projectName: context.projectName,
+    ...(context.developerId === undefined ? {} : { developerId: context.developerId }),
     dataset: request.dataset,
     instanceId: request.instanceId,
     model,
@@ -844,7 +850,7 @@ export async function readRun(dependencies: SwebenchDependencies, runId: string)
   const item = await get(dependencies, swebenchRunKey(runId));
   if (item === undefined) return undefined;
   // The state machine records the EC2 instance as ec2InstanceId; the run's instanceId is SWE-bench's.
-  return SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "projectName", "cancelRequestedBy", "ec2InstanceId", "executionArn"]));
+  return SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "cancelRequestedBy", "ec2InstanceId", "executionArn"]));
 }
 
 async function get(dependencies: SwebenchDependencies, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
