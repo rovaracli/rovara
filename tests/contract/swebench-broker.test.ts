@@ -708,9 +708,9 @@ for (const corrupt of ["digest", "cap"] as const) it(`M47 eval replay refuses a 
   expect(h.startExecution).toHaveBeenCalledTimes(1);
 });
 
-it("M47 an archived project cannot start a new enrolled eval", async () => {
+for (const status of ["archived", "active"] as const) it(`M47 project ${status} with an archive marker cannot start a new enrolled eval`, async () => {
   const h = await enrolledEvalBroker(), key = projectMetaKey(TEST_ORG, "payments");
-  h.db.set({ ...h.db.get(key), ...key, entityType: "PROJECT_META", orgId: TEST_ORG, name: "payments", status: "archived", archivedAt: new Date().toISOString() });
+  h.db.set({ ...h.db.get(key), ...key, entityType: "PROJECT_META", orgId: TEST_ORG, name: "payments", status, archivedAt: new Date().toISOString() });
   const reply = await start(h.handler);
   expect(reply.status, JSON.stringify(reply.body)).toBe(403);
   expect(h.startExecution).not.toHaveBeenCalled();
