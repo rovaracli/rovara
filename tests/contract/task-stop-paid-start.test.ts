@@ -1,3 +1,4 @@
+import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
@@ -405,5 +406,18 @@ for (const enrolled of [false, true]) for (const bound of ["path", "requested"] 
   } else {
     expect(f.t.meta(f.task.taskId).budgetUsd).toBe(bound === "path" ? 0.0000001 : before.budgetUsd);
     expect(f.t.db.get(f.receipt)).toBeUndefined();
+  }
+});
+
+for (const enrolled of [false, true]) it(`initial human run preserves a legacy submicro requested bound only before enrollment=${enrolled}`, async () => {
+  const f = await fixture();
+  if (!enrolled) f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const start = () => startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app", owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, runLimitUsd: 0.0000001 });
+  if (enrolled) {
+    await expect(start()).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+    expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  } else {
+    const result = await start(); expect(f.t.meta(result.taskId).budgetUsd).toBe(0.0000001);
+    expect(f.t.meta(result.taskId).spendingStop).toBeUndefined();
   }
 });
