@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { randomUUID } from "node:crypto";
@@ -639,4 +640,22 @@ it("M47 single eval records the authenticated org, project and requesting develo
   const rows = h.db.find(row => row.entityType === "SWEBENCH_RUN");
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ orgId: TEST_ORG, projectName: "payments", developerId: developerIdForSlackUser(member) });
+});
+
+it("M47 actual eval start captures the strict project stop without applying the approval ceiling as an ordinary cap", async () => {
+  const h = await evalBroker(); await enable(h.handler, { maxCostUsd: 10 });
+  const developerId = developerIdForSlackUser(member);
+  h.db.set({ ...orgMemberKey(TEST_ORG, developerId), orgId: TEST_ORG, developerId, role: "member" });
+  h.db.set({ ...developerOrgKey(developerId), orgId: TEST_ORG, role: "member" });
+  h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
+    policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "enabled" } });
+  h.db.set({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId: TEST_ORG, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 });
+  h.db.set({ ...agentGuardrailsKey(TEST_ORG), orgId: TEST_ORG, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1 } });
+  const catalog = orgProjectCatalogKey(TEST_ORG, "payments"), project = projectAiKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(catalog), ...catalog, orgId: TEST_ORG, entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1 });
+  h.db.set({ ...h.db.get(project), ...project, orgId: TEST_ORG, entityType: "PROJECT_AI", project: "payments", revision: 1, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1234567 } });
+  const reply = await start(h.handler); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ maxCostUsd: 1.234567,
+    spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 1234567, approvalCapMicrousd: 1000000 } });
+  expect([...h.launches.values()][0]?.run.maxCostUsd).toBe(1.234567);
 });
