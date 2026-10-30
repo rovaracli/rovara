@@ -3,7 +3,7 @@
 //
 // The catalog keeps archived projects: archiving writes the project's META only (project-archive.ts) and nothing deletes a catalog entry, so an archived project's partition is reached.
 //
-// A run stops when it has made `writes` item writes (default 1,000), has run `millis` (default 20 s) or has visited `projects`. It stops with `status: "running"` and the next run
+// A run stops when it has made `writes` item writes, its own cursor writes included (default 1,000), has run `millis` (default 20 s) or has visited `projects`. It stops with `status: "running"` and the next run
 // goes on after the last finished project. A job that stops inside a project (`"partial"`) leaves the cursor where it was, so the next run repeats that project: jobs must be
 // idempotent. Writes to the walk item are conditional on its `version`, so two overlapping runs cannot both move the cursor; the loser stops with `busy`.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -108,6 +108,7 @@ export async function runLearningWalk(deps: LearningDeps, input: { orgId: OrgId;
         throw error;
       }
       row = { ...row, version: row.version + 1 };
+      budget.spend(1); // the cursor write is an item write like any other
     }
     const lastSk = rows.at(-1)?.["sk"];
     if (typeof lastSk === "string") scanAfter = lastSk.slice("PROJECT#".length);

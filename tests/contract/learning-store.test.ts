@@ -209,6 +209,54 @@ describe("caps", () => {
   });
 });
 
+describe("a full project does not read its whole partition on every attempt", () => {
+  const fullState = (world: World) => seedItem(world.db, TEST_ORG, "web", "STATE", { entityType: "LEARNING_STATE", revision: 1, projectCreatedAt: PROJECT_CREATED, openSuggestions: 0, liveCorrections: LEARNING_LIVE_CORRECTIONS_MAX, pendingRules: 0 });
+  const queries = (world: World) => world.db.commandNames().filter((name) => name === "QueryCommand").length;
+  const pcEpoch = Math.floor(Date.parse(PROJECT_CREATED) / 1000);
+
+  it("checks the daily cap before it recounts: a capture the daily cap refuses reads no partition", async () => {
+    const world = makeWorld();
+    for (let n = 0; n < 3; n += 1) seedCorrection(world.db, TEST_ORG, "web", n);
+    fullState(world);
+    seedItem(world.db, TEST_ORG, "web", `DAILY#${iso(NOW_MS).slice(0, 10)}#${String(pcEpoch)}`, { autoCount: LEARNING_DAILY_AUTOMATIC_MAX, prCount: 0, projectCreatedAt: PROJECT_CREATED, indexExpiresAt: epochSeconds(NOW_MS) + 86400 });
+    expect(await captureCorrection(world.deps, world.scope, capture(1, { limit: "automatic" }))).toMatchObject({ ok: false, reason: "daily_cap" });
+    expect(queries(world)).toBe(0);
+  });
+
+  it("checks the rate cap before it recounts", async () => {
+    const world = makeWorld();
+    for (let n = 0; n < 3; n += 1) seedCorrection(world.db, TEST_ORG, "web", n);
+    fullState(world);
+    seedItem(world.db, TEST_ORG, "web", `RATE#dev1#${String(Math.floor(NOW_MS / 1000 / 600))}#${String(pcEpoch)}`, { rememberCount: LEARNING_REMEMBER_MAX, projectCreatedAt: PROJECT_CREATED, indexExpiresAt: epochSeconds(NOW_MS) + 86400 });
+    expect(await captureCorrection(world.deps, world.scope, capture(1, { limit: "remember", actor: "dev1" }))).toMatchObject({ ok: false, reason: "rate_limited" });
+    expect(queries(world)).toBe(0);
+  });
+
+  it("recounts a really full project once, then refuses without reading until the recount is old", async () => {
+    const world = makeWorld();
+    for (let n = 0; n < LEARNING_LIVE_CORRECTIONS_MAX; n += 1) seedCorrection(world.db, TEST_ORG, "web", n);
+    fullState(world);
+    expect(await captureCorrection(world.deps, world.scope, capture(5000))).toMatchObject({ ok: false, reason: "store_full" });
+    const afterFirst = queries(world);
+    expect(afterFirst).toBeGreaterThan(0);
+    world.clock.ms += 60_000;
+    expect(await captureCorrection(world.deps, world.scope, capture(5001, { sourceKey: "other-source" }))).toMatchObject({ ok: false, reason: "store_full" });
+    expect(queries(world)).toBe(afterFirst);
+    world.clock.ms += 20 * 60_000;
+    await captureCorrection(world.deps, world.scope, capture(5002, { sourceKey: "third-source" }));
+    expect(queries(world)).toBeGreaterThan(afterFirst);
+  });
+
+  it("repairs the counter from the real number of corrections that exist, expired ones included, so it never reads low", async () => {
+    const world = makeWorld();
+    for (let n = 0; n < LEARNING_LIVE_CORRECTIONS_MAX; n += 1) seedCorrection(world.db, TEST_ORG, "web", n, n < 100 ? { expiresAtSeconds: epochSeconds(NOW_MS) - 1 } : {});
+    fullState(world);
+    // 100 of the 2,000 are past their time but not yet swept: they are still stored, so they still count until the sweep deletes them.
+    expect(await captureCorrection(world.deps, world.scope, capture(7000))).toMatchObject({ ok: false, reason: "store_full" });
+    expect((await stateOf(world)).liveCorrections).toBe(LEARNING_LIVE_CORRECTIONS_MAX);
+  });
+});
+
 describe("a project created again under the same name sees nothing old", () => {
   const LATER = "2026-10-20T00:00:00.000Z";
   it("ignores items of an earlier project on every read, and the first write starts a fresh STATE", async () => {
@@ -230,6 +278,22 @@ describe("a project created again under the same name sees nothing old", () => {
     expect(world.db.find((item) => String(item.sk).startsWith("RATE#"))).toHaveLength(2);
     // The old project's own scope is now the stale one.
     expect(await captureCorrection(world.deps, world.scope, capture(3))).toMatchObject({ ok: false, reason: "stale" });
+  });
+
+  it("lets the new project capture a source key the old project still holds", async () => {
+    const world = makeWorld();
+    await captureCorrection(world.deps, world.scope, capture(1, { sourceKey: "comment-shared" }));
+    const again = makeWorld({ db: world.db, projectCreatedAt: LATER });
+    expect(await captureCorrection(again.deps, again.scope, capture(2, { sourceKey: "comment-shared" }))).toMatchObject({ ok: true, created: true });
+    // And a repeat inside the new project is still a repeat.
+    expect(await captureCorrection(again.deps, again.scope, capture(3, { sourceKey: "comment-shared" }))).toMatchObject({ ok: true, created: false, correctionId: "c2" });
+  });
+
+  it("starts a fresh STATE over one that has no projectCreatedAt (or no revision)", async () => {
+    const world = makeWorld();
+    seedItem(world.db, TEST_ORG, "web", "STATE", { entityType: "LEARNING_STATE", openSuggestions: 3, liveCorrections: 9, pendingRules: 0 });
+    expect(await captureCorrection(world.deps, world.scope, capture(1))).toMatchObject({ ok: true, created: true });
+    expect(await readLearningState(world.deps, world.scope)).toMatchObject({ projectCreatedAt: PROJECT_CREATED, liveCorrections: 1, openSuggestions: 0 });
   });
 
   it("keeps two projects and two companies apart (I9)", async () => {

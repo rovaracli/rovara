@@ -71,6 +71,8 @@ export const LearningStateSchema = z.object({
   liveCorrections: CountSchema,
   pendingRules: CountSchema,
   lastGroupedAt: IsoInstantSchema.optional(),
+  /** When a capture last counted the stored corrections and found the project full (epoch ms): a full project is not recounted again for a few minutes. */
+  recountedAt: z.number().int().positive().optional(),
 });
 export type LearningState = z.infer<typeof LearningStateSchema>;
 
