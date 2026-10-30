@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
-import { setup } from "../support/spend-world.js";
+import { setup, CODING, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function fixture(amount = 1_234_567) {
   const t = await setup(), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
@@ -127,6 +127,34 @@ it("a real project payer change after capture still refuses atomically", async (
     return send(command);
   };
   const reply = await f.start(); expect(edited).toBe(true); expect(reply.status).toBe(409);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+async function customStart() {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer");
+  const agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const request = { ...f.request, agent: { agentId } };
+  return { ...f, agentId, key, startCustom: () => f.t.dev(MAYA, "POST", "/v1/dev/tasks", request) };
+}
+it("a legitimate published custom agent can start under the captured company stop", async () => {
+  const f = await customStart(), reply = await f.startCustom(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toEqual([expect.objectContaining({ budgetUsd: 1.234567, agent: expect.objectContaining({ agentId: f.agentId }) })]);
+});
+for (const loss of ["archive", "roster", "owner"] as const) it(`paid custom-agent start refuses a real competing ${loss} write at commit`, async () => {
+  const f = await customStart(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true;
+      const reply = loss === "archive" ? await f.t.api(MAYA, "POST", `/v1/app/agents/${f.agentId}/archive`, {})
+        : loss === "roster" ? await f.t.api(MAYA, "DELETE", `/v1/app/projects/payments/agents/${f.agentId}`, {})
+          : await f.t.api(ADA, "PUT", `/v1/app/agents/${f.agentId}/owner`, { owner: { kind: "member", developerId: DEB.developerId } });
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    }
+    return send(command);
+  };
+  const reply = await f.startCustom(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
