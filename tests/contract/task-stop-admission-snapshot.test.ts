@@ -109,3 +109,8 @@ it("rejects a foreign seed receipt instead of considering it absent", async () =
   const f = fixture(); f.rows[8]!.orgId = "org_bbbbbbbbbbbbbbbbbbbb";
   await expect(f.capture()).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
 });
+it("legacy Slack-derived callers retain pre-enrollment behavior after trusted scope authorization", async () => {
+  const f = fixture(); f.rows.splice(8, 1); f.rows.splice(3, 1); f.rows.splice(0, 2);
+  expect(await f.capture()).toEqual({ kind: "disabled" });
+  expect(f.order).toEqual(["authorized", "snapshot"]);
+});

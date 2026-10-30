@@ -729,6 +729,7 @@ describe("what a start reads, whom it is for and what it refuses until the step 
     const t = await setup();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
     const started = await t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    expect(started.statusCode, started.body).toBe(200);
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
     const pinned = (await t.store.ensureBuiltinSettings(TEST_ORG, "rovara-code")).pinnedVersion;
     expect(t.meta(taskId)).toMatchObject({ origin: "slack", agent: { agentId: "rovara-code", version: pinned, builtin: true } });
