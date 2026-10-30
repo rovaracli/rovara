@@ -152,3 +152,17 @@ it("cutover preview never labels an enabled org unenrolled or accepts a client r
   await expect(f.capture({ cutoverPreview: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
   expect(await f.capture()).toEqual({ kind: "disabled" });
 });
+
+for (const limited of [false, true]) it(`taskless eval capture uses explicit none_eval scope with ${limited ? "project stop" : "seeded estimate"}`, async () => {
+  const f = fixture();
+  f.rows.splice(7, 1); // There is no agent resource for a taskless eval.
+  if (limited) f.rows[6]!.taskStopPolicy = { schemaVersion: 1, stopMicrousd: 1234567 };
+  const { agentId: omitted, ...scope } = f.input;
+  expect(omitted).toBe(agentId);
+  const capture = await company.captureTaskStopAdmission(f.deps, { ...scope, agentScope: "none_eval" });
+  expect(capture).toMatchObject({ kind: "captured", agentScope: "none_eval", effectiveStopMicrousd: limited ? 1234567 : 20000000, approvalCapMicrousd: 1000000 });
+  expect(capture).not.toHaveProperty("agentId");
+  expect(f.calls).toHaveLength(1);
+  const command = f.calls[0] as TransactGetCommand;
+  expect(command.input.TransactItems?.some(item => item.Get?.Key?.pk === agentKey(orgId, agentId, "META").pk)).toBe(false);
+});
