@@ -90,7 +90,7 @@ export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: str
   return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
 }
 
-export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY";
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY" | "MODEL_SELECTION_POLICY";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
   return { pk: orgScoped(orgId, "SETTINGS"), sk: name };
