@@ -682,3 +682,15 @@ for (const loss of ["member", "project"] as const) it(`M47 eval refuses ${loss} 
   expect(h.startExecution).not.toHaveBeenCalled();
   expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ status: "FAILED" });
 });
+
+it("M47 eval exact replay keeps its captured stop and a fresh request sees project tightening", async () => {
+  const h = await enrolledEvalBroker(), requestId = randomUUID();
+  const first = await start(h.handler, { requestId }); expect(first.status).toBe(200);
+  const key = projectAiKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(key)!, revision: 2, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+  const replay = await start(h.handler, { requestId }); expect(replay.status).toBe(200);
+  expect(replay.body.run).toEqual(first.body.run); expect(h.startExecution).toHaveBeenCalledTimes(1);
+  const fresh = await start(h.handler); expect(fresh.status, JSON.stringify(fresh.body)).toBe(409);
+  expect(fresh.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
+  expect(h.startExecution).toHaveBeenCalledTimes(1);
+});

@@ -941,3 +941,15 @@ it("M47 batch and actual refill retain the trusted requesting scope", async () =
   expect(runs.length).toBeGreaterThan(0);
   for (const run of runs) expect(run).toMatchObject({ batchId: batch.batchId, orgId, developerId, projectName: h.context.projectName });
 });
+
+it("M47 an old batch without org scope refuses a new refill instead of falling back", async () => {
+  const h = await harness(), batch = await createBatch(h.dependencies, h.context, file());
+  const row = h.db.find(item => item.entityType === "EVAL_BATCH")[0]!;
+  delete row.orgId; h.db.set(row);
+  const result = await topUpBatches(h.dependencies);
+  expect(result.failures).toHaveLength(1);
+  expect(result.failures[0]?.batchId).toBe(batch.batchId);
+  expect(result.failures[0]?.error).toContain("TASK_STOP_CONFIG_MISSING");
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(item => item.entityType === "SWEBENCH_RUN")).toHaveLength(0);
+});
