@@ -373,6 +373,9 @@ import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
 import type { AuditEraseDeps } from "../audit/erase.js";
+import { learningEraseHook } from "../learning/cleanup.js";
+import { setLearningHomeSettler } from "../learning/home-source.js";
+import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
@@ -1343,6 +1346,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
   // (`resumeAfterRunLimitApproval`, through the host above). Without this a member's Full task would block with no request and no way to run.
   routeDependencies.requestRunLimit ??= runLimitRequester(routeDependencies);
+  // v1.2 learning loop: Home hands the approvals of waiting suggested rules to the settler (learning/settle.ts); without it Home reads none.
+  setLearningHomeSettler(learningSettler({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, approvals: routeDependencies, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }));
   // Owner decision 2026-10-22: an owner's approval of an older, less safe version starts the run that asked for it, once, as the person who asked, through the same
   // start as any run (its request id makes a repeat answer the first start), with only the version check waived.
   routeDependencies.startApprovedRun = async (approved) => {
@@ -19120,6 +19125,8 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   now: Date.now,
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+  // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company.
+  eraseLearning: learningEraseHook({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

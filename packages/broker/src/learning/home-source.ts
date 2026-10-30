@@ -66,6 +66,8 @@ interface Found { project: string; state: LearningState }
 export const learningHomeSource: HomeCardSource = {
   kind: "rule_suggestion",
   async list(deps, caller): Promise<HomeSourceCard[]> {
+    // The settling window is half of the source's time counted from the start of the source, so a slow batch read leaves less time for approvals, never more.
+    const startedAt = Date.now();
     const members = deps.approvals?.projectMembers;
     if (members === undefined) return [];
     const { orgId } = caller;
@@ -95,18 +97,19 @@ export const learningHomeSource: HomeCardSource = {
       };
     });
 
-    if (settler !== undefined && deps.approvals !== undefined) await settleWaiting(deps, orgId, found, settler);
+    if (settler !== undefined && deps.approvals !== undefined) await settleWaiting(deps, orgId, found, settler, startedAt);
     return cards;
   },
 };
 
 /** Reads the approval of each awaiting rule (once each, 5 at most, in half the source's time) and hands the ended ones to the settler without waiting for it. */
-async function settleWaiting(deps: HomeDependencies, orgId: OrgId, found: readonly Found[], handOver: LearningHomeSettler): Promise<void> {
+async function settleWaiting(deps: HomeDependencies, orgId: OrgId, found: readonly Found[], handOver: LearningHomeSettler, startedAt: number): Promise<void> {
   const log = logOf(deps);
   const approvals = deps.approvals!;
   const learning: LearningDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
   const waiting: Array<{ project: string; projectCreatedAt: string; ruleId: string; suggestionId: string; approvalId: ApprovalId }> = [];
-  const window = Math.max(50, Math.floor((deps.homeSourceTimeoutMs ?? HOME_SOURCE_TIMEOUT_MS) / 2));
+  const window = Math.max(50, Math.floor((deps.homeSourceTimeoutMs ?? HOME_SOURCE_TIMEOUT_MS) / 2)) - (Date.now() - startedAt);
+  if (window <= 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const out = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), window); });
   let closed = false;

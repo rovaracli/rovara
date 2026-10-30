@@ -79,8 +79,11 @@ export function eraseProjectJob(deps: LearningDeps, developerId: string): Projec
     // 1. Read their corrections (reads only): which ids are theirs, and which items need a write.
     const mine = new Set<string>();
     const work: Item[] = [];
+    /** Every correction still stored: id to task, to tell whether a suggestion keeps two sources from two tasks without this person. */
+    const taskOf = new Map<string, string>();
     await eachPage(deps, orgId, project, "CORRECTION#", (item) => {
       const theirs = item["author"] === developerId, remembered = item["rememberedBy"] === developerId;
+      if (typeof item["id"] === "string" && typeof item["taskId"] === "string") taskOf.set(item["id"], item["taskId"]);
       if (theirs && typeof item["id"] === "string") mine.add(item["id"]);
       if (theirs || remembered) work.push(item);
       return "go";
@@ -90,7 +93,15 @@ export function eraseProjectJob(deps: LearningDeps, developerId: string): Projec
     if (mine.size > 0) {
       const open: Item[] = [];
       await eachPage(deps, orgId, project, "SUGGESTION#", (item) => {
-        if (item["status"] === "open" && Array.isArray(item["correctionIds"]) && item["correctionIds"].some((id) => typeof id === "string" && mine.has(id))) open.push(item);
+        const holdsMine = Array.isArray(item["correctionIds"]) && item["correctionIds"].some((id) => typeof id === "string" && mine.has(id));
+        if (!holdsMine) return "go";
+        if (item["status"] === "open") open.push(item);
+        // A suggestion being accepted keeps its place while two sources from two tasks remain without this person (their correction text goes in step 4). Privacy comes before "open only":
+        // with fewer left, it is withdrawn like an open one, and the rule that is already on its way is settled on its own.
+        else if (item["status"] === "accepting" || item["status"] === "awaiting_approval") {
+          const left = (item["correctionIds"] as unknown[]).filter((id): id is string => typeof id === "string" && !mine.has(id) && taskOf.has(id));
+          if (left.length < 2 || new Set(left.map((id) => taskOf.get(id))).size < 2) open.push(item);
+        }
         return "go";
       });
       for (const item of open) {
@@ -107,6 +118,7 @@ export function eraseProjectJob(deps: LearningDeps, developerId: string): Projec
           if (!done) return "partial";
         } else {
           // A suggestion of an earlier project: no counter of the present project to move, only the text to remove.
+          if (item["status"] !== "open") { budget.spend(1); continue; }
           try {
             await deps.documentClient.send(new UpdateCommand({
               TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] }, UpdateExpression: "SET #status = :withdrawn REMOVE proposedText, dismissNote",

@@ -315,7 +315,7 @@ describe("GET /v1/app/audit/view", () => {
   it("after a real erasure (the tombstone and its event, not a deleted key), shows the person as erased and holds their name nowhere in the page, while another org's page keeps its own", async () => {
     const b = await world();
     await eraseAuditSubject(
-      { documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined, purgeExports: async () => undefined },
+      { documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined, eraseLearning: async () => undefined, purgeExports: async () => undefined },
       { orgId: A, developerId: "dev_1", by: { kind: "operator", id: auditOperatorId("https://staff-idp.example.test", "staff-1") }, reason: "Asked to be forgotten", requestId: "view-erase-1" },
     );
     const mine = (await pageOf(b, admin()).get(`${AUDIT_VIEW_PATH}?limit=200`)).body;

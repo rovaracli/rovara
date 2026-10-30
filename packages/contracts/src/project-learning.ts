@@ -183,6 +183,13 @@ export const LearningRuleSchema = z.object({
   status: z.enum(LEARNING_RULE_STATUSES),
   processVersion: z.number().int().positive().optional(),
   removedInVersion: z.number().int().positive().optional(),
+  /** B6: when the accept started (a rule stuck in `pending` is resolved after 10 minutes), who asked, whether the text was edited and whether the publish waited for a person (audit facts at settlement). */
+  createdAt: IsoInstantSchema.optional(),
+  requestedBy: z.string().min(1).max(100).optional(),
+  edited: z.boolean().optional(),
+  lessSafe: z.boolean().optional(),
+  /** B6: Remove waited for a person; the rule stays `active` until that approval ends. */
+  removalApprovalId: IdSchema.optional(),
   projectCreatedAt: IsoInstantSchema,
 });
 export type LearningRule = z.infer<typeof LearningRuleSchema>;

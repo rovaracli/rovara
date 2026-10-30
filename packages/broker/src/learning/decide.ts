@@ -1,0 +1,428 @@
+// v1.2 learning loop, B6: Accept, Dismiss, Reopen and Remove (design 5). A person decides every rule; nothing here applies by itself.
+//
+// Accept builds the draft from the PUBLISHED overlay, never from a draft: the draft is per agent, not per person, so Accept refuses when the layer has any unpublished change (anyone's, or a
+// publish waiting on an approval). It then publishes through `publishDraft` (agents/changes.ts), the function the How-we-work publish route calls, with all its checks: the less-safe rules, the
+// guardrails, and the second person for a reviewing stage. A publish that waits for a person is the same 202 a hand publish gives. There is no parallel write.
+//
+// The request id is derived from the suggestion (suggestion id, the revision the person saw, the stage and the exact text), so a retry is the same request: it finds the same pending rule, the same
+// draft and the same approval. The rule is written `pending` before the draft, so a crash leaves a state that settlement (settle.ts) can resolve.
+//
+// Checked again at Accept, live: the accepter's standing (and, for a contributor, that they wrote one of the corrections: L3), every source author's standing, and PR-only membership (a source
+// that is a PR comment while PR capture is off does not count). A suggestion with fewer than 2 sources from 2 tasks left is withdrawn and refused.
+import { createHash } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningRuleSchema, LEARNING_SUGGESTION_SOURCES_MIN, agentXError, canonicalJson, projectAllows, projectLearningKey,
+  type LearningRule, type LearningSuggestion, type RecipeOverlay,
+} from "@agentx/contracts";
+import type { ZodType } from "zod";
+import { approvalIdFor } from "../agents/approvals-store.js";
+import { publishDraft } from "../agents/changes.js";
+import type { AgentDraft, AgentRecord, AgentVersion } from "../agents/store.js";
+import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { inertRuleText, RULE_TEXT_MAX } from "../playbook/inert-rule-text.js";
+import { existingLayer, postProjectProcess } from "../playbook/process-layer.js";
+import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rolledBackEvent } from "./audit.js";
+import { dismissedSetKey, groupCorrections, prCaptureOff } from "./grouping.js";
+import { ensureMetricCurrent, metricMonth, metricUpdateItem } from "./metric.js";
+import {
+  acceptNote, commitApplied, commitAwaiting, commitNotApplied, learningOf, parseSuggestionItem, readMembers, readRule, removeNote, ruleSk, ruleTransition, settleProject,
+  type LearningDecideDeps,
+} from "./settle.js";
+import { learningScopeChecked, readStandingChecked, readStandings, type StandingCheck } from "./standing.js";
+import { closeSuggestion, dismissedSk, getLearningItem, suggestionSk, terminalSuggestionItems, type LearningScope } from "./store.js";
+import { learningExpiry } from "./retention.js";
+
+export type AcceptAnswer = { outcome: "published"; version: number } | { outcome: "awaiting_approval"; confirmUrl: string };
+export type RemoveAnswer = AcceptAnswer | { outcome: "needs_editor"; stage: string };
+
+// ---- words
+
+const CHANGED = "This suggestion changed. Refresh the page and try again.";
+const BUSY_LAYER = "How we work has unpublished changes. Publish or discard them first.";
+const RULES_FULL = "This stage's rules are full. Make room in How we work first.";
+const SOURCES_GONE = "This suggestion no longer has enough sources.";
+const MAINTAINERS_ONLY = "Only a project maintainer can decide on suggested rules.";
+
+const failure = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
+const stale = () => failure("AGENT_REVISION_CONFLICT", CHANGED);
+
+function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  // Field names only: the values are the caller's.
+  const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
+  throw failure("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
+}
+
+// ---- derived ids
+
+const NAMESPACE = Buffer.from("5f0c7a52e1b34d9c8a6b1e0f4d2c9a77", "hex");
+/** A version 5 UUID of `name`: the same name always gives the same id. */
+function uuidV5(name: string): string {
+  const hash = createHash("sha1").update(NAMESPACE).update(name, "utf8").digest();
+  const bytes = Buffer.from(hash.subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+/** The request id (and the rule id) of one Accept: a retry of the same request derives the same one; a changed suggestion, stage or text derives another. */
+export function acceptRequestId(suggestionId: string, suggestionRevision: number, stage: string, text: string): string {
+  const digest = createHash("sha256").update(`${stage}\0${text}`, "utf8").digest("hex");
+  return uuidV5(`learning-accept\0${suggestionId}\0${String(suggestionRevision)}\0${digest}`);
+}
+export const removeRequestId = (ruleId: string): string => uuidV5(`learning-remove\0${ruleId}`);
+
+// ---- the rule text and the overlay
+
+/** The text of a rule as it is appended: inert, one paragraph (blank lines inside collapse to a line end, so Remove can find the paragraph again), at most 1,000 characters. */
+export function cleanRuleText(raw: string): string {
+  const text = inertRuleText(raw).replace(/\n[ \t]*(\n[ \t]*)+/g, "\n");
+  if (text === "") throw failure("CONFIG_INVALID", "text: a rule needs some words");
+  if (Array.from(text).length > 1000) throw failure("CONFIG_INVALID", "text: must be at most 1,000 characters");
+  return text;
+}
+
+type StepSettings = { instructions?: string } & Record<string, unknown>;
+const stageText = (overlay: RecipeOverlay, stage: string): string => stage === "*" ? overlay.instructions ?? "" : (overlay.steps?.[stage] as StepSettings | undefined)?.instructions ?? "";
+
+function withStageText(overlay: RecipeOverlay, stage: string, text: string): RecipeOverlay {
+  const next = structuredClone(overlay) as Record<string, unknown>;
+  if (stage === "*") {
+    if (text === "") delete next["instructions"]; else next["instructions"] = text;
+    return next as RecipeOverlay;
+  }
+  const steps: Record<string, StepSettings> = { ...((next["steps"] as Record<string, StepSettings> | undefined) ?? {}) };
+  const settings: StepSettings = { ...(steps[stage] ?? {}) };
+  if (text === "") delete settings.instructions; else settings.instructions = text;
+  if (Object.keys(settings).length === 0) delete steps[stage]; else steps[stage] = settings;
+  if (Object.keys(steps).length === 0) delete next["steps"]; else next["steps"] = steps;
+  return next as RecipeOverlay;
+}
+
+/** The overlay with `rule` appended as its own paragraph. The resulting stage text is checked against 4,000 characters BEFORE anything is written. */
+export function appendRuleToOverlay(overlay: RecipeOverlay, stage: string, rule: string): RecipeOverlay {
+  const existing = stageText(overlay, stage);
+  const combined = existing === "" ? rule : `${existing}\n\n${rule}`;
+  if (Array.from(combined).length > RULE_TEXT_MAX) throw failure("LEARNING_RULES_FULL", RULES_FULL);
+  return withStageText(overlay, stage, combined);
+}
+
+/** How many paragraphs of the stage's text equal `rule` exactly, and the overlay without the first of them. */
+export function removeRuleFromOverlay(overlay: RecipeOverlay, stage: string, rule: string): { matches: number; overlay: RecipeOverlay } {
+  const paragraphs = stageText(overlay, stage).split("\n\n");
+  const matches = paragraphs.filter((paragraph) => paragraph === rule).length;
+  if (matches !== 1) return { matches, overlay };
+  return { matches, overlay: withStageText(overlay, stage, paragraphs.filter((paragraph) => paragraph !== rule).join("\n\n")) };
+}
+
+// ---- the process layer
+
+interface Layer { agent: AgentRecord; draft: AgentDraft; published: AgentVersion | undefined; publishedOverlay: RecipeOverlay }
+
+const sameOverlay = (a: RecipeOverlay, b: RecipeOverlay) => canonicalJson(a) === canonicalJson(b);
+const sameBase = (a: AgentDraft["extends"], b: AgentDraft["extends"]) => canonicalJson(a ?? null) === canonicalJson(b ?? null);
+
+async function readLayer(deps: LearningDecideDeps, orgId: string, agentId: string): Promise<Layer> {
+  const store = deps.approvals.store;
+  const agent = await store.get(orgId as never, agentId as never);
+  if (agent === undefined || agent.status === "archived") throw failure("AGENT_UNAVAILABLE", "How we work isn't available for this project right now.");
+  const draft = await store.getDraft(orgId as never, agentId as never);
+  if (draft === undefined) throw failure("AGENT_UNAVAILABLE", "How we work isn't available for this project right now.");
+  const published = agent.currentVersion === undefined ? undefined : await store.getVersion(orgId as never, agentId as never, agent.currentVersion);
+  return { agent, draft, published, publishedOverlay: published?.overlay ?? {} };
+}
+
+/**
+ * Where the layer stands against a rule that is to be written: `clean` (the draft is what is published), `ours` (the draft already is published plus this change: an earlier try of the same
+ * request wrote it), or busy (anyone else's unpublished change, or one waiting on an approval), which is refused.
+ */
+function layerState(layer: Layer, built: RecipeOverlay): "clean" | "ours" {
+  const base = layer.published?.extends ?? layer.draft.extends;
+  if (sameOverlay(layer.draft.overlay, layer.publishedOverlay) && sameBase(layer.draft.extends, base)) return "clean";
+  if (sameOverlay(layer.draft.overlay, built) && sameBase(layer.draft.extends, base)) return "ours";
+  throw failure("LEARNING_LAYER_BUSY", BUSY_LAYER);
+}
+
+/** Best effort: puts the draft back to the published overlay when it still is exactly the change this request wrote. Never throws. */
+async function restoreDraft(deps: LearningDecideDeps, caller: DeveloperCaller, layer: Layer, built: RecipeOverlay): Promise<void> {
+  try {
+    const draft = await deps.approvals.store.getDraft(caller.orgId, layer.agent.agentId);
+    if (draft === undefined || !sameOverlay(draft.overlay, built)) return;
+    await deps.approvals.store.saveDraft({ orgId: caller.orgId, agentId: layer.agent.agentId, overlay: layer.publishedOverlay, expectedRevision: draft.revision, by: caller.developerId });
+  } catch { /* the draft stays as it is; the next Accept sees it as unpublished changes */ }
+}
+
+// ---- authority
+
+interface Authority { scope: LearningScope; scopeChecks: StandingCheck[]; accepterChecks: StandingCheck[]; maintainer: boolean }
+
+async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, options: { authorMayAct: boolean }): Promise<Authority & { project: string }> {
+  const found = await deps.projectFor(caller, rawProject);
+  const project = found.name;
+  const checked = await learningScopeChecked(deps, caller.orgId, project);
+  if (checked === undefined) throw failure("NOT_FOUND", "Rovara isn't learning from this project right now.");
+  // Read now, not from the sign-in: a person demoted since they signed in is not a member.
+  const standing = await readStandingChecked(deps, caller.orgId, caller.developerId, project);
+  const maintainer = projectAllows(found.role, "edit_settings");
+  if (standing.standing !== "member" || (!maintainer && !options.authorMayAct)) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
+  return { project, scope: checked.scope, scopeChecks: checked.checks, accepterChecks: standing.checks, maintainer };
+}
+
+// ---- Accept
+
+/**
+ * `POST …/learning/suggestions/{id}/accept`. See the module comment. The body's `requestId` is not used: the request id is derived from the suggestion, so a retry cannot publish twice.
+ */
+export async function acceptSuggestion(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, suggestionId: string, rawBody: unknown): Promise<AcceptAnswer> {
+  const body = strictBody(LearningAcceptBodySchema, rawBody);
+  const learning = learningOf(deps);
+  const auth = await authorize(deps, caller, rawProject, { authorMayAct: true });
+  const { scope, project } = auth;
+  await settleProject(deps, scope);
+
+  const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
+  if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
+  if (body.stage !== suggestion.stage) throw failure("CONFIG_INVALID", "stage: a rule is accepted for the stage it was suggested for");
+  const text = cleanRuleText(body.text);
+  const requestId = acceptRequestId(suggestion.id, body.expectedRevision, suggestion.stage, text);
+  const ruleId = requestId;
+
+  // A retry of this very request: it is already accepted, or on its way.
+  if (suggestion.status === "accepted" && suggestion.ruleId === ruleId) {
+    const done = await readRule(learning, scope, ruleId);
+    if (done?.status === "active" && done.processVersion !== undefined) return { outcome: "published", version: done.processVersion };
+  }
+  const resuming = (suggestion.status === "accepting" || suggestion.status === "awaiting_approval") && suggestion.ruleId === ruleId;
+  if (!resuming) {
+    if (suggestion.status === "accepting" || suggestion.status === "awaiting_approval") throw failure("LEARNING_LAYER_BUSY", "This suggestion is being accepted. Try again once it is decided.");
+    if (suggestion.status !== "open" || suggestion.revision !== body.expectedRevision) throw stale();
+  }
+
+  // The members, read live. L3: a contributor may accept only a rule their own corrections produced.
+  const members = await readMembers(learning, scope, suggestion.correctionIds);
+  if (!auth.maintainer && !members.some((member) => member.c.author === caller.developerId)) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
+
+  if (!resuming) await requireEnoughSources(deps, caller, scope, project, suggestion, members);
+
+  // The layer: a maintainer sets it up if the project has none yet; an author who is not a maintainer cannot.
+  const store = deps.approvals.store;
+  let agentId: string;
+  if (auth.maintainer) agentId = (await postProjectProcess(deps, caller, project)).agentId;
+  else {
+    const present = await existingLayer(deps, store, caller.orgId, project);
+    if (present === undefined) throw failure("FORBIDDEN", "A project maintainer needs to set up How we work before this rule can be added.");
+    agentId = present.agentId;
+  }
+  let layer = await readLayer(deps, caller.orgId, agentId);
+  const built = appendRuleToOverlay(layer.publishedOverlay, suggestion.stage, text);
+  layerState(layer, built);
+
+  // The pending rule and the suggestion `accepting`, before anything is published.
+  let started = false;
+  if (!resuming) {
+    started = await startAccepting(deps, caller, auth, suggestion, { ruleId, requestId, stage: suggestion.stage, text, processAgentId: agentId, edited: text !== (suggestion.proposedText ?? ""), expectedRevision: body.expectedRevision });
+  }
+
+  try {
+    if (!sameOverlay(layer.draft.overlay, built)) {
+      await store.saveDraft({ orgId: caller.orgId, agentId: agentId as never, overlay: built, expectedRevision: layer.draft.revision, by: caller.developerId });
+      layer = await readLayer(deps, caller.orgId, agentId);
+    }
+    const result = await publishDraft(deps.approvals, caller, layer.agent, { requestId, expectedRevision: layer.draft.revision, note: acceptNote(ruleId) });
+    if (result.applied) {
+      await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: agentId as never });
+      const rule = await readRule(learning, scope, ruleId);
+      if (rule === undefined) throw stale();
+      await commitApplied(deps, scope, ruleId, result.value.version, caller.developerId);
+      return { outcome: "published", version: result.value.version };
+    }
+    const rule = await readRule(learning, scope, ruleId);
+    if (rule === undefined) throw stale();
+    const approvalId = approvalIdFor(caller.orgId, caller.developerId, requestId);
+    if (rule.status === "pending") await commitAwaiting(deps, scope, rule, approvalId, caller.developerId);
+    return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl };
+  } catch (error) {
+    // A refusal (the guardrails, a revision conflict, an invalid draft) means nothing was published: the rule is not applied and the suggestion is open again. Anything else (the broker or the
+    // table failed) may have published, so the rule stays pending for a retry of the same request, or for settlement.
+    if (started && (error as { code?: string } | undefined)?.code !== undefined && (error as { code?: string }).code !== "RUNTIME_UNAVAILABLE") {
+      await restoreDraft(deps, caller, layer, built);
+      await commitNotApplied(deps, scope, ruleId);
+    }
+    throw error;
+  }
+}
+
+/** Re-checks the sources (design 5.1). A suggestion left with fewer than 2 sources from 2 tasks is withdrawn, and Accept is refused. */
+async function requireEnoughSources(
+  deps: LearningDecideDeps, caller: DeveloperCaller, scope: LearningScope, project: string, suggestion: LearningSuggestion, members: Awaited<ReturnType<typeof readMembers>>,
+): Promise<void> {
+  const learning = learningOf(deps);
+  const authors = members.map((member) => member.c.author).filter((author) => author !== "erased");
+  const standings = await readStandings(deps, caller.orgId, project, authors);
+  const prOff = await (deps.prCaptureOff ?? prCaptureOff)(learning, scope);
+  const kept = members.filter((member) => member.c.standing === "member" && member.c.author !== "erased" && standings.get(member.c.author) === "member" && !(member.c.source === "pr_comment" && prOff));
+  if (kept.length >= LEARNING_SUGGESTION_SOURCES_MIN && new Set(kept.map((member) => member.c.taskId)).size >= 2) return;
+  await closeSuggestion(learning, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "withdrawn" });
+  throw failure("LEARNING_SOURCES_GONE", SOURCES_GONE);
+}
+
+interface Starting { ruleId: string; requestId: string; stage: string; text: string; processAgentId: string; edited: boolean; expectedRevision: number }
+
+/** One transaction: the rule `pending`, the suggestion `accepting`, one more pending rule on STATE, under the revision the person saw and the standing records read for this request. */
+async function startAccepting(deps: LearningDecideDeps, caller: DeveloperCaller, auth: Authority, suggestion: LearningSuggestion, input: Starting): Promise<boolean> {
+  const learning = learningOf(deps);
+  const { scope } = auth;
+  const rule = LearningRuleSchema.parse({
+    id: input.ruleId, suggestionId: suggestion.id, stage: input.stage, text: input.text, processAgentId: input.processAgentId, requestId: input.requestId, status: "pending",
+    createdAt: new Date(deps.now()).toISOString(), requestedBy: caller.developerId, edited: input.edited, lessSafe: false, projectCreatedAt: scope.projectCreatedAt,
+  });
+  const key = (sk: string) => projectLearningKey(scope.orgId, scope.project, sk);
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Put: { TableName: deps.tableName, Item: { ...key(ruleSk(rule.id)), entityType: "LEARNING_RULE", orgId: scope.orgId, ...rule }, ConditionExpression: "attribute_not_exists(pk)" } },
+      {
+        Update: {
+          TableName: deps.tableName, Key: key(suggestionSk(suggestion.id)), UpdateExpression: "SET #status = :accepting, ruleId = :rule, #revision = #revision + :one",
+          ConditionExpression: "attribute_exists(pk) AND projectCreatedAt = :pc AND #status = :open AND #revision = :expected",
+          ExpressionAttributeNames: { "#status": "status", "#revision": "revision" },
+          ExpressionAttributeValues: { ":accepting": "accepting", ":rule": rule.id, ":one": 1, ":pc": scope.projectCreatedAt, ":open": "open", ":expected": input.expectedRevision },
+        },
+      },
+      {
+        Update: {
+          TableName: deps.tableName, Key: key("STATE"), UpdateExpression: "ADD pendingRules :one", ConditionExpression: "attribute_exists(pk) AND projectCreatedAt = :pc",
+          ExpressionAttributeValues: { ":one": 1, ":pc": scope.projectCreatedAt },
+        },
+      },
+      ...auth.accepterChecks, ...auth.scopeChecks,
+    ] }));
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+    // Someone else moved the suggestion, a record the decision rests on changed, or an identical request got there first (then this one goes on with it).
+    const now = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestion.id)));
+    if (now !== undefined && now.status === "accepting" && now.ruleId === input.ruleId) return false;
+    throw stale();
+  }
+}
+
+// ---- Dismiss and reopen
+
+/** `POST …/learning/suggestions/{id}/dismiss`: a maintainer. The pattern is remembered (the exact member set, as hashed tokens) so it does not come back; the note is never stored. */
+export async function dismissSuggestion(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, suggestionId: string, rawBody: unknown): Promise<{ suggestion: { id: string; status: "dismissed" } }> {
+  const body = strictBody(LearningDismissBodySchema, rawBody);
+  const learning = learningOf(deps);
+  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  const { scope } = auth;
+  await settleProject(deps, scope);
+  const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
+  if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
+  if (suggestion.status === "accepting" || suggestion.status === "awaiting_approval") throw failure("LEARNING_LAYER_BUSY", "This suggestion is being accepted. Try again once it is decided.");
+  if (suggestion.status === "dismissed" && suggestion.dismissKind === body.dismissKind) return { suggestion: { id: suggestion.id, status: "dismissed" } };
+  if (suggestion.status !== "open" || suggestion.revision !== body.expectedRevision) throw stale();
+
+  const month = metricMonth(new Date(deps.now()).toISOString());
+  await ensureMetricCurrent(learning, scope, month);
+  const audited = await learningEvents(learning, () => [dismissedEvent(learning, scope, memberActor(caller.developerId), { suggestionId: suggestion.id, stage: suggestion.stage, dismissKind: body.dismissKind })]);
+  const nowMs = deps.now();
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      ...terminalSuggestionItems(learning, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "dismissed", decidedBy: caller.developerId, dismissKind: body.dismissKind }),
+      {
+        Put: {
+          TableName: deps.tableName,
+          Item: {
+            ...projectLearningKey(scope.orgId, scope.project, dismissedSk(dismissedSetKey(suggestion.correctionIds))), entityType: "LEARNING_DISMISSED", orgId: scope.orgId, signature: suggestion.signature,
+            suggestionId: suggestion.id, dismissedAt: new Date(nowMs).toISOString(), projectCreatedAt: scope.projectCreatedAt, indexExpiresAt: learningExpiry(nowMs),
+          },
+        },
+      },
+      metricUpdateItem(learning, scope, month, { dismissed: 1 }),
+      ...auth.accepterChecks, ...auth.scopeChecks, ...audited.items,
+    ] }));
+  } catch (error) {
+    if (error instanceof Error && error.name === "TransactionCanceledException") throw stale();
+    throw error;
+  }
+  await flushLearningEvents(learning, audited.events);
+  return { suggestion: { id: suggestion.id, status: "dismissed" } };
+}
+
+/** `POST …/learning/dismissed/{id}/reopen`: a maintainer takes the pattern off the dismissed list, so the same corrections can form a suggestion again. */
+export async function reopenDismissed(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, dismissedId: string): Promise<{ reopened: true }> {
+  const learning = learningOf(deps);
+  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  if (!/^[a-f0-9]{32}$/.test(dismissedId)) throw failure("NOT_FOUND", "That is not on the dismissed list.");
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Delete: { TableName: deps.tableName, Key: projectLearningKey(auth.scope.orgId, auth.scope.project, dismissedSk(dismissedId)), ConditionExpression: "attribute_exists(pk) AND projectCreatedAt = :pc", ExpressionAttributeValues: { ":pc": auth.scope.projectCreatedAt } } },
+      ...auth.accepterChecks, ...auth.scopeChecks,
+    ] }));
+  } catch (error) {
+    if (error instanceof Error && error.name === "TransactionCanceledException") return { reopened: true };
+    throw error;
+  }
+  // The corrections are free again (their suggestion ended); grouping forms the suggestion now. A failure here is the next capture's to finish.
+  try { await groupCorrections(learning, auth.scope); } catch { /* the next grouping run does it */ }
+  return { reopened: true };
+}
+
+// ---- Remove
+
+/**
+ * `POST …/learning/rules/{ruleId}/remove`: a maintainer. Removes the paragraph that equals the rule's text. A text that is not there once (hand-edited since, a duplicate, or only part of a
+ * longer paragraph) is not guessed: the answer is `needs_editor`. Built from the published overlay with the same busy refusal as Accept; a reviewing stage's removal waits for a second person.
+ */
+export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, ruleId: string, rawBody: unknown): Promise<RemoveAnswer> {
+  strictBody(LearningRuleRemoveBodySchema, rawBody);
+  const learning = learningOf(deps);
+  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  const { scope } = auth;
+  await settleProject(deps, scope);
+  let rule: LearningRule | undefined = await readRule(learning, scope, ruleId);
+  if (rule === undefined) throw failure("NOT_FOUND", "That rule is gone.");
+  if (rule.status === "removed" && rule.removedInVersion !== undefined) return { outcome: "published", version: rule.removedInVersion };
+  if (rule.status !== "active") throw failure("AGENT_REVISION_CONFLICT", "This rule isn't in How we work. Refresh the page and try again.");
+
+  let layer = await readLayer(deps, caller.orgId, rule.processAgentId);
+  const removal = removeRuleFromOverlay(layer.publishedOverlay, rule.stage, rule.text);
+  if (removal.matches !== 1) return { outcome: "needs_editor", stage: rule.stage };
+  layerState(layer, removal.overlay);
+
+  const requestId = removeRequestId(rule.id);
+  if (!sameOverlay(layer.draft.overlay, removal.overlay)) {
+    await deps.approvals.store.saveDraft({ orgId: caller.orgId, agentId: rule.processAgentId, overlay: removal.overlay, expectedRevision: layer.draft.revision, by: caller.developerId });
+    layer = await readLayer(deps, caller.orgId, rule.processAgentId);
+  }
+  let result;
+  try {
+    result = await publishDraft(deps.approvals, caller, layer.agent, { requestId, expectedRevision: layer.draft.revision, note: removeNote(rule.id) });
+  } catch (error) {
+    if ((error as { code?: string } | undefined)?.code !== undefined && (error as { code?: string }).code !== "RUNTIME_UNAVAILABLE") await restoreDraft(deps, caller, layer, removal.overlay);
+    throw error;
+  }
+  if (!result.applied) {
+    rule = await readRule(learning, scope, ruleId);
+    const approvalId = approvalIdFor(caller.orgId, caller.developerId, requestId);
+    if (rule?.status === "active" && rule.removalApprovalId === undefined) {
+      try {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [ruleTransition(learning, scope, ruleId, ["active"], "active", { removalApprovalId: approvalId })] }));
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+      }
+    }
+    return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl };
+  }
+  await deps.approvals.triggerHooks?.recheckTriggersForTarget(caller.orgId, { kind: "agent", agentId: rule.processAgentId });
+  const audited = await learningEvents(learning, () => [rolledBackEvent(learning, scope, memberActor(caller.developerId), { ruleId: rule!.id, processAgentId: rule!.processAgentId, processVersion: result.value.version })]);
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [ruleTransition(learning, scope, ruleId, ["active"], "removed", { removedInVersion: result.value.version }, ["removalApprovalId"]), ...audited.items] }));
+    await flushLearningEvents(learning, audited.events);
+  } catch (error) {
+    if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+  }
+  return { outcome: "published", version: result.value.version };
+}

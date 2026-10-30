@@ -111,7 +111,7 @@ function bench() {
     audit,
     now: () => clock.now,
     log: (entry) => logs.push(entry),
-    purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+    eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
   };
   const sleeps: number[] = [];
   const shred: AuditShredDeps = {
@@ -927,7 +927,7 @@ describe("after a shred: no new export, and no link for an old one", () => {
     expect(before).toContain(`Person of ${ROUTES_A}`);
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: x.bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: x.bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     await eraseAuditSubject(erase, request({ orgId: ROUTES_A }));
     expect(x.bucket.keysUnder(`${ROUTES_A}/`)).toStrictEqual([]);
@@ -991,7 +991,7 @@ describe("POST /v1/admin/audit/{orgId}/erase-subject", () => {
     for (const orgId of [ROUTES_A, ROUTES_B]) bucket.objects.set(`${orgId}/aex_${"0".repeat(32)}.0123456789abcdef.rovara-audit.json.gz`, Buffer.from("Person of " + orgId));
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     const orgs = orgStore(b);
     const names = new Map([["dev_1", "Alice Example"]]);
@@ -1127,7 +1127,7 @@ describe("through the broker's handler", () => {
     bucket.objects.set(`${ROUTES_A}/aex_x.0123456789abcdef.rovara-audit.json.gz`, Buffer.from("export"));
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     const developer = {
       issuer: "https://dev.example.test", env: "staging", methods: { slack: true, oidc: false }, slackTeamId: "T0TEAM1", signInTableName: "signin",

@@ -18,6 +18,7 @@ import {
   LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_SUGGESTION_SOURCES_MAX, LEARNING_SUGGESTION_SOURCES_MIN, LearningCorrectionSchema, LearningRuleSchema, LearningSuggestionSchema, agentXError,
   projectLearningKey, type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId,
 } from "@agentx/contracts";
+import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rememberedEvent, suggestedEvent, systemActor } from "./audit.js";
 import { metricMonth, metricUpdateItem, ensureMetricCurrent, type MetricCounters } from "./metric.js";
 import { visibility } from "./retention.js";
 import {
@@ -67,7 +68,7 @@ export interface GroupingResult {
   /** A group was ready but the project already has 20 open suggestions. */
   capped: boolean;
 }
-export type ForgetResult = { ok: true } | { ok: false; reason: "missing" | "in_accepted_rule" | "suggestion_busy" };
+export type ForgetResult = { ok: true } | { ok: false; reason: "missing" | "in_accepted_rule" | "suggestion_busy" | "suggestion_changed" };
 
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Learning could not be read or written. Try again.");
 const invalid = (what: string) => agentXError("CONFIG_INVALID", `${what} is not valid.`);
@@ -436,6 +437,9 @@ async function openStep(deps: LearningDeps, scope: LearningScope, context: Conte
     });
     const month = metricMonth(suggestion.createdAt);
     await ensureMetricCurrent(deps, scope, month);
+    const audited = await learningEvents(deps, () => [suggestedEvent(deps, scope, {
+      suggestionId: id, stage: suggestion.stage, sourceCount: picked.length, sourceKinds: [...new Set(picked.map((entry) => entry.c.source))].sort().join(","), lessSafe: suggestion.lessSafe, fromOnePerson: suggestion.allFromOnePerson,
+    })]);
     const outcome = await send(deps, [
       {
         Update: {
@@ -447,7 +451,9 @@ async function openStep(deps: LearningDeps, scope: LearningScope, context: Conte
       { Put: { TableName: deps.tableName, Item: { ...keyOf(scope, suggestionSk(id)), entityType: "LEARNING_SUGGESTION", orgId: scope.orgId, ...suggestion }, ConditionExpression: "attribute_not_exists(pk)" } },
       ...picked.map((entry) => linkMemberItem(deps, scope, entry, id)),
       metricUpdateItem(deps, scope, month, { suggestions: 1 }),
+      ...audited.items,
     ]);
+    if (outcome === "ok") await flushLearningEvents(deps, audited.events);
     return outcome === "ok" ? { kind: "opened", id } : { kind: "conflict" };
   }
   return { kind: "none" };
@@ -537,7 +543,7 @@ export async function withdrawPrDependentSuggestions(deps: LearningDeps, rawScop
  * (or from fewer than 2 tasks) is withdrawn first, with its text cleared. Refused for a correction in an accepted rule (its text is gone and the rule is published) and while its suggestion is
  * being accepted. Who may forget is B3's to check. Pass `sourceKey` to delete the source record too, so the same comment can be remembered again.
  */
-export async function forgetCorrection(deps: LearningDeps, rawScope: LearningScope, input: { correctionSk: string; sourceKey?: string }): Promise<ForgetResult> {
+export async function forgetCorrection(deps: LearningDeps, rawScope: LearningScope, input: { correctionSk: string; sourceKey?: string; actor?: string }): Promise<ForgetResult> {
   const scope = normalized(rawScope);
   const item = await getLearningItem(deps, scope, input.correctionSk);
   const entry = item === undefined ? undefined : parseCorrection(item);
@@ -601,15 +607,26 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
     }));
   }
   if (input.sourceKey !== undefined) items.push({ Delete: { TableName: deps.tableName, Key: keyOf(scope, sourceSk(scope.projectCreatedAt, input.sourceKey)) } });
+  // The events of this forget, in the same transaction: the correction forgotten (when a person did it) and the suggestion it left withdrawn (by the system).
+  const audited = await learningEvents(deps, () => [
+    ...(input.actor === undefined ? [] : [rememberedEvent(deps, scope, memberActor(input.actor), { correctionId: c.id, stage: c.stage, standing: c.standing, op: "forget" })]),
+    ...(withdrawing && readSuggestion !== undefined ? [dismissedEvent(deps, scope, systemActor(), { suggestionId: readSuggestion.id, stage: readSuggestion.stage, dismissKind: "withdrawn" })] : []),
+  ]);
+  items.push(...audited.items);
 
   const outcome = await send(deps, items);
-  if (outcome === "ok") return { ok: true };
+  if (outcome === "ok") {
+    await flushLearningEvents(deps, audited.events);
+    return { ok: true };
+  }
   // Changed under us (judged, grouped or forgotten meanwhile): a gone correction is answered as gone, anything else asks the caller to try again.
   const again = await getLearningItem(deps, scope, input.correctionSk);
   if (again === undefined) return { ok: false, reason: "missing" };
   if (readSuggestion !== undefined) {
     const now = await getLearningItem(deps, scope, suggestionSk(readSuggestion.id));
-    if (now === undefined || now["revision"] !== readSuggestion.revision || now["status"] !== "open") return { ok: false, reason: "suggestion_busy" };
+    // Being accepted is busy; only the revision having moved (a member joined, a rewrite) means the item changed and a refresh is needed.
+    if (now === undefined || now["status"] === "accepting" || now["status"] === "awaiting_approval") return { ok: false, reason: "suggestion_busy" };
+    if (now["revision"] !== readSuggestion.revision || now["status"] !== "open") return { ok: false, reason: "suggestion_changed" };
   }
   throw unavailable();
 }

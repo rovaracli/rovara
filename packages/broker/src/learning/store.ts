@@ -17,6 +17,8 @@ import {
   type LearningSuggestion, type LearningTerminalStatus, type OrgId,
 } from "@agentx/contracts";
 import type { z } from "zod";
+import type { AuditRuntime } from "../audit/outbox.js";
+import { dismissedEvent, flushLearningEvents, learningEvents, suggestedEvent, systemActor } from "./audit.js";
 import { learningExpiry, sameProject, shortLearningExpiry, visibility } from "./retention.js";
 
 type Item = Record<string, unknown>;
@@ -27,6 +29,8 @@ export interface LearningDeps {
   tableName: string;
   /** The clock, in epoch milliseconds. */
   now: () => number;
+  /** The Audit Ledger (optional): the events of the learning loop go into the transaction that changes the state. Absent where there is no ledger. */
+  audit?: AuditRuntime | undefined;
 }
 
 /** One project of one company, as the project META says it exists now: `projectCreatedAt` is its `createdAt`. */
@@ -365,6 +369,8 @@ export interface NewSuggestion {
   kinds: string[];
   overlaps: string[];
   dismissNote?: string;
+  /** The kinds of the sources, sorted and joined with commas, for the `rule.suggested` event (a fixed-word fact). */
+  sourceKinds?: string;
 }
 export type OpenSuggestionResult = { ok: true; suggestion: LearningSuggestion } | { ok: false; reason: "suggestion_cap" | "stale" | "duplicate" };
 
@@ -382,6 +388,11 @@ export async function openSuggestion(deps: LearningDeps, rawScope: LearningScope
     ...input, status: "open", revision: 0, createdAt: new Date(nowMs).toISOString(), projectCreatedAt: scope.projectCreatedAt,
   });
   if (!parsed.success) throw invalid("The suggestion");
+  // `sourceKinds` is not a field of the stored suggestion (the schema drops it); it is only a fact of the event.
+  const stored = parsed.data;
+  const audited = await learningEvents(deps, () => [suggestedEvent(deps, scope, {
+    suggestionId: parsed.data.id, stage: parsed.data.stage, sourceCount: parsed.data.correctionIds.length, sourceKinds: input.sourceKinds ?? "unknown", lessSafe: parsed.data.lessSafe, fromOnePerson: parsed.data.allFromOnePerson,
+  })]);
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       {
@@ -391,8 +402,10 @@ export async function openSuggestion(deps: LearningDeps, rawScope: LearningScope
           ExpressionAttributeValues: { ":one": 1, ":pc": scope.projectCreatedAt, ":expected": expected, ":cap": LEARNING_OPEN_SUGGESTIONS_MAX },
         },
       },
-      { Put: { TableName: deps.tableName, Item: { ...keyOf(scope, suggestionSk(parsed.data.id)), entityType: "LEARNING_SUGGESTION", orgId: scope.orgId, ...parsed.data }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: deps.tableName, Item: { ...keyOf(scope, suggestionSk(stored.id)), entityType: "LEARNING_SUGGESTION", orgId: scope.orgId, ...stored }, ConditionExpression: "attribute_not_exists(pk)" } },
+      ...audited.items,
     ] }));
+    await flushLearningEvents(deps, audited.events);
     return { ok: true, suggestion: parsed.data };
   } catch (error) {
     const failed = failedIndexes(error);
@@ -461,8 +474,13 @@ export async function closeSuggestion(deps: LearningDeps, rawScope: LearningScop
   if (current === undefined) return { ok: false, reason: "missing" };
   if ((LEARNING_TERMINAL_STATUSES as readonly string[]).includes(String(current["status"]))) return { ok: false, reason: "already_terminal" };
   if (current["revision"] !== move.expectedRevision) return { ok: false, reason: "stale" };
+  // Rovara withdrew it (its sources went away): the event is the dismissal with the fixed kind `withdrawn`, by the system.
+  const audited = move.status === "withdrawn"
+    ? await learningEvents(deps, () => [dismissedEvent(deps, scope, systemActor(), { suggestionId: move.id, stage: String(current["stage"]), dismissKind: "withdrawn" })])
+    : { items: [], events: [] };
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: terminalSuggestionItems(deps, scope, move) }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...terminalSuggestionItems(deps, scope, move), ...audited.items] }));
+    await flushLearningEvents(deps, audited.events);
   } catch (error) {
     if (cancellationCodes(error) === undefined) throw error;
     return { ok: false, reason: "stale" };

@@ -1997,8 +1997,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           editComment: (caller, taskId, input) => editPageComment(routeDeps(caller), caller, taskId, input),
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
-          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId),
-          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId),
+          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
+          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
           retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
           readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
@@ -2160,7 +2160,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // v1.2 learning loop: Remember and Forget (more routes are added to learning/routes.ts by later steps).
   if (LEARNING_PATH.test(url.pathname)) {
-    const learned = await routeLearning({ task: developerTaskRouteDependencies(deps, caller), projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName) }, caller, request.method, url, () => jsonBody(request));
+    const projectFor = (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName);
+    const learned = await routeLearning({
+      task: developerTaskRouteDependencies(deps, caller), projectFor, audit: deps.agents?.audit,
+      ...(deps.agents === undefined ? {} : { decide: { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents.store, audit: deps.agents.audit, approvals: deps.agents, projectFor } }),
+    }, caller, request.method, url, () => jsonBody(request));
     if (learned !== undefined) return learned;
   }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
