@@ -56,3 +56,12 @@ it("refuses company-level same-model review with a fixed code and How we work li
  const response=await f.call({...first,stepOverrides:{build:choice,code_review:choice,security_review:choice}});
  expect(response.status).toBe(403);expect(response.body.error).toMatchObject({code:"MODEL_NOT_ALLOWED",reason:"DIFFERENT_FROM_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});expect(f.audit.recordedBy("model_policy.changed")).toEqual([]);
 });
+it("fills soleOwner in the 202 response from shared eligibility and cool-off evidence",async()=>{
+ for(const cooling of [false,true]){
+  const f=await fixture(),loss=Date.now()-60000;
+  f.db.set({...orgMetaKey(TEST_ORG),orgId:TEST_ORG,name:"Company",plan:"team",createdAt:"2026-10-01T00:00:00.000Z",approvalTrackingSince:"2026-10-01T00:00:00.000Z",approvalMembershipVersion:7,...(cooling?{approvalLastCompanyEligibleLossAt:new Date(loss).toISOString()}: {})});
+  expect((await f.call(first)).status).toBe(200);
+  const response=await f.call({version:1,requestId:"66666666-6666-4666-8666-666666666666",expectedRevision:1,stepOverrides:{}});
+  expect(response.status).toBe(202);expect(response.body.soleOwner).toEqual(cooling?{available:false,availableAt:new Date(loss+86400000).toISOString(),reasonCode:"SOLE_OWNER_COOL_OFF"}:{available:true,availableAt:null,reasonCode:"SOLE_OWNER_EXCEPTION_AVAILABLE"});
+ }
+});

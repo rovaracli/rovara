@@ -1,7 +1,7 @@
 import {readRequest} from "../agents/table-writes.js";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 // The existing guardrail confirmation flow, with B33's shared live evidence policy.
-import {agentXError,ModelSelectionPolicyPutSchema,NEEDS_CONFIRMATION_CHANGES_MAX} from "@agentx/contracts";
+import {agentXError,NeedsConfirmationSchema,type NeedsConfirmation,ModelSelectionPolicyPutSchema,NEEDS_CONFIRMATION_CHANGES_MAX} from "@agentx/contracts";
 import {createPendingChange,confirmUrlFor,registerApprovalDecisionGuard,registerApprovalSubjectHandler,type ApprovalDependencies} from "../agents/approvals.js";
 import {orgAdminApprovers} from "../agents/changes.js";
 import type {AgentCaller} from "../agents/access.js";
@@ -9,6 +9,7 @@ import {readSecondPersonApprovalEvidence} from "../org/second-person-evidence.js
 import {decideSecondPersonApproval} from "../org/second-person-approval.js";
 import {prepareCompanyModelPolicy} from "./company-prepare.js";
 import {writeSaferCompanyModelPolicy,applyApprovedCompanyModelPolicy} from "./company-write.js";
+type SoleOwnerMetadata=NonNullable<NeedsConfirmation["soleOwner"]>;
 export async function updateCompanyModelPolicy(deps:ApprovalDependencies,caller:AgentCaller,value:unknown){
  const adapted={...deps,routing:deps.modelRouting??{}};
  await requireCompanyModelPolicyAuthority(adapted,caller);
@@ -17,9 +18,18 @@ export async function updateCompanyModelPolicy(deps:ApprovalDependencies,caller:
  const prepared=await prepareCompanyModelPolicy(adapted,caller,value);
  if(prepared.changes.length===0)return writeSaferCompanyModelPolicy(adapted,{...caller,signedInId:caller.developerId},prepared.body);
  if(deps.audit===undefined||deps.modelSignInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","Company model approvals are unavailable.");
+ let soleOwner:SoleOwnerMetadata={available:false,availableAt:null,reasonCode:"ELIGIBILITY_UNAVAILABLE"};
+ try {
+  const evidence=await readSecondPersonApprovalEvidence({...deps,signInTableName:deps.modelSignInTableName},{orgId:caller.orgId,proposerId:caller.developerId,approverId:caller.developerId});
+  const decision=decideSecondPersonApproval(evidence.decisionInput);
+  if(decision.mode==="sole_owner_exception")soleOwner={available:true,availableAt:null,reasonCode:"SOLE_OWNER_EXCEPTION_AVAILABLE"};
+ }catch(error){
+  const metadata=NeedsConfirmationSchema.shape.soleOwner.unwrap().safeParse((error as {soleOwner?:unknown}|null)?.soleOwner);
+  if(metadata.success)soleOwner=metadata.data;
+ }
  const record=await createPendingChange(deps,{orgId:caller.orgId,requestId:prepared.body.requestId,requestedBy:caller.developerId,subject:{kind:"model_selection_policy",body:prepared.body,sourcesRevision:prepared.sourcesRevision,guardrailsRevision:prepared.guardrailsRevision},changes:prepared.changes,approvers:await orgAdminApprovers(deps,caller.orgId)});
  if(record.status!=="PENDING")throw agentXError("APPROVAL_CLOSED","This request was already decided.");
- return {status:"NEEDS_CONFIRMATION" as const,code:"REAUTH_REQUIRED" as const,confirmationId:record.approvalId,confirmUrl:confirmUrlFor(deps,record),changes:record.changes.slice(0,NEEDS_CONFIRMATION_CHANGES_MAX),requestId:prepared.body.requestId};
+ return {status:"NEEDS_CONFIRMATION" as const,soleOwner,code:"REAUTH_REQUIRED" as const,confirmationId:record.approvalId,confirmUrl:confirmUrlFor(deps,record),changes:record.changes.slice(0,NEEDS_CONFIRMATION_CHANGES_MAX),requestId:prepared.body.requestId};
 }
 export function registerCompanyModelPolicyApprovals(){
  registerApprovalDecisionGuard("company_model_policy",async(deps,caller,record,decision)=>{
