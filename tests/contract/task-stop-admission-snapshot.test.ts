@@ -119,3 +119,24 @@ for (const state of ["disabled", "ready"] as const) it(`seeded ${state} policy p
   expect(await f.capture()).toEqual({ kind: "disabled" });
   expect(f.order).toEqual(["authorized", "snapshot"]);
 });
+
+for (const state of ["disabled", "ready"] as const) it(`cutover preview uses the same snapshot calculator while enrollment stays ${state}`, async () => {
+  const f = fixture(), enabled = await f.capture(); f.rows[3]!.enrollment = { version: 1, state };
+  const before = structuredClone(f.rows);
+  expect(await f.capture()).toEqual({ kind: "disabled" });
+  const preview: unknown = Reflect.get(company, "previewTaskStopCutover"); expect(typeof preview).toBe("function");
+  if (typeof preview !== "function") throw new Error("cutover preview missing");
+  expect(await preview(f.deps, f.input)).toEqual({ kind: "preview", enrolled: false, snapshot: enabled });
+  expect(f.rows).toEqual(before); expect(f.calls).toHaveLength(3); expect(f.order.slice(-2)).toEqual(["authorized", "snapshot"]);
+});
+for (const drift of ["member", "pointer", "seed", "scope"] as const) it(`cutover preview refuses ${drift} loss without enabling enrollment`, async () => {
+  const f = fixture(); f.rows[3]!.enrollment = { version: 1, state: "disabled" };
+  if (drift === "member" || drift === "pointer") f.rows[drift === "member" ? 0 : 1]!.role = "viewer";
+  if (drift === "seed") f.rows.pop();
+  if (drift === "scope") f.deps.requireScopeAccess = async () => { throw new Error("scope denied"); };
+  const preview: unknown = Reflect.get(company, "previewTaskStopCutover"); expect(typeof preview).toBe("function");
+  if (typeof preview !== "function") throw new Error("cutover preview missing");
+  await expect(preview(f.deps, f.input)).rejects.toBeDefined();
+  expect(f.rows[3]!.enrollment).toEqual({ version: 1, state: "disabled" });
+  if (drift === "scope") expect(f.calls).toHaveLength(0);
+});
