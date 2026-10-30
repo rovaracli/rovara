@@ -32,6 +32,8 @@ export const SIMILARITY_CONTAINMENT_MIN = 0.8;
 /** ...but containment only counts when the smaller signature has at least this many hashes (about five words): "Use strict types." sits inside a thousand unrelated texts. */
 export const CONTAINMENT_MIN_HASHES = 8;
 const HASH_HEX_LENGTH = 16;
+/** The most characters (code points) of a text that go into a signature. A stored correction is at most 1,000, so nothing real is lost; the cut bounds the work on any input. */
+export const SIGNATURE_TEXT_MAX = 2000;
 
 // ---- look-alike letters
 
@@ -94,7 +96,7 @@ const undouble = (stemmed: string): string => (/([bgmnprt])\1$/u.test(stemmed) ?
 
 /** All words of a text in order, normalised and stemmed, stop words removed, with the negations kept. */
 export function signatureWords(text: string): string[] {
-  const folded = foldLookAlikes(inertRuleText(text).normalize("NFKC").normalize("NFD").replace(COMBINING_MARKS, "").normalize("NFC"));
+  const folded = foldLookAlikes(inertRuleText(Array.from(text).slice(0, SIGNATURE_TEXT_MAX).join("")).normalize("NFKC").normalize("NFD").replace(COMBINING_MARKS, "").normalize("NFC"));
   const withoutCode = folded.replace(URL, " ").replace(/\S+/gu, (token) => (isPath(token) ? " " : token));
   const apart = withoutCode
     .replace(/n['’]t\b/giu, "nt")

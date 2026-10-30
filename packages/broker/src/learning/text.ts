@@ -12,6 +12,8 @@ import { redactText } from "@agentx/contracts";
 import { inertRuleText } from "../playbook/inert-rule-text.js";
 import { contentWords, signatureWords } from "./similarity.js";
 
+/** The most characters (code points) of raw input read at all; the rest is dropped before any other step runs, so a huge comment costs a bounded amount of work. */
+export const CORRECTION_RAW_MAX = 20_000;
 /** The most characters (code points) of a stored correction. */
 export const CORRECTION_TEXT_MAX = 1000;
 /** A correction under this many characters after cleaning is not a correction (design 2.2). */
@@ -27,7 +29,9 @@ const codePoints = (text: string): string[] => Array.from(text);
 
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/u;
 const QUOTED_LINE = /^ {0,3}>/u;
-const INDENTED_LINE = /^(?: {4,}|\t)/u;
+// A triple-backtick span closed on the same line (```code```) is code too.
+const ONE_LINE_FENCE = /(`{3,})[^`\n]*\1/gu;
+const INDENTED_LINE = /^(?: {4,}| {0,3}\t)/u;
 
 /**
  * The text without its code: fenced blocks (``` and ~~~, with any info string such as `suggestion`; a fence ends at a line of the same mark, at least as long; one never closed runs to the end),
@@ -49,7 +53,7 @@ export function stripCode(text: string): string {
       fence = { mark: open[1]?.startsWith("`") ? "`" : "~", length: open[1]?.length ?? 3 };
       continue;
     }
-    kept.push(line);
+    kept.push(line.replace(ONE_LINE_FENCE, " "));
   }
   return kept.join("\n");
 }
@@ -59,7 +63,7 @@ export function stripCode(text: string): string {
 const SLACK_LINK = /<(?:https?:|mailto:)[^<>|\s]{0,2000}(?:\|([^<>]{0,200}))?>/giu;
 const SLACK_MENTION = /<([@#!])([^<>|\s]{1,64})(?:\|[^<>]{0,64})?>/gu;
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/gu;
-const HTML_RAW_ELEMENT = /<(script|style)\b[^>]{0,500}>[\s\S]*?(?:<\/\1\s*>|$)/giu;
+const HTML_RAW_ELEMENT = /<(script|style|pre|code|details)\b[^>]{0,500}>[\s\S]*?(?:<\/\1\s*>|$)/giu;
 const HTML_TAG = /<\/?[A-Za-z][^<>]{0,500}>/gu;
 const HTML_TAG_START = /<(?=[A-Za-z/!?])/gu;
 const MARKDOWN_IMAGE = /!\[([^\]]{0,200})\]\([^)]{0,2000}\)/gu;
@@ -91,7 +95,7 @@ function inertMarkup(text: string): string {
  * code, or nothing). It never throws.
  */
 export function cleanCorrectionText(raw: string): string {
-  const visible = inertRuleText(raw.normalize("NFKC"));
+  const visible = inertRuleText(codePoints(raw).slice(0, CORRECTION_RAW_MAX).join("").normalize("NFKC"));
   const redacted = redactText(visible);
   const prose = inertMarkup(stripCode(redacted));
   const tidy = prose

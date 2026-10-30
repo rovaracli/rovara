@@ -2,7 +2,7 @@
 // NFKC folds the text first, secrets are redacted before the text is cut, and what is left is inert. No token-shaped literal appears here: every token is built at run time.
 import { describe, expect, it } from "vitest";
 import { inertRuleText } from "../../packages/broker/src/playbook/inert-rule-text.js";
-import { CORRECTION_TEXT_MAX, PROPOSED_TEXT_MAX, cleanCorrectionText, prepareCorrection, proposedRuleText, stripCode } from "../../packages/broker/src/learning/text.js";
+import { CORRECTION_RAW_MAX, CORRECTION_TEXT_MAX, PROPOSED_TEXT_MAX, cleanCorrectionText, prepareCorrection, proposedRuleText, stripCode } from "../../packages/broker/src/learning/text.js";
 
 const FENCE = "`".repeat(3);
 const codePoints = (text: string) => Array.from(text).length;
@@ -213,5 +213,32 @@ describe("hostile input stays fast and never throws", () => {
       expect(prepareCorrection(raw).ok).toBe(false);
     }
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("review follow-ups", () => {
+  it("caps the raw input before anything else, so a huge comment is cut at 20,000 code points", () => {
+    expect(CORRECTION_RAW_MAX).toBe(20_000);
+    const hugeCode = `${FENCE}\n${"private code line\n".repeat(1500)}${FENCE}\n`;
+    expect(hugeCode.length).toBeGreaterThan(CORRECTION_RAW_MAX);
+    const cleaned = cleanCorrectionText(`Early prose stays.\n${hugeCode}Late prose beyond the limit.`);
+    expect(cleaned).toContain("Early prose stays.");
+    expect(cleaned).not.toContain("Late prose");
+  });
+  it("drops lines indented by one to three spaces and then a tab", () => {
+    const cleaned = cleanCorrectionText("Please use the helper.\n \tPRIVATE_ONE();\n  \tPRIVATE_TWO();\n   \tPRIVATE_THREE();\nIt is shorter.");
+    expect(cleaned).not.toContain("PRIVATE_");
+    expect(cleaned).toContain("It is shorter.");
+  });
+  it("drops the body of pre, code and details elements written in HTML", () => {
+    const cleaned = cleanCorrectionText("Use the helper.<pre>PRIVATE_PRE\nmore</pre> And <code>PRIVATE_CODE</code> too.<details><summary>s</summary>PRIVATE_DETAILS</details> Done here.");
+    expect(cleaned).not.toContain("PRIVATE_");
+    expect(cleaned).toContain("Use the helper.");
+    expect(cleaned).toContain("Done here.");
+  });
+  it("drops a one-line triple-backtick span", () => {
+    const cleaned = cleanCorrectionText(`Use the helper ${FENCE}PRIVATE_INLINE(x)${FENCE} everywhere in new modules.`);
+    expect(cleaned).not.toContain("PRIVATE_INLINE");
+    expect(cleaned).toContain("everywhere in new modules.");
   });
 });

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { prepareCorrection } from "../../packages/broker/src/learning/text.js";
 import {
   CONTAINMENT_MIN_HASHES,
+  SIGNATURE_TEXT_MAX,
   buildDocumentFrequency,
   compareSignatures,
   isSimilar,
@@ -158,5 +159,21 @@ describe("W8: precision on the fixture pairs is at least 90%", () => {
   it("finds every confusable and every near-identical variant", () => {
     const sure = results.filter((r) => ["confusable", "variant"].includes(r.pair.kind));
     expect(sure.filter((r) => !r.predicted).map((r) => r.pair.id)).toEqual([]);
+  });
+});
+
+describe("long input stays fast", () => {
+  it("cuts the text at 2,000 characters, so a long punctuation run is not quadratic", () => {
+    expect(SIGNATURE_TEXT_MAX).toBe(2000);
+    const started = Date.now();
+    for (const raw of [`${"!".repeat(200_000)}x`, `${"!.".repeat(100_000)}x`, `x${"!".repeat(300_000)}`, `x${"a.".repeat(150_000)}`, `x ${",;".repeat(150_000)}`]) {
+      expect(signatureWords(raw).length).toBeLessThan(5);
+      expect(sig(raw).length).toBeLessThan(5);
+    }
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+  it("ignores everything past the cut", () => {
+    const head = "Always run the linter before committing changes. ";
+    expect(sig(`${head}${"filler ".repeat(300)}trailing words that change nothing`)).toEqual(sig(`${head}${"filler ".repeat(300)}other trailing words`));
   });
 });
