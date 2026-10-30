@@ -3,7 +3,7 @@ import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
 import { approveCapturedTaskStop, captureTaskStopAdmission, previewTaskStopCutover, type CapturedTaskStop } from "../org/task-stop-admission.js";
-import { savedTaskStopBounds, checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
+import { savedTaskStopBounds, checkedTaskStopSnapshot, withAdmittedTaskSource, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
 import type { BudgetSubject } from "./owner-total.js";
@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
+  agentGuardrailsKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
@@ -2092,7 +2092,11 @@ function expirySource(record: SpendRequestRecord) {
 
 /** Read-only classification, never a maintenance receipt or an enrollment gate.
  * The bounded writer must bind the reviewed source/policy again at expiry. */
-export async function reviewTaskStopCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, record: SpendRequestRecord): Promise<{ kind: "retain" | "expire" | "not_applicable"; reason?: "spending_rules_changed"; policyDigest?: string }> {
+type CutoverApprovalReview = { kind: "retain" | "expire" | "not_applicable"; reason?: "spending_rules_changed"; policyDigest?: string };
+export async function reviewTaskStopCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, record: SpendRequestRecord): Promise<CutoverApprovalReview> {
+  return reviewCutoverApproval(deps, actor, record);
+}
+async function reviewCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, record: SpendRequestRecord, nativeGuards?: TransactItem[]): Promise<CutoverApprovalReview> {
   if (actor.orgId !== record.orgId || (actor.orgRole !== "owner" && actor.orgRole !== "admin") || await orgRoleOf(deps, actor.orgId, actor.developerId) !== actor.orgRole) throw budgetActorRefused();
   if (record.kind === "owner_cap" || record.kind === "month" || record.status !== "PENDING") return { kind: "not_applicable" };
   const terms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
@@ -2107,6 +2111,23 @@ export async function reviewTaskStopCutoverApproval(deps: SpendRequestDependenci
     ...(record.kind === "max_per_run" || task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
     pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null });
   const snapshot = preview.snapshot, policyDigest = taskApprovalPolicyDigest(snapshot);
+  if (nativeGuards !== undefined) {
+    nativeGuards.push(...budgetActorChecks(deps.tableName, record.orgId, { developerId: actor.developerId, role: actor.orgRole }));
+    const revisions = snapshot.sourceRevisions;
+    for (const [key, field, revision] of [
+      [orgSettingsKey(record.orgId, "TASK_STOP_POLICY"), "revision", revisions.company],
+      [agentGuardrailsKey(record.orgId), "revision", revisions.ceiling],
+      [orgProjectCatalogKey(record.orgId, task.project), "latestRevision", revisions.projectCatalog],
+      [projectAiKey(record.orgId, task.project), "revision", revisions.project],
+      [isBuiltinAgentId(agentId) ? builtinSettingsKey(record.orgId, agentId) : agentKey(record.orgId, agentId, "META"), "revision", revisions.agent],
+    ] as const) nativeGuards.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: "#cutoverRevision = :cutoverRevision", ExpressionAttributeNames: { "#cutoverRevision": field }, ExpressionAttributeValues: { ":cutoverRevision": revision } } });
+    const company = nativeGuards[nativeGuards.length - 5]!.ConditionCheck!;
+    company.ConditionExpression += " AND (#cutoverEnrollment.#cutoverState = :cutoverDisabled OR #cutoverEnrollment.#cutoverState = :cutoverReady)";
+    company.ExpressionAttributeNames = { ...company.ExpressionAttributeNames, "#cutoverEnrollment": "enrollment", "#cutoverState": "state" };
+    company.ExpressionAttributeValues = { ...company.ExpressionAttributeValues, ":cutoverDisabled": "disabled", ":cutoverReady": "ready" };
+    const fenced = withAdmittedTaskSource(deps.tableName, task, nativeGuards, "cutoverTask");
+    nativeGuards.splice(0, nativeGuards.length, ...fenced.items);
+  }
   if (!taskApprovalSourceMatches(terms.data, task) || terms.data.policyDigest !== policyDigest) return { kind: "expire", reason: "spending_rules_changed", policyDigest };
   const proposed = usdToWholeMicrodollars(newLimitFor(record, record.amountUsd));
   try {
@@ -2116,6 +2137,18 @@ export async function reviewTaskStopCutoverApproval(deps: SpendRequestDependenci
     if (error instanceof AgentXError && error.code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return { kind: "expire", reason: "spending_rules_changed", policyDigest };
     throw error;
   }
+}
+
+/** One freshly reviewed complete task ask, expired as SYSTEM only while its
+ * native actor, policy revisions and task remain the reviewed source. */
+export async function expireTaskStopCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, spendRequestId: string): Promise<{ kind: "expired" | "retain" | "not_applicable" | "retry" }> {
+  const record = await getSpendRequest(deps, actor.orgId, spendRequestId);
+  if (record === undefined) throw notFound();
+  const guards: TransactItem[] = [], review = await reviewCutoverApproval(deps, actor, record, guards);
+  if (review.kind !== "expire") return { kind: review.kind };
+  // Legacy asks use the separately bounded missing-terms phase.
+  if (guards.length === 0) throw staleApproval();
+  return { kind: await expireOne(deps, record, "spending_rules_changed", guards) ? "expired" : "retry" };
 }
 
 /** Explicit maintenance phase for old asks without complete terms. This does
@@ -2151,7 +2184,7 @@ export async function expireLegacySpendingRequests(deps: SpendRequestDependencie
   return { examined: (page.Items ?? []).length, expired, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
 }
 
-async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now" | "audit">, record: SpendRequestRecord, because?: SpendRequestRecord["endedBecause"]): Promise<boolean> {
+async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now" | "audit">, record: SpendRequestRecord, because?: SpendRequestRecord["endedBecause"], nativeChecks: TransactItem[] = []): Promise<boolean> {
   const at = iso(deps.now());
   const events = await audited(deps, () => [auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) })]);
   const items = endItems(deps, record, { status: "EXPIRED", expiredAt: at, ...(because === undefined ? {} : { endedBecause: because }) });
@@ -2168,10 +2201,12 @@ async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" |
       orgId: record.orgId, spendRequestId: record.spendRequestId, kind: record.kind, status: "EXPIRED", reason: because ?? "expired",
       actor: { kind: "system" }, occurredAt: at, termsDigest: source.termsDigest }, ConditionExpression: "attribute_not_exists(pk)" } });
   }
+  const writes = [...items, ...events.flatMap((event) => auditPending(deps, event))], nativeStart = writes.length;
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...events.flatMap((event) => auditPending(deps, event))] }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...writes, ...nativeChecks] }));
   } catch (error) {
-    if (failedIndexes(error)?.has(0) === true) return false;
+    const failed = failedIndexes(error);
+    if (failed?.has(0) === true || (failed !== undefined && [...failed].some(index => index >= nativeStart))) return false;
     throw error;
   }
   await flushAuditEvents(deps, events);
