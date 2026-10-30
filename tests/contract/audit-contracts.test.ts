@@ -123,7 +123,7 @@ describe("the event catalog", () => {
   it("lists the actions exactly, in order", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
-      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "pull_request.opened",
+      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.policy_seeded", "pull_request.opened",
   "pull_request.merged",
   "pull_request.merge_requested",
   "member.joined",

@@ -532,3 +532,10 @@ export function auditPlaybookDefaultProcessChanged(input: AuditBuilderBase & { p
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
 }
+
+/** One system bootstrap/upgrade occurrence, preserving numeric policies already set by an admin. */
+export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "bootstrap" | "upgrade"; mode: "rovara_estimate"; revision: number; ceilingMicrousd: number }): AuditEventInput {
+  return build("spending.policy_seeded", input, { kind: "spend_policy", id: "task_stop" }, {
+    mode: input.mode, source: input.source, revision: input.revision, ceilingMicrousd: input.ceilingMicrousd,
+  });
+}

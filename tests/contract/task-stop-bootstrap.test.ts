@@ -33,7 +33,8 @@ for (const creation of ["ensureOrg", "createOrgWithOwner"] as const) {
       expect(transaction).toBeDefined();
       expect(transaction?.some(item => putItem(item)?.pk === orgMetaKey(orgId).pk && putItem(item)?.sk === "META")).toBe(true);
       const events = transaction?.flatMap(item => putItem(item)?.event === undefined ? [] : [putItem(item)?.event]);
-      expect(events).toContainEqual(expect.objectContaining({ action: "spending.policy_seeded", actor: { kind: "system", id: "rovara" }, facts: expect.objectContaining({ mode: "rovara_estimate", source: "bootstrap" }) }));
+      const seeded = events?.find(event => typeof event === "object" && event !== null && "action" in event && event.action === "spending.policy_seeded");
+      expect(seeded).toMatchObject({ action: "spending.policy_seeded", actor: { kind: "system", id: "rovara" }, facts: { mode: "rovara_estimate", source: "bootstrap" } });
       expect(JSON.stringify(f.db.get(policyKey.pk, policyKey.sk))).not.toContain('"defaultStopMicrousd":10000000');
     });
   }
