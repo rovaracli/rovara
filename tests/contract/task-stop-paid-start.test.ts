@@ -1473,3 +1473,22 @@ for (const loss of ["pointer", "task", "pointer_race"] as const) it(`an admitted
   if (loss === "pointer_race") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
   else expect(f.t.access.mintedKeys().length).toBe(before);
 });
+
+for (const change of ["operation_org", "operation_id", "task_workspace", "route_between_reads"] as const) it(`model keys refuse contradictory admitted scope identity: ${change}`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, opKey = operationKey(task.workspaceId, plan.id), stored = f.t.db.get(opKey)!;
+  if (change === "operation_org") f.t.db.set({ ...stored, orgId: "org_00000000000000000000" });
+  if (change === "operation_id") f.t.db.set({ ...stored, id: randomUUID() });
+  if (change === "task_workspace") f.t.db.set({ ...f.t.meta(task.taskId), workspaceId: randomUUID() });
+  const send = f.t.db.send.bind(f.t.db); let reads = 0;
+  f.t.db.send = async command => {
+    if (change === "route_between_reads" && command instanceof GetCommand && command.input.Key?.pk === opKey.pk && command.input.Key.sk === opKey.sk && ++reads === 2) f.t.db.set({ ...f.t.db.get(opKey)!, modelRoute: null });
+    return send(command);
+  };
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  if (change === "route_between_reads") expect(reads).toBeGreaterThanOrEqual(2);
+  expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
+});
