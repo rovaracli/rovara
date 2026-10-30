@@ -97,7 +97,7 @@ describe("GET learning: the answer", () => {
     const card = (await view(w, MAX)).suggestions[0]!;
     expect(card.allFromOnePerson).toBe(true);
     expect(card.sources).toHaveLength(3);
-    expect(card.sources.every((source) => source.label.length > 0)).toBe(true);
+    expect(card.sources.every((source) => (source.label ?? "").length > 0)).toBe(true);
   });
 
   it("lists active and waiting rules, not the ones that were removed or never applied", async () => {

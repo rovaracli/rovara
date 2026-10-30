@@ -234,10 +234,10 @@ describe("person erase", () => {
     for (let run = 0; run < 20 && last.status !== "done"; run += 1) last = await eraseLearningSubject(world.deps, TEST_ORG, "dev1", { writes: 3 });
     expect(last.status).toBe("done");
     expect(walkOf(world, "erase#dev1")).toBeUndefined();
-    const snapshot = JSON.stringify(partition(world, "web").sort((a, b) => (a.sk < b.sk ? -1 : 1)));
+    const snapshot = JSON.stringify(partition(world, "web").sort((a, b) => (String(a.sk) < String(b.sk) ? -1 : 1)));
     const repeat = await eraseLearningSubject(world.deps, TEST_ORG, "dev1");
     expect(repeat.status).toBe("done");
-    expect(JSON.stringify(partition(world, "web").sort((a, b) => (a.sk < b.sk ? -1 : 1)))).toBe(snapshot);
+    expect(JSON.stringify(partition(world, "web").sort((a, b) => (String(a.sk) < String(b.sk) ? -1 : 1)))).toBe(snapshot);
   });
 
   it("holds no text in the walk item", async () => {
