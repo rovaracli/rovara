@@ -43,6 +43,7 @@ import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
+import { requireResolvableStageChoices, requireVersionStageChoices, runningChoices } from "../playbook/process-stage-models.js";
 import { requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
@@ -192,10 +193,12 @@ export async function publishDraft(
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
     // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
-    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt });
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt, before: () => requireVersionStageChoices(deps, agent.orgId, agent.agentId, running.version, caller.developerId) });
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
+  // V3: a process layer's model choices must resolve before the draft can become effective (nothing is stored or asked otherwise).
+  await requireResolvableStageChoices(deps, { layer: agent, recipe: next, overlay: draft.overlay, developerId: caller.developerId, running: runningChoices(deps, agent) });
   const changes = lessSafeChangesFor(agent, await runningNow(deps, agent, draft.extends), next, { firstPublish: agent.currentVersion === undefined });
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
@@ -231,6 +234,7 @@ export async function rollbackAgent(
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
+  await requireResolvableStageChoices(deps, { layer: agent, recipe: target, overlay: stored.overlay, version: input.version, developerId: caller.developerId, running: runningChoices(deps, agent) });
   const changes = lessSafeChangesFor(agent, current, target, { firstPublish: false });
   if (changes.length === 0) {
     return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
@@ -337,7 +341,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
     if (landed !== undefined && landed.digest === subject.digest) {
-      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt });
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt, before: () => requireVersionStageChoices(deps, record.orgId, subject.agentId, landed.version, record.requestedBy) });
       return;
     }
     throw stale("The published version changed after this was asked. Publish again.");
@@ -347,6 +351,8 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
   // The guardrails may have tightened since this was asked.
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
+  // The choices are checked again as they stand now, for the person who asked: a model that stopped resolving since this was asked is not published.
+  await requireResolvableStageChoices(deps, { layer: agent, recipe: draftRecipe, overlay: draft.overlay, developerId: record.requestedBy, running: runningChoices(deps, agent) });
   const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
     skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe", selfConfirmedSoleOwner: await confirmedBySoleOwner(deps, agent, record, by),
@@ -368,6 +374,9 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
+  const targetVersion = await deps.store.getVersion(record.orgId, subject.agentId, subject.version);
+  if (targetVersion === undefined) throw stale("That version changed after this was asked. Roll back again.");
+  await requireResolvableStageChoices(deps, { layer: agent, recipe: target, overlay: targetVersion.overlay, version: subject.version, developerId: record.requestedBy, running: runningChoices(deps, agent) });
   await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe" });
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }

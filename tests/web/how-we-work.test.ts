@@ -36,13 +36,13 @@ describe("the How we work tab", () => {
 
  it("marks every value: inherited, changed here, or locked by the company or by Rovara", async () => {
   await open();
-  const plan = card("Plan"), markers = (name: string) => within(card(name)).getAllByText(/Inherited|Changed here|Locked by/u).map(item => `${item.getAttribute("data-marker")}:${item.textContent}`);
-  expect(markers("Plan")).toEqual(expect.arrayContaining(["inherited:Inherited", "changed:Changed here", "locked:Locked by Rovara"]));
+  const plan = card("Plan (and Understand)"), markers = (name: string) => within(card(name)).getAllByText(/Inherited|Changed here|Locked by/u).map(item => `${item.getAttribute("data-marker")}:${item.textContent}`);
+  expect(markers("Plan (and Understand)")).toEqual(expect.arrayContaining(["inherited:Inherited", "changed:Changed here", "locked:Locked by Rovara"]));
   expect(within(plan).getByText("Rovara plan guidance").parentElement?.querySelector("[data-marker]")?.textContent).toBe("Inherited");
   expect(within(plan).getByText("Keep changes small.").parentElement?.querySelector("[data-marker]")?.textContent).toBe("Changed here");
   expect(markers("Plan check")).toContain("locked:Locked by company");
   expect(within(card("Plan check")).getByText("Plan").parentElement?.querySelector("[data-marker]")?.getAttribute("data-marker")).toBe("locked");
-  expect(card("Plan").querySelector("svg")).toBeTruthy();
+  expect(card("Plan (and Understand)").querySelector("svg")).toBeTruthy();
  });
 
  it("shows only changed and locked rows by default, and the rest with Show unchanged settings", async () => {
@@ -60,14 +60,14 @@ describe("the How we work tab", () => {
  it("filters: All, Changed here, Locked", async () => {
   await open();
   fireEvent.click(screen.getByRole("radio", { name: "Locked" }));
-  expect(within(card("Plan")).getAllByText("Locked by Rovara").length).toBeGreaterThan(0);
-  expect(within(card("Plan")).queryByText("Rovara plan guidance")).toBeNull();
+  expect(within(card("Plan (and Understand)")).getAllByText("Locked by Rovara").length).toBeGreaterThan(0);
+  expect(within(card("Plan (and Understand)")).queryByText("Rovara plan guidance")).toBeNull();
   expect(within(card("Build")).queryByText("Run the linter.")).toBeNull();
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Show unchanged settings" }).disabled).toBe(true);
   fireEvent.click(screen.getByRole("radio", { name: "Changed here" }));
   expect(within(card("Build")).getAllByText("Run the linter.").length).toBeGreaterThan(0);
-  expect(within(card("Plan")).getAllByText("Keep changes small.").length).toBeGreaterThan(0);
-  expect(within(card("Plan")).queryByText("Rovara plan guidance")).not.toBeNull();
+  expect(within(card("Plan (and Understand)")).getAllByText("Keep changes small.").length).toBeGreaterThan(0);
+  expect(within(card("Plan (and Understand)")).queryByText("Rovara plan guidance")).not.toBeNull();
   expect(within(card("Plan check")).queryByText("Locked by company")).toBeNull();
   fireEvent.click(screen.getByRole("radio", { name: "All" }));
   expect(within(card("Plan check")).getByText("Locked by company")).toBeTruthy();
@@ -77,7 +77,7 @@ describe("the How we work tab", () => {
   await open();
   expect(HOW_WE_WORK_REVIEWER_NOTE).toBe("Project rules apply to Understand, Plan and Build. Reviewers only follow rules written for them.");
   for (const name of ["Plan check", "Review"]) expect(within(card(name)).getByText(HOW_WE_WORK_REVIEWER_NOTE)).toBeTruthy();
-  for (const name of ["Plan", "Build", "Checks"]) expect(within(card(name)).queryByText(HOW_WE_WORK_REVIEWER_NOTE)).toBeNull();
+  for (const name of ["Plan (and Understand)", "Build", "Checks"]) expect(within(card(name)).queryByText(HOW_WE_WORK_REVIEWER_NOTE)).toBeNull();
  });
 
  it("renders the note the server sent, not a copy of it", async () => {
@@ -92,8 +92,10 @@ describe("the How we work tab", () => {
  it("shows the model rows read only, with the note", async () => {
   await open();
   const build = card("Build");
-  expect(within(build).getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
-  expect(within(build).getByText("Model choice per stage is coming; today models come from the project's model settings.")).toBeTruthy();
+  // V3: the view decides no model, so without the resolver's read the card says so and names none.
+  expect(within(build).queryByText("anthropic/claude-sonnet-4-6")).toBeNull();
+  expect(within(build).queryByText("The project's model settings")).toBeNull();
+  expect(within(build).getByText("The models of this stage can't be shown right now. Reload to try again.")).toBeTruthy();
   expect(within(build).queryByRole("combobox")).toBeNull();
  });
 
@@ -134,7 +136,7 @@ describe("saving rules", () => {
   await screen.findByText("Draft saved. Review changes to publish it.");
   const writes = f.sent().slice(before);
   expect(writes.map(request => request.method + " " + request.path)).toEqual(["POST /v1/app/projects/payments/playbook/process", `PUT /v1/app/agents/${LAYER}/draft`]);
-  expect(f.calls().slice(-2)).toEqual([`GET /v1/app/agents/${LAYER}/draft`, `PUT /v1/app/agents/${LAYER}/draft`]);
+  expect(f.calls().filter(call => !call.endsWith("/stage-models")).slice(-2)).toEqual([`GET /v1/app/agents/${LAYER}/draft`, `PUT /v1/app/agents/${LAYER}/draft`]);
   expect(f.calls().lastIndexOf("POST /v1/app/projects/payments/playbook/process")).toBeLessThan(f.calls().lastIndexOf(`PUT /v1/app/agents/${LAYER}/draft`));
   expect(writes[1]!.body).toMatchObject({ overlay: { instructions: "Keep changes small. Add tests.", steps: { build: { instructions: "Run the linter." } } }, expectedRevision: 3 });
  });
@@ -231,6 +233,41 @@ describe("review and publish", () => {
   refuse = false;
   fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
   await within(dialog).findByText(/Published as version 3/u);
+ });
+});
+
+describe("a publish refused for its model choices", () => {
+ const refuse = (message: string): Handler => (request, url) => url.pathname.endsWith("/publish") ? { status: 400, body: { error: { code: "CONFIG_INVALID", message } } } : undefined;
+ const refused = async (message: string) => {
+  await open({ handle: refuse(message) });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
+  fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+  const dialog = await screen.findByRole("dialog", { name: "Review changes" });
+  await within(dialog).findByText("What changes");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+  return dialog;
+ };
+
+ it("shows each stage's fixed sentence, with the page that fixes it, instead of the codes", async () => {
+  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build /app/admin/models/sources; STAGE_LOCKED code_review /app/admin/how-we-work; MODEL_FORBIDDEN plan_check");
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).getByText("Build: This account has no fresh verified access to this model.")).toBeTruthy();
+  expect(within(alert).getByText("Code review: Your company locked this stage's model choice.")).toBeTruthy();
+  expect(within(alert).getByText("Plan check: Your company's rules do not allow this model.")).toBeTruthy();
+  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/models/sources", "/app/admin/how-we-work"]);
+  expect(alert.textContent).not.toContain("MODEL_NOT_VERIFIED");
+ });
+
+ it("shows an ordinary refusal as the server wrote it, and reads a link only from the app's own pages", async () => {
+  const plain = await refused("The draft has a problem.");
+  expect((await within(plain).findByRole("alert")).textContent).toContain("The draft has a problem.");
+ });
+
+ it("does not read a message that has a word it does not know", async () => {
+  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build //evil.example/x");
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).queryByRole("link")).toBeNull();
+  expect(alert.textContent).toContain("//evil.example/x");
  });
 });
 
@@ -410,7 +447,7 @@ describe("the pull request stage", () => {
   expect(within(pull).getByText("Mention the ticket.")).toBeTruthy();
   expect(within(pull).getByText(UNUSED)).toBeTruthy();
   expect(within(pull).queryByRole("textbox")).toBeNull();
-  for (const name of ["Plan", "Plan check", "Build", "Review"]) {
+  for (const name of ["Plan (and Understand)", "Plan check", "Build", "Review"]) {
    expect(within(card(name)).queryByText(UNUSED)).toBeNull();
    expect(within(card(name)).getByRole("textbox", { name: "Instructions for this stage" })).toBeTruthy();
   }

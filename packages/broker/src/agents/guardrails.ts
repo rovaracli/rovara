@@ -1,3 +1,4 @@
+import { classifyStageChoiceChange } from "../model-selection/classify.js";
 import { budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 // Plan 3 Task 8: the company's agent guardrails as the broker uses them. This file reads and writes the document, says which changes to it
 // are less safe (those wait for an org admin on the confirmation page, changes.ts), checks a recipe against it when the recipe is
@@ -101,11 +102,7 @@ const modelLabel = (model: ModelIdentifier): string => `${model.provider}/${mode
  */
 export function lessSafeGuardrailChanges(current: AgentGuardrails, next: AgentGuardrails): string[] {
   const changes: string[] = [];
-  const stillForbidden = new Set(next.forbiddenModels.map(canonicalModelName));
-  for (const model of current.forbiddenModels) {
-    if (!stillForbidden.has(canonicalModelName(model))) changes.push(`Allows the model ${modelLabel(model)} again`);
-  }
-  if (current.requireCrossCompanyReview && !next.requireCrossCompanyReview) changes.push("Turns off the rule that a review step uses a model from a different AI company");
+  changes.push(...classifyStageChoiceChange({ kind: "guardrails", before: current, after: next }));
   if (next.maxAgentMonthlyUsd > current.maxAgentMonthlyUsd) changes.push(`Raises the most one agent can spend in a month, from $${String(current.maxAgentMonthlyUsd)} to $${String(next.maxAgentMonthlyUsd)}`);
   if (next.maxPerRunCeilingUsd > current.maxPerRunCeilingUsd) changes.push(`Raises the most one run can be limited to, from $${String(current.maxPerRunCeilingUsd)} to $${String(next.maxPerRunCeilingUsd)}`);
   if (current.maxStepBudgetUsd !== undefined) {

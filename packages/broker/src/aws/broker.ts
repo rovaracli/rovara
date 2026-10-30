@@ -1256,6 +1256,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...((agents.rovaraCodeV2Live ?? (rovaraCodeV2LiveFromEnvironment(process.env) ? true : undefined)) === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live ?? true }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
     ...(routing === undefined ? {} : { modelRouting: routing }),
+    // V3: a process layer's model choices are checked against the same sources and ChatGPT connections the model rows read.
+    ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).

@@ -18,6 +18,7 @@ import type { ChainStore } from "../chains/store.js";
 import type { TriggerHookReader, TriggerHooks, TriggerLookup, TriggerScheduler } from "../triggers/ports.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
+import type { StageEvidenceDependencies } from "../model-selection/evidence.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
 import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
@@ -50,6 +51,9 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   resolveSkill?: ResolveOptions["resolveSkill"];
   /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
   servableModels?: ServableModels;
+  /** V3: where a process layer's model choices are checked at publish, confirm and rollback (lane C's resolver reads the same sources); without them, Rovara's own AI alone. */
+  modelRouting?: StageEvidenceDependencies["routing"];
+  chatgpt?: StageEvidenceDependencies["chatgpt"];
   /** What a project's connectors need (Task 13): the org's connections, the project revision write and the live connector status. Without it those routes answer 404 and a widening cannot be applied. */
   projectConnectors?: ProjectConnectorDependencies;
   /** Task 14b: a read-only reader of a repository's default branch for an org, for the comment-triggered workflow scan. Without it, nothing can be reviewed or opted out. */
