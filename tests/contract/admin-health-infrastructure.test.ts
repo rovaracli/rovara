@@ -132,6 +132,8 @@ describe("the health route's grants (A13)", () => {
       "packages/contracts/src/admin-changes.ts", "packages/broker/src/aws/admin-changes.ts",
       // The plan evidence job row (spec 061) expires on it too.
       "packages/broker/src/developer/plan-evidence-jobs.ts",
+      // Fixed-window rate rows (takeRateAt): each window's row expires on it, 30 days after the window opens.
+      "packages/broker/src/developer/page-comments.ts",
       // Retired and quarantined recovery rows only; active retries remove the due/lease fields without TTL.
       "packages/broker/src/aws/workflow-merge-recovery.ts",
       // The audit outbox's AUDIT_PENDING# items (Audit Ledger, Task 6) expire on it too; the drain only reads them.
@@ -221,6 +223,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/sharing.ts",
       // The marker a project setup run leaves for the test machine renewal's drain (AUTOREQUALIFY AR-3) ends at the run's deadline and expires on it a day later.
       "packages/broker/src/e2e/requalify-hold.ts",
+      // C53: replay only reads the existing AGENT_REQUEST receipt expiry in a ConditionCheck; it creates no new TTL-bearing entity.
+      "packages/broker/src/model-selection/selection-write.ts",
+      // C53 company replay also only reads existing AGENT_REQUEST expiry; it creates no new TTL-bearing entity.
+      "packages/broker/src/model-selection/company-write.ts",
       // B33: proposal and atomic narrowing receipts expire after the explicit authority window plus cleanup retention.
       "packages/broker/src/org/project-allowed-domains.ts",
       "packages/broker/src/org/legacy-domain-narrowing.ts",

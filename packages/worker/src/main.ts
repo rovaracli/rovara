@@ -1,3 +1,4 @@
+import {taskFallbackAuthorizer} from "./model-fallback-authority.js";
 import type { WorkerInvocation } from "@agentx/contracts";
 import { CONTAINED_RUNTIME_PROFILE, inspectContainedRuntimeReadiness, type ContainedRuntimeReadiness } from "@agentx/verifier";
 import { OperationJournal } from "./journal.js";
@@ -12,7 +13,7 @@ import { inspectWorkspaceForClose } from "./close-workspace.js";
 import { advertisedInvocationFeatures, anotherOperationActive, createWorkerServerState, startWorkerServer } from "./server.js";
 import { consoleWorkerLog, logWorkerStarted } from "./worker-log.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
-import { modelFallbackReporter, resolveTaskSessionModel } from "./task-model.js";
+import { modelFallbackReporter, resolveTaskSessionModel, taskMissingKeyAuthorizer } from "./task-model.js";
 import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
@@ -100,7 +101,7 @@ const state = createWorkerServerState(
       }
       if (invocation.kind === "task") {
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
-        const { chatGptToken, chatGptFallback, ...callbacks } = createWorkerCallbackSinks({ controlPlaneUrl, invocation });
+        const { chatGptToken, chatGptFallback, authorizeModelFallback, ...callbacks } = createWorkerCallbackSinks({ controlPlaneUrl, invocation });
         // #341: a task on its owner's ChatGPT plan; the token never leaves this process's memory.
         // Ruling R29: on an install with a model proxy the task calls models through it, with a key minted for this task;
         // the worker holds no provider secret. The key is asked for lazily, at the first request that needs the proxy (a ChatGPT
@@ -109,12 +110,13 @@ const state = createWorkerServerState(
           ? lazyModelProxy({ baseUrl: process.env.AGENTX_MODEL_PROXY_URL, source: modelAccessSource({ controlPlaneUrl, capability: invocation.callbackCapability }) })
           : undefined;
         const session = await resolveTaskSessionModel(invocation.payload,
-          invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback, proxy);
+          invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback, proxy, taskFallbackAuthorizer(invocation.payload,authorizeModelFallback));
+        const missingKeyAuthority=taskMissingKeyAuthorizer(invocation.payload,authorizeModelFallback,proxy,process.env);
         return runTaskInvocation(invocation, {
           rootPath,
           model: session.model,
           // MODEL3: a missing provider key that sent the task to the chosen fallback model is told to the task page, once, as a progress event.
-          piAdapter: session.piAdapter ?? createDefaultPiSessionAdapter({ onModelFallback: modelFallbackReporter(callbacks.eventSink) }),
+          piAdapter: session.piAdapter ?? createDefaultPiSessionAdapter({ onModelFallback: modelFallbackReporter(callbacks.eventSink),...(missingKeyAuthority===undefined?{}:{authorizeModelFallback:missingKeyAuthority}) }),
           ...callbacks,
           // The operation's skills snapshot, asked for only when the invocation's agentStep names skills.
           agentSkills: agentSkillsSource({ controlPlaneUrl, capability: invocation.callbackCapability }),

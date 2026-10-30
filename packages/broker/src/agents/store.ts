@@ -4,6 +4,8 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
+import {modelAuthorityRefused} from "../model-selection/authority.js";
+import {parseStageModelApprovalProof,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
@@ -15,6 +17,8 @@ import {
   BUILTIN_AGENTS,
   EMPTY_RECIPE,
   RecipeOverlaySchema,
+  modelSourcesKey,
+  orgSettingsKey,
   agentDirectoryKey,
   agentGuardrailsKey,
   agentKey,
@@ -106,6 +110,8 @@ export interface AgentDraft {
 }
 
 export interface AgentVersion {
+  /** Server-created confirmation proof; never accepted from draft or browser settings. */
+  modelApproval?: StageModelApprovalProof;
   version: number;
   overlay: RecipeOverlay;
   extends?: BaseRef;
@@ -240,6 +246,12 @@ interface OwnerTotals {
 
 function checkAmount(label: string, value: number | null | undefined): void {
   if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) throw coded("CONFIG_INVALID", `${label}: must be a number of dollars, zero or more`);
+}
+
+/** ConditionChecks that the company model policy and model sources are still at the revisions a model check read (lane C's publish and rollback share these with the playbook pointer writes). */
+export function stageRevisionChecks(tableName:string,orgId:OrgId,revisions:{companyRevision:number;sourcesRevision:number}):TransactItem[] {
+  if(!Object.values(revisions).every(revision=>Number.isSafeInteger(revision)&&revision>=0)) throw coded("CONFIG_INVALID","Invalid model validation revisions.");
+  return ([[orgSettingsKey(orgId,"MODEL_SELECTION_POLICY"),revisions.companyRevision],[modelSourcesKey(orgId),revisions.sourcesRevision]] as const).map(([key,revision])=>({ConditionCheck:{TableName:tableName,Key:key,...(revision===0?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"#revision = :revision",ExpressionAttributeNames:{"#revision":"revision"},ExpressionAttributeValues:{":revision":revision}})}}));
 }
 
 export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, AgentEventKind> {
@@ -556,18 +568,35 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * was resolved with, so the version is the recipe that was compared) or else the skill's current digest. The write applies only while
    * the skill still has that content, so a skill edited in between refuses the publish instead of publishing something else.
    */
+  private stageRevisionChecks(orgId:OrgId,revisions:{companyRevision:number;sourcesRevision:number}):TransactItem[] { return stageRevisionChecks(this.input.tableName,orgId,revisions); }
   async publish(input: {
     orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark;
     /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
     safety?: "safe" | "less_safe";
     /** A project's process layer only: the person who confirmed this publish is the one who asked, being the only one who could (`process.published` says so). */
     selfConfirmedSoleOwner?: boolean;
+    modelApproval?: StageModelApprovalProof;
+    /** Server-read validation revisions, fenced in the publish transaction. */
+    modelRevisions?: {companyRevision:number;sourcesRevision:number};
+    modelAuthorityChecks?: TransactItem[];
   }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
+    let modelApproval:StageModelApprovalProof|undefined;
+    if(input.modelApproval!==undefined) {
+      if(agent.purpose!=="process" || agent.owner.kind!=="project" || input.safety!=="less_safe") throw coded("CONFIG_INVALID","The model approval does not match this process version.");
+      modelApproval=parseStageModelApprovalProof(input.modelApproval,{orgId:input.orgId,project:agent.owner.project,registeredAt:input.modelApproval.registeredAt,agentId:input.agentId,recipeDigest:input.digest});
+      if(input.modelRevisions===undefined) throw coded("CONFIG_INVALID","A model approval requires model revision checks.");
+    }
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (agent.draftRevision !== input.expectedDraftRevision || draft.revision !== input.expectedDraftRevision) throw conflict();
+    const modelChecks:TransactItem[]=[];
+    if(input.modelRevisions!==undefined) {
+      if(agent.purpose!=="process" || !Object.values(input.modelRevisions).every(revision=>Number.isSafeInteger(revision)&&revision>=0)) throw coded("CONFIG_INVALID","Invalid model validation revisions.");
+      modelChecks.push(...this.stageRevisionChecks(input.orgId,input.modelRevisions));
+      if(input.modelApproval!==undefined && input.modelApproval.companyRevision!==input.modelRevisions.companyRevision) throw coded("CONFIG_INVALID","The model approval does not match this process version.");
+    }
     const n = agent.latestVersion;
     const version = n + 1;
     const publishedAt = this.iso();
@@ -578,6 +607,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const pinned = added === undefined ? undefined : await this.skills.pin(input.orgId, added, input.skillDigests);
     const overlay: RecipeOverlay = pinned === undefined ? draft.overlay : { ...draft.overlay, skills: { ...draft.overlay.skills, add: pinned.refs } };
     const published: AgentVersion = {
+      ...(modelApproval===undefined?{}:{modelApproval}),
       version,
       overlay,
       ...(draft.extends === undefined ? {} : { extends: draft.extends }),
@@ -609,7 +639,15 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       event.item,
     ];
     // The skills' checks follow what is written; one of them failing is a skill that moved, not a draft that did. The audit item is last of all.
-    await this.commit([...written, ...(pinned?.checks ?? []), ...audit.items], (failed) => ([...failed].some((index) => index < written.length) ? conflict() : coded("AGENT_REVISION_CONFLICT", "A skill this agent uses changed while it was being published. Publish again.")), input.request, published);
+    const modelCheckStart=written.length+(pinned?.checks.length??0);
+    const authorityStart=modelCheckStart+modelChecks.length;
+    const publicationItems=[...written,...(pinned?.checks??[]),...modelChecks,...(input.modelAuthorityChecks??[]),...audit.items];
+    if(input.modelRevisions!==undefined&&publicationItems.length+(input.request===undefined?0:1)>25) throw coded("CONFIG_INVALID","The model publication exceeds the transaction limit.");
+    await this.commit(publicationItems, (failed) => {
+      if([...failed].some(index=>index>=authorityStart&&index<authorityStart+(input.modelAuthorityChecks?.length??0))) return modelAuthorityRefused();
+      if([...failed].some(index=>index>=modelCheckStart&&index<modelCheckStart+modelChecks.length)) return coded("AGENT_REVISION_CONFLICT","The model policy or sources changed. Reload and publish again.");
+      return [...failed].some(index=>index<written.length)?conflict():coded("AGENT_REVISION_CONFLICT","A skill this agent uses changed while it was being published. Publish again.");
+    }, input.request, published);
     await flushAuditEvents(this.input, audit.events);
     return published;
   }
@@ -618,8 +656,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe" }): Promise<AgentRecord> {
-    const { agentId, ...rest } = input;
+  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark; safety?: "safe" | "less_safe"; modelRevisions?:{companyRevision:number;sourcesRevision:number}; modelAuthorityChecks?:TransactItem[] }): Promise<AgentRecord> {
+    const { agentId, modelRevisions, modelAuthorityChecks, ...rest } = input;
     // A process layer is never rolled back to a version that does not build on Rovara Code, whatever stored it.
     const agent = await this.require(input.orgId, agentId);
     if (agent.purpose === "process") {
@@ -631,7 +669,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         await requireNoNewPullRequestInstructionsToPublish(this, agent, target.overlay);
       }
     }
-    return this.rollbackItem({ ...rest, id: agentId });
+    if(modelRevisions!==undefined && agent.purpose!=="process") throw coded("CONFIG_INVALID","Invalid model validation revisions.");
+    return this.rollbackItem({ ...rest, id: agentId,...(modelRevisions===undefined?{}:{maxTransactionItems:25,checks:{items:[...this.stageRevisionChecks(input.orgId,modelRevisions),...(modelAuthorityChecks??[])],refused:()=>coded("AGENT_REVISION_CONFLICT","The model policy or sources changed. Reload and roll back again.")}}) });
   }
 
   // ---- the owner totals (Task 28; the counter itself is `spend/owner-budgets.ts`)

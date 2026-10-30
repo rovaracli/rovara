@@ -1,4 +1,4 @@
-import {STAGE_IDS,STAGE_EDIT_RULES,STAGE_REFERENCE,ModelIdentifierSchema,StageModelChoiceSchema,agentXError,type StageModelChoice,type StageId,type ResolvedRecipe,type RecipeOverlay} from "@agentx/contracts";
+import {STAGE_IDS,STAGE_EDIT_RULES,STAGE_REFERENCE,ModelIdentifierSchema,StageModelChoiceSchema,agentXError,type ProjectModels,type ModelIdentifier,type ModelSelection,type StageModelChoice,type StageId,type ResolvedRecipe,type RecipeOverlay} from "@agentx/contracts";
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","The model settings could not be read. Reload and try again.");
 export function stageChoiceOf(raw:unknown,stage:StageId,recipe:ResolvedRecipe):StageModelChoice|undefined {
  if(typeof raw!=="object" || raw===null) return undefined;
@@ -32,4 +32,11 @@ export function frozenRecipeModelInputs(recipe:ResolvedRecipe,overlay?:RecipeOve
   if(raw?.fallbackModel===null)clearedFallbacks.push(stage);
  }
  return {projectChoices,recipeDefaults,clearedFallbacks};
+}
+
+/** Effort is taken from the project's approved entry, never from an untrusted selection row. */
+export function approvedProjectModel(model:ModelIdentifier|undefined,models:ProjectModels|undefined):ModelSelection|undefined {
+ if(model===undefined)return undefined;
+ const approved=models?.approved.find(entry=>entry.provider===model.provider&&entry.modelId===model.modelId);
+ return {provider:model.provider,modelId:model.modelId,...(approved?.thinkingLevel===undefined?{}:{thinkingLevel:approved.thinkingLevel})};
 }

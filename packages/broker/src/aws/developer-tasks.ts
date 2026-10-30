@@ -6,6 +6,7 @@ import { WORKFLOW_ACTIONABLE_REFUSALS, WORKFLOW_BREAKDOWN_REFUSALS } from "../de
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  ModelFallbacksSchema,
   SPEND_RESUME_INSTRUCTIONS,
   UNDERSTAND_TIMEOUT_MINUTES,
   UNDERSTAND_WATCHDOG_GRACE_MINUTES,
@@ -1629,6 +1630,8 @@ export async function taskView(
   task: DeveloperTaskRecord,
   options: { events: number; details: boolean; loaded?: WorkspaceReads; actor?: "owner" | "viewer" },
 ): Promise<DeveloperTaskView> {
+  const modelFallbacks=ModelFallbacksSchema.safeParse(task.modelFallbacks??[]);
+  if(!modelFallbacks.success) throw agentXError("RUNTIME_UNAVAILABLE","The task's model fallback history could not be read.");
   const [{ workspace, operations }, pointer] = await Promise.all([
     options.loaded ?? workspaceReads(deps, task),
     get<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId)),
@@ -1761,6 +1764,7 @@ export async function taskView(
   // full read, and only when this task's pull request was published with risk low.
   const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;
   return {
+    modelFallbacks:modelFallbacks.data,
     taskId: task.taskId,
     title: task.title,
     project: task.project,
@@ -2030,7 +2034,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (deps.agentRuns !== undefined) {
     try {
       prepared = await prepareRun(deps.agentRuns, {
-        orgId: deps.orgId, project: request.project, input: request.input ?? { text: request.instructions },
+        orgId: deps.orgId, project: request.project, projectRevision: project.definition.revision, input: request.input ?? { text: request.instructions },
         ...(request.agent === undefined ? {} : { agent: { agentId: request.agent.agentId, ...(request.agent.version === undefined ? {} : { version: request.agent.version }) } }),
         origin: run?.origin ?? (client === SLACK_CLIENT_NAME ? "slack" : "cli"),
         ...(run?.autonomous === true ? {} : { caller, role: access.role }),
@@ -2238,6 +2242,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
+  if(prepared?.modelPolicyPin!==undefined&&items.length>90) throw agentXError("CONFIG_INVALID","The model admission exceeds the transaction limit.");
   try {
     await deps.actions.transact(items);
   } catch (error) {

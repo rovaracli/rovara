@@ -88,7 +88,8 @@ export function classifyStageChoiceChange(input: StageChoiceChange): string[] {
    if(before?.differentFrom!==undefined && JSON.stringify(before.differentFrom)!==JSON.stringify(after?.differentFrom)) found.push(`Changes the company different-model rule for ${stage}`);
    if(stage === "plan_check" || stage === "code_review" || stage === "security_review") {
     const reference=input.after[stage === "plan_check" ? "plan" : "build"]?.model;
-    if(next!==undefined && reference!==undefined && sameModel(next,reference) && (prior===undefined || !sameModel(prior,next))) found.push(`Makes the company ${stage} default use the same model as the stage it checks`);
+    const priorReference=input.before[stage === "plan_check" ? "plan" : "build"]?.model;
+    if(next!==undefined && reference!==undefined && sameModel(next,reference) && (prior===undefined || priorReference===undefined || !sameModel(prior,priorReference))) found.push(`Makes the company ${stage} default use the same model as the stage it checks`);
    }
   }
   return [...new Set(found)];

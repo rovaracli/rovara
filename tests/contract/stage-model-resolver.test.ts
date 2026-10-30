@@ -77,7 +77,7 @@ it("keeps a metadata-only configured fallback when the inherited exact choice is
 
 it("preserves a verified personal-plan default below explicit choices and company policy",()=>{
  const input={...base(),defaultPreferred:other,projectDefault:build};
- expect(resolveStageModel(input)).toMatchObject({kind:"resolved",model:other});
+ expect(resolveStageModel(input)).toMatchObject({kind:"resolved",model:other,reason:"PERSONAL_PLAN_DEFAULT"});
  expect(resolveStageModel({...input,companyDefault:{model:build}})).toMatchObject({kind:"resolved",model:build,reason:"COMPANY_DEFAULT"});
  expect(resolveStageModel({...input,projectChoice:{model:build}})).toMatchObject({kind:"resolved",model:build,reason:"PROJECT_CHOICE"});
  expect(resolveStageModel({...input,deniedModels:[other],defaultFallbacks:[build]})).toMatchObject({kind:"resolved",model:build,fallback:{reasonCode:"DEFAULT_MODEL_UNAVAILABLE"}});
@@ -91,7 +91,7 @@ it("preserves the existing reviewer retry ranking across a refused capability ti
 
 it("preserves the last default attempt on the verified reference with visible fallback only",()=>{
  const input={...base(),stage:"plan_check" as const,referenceModel:build,allowLegacyDefaultFallback:true,defaultLastAttempt:true};
- expect(resolveStageModel(input)).toMatchObject({kind:"resolved",model:build,fallback:{reasonCode:"DEFAULT_MODEL_UNAVAILABLE"}});
+ expect(resolveStageModel(input)).toMatchObject({kind:"resolved",model:build,reason:"BUILTIN_DEFAULT",fallback:{reasonCode:"DEFAULT_MODEL_UNAVAILABLE"}});
  expect(resolveStageModel({...input,deniedModels:[build]})).toMatchObject({kind:"resolved",model:other});
  expect(resolveStageModel({...input,projectChoice:{model:other}})).toMatchObject({kind:"resolved",model:other});
  expect(resolveStageModel({...input,requireDifferentVendor:true})).toMatchObject({kind:"refusal"});

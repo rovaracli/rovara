@@ -8,7 +8,7 @@ import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js"
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { applyOverlay, type RecipeLayer, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
 import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "../../packages/contracts/src/index.js";
-import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { applyAgentStep, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
@@ -147,8 +147,9 @@ describe("rolling a process layer back to a version that has skills", () => {
     agent = (await w.store.get(ORG_A, id))!;
     const confirmed = await publishDraft(w.deps, callerOf(w, MAX), agent, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
     if (!confirmed.applied) {
-      const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, id, "draft"));
-      await getApprovalSubjectHandler("agent_publish")!(w.deps, { orgId: ORG_A, approvalId: "apr_v2", decidedBy: OLA, subject: { kind: "agent_publish", agentId: id, draftRevision: agent.draftRevision, digest, expectedCurrentVersion: 1 } } as unknown as ApprovalRecord);
+      const pending = await getApproval(w.deps, ORG_A, w.approvalIdOf(confirmed.confirmUrl));
+      expect(pending).toBeDefined();
+      await getApprovalSubjectHandler("agent_publish")!(w.deps, { ...pending!, decidedBy: OLA });
     }
     return id;
   }
@@ -157,13 +158,17 @@ describe("rolling a process layer back to a version that has skills", () => {
     const w = world();
     const skill = await newSkill(w);
     const id = await twoVersions(w);
+    const pendingRollback = await rollbackAgent(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, id))!, { requestId: randomUUID(), version: 1 });
+    expect(pendingRollback.applied).toBe(false);
+    if (pendingRollback.applied) throw new Error("expected a rollback confirmation");
+    const approved = (await getApproval(w.deps, ORG_A, w.approvalIdOf(pendingRollback.confirmUrl)))!;
     storeOverlay(w, id, agentVersionSk(1), { skills: { add: [{ skillId: skill.skillId }] } });
     const agent = (await w.store.get(ORG_A, id))!;
     expect(agent.currentVersion).toBe(2);
     expect(await failure(rollbackAgent(w.deps, callerOf(w, MAX), agent, { requestId: randomUUID(), version: 1 }))).toEqual(refused);
     expect(await failure(w.store.rollback({ orgId: ORG_A, agentId: id, version: 1, expectedCurrentVersion: 2, by: MAX }))).toEqual(refused);
     const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, id, 1));
-    const record = { orgId: ORG_A, approvalId: "apr_y", decidedBy: OLA, subject: { kind: "agent_rollback", agentId: id, version: 1, digest, expectedCurrentVersion: 2 } } as unknown as ApprovalRecord;
+    const record = { ...approved, decidedBy: OLA, subject: { ...approved.subject, digest } } as ApprovalRecord;
     expect(await failure(getApprovalSubjectHandler("agent_rollback")!(w.deps, record))).toEqual(refused);
     expect((await w.store.get(ORG_A, id))?.currentVersion).toBe(2);
   });

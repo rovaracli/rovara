@@ -34,9 +34,9 @@ export async function howWeWorkMock({ url, method, body, json, record }: MockExc
  if (url.pathname === `${agent}/publish` && method === "POST") {
   const input = AgentPublishBodySchema.parse(await body());record(input);
   if (input.expectedRevision !== layer.revision) { json(409, { error: { code: "AGENT_REVISION_CONFLICT", message: "Someone else changed this draft. Reload and try again." } });return true; }
-  // The mock plays the resolver's publish check for one case: a Build model the company has since locked away (the real server answers with the fixed line the page reads).
+  // The mock plays the resolver's publish check for one case: a Build model the company has since locked away (the real server answers with lane C's 409 refusal the page reads).
   const build = ((layer.overlay.steps ?? {}) as Record<string, { model?: { modelId: string } }>)["build"]?.model;
-  if (build?.modelId === "claude-opus-5-5") { json(400, { error: { code: "CONFIG_INVALID", message: "Model choices can't be published: STAGE_LOCKED build /app/admin/how-we-work" } });return true; }
+  if (build?.modelId === "claude-opus-5-5") { json(409, { error: { code: "STAGE_LOCKED", stage: "build", fixHref: "/app/admin/how-we-work", message: "build: STAGE_LOCKED" } });return true; }
   layer = { ...layer, version: layer.version + 1 };json(200, { agent: { ...agentProfile().agent, agentId: LAYER, currentVersion: layer.version }, version: { version: layer.version } });return true;
  }
  if (url.pathname === `${agent}/versions` && method === "GET") { json(200, { versions: [{ version: layer.version, current: true, publishedAt: "2026-10-26T12:00:00.000Z", note: "Current rules" }, { version: 1, publishedAt: "2026-10-25T12:00:00.000Z", note: "First rules" }] });return true; }

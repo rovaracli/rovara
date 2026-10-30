@@ -16,7 +16,7 @@ import {
 } from "@agentx/contracts";
 import { auditOccurrence, auditPlaybookDefaultProcessChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, tryAuditEvents, type AuditDeps, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, tryAuditEvents, type AuditDeps, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 
 export interface ProjectPlaybookReader {
@@ -87,9 +87,11 @@ const conditionFailed = (error: unknown): boolean => error instanceof Error && (
  * transaction. The caller has already checked that a `project_process` is usable (`requireProcessLayer`).
  * `ifLayer` ties the write to a decision made about a process layer: it applies only while that layer is still at the version that was compared (a switch to the built-in compared the
  * layer's published version; one published since makes the write `PLAYBOOK_STALE`, F2). The check is in the same transaction.
+ * `guards` are ConditionChecks the caller's model check read (the company model policy and sources revisions, the authority fences): the write applies only while they still hold,
+ * else `PLAYBOOK_STALE` (C53).
  */
 export async function writeProjectPlaybook(
-  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; ifLayer?: { agentId: AgentId; version: number } },
+  deps: ProjectPlaybookWriter, input: { orgId: OrgId; project: string; developerId: string; expectedRevision: number; defaultProcess: DefaultProcess; ifLayer?: { agentId: AgentId; version: number }; guards?: readonly TransactItem[] },
 ): Promise<ProjectPlaybook> {
   const { orgId, project } = input;
   const item = await readItem(deps, orgId, project);
@@ -118,6 +120,7 @@ export async function writeProjectPlaybook(
           ExpressionAttributeNames: { "#currentVersion": "currentVersion" }, ExpressionAttributeValues: { ":layerVersion": input.ifLayer.version },
         },
       }]),
+      ...(input.guards ?? []),
       ...events.flatMap((event) => auditPending(auditDeps, event)),
     ] }));
   } catch (error) {

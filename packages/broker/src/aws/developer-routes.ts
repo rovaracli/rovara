@@ -1,9 +1,14 @@
+import { readOrgServiceStatus, type ServiceStatusDependencies } from "../org/service-status.js";
+import {CompanySameModelPolicyRefusal} from "../model-selection/company-prepare.js";
+import {updateCompanyModelPolicy} from "../model-selection/company-approval.js";
+import {ModelSelectionPolicyAppliedSchema,ModelSelectionPolicyPendingSchema} from "@agentx/contracts";
+import {previewCompanyModelPolicy} from "../model-selection/policy-preview.js";
+import { requireCompanyModelPolicyAuthority,getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
+import { getStageModels } from "../model-selection/read.js";
+import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
 import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
-import { getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
-import { getStageModels } from "../model-selection/read.js";
-import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 // Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
 import { getTaskStopProject } from "../org/task-stop-project.js";
 // Lane A G1: existing agent money limit, no initialization or management.
@@ -262,6 +267,7 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus">;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   developer: DeveloperApiConfiguration;
@@ -1939,6 +1945,7 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"&&authenticated?.caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session to change company model policy.");
   // Website proposal routes accept only the trusted opaque-cookie adapter.
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -2139,6 +2146,25 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
   }
   // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  if (request.method === "POST" && url.pathname === "/v1/app/org/model-selection-policy/preview") {
+    if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy preview query is invalid.");
+    return previewCompanyModelPolicy({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,...(deps.agentSessions?.cursorKey===undefined?{}:{cursorKey:deps.agentSessions.cursorKey}),
+      loadSnapshot:(who,name,policy)=>loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,store:deps.agents?.store,routing:deps.agents?.modelRouting??{}},who,name,undefined,undefined,policy),
+    },caller,jsonBody(request));
+  }
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"){
+    if([...url.searchParams].length!==0)throw agentXError("CONFIG_INVALID","The company model-policy query is invalid.");
+    await requireCompanyModelPolicyAuthority({documentClient:deps.documentClient,tableName:deps.tableName},caller);
+    if(deps.agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","Company model approvals are unavailable.");
+    try {
+      const result=await updateCompanyModelPolicy(deps.agents,caller,jsonBody(request));
+      if(result.status==="NEEDS_CONFIRMATION")return new StatusReply(202,ModelSelectionPolicyPendingSchema.parse(result));
+      return ModelSelectionPolicyAppliedSchema.parse({status:result.status,revision:result.revision,requestId:result.requestId});
+    }catch(error){
+      if(error instanceof CompanySameModelPolicyRefusal)return new StatusReply(403,{error:{code:error.code,reason:error.reason,fixHref:error.fixHref,message:"Company reviewer models must differ. Configure same-model exceptions per project in How we work."}});
+      throw error;
+    }
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
     if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");
     return getCompanyModelSelectionPolicy({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, routing: deps.agents?.modelRouting ?? {} }, caller);
@@ -2227,6 +2253,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && revokeInvite !== null) return revokeOrganizationInvite(deps, caller, revokeInvite[1]!, jsonBody(request));
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/service-status") return readOrgServiceStatus({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...deps.serviceStatus }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
     if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
     return readSlackWorkspaceEvidence(deps, caller);

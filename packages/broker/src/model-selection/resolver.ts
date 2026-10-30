@@ -1,5 +1,5 @@
 // G3: one choice function. Callers supply server-read policy and source evidence, never browser attestations.
-import { canonicalModelName, modelCompany, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
+import { StageModelChoiceSchema, canonicalModelName, modelCompany, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
 
 export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@agentx/contracts";
@@ -29,8 +29,10 @@ export interface StageModelInput {
   companyLock?: StageModelChoice | undefined;
   projectChoice?: StageModelChoice | undefined;
   companyDefault?: StageModelChoice | undefined;
-  projectSelection?: ModelIdentifier | undefined;
-  projectDefault?: ModelIdentifier | undefined;
+  /** Provenance of a model inherited below partial company metadata. Server-only. */
+  companyDefaultOrigin?: "recipe" | undefined;
+  projectSelection?: ModelSelection | undefined;
+  projectDefault?: ModelSelection | undefined;
   builtinDefault?: ModelIdentifier | undefined;
   defaultFallbacks?: readonly ModelIdentifier[] | undefined;
   /** Verified server-selected default preference (for example the payer's personal plan). */
@@ -44,7 +46,7 @@ export interface StageModelInput {
   /** Only an approval validated against the task's frozen recipe and pinned policy may populate this input. */
   sameModelApproval?: { model: ModelIdentifier; referenceModel: ModelIdentifier } | undefined;
 }
-export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "APPROVED_SAME_MODEL";
+export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "PERSONAL_PLAN_DEFAULT" | "RECIPE_DEFAULT" | "APPROVED_SAME_MODEL";
 export type StageModelResult = { kind: "refusal"; code: StageModelRefusalCode } | {
   kind: "resolved"; model: ModelIdentifier; sourceId: string; thinkingLevel: ThinkingLevel | null;
   reason: StageDecisionReason; locked: boolean; fallback?: ModelFallback;
@@ -62,6 +64,8 @@ export function stageCandidateVerified(input: StageModelInput, candidate: Verifi
   if (candidate.sourceId === "rovara") return evidence.kind === "rovara_catalog";
   return /^src_[a-z0-9]{20}$/u.test(candidate.sourceId) && (evidence.kind === "tested_bedrock_role" || evidence.kind === "stored_key");
 }
+
+const projectDefaultChoice=(model:ModelSelection)=>StageModelChoiceSchema.safeParse({model:{provider:model.provider,modelId:model.modelId},...(model.thinkingLevel===undefined?{}:{thinkingLevel:model.thinkingLevel})});
 
 export function resolveStageModel(input: StageModelInput): StageModelResult {
   const locked = input.companyLock !== undefined;
@@ -87,7 +91,7 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   const refusal = (code: StageModelRefusalCode): StageModelResult => ({ kind: "refusal", code: locked ? "LOCK_UNSATISFIABLE" : code });
   const finish = (candidate: VerifiedStageCandidate, choice: StageModelChoice, reason: StageDecisionReason, wanted?: ModelIdentifier, fallbackCode?: ModelFallback["reasonCode"]): Extract<StageModelResult, { kind: "resolved" }> => ({
     kind: "resolved", model: candidate.model, sourceId: candidate.sourceId, thinkingLevel: choice.thinkingLevel ?? null, locked,
-    reason: checking(input.stage) && input.referenceModel !== undefined && same(candidate.model, input.referenceModel) ? "APPROVED_SAME_MODEL" : reason,
+    reason: fallbackCode !== "DEFAULT_MODEL_UNAVAILABLE" && checking(input.stage) && input.referenceModel !== undefined && input.sameModelApproval !== undefined && same(candidate.model, input.referenceModel) && same(input.sameModelApproval.model, candidate.model) && same(input.sameModelApproval.referenceModel, input.referenceModel) ? "APPROVED_SAME_MODEL" : reason,
     ...(fallbackCode === undefined ? {} : { fallback: { stage: input.stage, used: label(candidate.model), wanted: wanted === undefined ? null : label(wanted), reasonCode: fallbackCode } }),
   });
   let choice: StageModelChoice | undefined;
@@ -95,10 +99,10 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   let explicit = false;
   if (input.companyLock !== undefined) { choice = input.companyLock; reason = "COMPANY_LOCK"; explicit = true; }
   else if (input.projectChoice?.model !== undefined) { choice = input.projectChoice; reason = "PROJECT_CHOICE"; explicit = true; }
-  else if (input.companyDefault?.model !== undefined) { choice = input.companyDefault; reason = "COMPANY_DEFAULT"; explicit = true; }
-  else if (!checking(input.stage) && input.projectSelection !== undefined) { choice = { model: input.projectSelection }; reason = "PROJECT_SELECTION"; }
-  else if (!checking(input.stage) && input.defaultPreferred !== undefined) choice = { model: input.defaultPreferred };
-  else if (!checking(input.stage) && input.projectDefault !== undefined) { choice = { model: input.projectDefault }; reason = "PROJECT_DEFAULT"; }
+  else if (input.companyDefault?.model !== undefined) { choice = input.companyDefault; reason = input.companyDefaultOrigin === "recipe" ? "RECIPE_DEFAULT" : "COMPANY_DEFAULT"; explicit = true; }
+  else if (!checking(input.stage) && input.projectSelection !== undefined) { const parsed=projectDefaultChoice(input.projectSelection);if(!parsed.success)return refusal("MODEL_NOT_VERIFIED");choice=parsed.data; reason = "PROJECT_SELECTION"; }
+  else if (!checking(input.stage) && input.defaultPreferred !== undefined) { choice = { model: input.defaultPreferred }; reason = "PERSONAL_PLAN_DEFAULT"; }
+  else if (!checking(input.stage) && input.projectDefault !== undefined) { const parsed=projectDefaultChoice(input.projectDefault);if(!parsed.success)return refusal("MODEL_NOT_VERIFIED");choice=parsed.data; reason = "PROJECT_DEFAULT"; }
   else if (!checking(input.stage) && input.builtinDefault !== undefined) choice = { model: input.builtinDefault };
 
   // Model precedence and field inheritance are separate: metadata-only settings still apply.

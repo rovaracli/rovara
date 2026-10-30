@@ -1,7 +1,8 @@
-import {stageChoiceOf} from "./stage-inputs.js";
+import {ProcessModelRefusal} from "./process-refusal.js";
+import {approvedProjectModel,stageChoiceOf} from "./stage-inputs.js";
 // Current server-owned process/source snapshot for G3. Read-only; no agent/list or provider fanout.
 import { GetCommand,QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { STAGE_IDS,STAGE_EDIT_RULES,STAGE_EDIT_GROUPS,ROVARA_CODE_AGENT_ID,builtinRecipe,builtinDefaultPin,recipeDigest,StoredProjectDefinitionSchema,ModelIdentifierSchema,agentXError,orgScoped,projectPk,PROJECT_REVISION_SK_PREFIX,projectSelectionKey,type AgentId,type OrgId,type RecipeOverlay,type ResolvedRecipe,type ModelIdentifier } from "@agentx/contracts";
+import { ModelSelectionPolicyResponseSchema,type ModelSelectionPolicyResponse,STAGE_IDS,STAGE_EDIT_RULES,STAGE_EDIT_GROUPS,ROVARA_CODE_AGENT_ID,builtinRecipe,builtinDefaultPin,recipeDigest,StoredProjectDefinitionSchema,ModelIdentifierSchema,agentXError,orgScoped,projectPk,PROJECT_REVISION_SK_PREFIX,projectSelectionKey,type AgentId,type OrgId,type RecipeOverlay,type ResolvedRecipe,type ModelIdentifier } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { resolveAgent,type AgentStore,type AgentRecord } from "../agents/store.js";
 import { readGuardrailsWithRevision } from "../agents/guardrails.js";
@@ -31,7 +32,7 @@ async function draftLayer(deps:StageSnapshotDependencies,orgId:OrgId,project:str
 }
 /** Trusted publish/rollback input, resolved by the server from its immutable draft/version. Never an HTTP body. */
 export interface StagePublicationRecipe {record:AgentRecord;recipe:ResolvedRecipe;overlay:RecipeOverlay;version?:number}
-export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,caller:StageModelCaller,project:string,draftRevision?:number,publication?:StagePublicationRecipe):Promise<StageModelSnapshot> {
+export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,caller:StageModelCaller,project:string,draftRevision?:number,publication?:StagePublicationRecipe,policyPreview?:ModelSelectionPolicyResponse):Promise<StageModelSnapshot> {
  const orgId=caller.orgId;
  const raw=await deps.documentClient.send(new QueryCommand({TableName:deps.tableName,KeyConditionExpression:"pk = :pk AND begins_with(sk, :prefix)",ExpressionAttributeValues:{":pk":projectPk(orgId,project),":prefix":PROJECT_REVISION_SK_PREFIX},ScanIndexForward:false,Limit:1,ConsistentRead:true})) as {Items?:Record<string,unknown>[]};
  const record=raw.Items?.[0];const definition=StoredProjectDefinitionSchema.safeParse(record?.definition);
@@ -52,14 +53,17 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
   if(layer===undefined || layer.status!=="active" || layer.purpose!=="process" || layer.owner.kind!=="project" || layer.owner.project!==project) throw unavailable();
   agentId=layer.agentId;
   if(draftRevision!==undefined) {
-   const draft=await deps.store.getDraft(orgId,agentId);if(draft===undefined || draft.revision!==draftRevision) throw agentXError("PLAYBOOK_STALE","DRAFT_STALE: This process draft changed. Reload and try again.");
+   const draft=await deps.store.getDraft(orgId,agentId);if(draft===undefined || draft.revision!==draftRevision) throw agentXError("DRAFT_STALE","This process draft changed. Reload and try again.");
    recipe=await resolveAgent(deps.store,orgId,agentId,"draft",{draft});overlay=draft.overlay;version=undefined;
   } else {
    if(layer.currentVersion===undefined) throw unavailable();version=layer.currentVersion;
    recipe=await resolveAgent(deps.store,orgId,agentId,version);overlay=(await deps.store.getVersion(orgId,agentId,version))?.overlay;
   }
  }
- const policy=await readModelSelectionPolicy(deps,orgId),storedGuardrails=await readGuardrailsWithRevision(deps,orgId);
+ const currentPolicy=await readModelSelectionPolicy(deps,orgId),storedGuardrails=await readGuardrailsWithRevision(deps,orgId);
+ // Trusted read-only preview overlay; all source/recipe evidence is still loaded normally.
+ const policy=policyPreview===undefined?currentPolicy:ModelSelectionPolicyResponseSchema.parse(policyPreview);
+ if(policy.revision!==currentPolicy.revision)throw unavailable();
  const guardrails=storedGuardrails.guardrails;
  const selectionRow=await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:projectSelectionKey(orgId,project),ConsistentRead:true})) as {Item?:Record<string,unknown>};
  const selected=selectionRow.Item===undefined?undefined:ModelIdentifierSchema.safeParse(selectionRow.Item.model);
@@ -75,7 +79,7 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
   const group=STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))!;
   const configured=group.map(member=>policy.stepOverrides[member]).filter(row=>row!==undefined);
   const company=configured[0];
-  if(configured.some(row=>JSON.stringify(row)!==JSON.stringify(company))) throw unavailable();
+  if(configured.some(row=>JSON.stringify(row)!==JSON.stringify(company))) throw new ProcessModelRefusal("LOCK_UNSATISFIABLE",stage,"/app/admin/how-we-work");
   for(const choice of [own,inherited,company]){add(choice?.model);add(choice?.fallbackModel);}
   const projectSelection=selected?.success?selected.data:undefined;add(projectSelection);add(definition.data.models?.default);
   const defaults=inherited===undefined&&company===undefined?undefined:{...inherited,...company};
@@ -85,5 +89,5 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
  });
  if(pool.size>23) throw unavailable();
  const evidence=await readStageModelEvidence(deps,{orgId,project,models:[...pool.values()],payerDeveloperId:caller.developerId});
- return {orgId,project,processChain:recipe.chain,playbookSnapshot:{exists:playbookState.exists,revision:playbook.revision,defaultProcess:playbook.defaultProcess},selectionSnapshot:selected?.success?{exists:true,model:selected.data}:{exists:false},guardrailsRevision:storedGuardrails.revision,registeredAt:record.registeredAt,companyRevision:policy.revision,projectRevision:definition.data.revision,canEdit:false,process:{agentId,...(version===undefined?{}:{version}),...(draftRevision===undefined?{}:{draftRevision}),digest:recipeDigest(recipe)},stages:rows.map(({stage,own,defaults,company,projectSelection})=>({orgId,stage,...evidence,forbidden:guardrails.forbiddenModels,approved:definition.data.models?.approved,projectChoice:own,companyLock:company?.locked===true?company:undefined,companyDefault:company?.locked===true?undefined:defaults,projectSelection,projectDefault:definition.data.models?.default,builtinDefault:defaultWorkerModel(deps.routing.rovaraGeography),requireDifferentVendor:guardrails.requireCrossCompanyReview&&(stage==="code_review"||stage==="security_review"),allowLegacyDefaultFallback:true}))};
+ return {orgId,project,processChain:recipe.chain,playbookSnapshot:{exists:playbookState.exists,revision:playbook.revision,defaultProcess:playbook.defaultProcess},selectionSnapshot:selected?.success?{exists:true,model:selected.data}:{exists:false},guardrailsRevision:storedGuardrails.revision,registeredAt:record.registeredAt,companyRevision:policy.revision,projectRevision:definition.data.revision,canEdit:false,process:{agentId,...(version===undefined?{}:{version}),...(draftRevision===undefined?{}:{draftRevision}),digest:recipeDigest(recipe)},stages:rows.map(({stage,own,defaults,company,projectSelection})=>({orgId,stage,...evidence,forbidden:guardrails.forbiddenModels,approved:definition.data.models?.approved,projectChoice:own,companyLock:company?.locked===true?company:undefined,companyDefault:company?.locked===true?undefined:defaults,companyDefaultOrigin:company?.model===undefined&&defaults?.model!==undefined?"recipe":undefined,projectSelection:approvedProjectModel(projectSelection,definition.data.models),projectDefault:approvedProjectModel(definition.data.models?.default,definition.data.models),builtinDefault:defaultWorkerModel(deps.routing.rovaraGeography),requireDifferentVendor:guardrails.requireCrossCompanyReview&&(stage==="code_review"||stage==="security_review"),allowLegacyDefaultFallback:true}))};
 }

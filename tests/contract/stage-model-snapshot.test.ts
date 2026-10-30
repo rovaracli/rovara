@@ -18,6 +18,7 @@ it("loads a process draft through bounded discovery without using store.list",as
  w.store.list=async()=>{throw Error("unbounded list forbidden");};
  const snap=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision);
  expect(snap.process.agentId).toBe(layer.agentId);expect(snap.process.draftRevision).toBe(layer.draftRevision);
+ await expect(loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision+1)).rejects.toMatchObject({code:"DRAFT_STALE",statusCode:409});
 });
 it("does not manufacture a process draft or project on missing storage",async()=>{
  const {deps}=fixture();await expect(loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"missing")).rejects.toThrow();
@@ -39,7 +40,7 @@ it("retains a recipe model beneath partial project and company settings",async()
  const layer=await w.store.create({orgId:ORG_A,name:"web process",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{thinkingLevel:"low"}}},purpose:"process",createdBy:MAX});
  w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:ORG_A,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{thinkingLevel:"high",locked:false}}});
  const snap=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision);
- for(const stage of ["plan","understand"]) expect(snap.stages.find(row=>row.stage===stage)).toMatchObject({projectChoice:{thinkingLevel:"low"},companyDefault:{model,thinkingLevel:"high"}});
+ for(const stage of ["plan","understand"]) expect(snap.stages.find(row=>row.stage===stage)).toMatchObject({projectChoice:{thinkingLevel:"low"},companyDefault:{model,thinkingLevel:"high"},companyDefaultOrigin:"recipe"});
 });
 
 it("honors recipe null clears without relaxing a company lock",async()=>{
@@ -88,4 +89,13 @@ it("retains absent and stored playbook and selection inputs without another read
  const stored=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web");
  expect(stored.selectionSnapshot).toEqual({exists:true,model});
  expect(stored.playbookSnapshot).toEqual({exists:true,revision:4,defaultProcess:{kind:"builtin"}});
+});
+
+it("previews a proposed company tuple without saving it or losing the current revision binding",async()=>{
+ const {w,deps}=fixture(),caller={orgId:ORG_A,developerId:MAX},before=structuredClone([...w.db.items]);
+ const proposed={version:1 as const,revision:0,rankingVersion:"g3-v1" as const,stepOverrides:{build:{model:{provider:"anthropic",modelId:"claude-opus-4"},locked:false}}};
+ const snap=await loadStageModelSnapshot(deps,caller,"web",undefined,undefined,proposed);
+ expect(snap.stages.find(row=>row.stage==="build")?.companyDefault).toMatchObject({model:proposed.stepOverrides.build.model});
+ expect([...w.db.items]).toEqual(before);
+ await expect(loadStageModelSnapshot(deps,caller,"web",undefined,undefined,{...proposed,revision:1})).rejects.toThrow("could not be read");
 });

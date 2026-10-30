@@ -40,6 +40,17 @@ test("an admin follows the link from AI models, reviews a change page by page, s
  await checkA11y(page, { theme: "light" });
 });
 
+test("a save refused 403 MODEL_NOT_ALLOWED shows the server's own words, not the permission sentence", async ({ page }) => {
+ await page.setViewportSize({ width: 1280, height: 900 });
+ const message = "A chosen company model is unavailable. Review model sources.";
+ await page.route("**/v1/web/org/model-selection-policy", route => route.request().method() === "PUT" ? route.fulfill({ status: 403, json: { error: { code: "MODEL_NOT_ALLOWED", message } } }) : route.fallback());
+ await open(page);
+ await page.getByRole("region", { name: "Build" }).getByRole("combobox", { name: "Effort" }).selectOption({ label: "High" });
+ await page.getByRole("button", { name: "Review changes" }).click();
+ await page.getByRole("region", { name: "Review of company changes" }).getByRole("button", { name: "Save company defaults" }).click();
+ await expect(page.getByRole("alert").filter({ hasText: message })).toBeVisible();
+ await expect(page.getByText("You don't have permission to change the company defaults.")).toHaveCount(0);
+});
 test("removing a lock needs another admin; a lone admin is told when they can confirm it", async ({ page, request }) => {
  await page.setViewportSize({ width: 1280, height: 900 });
  await open(page);

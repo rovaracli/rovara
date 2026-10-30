@@ -34,7 +34,7 @@ export function playbookDeps(w: MergeWorld, client: Client = w.db): ProjectPlayb
     },
   };
 }
-export const failure = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; statusCode?: number; message: string }) => ({ code: error.code, status: error.statusCode, message: error.message }));
+export const failure = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; statusCode?: number; message: string; stage?: string; fixHref?: string }) => ({ code: error.code, status: error.statusCode, message: error.message, ...(error.stage === undefined ? {} : { stage: error.stage, fixHref: error.fixHref }) }));
 export const playbook = (w: MergeWorld) => readProjectPlaybook(playbookDeps(w), ORG_A, "web", { lenient: true });
 export const toBuiltin = async (w: MergeWorld, deps = playbookDeps(w)) => putProjectPlaybook(deps, callerOf(w, MAX), "web", { expectedRevision: (await playbook(w)).revision, defaultProcess: { kind: "builtin" } });
 export const publish = async (w: MergeWorld, agentId: AgentId) => {

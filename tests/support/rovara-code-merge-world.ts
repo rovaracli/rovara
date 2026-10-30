@@ -4,7 +4,7 @@
 // a person does.
 import { createHash, randomUUID } from "node:crypto";
 import {
-  agentXError, mergeTrackingDecisionDigest, mergeTrackingKey, type CodeSettings, type MergeTrackingItem, type OrgId,
+  developerOrgKey,orgMetaKey,projectRevisionKey, agentXError, mergeTrackingDecisionDigest, mergeTrackingKey, type CodeSettings, type MergeTrackingItem, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
@@ -138,6 +138,12 @@ export type MergeWorld = ReturnType<typeof sessionWorld> & MergeWorldExtras;
 
 export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const w = sessionWorld();
+  // The fake member roster already grants "web". Keep its registered project identity real as well:
+  // G3 publication reads the canonical definition and registeredAt rather than trusting roster names.
+  w.db.set({...projectRevisionKey(ORG_A,"web",1),entityType:"PROJECT",registeredAt:new Date(w.clock.now).toISOString(),definition:{name:"web",revision:1,repositories:[{name:"web",url:"https://github.com/acme/web.git",path:"repo/web",defaultBranch:"main",credentialRef:"github-app"}],setup:[],readiness:[],orchestratorInstructions:"Delegate work."}});
+  // Match real company membership pointers and open-org identity for transactional model fences.
+  w.db.set({...orgMetaKey(ORG_A),entityType:"ORG",orgId:ORG_A,name:"test",plan:"team"});
+  for(const row of w.db.find(row=>row.entityType==="ORG_MEMBER"&&row.orgId===ORG_A)) if(typeof row.developerId==="string") w.db.set({...developerOrgKey(row.developerId),entityType:"DEVELOPER_ORG",orgId:ORG_A,role:row.role});
   const prs = options.pullRequests ?? [{ repositoryId: "payments", number: 7 }];
   const seeded = w.seedSession();
   const { sessionId, taskId } = seeded;
@@ -208,7 +214,7 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const shareDeps: SessionShareDependencies = { documentClient: w.db, tableName: "state", now, projectMembers: w.members, signInStore: w.signInStore };
   const decideStore = new DecideStore({ documentClient: w.db, tableName: "signin", now });
   const deps = {
-    store, projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore, now, confirmOrigin: CELL, log: () => undefined,
+    modelSignInTableName:"state",store, projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore, now, confirmOrigin: CELL, log: () => undefined,
     agentSessions: shareDeps, codeMerge: host,
   } as unknown as ApprovalDependencies;
   const kind = approvalDecideKind(deps);

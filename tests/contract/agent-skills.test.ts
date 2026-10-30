@@ -767,6 +767,7 @@ describe("GET /v1/internal/agent-skills", () => {
     await h.finish(workspaceId, active(), "SUCCEEDED");
     const operationId = active();
     const outbox = h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!;
+    expect(outbox, "authorized skills fixture must enqueue its task").toBeDefined();
     const invocation = outbox.invocation as { callbackCapability: string; fence: number };
     const grant = issueCapability({ callbackSigningKey: "c".repeat(64) }, workspaceId, operationId, invocation.fence, { agentSkills: true });
     const ask = (header: string | null = grant) => callBroker(h.handler, { method: "GET", path: "/v1/internal/agent-skills", ...(header === null ? {} : { headers: { "x-agentx-callback-capability": header } }) });
