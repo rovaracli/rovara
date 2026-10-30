@@ -114,3 +114,8 @@ it("legacy Slack-derived callers retain pre-enrollment behavior after trusted sc
   expect(await f.capture()).toEqual({ kind: "disabled" });
   expect(f.order).toEqual(["authorized", "snapshot"]);
 });
+for (const state of ["disabled", "ready"] as const) it(`seeded ${state} policy preserves trusted legacy callers until cutover`, async () => {
+  const f = fixture(); f.rows[3]!.enrollment = { version: 1, state }; f.rows.splice(0, 2);
+  expect(await f.capture()).toEqual({ kind: "disabled" });
+  expect(f.order).toEqual(["authorized", "snapshot"]);
+});
