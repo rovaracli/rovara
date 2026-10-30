@@ -253,3 +253,20 @@ for (const explicit of [false, true]) it(`built-in inheritance upgrade preserves
   expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "preserved" });
   expect(f.db.get(key.pk, key.sk)).toEqual(saved); expect(f.db.transactions()).toHaveLength(count);
 });
+
+for (const invalid of ["org", "agent", "revision", "pin"] as const) it(`built-in inheritance refuses corrupt ${invalid}`, async () => {
+  const f = fixture(true); await f.store.createOrgWithOwner({ name: "Company", developerId: who });
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), original = f.db.get(key.pk, key.sk)!;
+  const changed = { ...original, ...(invalid === "org" ? { orgId: "org_bbbbbbbbbbbbbbbbbbbb" } : invalid === "agent" ? { agentId: "rovara-triage" } : invalid === "revision" ? { revision: null } : { pinnedVersion: 99999 }) }; f.db.set(changed);
+  const count = f.db.transactions().length;
+  await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId: ROVARA_CODE_AGENT_ID })).rejects.toThrow();
+  expect(f.db.transactions()).toHaveLength(count); expect(f.db.get(key.pk, key.sk)).toEqual(changed);
+});
+for (const race of ["pin", "identity"] as const) it(`built-in inheritance fences ${race} at the native write`, async () => {
+  const f = fixture(true); await f.store.createOrgWithOwner({ name: "Company", developerId: who });
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), original = f.db.get(key.pk, key.sk)!;
+  const winner = { ...original, ...(race === "pin" ? { pinnedVersion: 1 } : { orgId: "org_bbbbbbbbbbbbbbbbbbbb" }) }, send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true; f.db.set(winner); } return send(command); };
+  await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId: ROVARA_CODE_AGENT_ID })).rejects.toThrow();
+  expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(winner); expect(f.db.get(key.pk, key.sk)).not.toHaveProperty("seedProvenance");
+});
