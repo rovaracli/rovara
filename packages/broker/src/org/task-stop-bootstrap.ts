@@ -42,7 +42,7 @@ export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(com
   const [org, policy, ceiling, receipt] = rows;
   if (org?.orgId !== orgId || org.status !== "open") throw agentXError("CONFIG_INVALID", "The company must be open before spending upgrade.");
   if (receipt !== undefined) {
-    const saved = z.object({ orgId: z.literal(orgId), entityType: z.literal("TASK_STOP_SEED"), source: z.literal("upgrade"), version: z.literal(1), outcome: z.enum(["created", "preserved"]) }).parse(receipt);
+    const saved = z.object({ orgId: z.literal(orgId), entityType: z.literal("TASK_STOP_SEED"), source: z.literal("upgrade"), version: z.literal(1), occurrenceId: z.literal(`task-stop-upgrade-v1#${orgId}`), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), completedAt: z.string().datetime(), policyRevision: z.number().int().positive(), auditOccurrence: z.string().min(1), outcome: z.enum(["created", "preserved"]) }).parse(receipt);
     return { outcome: saved.outcome };
   }
   if (policy !== undefined) {
