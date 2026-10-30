@@ -206,8 +206,8 @@ export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: 
 }
 
 /** `occurrence`: as for `auditSlackChannelBound`. */
-export function auditSlackChannelUnbound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string }): AuditEventInput {
-  return build("slack_channel.unbound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
+export function auditSlackChannelUnbound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; source?: "admin_change_plan" }): AuditEventInput {
+  return build("slack_channel.unbound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { source: input.source });
 }
 
 /**
@@ -543,4 +543,9 @@ export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "b
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
+}
+
+/** Terminal pending-link decision; never claims a canonical binding changed. */
+export function auditSlackChannelDecision(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string; proposalId: string; state: "cancelled" | "rejected" }): AuditEventInput {
+ return build(input.state === "cancelled" ? "slack_channel.cancelled" : "slack_channel.rejected", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.proposalId });
 }

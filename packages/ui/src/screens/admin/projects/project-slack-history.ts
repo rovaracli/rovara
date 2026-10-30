@@ -6,13 +6,15 @@ const bindSchema = z.discriminatedUnion("operation", [
  unlinkSchema.extend({ operation: z.literal("propose") }).strict(),
  z.object({ operation: z.literal("approve"), reviewedAt: z.string().datetime(), proposalExpiresAt: z.string().datetime(), body: ReviewedSlackApproveBodySchema.extend({ proposalId: z.string().uuid(), teamId: ProjectSlackTargetReaderSchema.shape.teamId, channelId: ProjectSlackTargetReaderSchema.shape.channelId }).strict() }).strict(),
 ]);
-const requestSchema = z.union([unlinkSchema, bindSchema]);
+const decisionSchema = z.object({ operation: z.enum(["cancel", "reject"]), reviewedAt: z.string().datetime(), proposalExpiresAt: z.string().datetime(), body: ReviewedSlackApproveBodySchema.extend({ proposalId: z.string().uuid(), teamId: ProjectSlackTargetReaderSchema.shape.teamId, channelId: ProjectSlackTargetReaderSchema.shape.channelId }).strict() }).strict();
+const requestSchema = z.union([unlinkSchema, bindSchema, decisionSchema]);
 const historySchema = scopeSchema.extend({ version: z.literal(1), requests: z.array(requestSchema).max(10), selectedIndex: z.number().int() }).strict().superRefine((value, ctx) => {
  if (value.selectedIndex < (value.requests.length ? 0 : -1) || value.selectedIndex >= value.requests.length || (!value.requests.length && value.selectedIndex !== -1) || new Set(value.requests.map(row => row.body.requestId)).size !== value.requests.length || value.requests.some(row => row.body.expectedOrgId !== value.orgId)) ctx.addIssue({ code: "custom", message: "Invalid Slack request history." });
 });
 type Scope = z.infer<typeof scopeSchema>;
 export type SlackRequest = z.infer<typeof unlinkSchema>;
 export type SlackBindRequest = z.infer<typeof bindSchema>;
+export type SlackDecisionRequest = z.infer<typeof decisionSchema>;
 type Request = z.infer<typeof requestSchema>;
 interface Storage { get(key: string): string | undefined; set(key: string, value: string): void }
 const failure = () => new Error("Saved Slack requests could not be verified. Nothing was sent.");
@@ -33,7 +35,8 @@ function retain(storage: Storage, scope: Scope, request: Request): void {
  else { const requests = [...history.requests, parsed].slice(-10);write(storage, scope, { requests, selectedIndex: requests.length - 1 }); }
 }
 const isUnlink = (request: Request): request is SlackRequest => !("operation" in request);
-const isBind = (request: Request): request is SlackBindRequest => "operation" in request;
+const isBind = (request: Request): request is SlackBindRequest => "operation" in request && (request.operation === "propose" || request.operation === "approve");
+const isDecision = (request: Request): request is SlackDecisionRequest => "operation" in request && (request.operation === "cancel" || request.operation === "reject");
 function filtered<T extends Request>(storage: Storage, scope: Scope, predicate: (value: Request) => value is T) {
  const all = readAll(storage, scope), selected = all.requests[all.selectedIndex], requests = all.requests.filter(predicate);
  return { requests, selectedIndex: selected === undefined ? -1 : requests.findIndex(row => row.body.requestId === selected.body.requestId) };
@@ -53,3 +56,7 @@ export function slackRequestCanResend(request: Request, now: number): boolean {
  const parsed = requestSchema.safeParse(request);if (!parsed.success || !Number.isFinite(now)) return false;const age = now - Date.parse(parsed.data.reviewedAt);
  return age >= 0 && age < 86400000 && (!("proposalExpiresAt" in parsed.data) || now < Date.parse(parsed.data.proposalExpiresAt));
 }
+
+export function readSlackDecisionRequests(storage: Storage, scope: Scope) { return filtered(storage, scope, isDecision); }
+export function retainSlackDecisionRequest(storage: Storage, scope: Scope, request: SlackDecisionRequest): void { retain(storage, scope, decisionSchema.parse(request)); }
+export function selectSlackDecisionRequest(storage: Storage, scope: Scope, index: number): SlackDecisionRequest { return select(storage, scope, index, isDecision); }

@@ -29,11 +29,17 @@ export const ReviewedSlackProposeBodySchema = ReviewedSlackUnbindBodySchema;
 export const ReviewedSlackApproveBodySchema = z.object({ expectedOrgId: OrgIdSchema, requestId: uuid }).strict();
 const person = z.string().regex(/^[a-f0-9]{64}$/);
 export const ProjectSlackProposalViewSchema = z.object({ proposalId: uuid, by: person, teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema,
- state: z.enum(["pending", "applied"]), createdAt: stamp, expiresAt: stamp,
+ state: z.enum(["pending", "applied", "cancelled", "rejected"]), createdAt: stamp, expiresAt: stamp,
  mode: z.enum(["second_person", "sole_owner_exception"]).optional(), decidedBy: person.optional(), decidedAt: stamp.optional(),
 }).strict().superRefine((value, ctx) => {
  if (Date.parse(value.expiresAt) !== Date.parse(value.createdAt) + 86400000 || (value.state === "applied" && (value.mode === undefined || value.decidedBy === undefined || value.decidedAt === undefined))
+  || (["cancelled", "rejected"].includes(value.state) && (value.mode !== undefined || value.decidedBy === undefined || value.decidedAt === undefined))
   || (value.state === "pending" && (value.mode !== undefined || value.decidedBy !== undefined || value.decidedAt !== undefined))) ctx.addIssue({ code: "custom", message: "Slack proposal state mismatch." });
 });
 export const ProjectSlackProposalSchema = z.object({ kind: z.literal("proposal"), orgId: OrgIdSchema, project: AgentXNameSchema, proposal: ProjectSlackProposalViewSchema.nullable() }).strict();
 export const ProjectSlackProposalReaderSchema = ProjectSlackProposalSchema.strip();
+
+export const ReviewedSlackDecisionBodySchema = ReviewedSlackApproveBodySchema;
+export const ProjectSlackDecisionSchema = z.object({ kind: z.literal("decision"), orgId: OrgIdSchema, project: AgentXNameSchema,
+ decision: z.object({ requestId: uuid, proposalId: uuid, state: z.enum(["cancelled", "rejected"]), createdAt: stamp, expiresAt: stamp }).strict() }).strict();
+export const ProjectSlackDecisionReaderSchema = ProjectSlackDecisionSchema.strip();

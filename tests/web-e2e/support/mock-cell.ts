@@ -117,7 +117,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),body,headers);json(200,result);return;
  }
  // B34: reviewed stored Slack evidence and unbind use real cookie handlers.
- if (current.name === "admin" && /^\/v1\/web\/projects\/[^/]+\/slack-channel\/(links|review|requests\/[^/]+|unbind|proposals(?:\/[^/]+(?:\/approve)?)?)$/.test(url.pathname)) {
+ if (current.name === "admin" && /^\/v1\/web\/projects\/[^/]+\/slack-channel\/(links|review|requests\/[^/]+|decisions\/[^/]+|unbind|proposals(?:\/[^/]+(?:\/(?:approve|cancel|reject))?)?)$/.test(url.pathname)) {
   let body: unknown;if (method !== "GET") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 16384) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown; }
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"), body, headers);json(200, result);return;
  }

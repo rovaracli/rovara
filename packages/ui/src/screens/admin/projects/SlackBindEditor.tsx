@@ -4,6 +4,7 @@ import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
 import { createProjectSlackApi } from "../../../api/project-slack.js";
 import { readSlackBindRequests, retainSlackBindRequest, selectSlackBindRequest, slackRequestCanResend, type SlackBindRequest } from "./project-slack-history.js";
+import { SlackDecisionEditor } from "./SlackDecisionEditor.js";
 type Props = { orgId: string; developerId: string; project: string; onClose: () => void };
 type Pending = NonNullable<Awaited<ReturnType<ReturnType<typeof createProjectSlackApi>["proposal"]>>["proposal"]>;
 type Phase = "loading" | "editing" | "reviewing" | "ready" | "sending" | "unknown" | "checking" | "absent" | "pending" | "done" | "refused" | "expired" | "failed";
@@ -14,6 +15,7 @@ export function SlackBindEditor({ orgId, developerId, project, onClose }: Props)
  const [phase, setPhase] = useState<Phase>("loading"), [pending, setPending] = useState<Pending | null>(null), [attempt, setAttempt] = useState<SlackBindRequest>();
  const [history, setHistory] = useState<ReturnType<typeof readSlackBindRequests>>({ requests: [], selectedIndex: -1 }), [message, setMessage] = useState("Checking pending channel approval."), [receipt, setReceipt] = useState("");
  const [observedAt, setObservedAt] = useState(0);
+ const [decision, setDecision] = useState<"cancel" | "reject" | "history">();
  const alive = useRef(false), busy = useRef(false), heading = useRef<HTMLHeadingElement>(null);
  useEffect(() => {
   alive.current = true;api.setScopeActive(true);
@@ -45,7 +47,7 @@ export function SlackBindEditor({ orgId, developerId, project, onClose }: Props)
   const proposal = value.proposal;
   if (proposal === null || proposal.teamId !== request.body.teamId || proposal.channelId !== request.body.channelId || (request.operation === "propose" && proposal.by !== developerId)) throw new Error("Proposal mismatch");
   setPending(proposal);setObservedAt(Date.now());setPhase(proposal.state === "pending" ? Date.parse(proposal.expiresAt) > Date.now() ? "pending" : "expired" : "done");
-  setMessage(proposal.state === "pending" ? "Approval request recorded. A different live owner or admin must review it, or a qualifying sole owner may review the exception." : "Proposal records an applied link. Refresh recorded Slack links to check current state.");
+  setMessage(proposal.state === "pending" ? "Approval request recorded. A different live owner or admin must review it, or a qualifying sole owner may review the exception." : proposal.state === "applied" ? "Proposal records an applied link. Refresh recorded Slack links to check current state." : `Proposal records ${proposal.state}. No link was applied by this decision.`);
  }
  function confirmedReceipt(value: Awaited<ReturnType<typeof api.status>>, request: SlackBindRequest) {
   if (value.receipt.requestId !== request.body.requestId || value.receipt.operation !== "bind" || value.receipt.outcome.binding.teamId !== request.body.teamId || value.receipt.outcome.binding.channelId !== request.body.channelId) throw new Error("Receipt mismatch");
@@ -83,6 +85,7 @@ export function SlackBindEditor({ orgId, developerId, project, onClose }: Props)
  }
  const own = pending?.by === developerId, inFlight = ["loading", "reviewing", "sending", "checking"].includes(phase);
  const label = attempt?.operation === "approve" ? own ? "Apply reviewed sole-owner exception" : "Approve reviewed Slack link" : "Request channel link approval";
+ if (decision) return <SlackDecisionEditor {...scope} decision={decision} proposal={pending} onClose={() => { setDecision(undefined);try { setHistory(readSlackBindRequests(host.storage, scope));void refresh(); } catch { setPhase("failed");setMessage("Saved link requests could not be verified. Nothing was sent."); } }} />;
  return <section aria-label="Slack channel link approval">
   <h3 ref={heading} tabIndex={-1}>Review Slack channel linking</h3>
   <p>Company {orgId} · Project {project}</p>
@@ -96,6 +99,8 @@ export function SlackBindEditor({ orgId, developerId, project, onClose }: Props)
   {pending && <div aria-label="Recorded Slack link proposal"><p>Proposal {pending.proposalId} · Workspace {pending.teamId} · Channel {pending.channelId}</p><p>Recorded {pending.state} · expires {pending.expiresAt}</p>{pending.state === "pending" && Date.parse(pending.expiresAt) <= observedAt && <p>This proposal expired. Review a new channel request to continue.</p>}
    {phase === "pending" && pending.state === "pending" && Date.parse(pending.expiresAt) > observedAt && <button type="button" className="rv-button rv-button-secondary" onClick={() => void prepare(pending)}>{own ? "Review sole-owner exception" : "Review pending Slack link"}</button>}
   </div>}
+  {phase === "pending" && pending?.state === "pending" && <div><button type="button" className="rv-button rv-button-secondary" onClick={() => setDecision("cancel")}>Review cancellation</button>{!own && <button type="button" className="rv-button rv-button-secondary" onClick={() => setDecision("reject")}>Review rejection</button>}</div>}
+  {!inFlight && <button type="button" className="rv-button rv-button-secondary" onClick={() => setDecision("history")}>Review saved Slack decisions</button>}
   {attempt && phase === "ready" && <div aria-label="Reviewed Slack link request"><p>Workspace {attempt.body.teamId} · Channel {attempt.body.channelId}</p>
    {attempt.operation === "approve" && own ? <p>The sole-owner exception is allowed only for exactly one owner with no other eligible owner or admin, with complete evidence of no eligible-access loss in the last 24 hours. The server checks this again when applying.</p> : <p>A different live company owner or admin must approve this link. Sending a proposal does not link the channel.</p>}
   </div>}

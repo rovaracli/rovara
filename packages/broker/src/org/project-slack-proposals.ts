@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AgentXNameSchema, SlackTeamIdSchema, SlackChannelIdSchema, SlackChannelBindingSchema, agentXError, canonicalJson, orgSlackTeamKey, projectMetaKey, projectPk, slackBindingKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditOccurrence, auditSlackChannelProposed } from "../audit/events.js";
+import { auditOccurrence, auditSlackChannelProposed, auditSlackChannelDecision } from "../audit/events.js";
 import { bindProjectChannel, type ProjectSlackChannelDependencies } from "./slack-binding.js";
 import { readRequestRecord, requireSameRequest } from "./request-records.js";
 import { readProjectSlackTarget, requireProjectSlackAuthority, readProjectSlackBindApproval } from "./project-slack-browser.js";
@@ -16,7 +16,7 @@ const uuid = z.string().uuid(), sha = z.string().regex(/^[a-f0-9]{64}$/);
 const bodySchema = z.object({ requestId: uuid, teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, expectedContextDigest: sha }).strict();
 const proposalSchema = z.object({ entityType: z.literal("SLACK_BINDING_PROPOSAL"), orgId: z.string(), project: AgentXNameSchema, proposalId: uuid,
  by: z.string().regex(/^[a-f0-9]{64}$/), bodyHash: sha, teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, contextDigest: sha,
- state: z.enum(["pending", "applied"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), indexExpiresAt: z.number().int().positive(),
+ state: z.enum(["pending", "applied", "cancelled", "rejected"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), indexExpiresAt: z.number().int().positive(),
 }).passthrough();
 export type SlackBindingProposal = z.infer<typeof proposalSchema>;
 const digest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -117,4 +117,53 @@ export async function readLiveProjectSlackProposal(deps: Dependencies, input: Sc
  if (pointer.entityType !== "SLACK_BINDING_PROPOSAL_LIVE" || pointer.orgId !== input.orgId || pointer.project !== input.project || !uuid.safeParse(pointer.proposalId).success || !z.string().datetime().safeParse(pointer.expiresAt).success) throw unavailable();
  const proposal = await readProjectSlackProposal(deps, { ...input, proposalId: String(pointer.proposalId) });
  if (proposal.expiresAt !== pointer.expiresAt || proposal.state !== "pending") throw unavailable();return proposal;
+}
+
+
+const decisionBodySchema = z.object({ requestId: uuid, proposalId: uuid, decision: z.enum(["cancel", "reject"]) }).strict();
+const decisionReceiptSchema = z.object({ entityType: z.literal("SLACK_BINDING_PROPOSAL"), kind: z.literal("decision_receipt"), orgId: z.string(), project: AgentXNameSchema,
+ by: z.string(), requestId: uuid, proposalId: uuid, bodyHash: sha, state: z.enum(["cancelled", "rejected"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), indexExpiresAt: z.number().int().positive() }).passthrough();
+/** One live actor, one conditional pending transition, pointer removal, receipt and audit. */
+export async function decideProjectSlackProposal(deps: Dependencies, input: Scope & { body: unknown }) {
+ const authority = await requireProjectSlackAuthority(deps, input), parsed = decisionBodySchema.safeParse(input.body);
+ if (!parsed.success || parsed.data.requestId === parsed.data.proposalId) throw agentXError("CONFIG_INVALID", "Review a valid Slack decision with a fresh request id.");
+ const body = parsed.data, receiptKey = keyOf(input.orgId, input.project, body.requestId), bodyHash = digest({ orgId: input.orgId, project: input.project, by: input.by, body });
+ const state = body.decision === "cancel" ? "cancelled" as const : "rejected" as const;
+ const recover = async () => {
+  const row = await read(deps, receiptKey);if (row === undefined) return undefined;
+  if (row.orgId !== input.orgId || row.project !== input.project || row.by !== input.by || row.bodyHash !== bodyHash || row.kind !== "decision_receipt") throw agentXError("IDEMPOTENCY_CONFLICT", "Use a fresh request id for a different Slack decision.");
+  const result = decisionReceiptSchema.safeParse(row);if (!result.success || result.data.requestId !== body.requestId || result.data.proposalId !== body.proposalId || result.data.state !== state) throw unavailable();
+  if (Date.parse(result.data.expiresAt) <= deps.now()) throw stale();return result.data;
+ };
+ const prior = await recover();if (prior !== undefined) return prior;
+ requireAudit(deps);const proposal = await readProjectSlackProposal(deps, { ...input, proposalId: body.proposalId });
+ if (body.decision === "reject" && input.by === proposal.by) throw agentXError("FORBIDDEN", "Another live company owner or admin must reject this Slack proposal.");
+ const now = deps.now(), at = new Date(now).toISOString();
+ if (proposal.state !== "pending" || Date.parse(proposal.expiresAt) <= now || Date.parse(proposal.createdAt) > now) throw stale();
+ const receipt = decisionReceiptSchema.parse({ ...receiptKey, entityType: "SLACK_BINDING_PROPOSAL", kind: "decision_receipt", orgId: input.orgId, project: input.project, by: input.by,
+  requestId: body.requestId, proposalId: proposal.proposalId, bodyHash, state, createdAt: at, expiresAt: proposal.expiresAt, indexExpiresAt: proposal.indexExpiresAt });
+ const event = auditSlackChannelDecision({ orgId: input.orgId, actor: { kind: "member", id: input.by }, projectName: input.project, teamId: proposal.teamId, channelId: proposal.channelId,
+  requestId: body.requestId, proposalId: proposal.proposalId, state, occurredAt: at, occurrence: auditOccurrence(input.project, body.requestId, state), related: [proposal.by] });
+ const pending = auditPending(deps, event);if (pending.length !== 1) throw agentXError("AUDIT_UNAVAILABLE", "Slack changes require the audit ledger.");
+ const items: TransactItem[] = [...authority.conditions,
+  snapshot(deps, projectMetaKey(input.orgId, input.project), authority.project, ["name", "status", "archiveRevision", "createdAt", "createdBy"]),
+  { Put: { TableName: deps.tableName, Item: { ...proposal, state, decidedAt: at, decidedBy: input.by, decisionRequestId: body.requestId },
+   ConditionExpression: "#state = :pending AND bodyHash = :hash AND expiresAt = :expires AND expiresAt > :now",
+   ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":pending": "pending", ":hash": proposal.bodyHash, ":expires": proposal.expiresAt, ":now": at } } },
+  { Delete: { TableName: deps.tableName, Key: liveKeyOf(input.orgId, input.project), ConditionExpression: "proposalId = :id AND orgId = :org AND #project = :project AND expiresAt = :expires",
+   ExpressionAttributeNames: { "#project": "project" }, ExpressionAttributeValues: { ":id": proposal.proposalId, ":org": input.orgId, ":project": input.project, ":expires": proposal.expiresAt } } },
+  { Put: { TableName: deps.tableName, Item: receipt, ConditionExpression: "attribute_not_exists(pk)" } }, ...pending];
+ if (items.length > 100) throw agentXError("CONFIG_INVALID", "This Slack decision cannot fit one transaction.");
+ try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
+ catch (error) { await requireProjectSlackAuthority(deps, input);const recovered = await recover();if (recovered !== undefined) return recovered;if (error instanceof Error && error.name === "TransactionCanceledException") throw stale();throw unavailable(); }
+ await flushAuditEvents(deps, [event]);return receipt;
+}
+
+/** Scoped actor-owned decision readback; TTL cleanup never extends receipt authority. */
+export async function readProjectSlackDecision(deps: Dependencies, input: Scope & { requestId: string }) {
+ await requireProjectSlackAuthority(deps, input);if (!uuid.safeParse(input.requestId).success) throw missing();
+ const raw = await read(deps, keyOf(input.orgId, input.project, input.requestId));
+ if (raw === undefined || raw.by !== input.by || raw.orgId !== input.orgId || raw.project !== input.project || raw.kind !== "decision_receipt") throw missing();
+ const row = decisionReceiptSchema.safeParse(raw);if (!row.success || row.data.requestId !== input.requestId) throw unavailable();
+ if (Date.parse(row.data.expiresAt) <= deps.now()) throw missing();return row.data;
 }
