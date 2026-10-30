@@ -351,7 +351,7 @@ export interface SpendRequestRecord {
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
   /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, the agent came to count for another owner than the one the change was summed for, or everyone who could decide it left. */
-  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left" | "figures_changed";
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left" | "figures_changed" | "spending_rules_changed";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

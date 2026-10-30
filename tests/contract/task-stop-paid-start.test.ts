@@ -741,7 +741,9 @@ it("an allowed run-limit approval commits its newly calculated stop envelope wit
 for (const scope of ["company", "project", "agent"] as const) it(`a new run-limit approval cannot lift its explicit ${scope} stop`, async () => {
   const f = await approvalWindow(scope), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
   expect(f.spendRequest.newLimitUsd).toBe(7);
-  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE", message: expect.stringContaining("Spending rules changed; ask again.") });
+  const decision = f.t.decide(MAYA, f.spendRequest.spendRequestId);
+  await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  await expect(decision).rejects.toThrow("Spending rules changed; ask again.");
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });

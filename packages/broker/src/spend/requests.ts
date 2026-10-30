@@ -1,4 +1,4 @@
-import { captureTaskStopAdmission } from "../org/task-stop-admission.js";
+import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { checkedTaskStopSnapshot } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
@@ -90,6 +90,7 @@ const errorName = (error: unknown): string => (error instanceof Error ? error.na
 const notFound = () => agentXError("NOT_FOUND", "spend request not found");
 const ENDED_WORDS: Record<NonNullable<SpendRequestRecord["endedBecause"]>, string> = {
   figures_changed: "Spending figures changed; ask again.",
+  spending_rules_changed: "Spending rules changed; ask again.",
   continued: "The task went on without this, so nobody can decide it now.",
   task_closed: "This task was closed, so nobody can decide this now.",
   target_left: "The person this change names is no longer a member of your organization, so it can't apply now.",
@@ -1208,7 +1209,7 @@ const legacySubjectOf = (record: SpendRequestRecord): string =>
  * a condition too (fix round 1, I-3): while the task is still paused on it, the approval removes it and the task goes on (`resume`); once it is gone (the
  * owner went on) or another limit paused the task, the approval only raises the limit. A `resume: "implement"` request is asked at plan approval, with no pause.
  */
-async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRecord, task: DeveloperTaskRecord, approvedUsd: number): Promise<{ items: TransactItem[]; resume: boolean; resetRunWindow: boolean; firstDispatch: boolean; raisedPastRunLimit?: number }> {
+async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRecord, task: DeveloperTaskRecord, approvedUsd: number, approvalStop?: CapturedTaskStop): Promise<{ items: TransactItem[]; resume: boolean; resetRunWindow: boolean; firstDispatch: boolean; raisedPastRunLimit?: number }> {
   const names: Record<string, string> = { "#pause": "budgetPause", "#scope": "scope", "#kind": "kind" };
   const values: Record<string, unknown> = { ":org": task.orgId };
   const sets: string[] = ["updatedAt = :now"];
@@ -1270,6 +1271,10 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
     sets.push("#maxPerRunUsd = :stop");
     if (forThis) removes.push("#pause");
     if (stop > runLimitOf(task)) raisedPastRunLimit = runLimitOf(task);
+  }
+  if (approvalStop !== undefined && !(forPlan && !planBlocked)) {
+    values[":spendingStop"] = approvalStop; sets.push("spendingStop = :spendingStop");
+    for (const field of ["project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "spendingStop", "budgetBaselineUsd"] as const) same(field, task[field]);
   }
   const update = {
     Update: {
@@ -1481,22 +1486,30 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   let task = status === "APPROVED" && record.taskId !== undefined ? await readTask(deps, record.orgId, record.taskId) : undefined;
   if (status === "APPROVED" && record.taskId !== undefined && task === undefined) throw notFound();
   if (task?.closedAt !== undefined) await closedTask();
+  let approvalStop: CapturedTaskStop | undefined;
   if (status === "APPROVED" && approvedUsd !== undefined && task !== undefined && (record.kind === "run_limit" || record.kind === "max_per_run" || record.kind === "planning")) {
     const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
     // This is a new approval, not a retrofit of the task's committed window.
     // Disabled/unseeded orgs retain the existing decision path. Eligibility was
     // checked above and is rechecked after source reads by the same decider.
-    await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+    const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
       if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
       agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
       pathLimitMicrousd: previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
       approvedRunLimitMicrousd: usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null,
     });
+    if (captured.kind === "captured") {
+      if (captured.effectiveStopMicrousd !== usdToWholeMicrodollars(newLimitFor(record, approvedUsd))) {
+        await expireOne(deps, record, "spending_rules_changed");
+        throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
+      }
+      approvalStop = captured;
+    }
   }
   /** What the approval writes on `current`, and what follows it. */
   const plan = async (current: DeveloperTaskRecord | undefined) => {
-    const change = current === undefined || approvedUsd === undefined ? undefined : await taskChange(deps, record, current, approvedUsd);
+    const change = current === undefined || approvedUsd === undefined ? undefined : await taskChange(deps, record, current, approvedUsd, approvalStop);
     let followUp: Omit<CreateSpendRequestInput, "reason"> | undefined;
     let followUpWords: string | undefined;
     const extra: TransactItem[] = [];
