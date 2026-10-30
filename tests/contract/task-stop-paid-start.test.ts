@@ -1,3 +1,4 @@
+import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { call } from "../support/slack-broker.js";
@@ -1222,4 +1223,30 @@ it("a later run-limit approval retains the already approved task per-run stop", 
   expect((await f.t.decide(BEN, runRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000, calculationInput: { approvedRunLimitMicrousd: 14_000_000, committedMaxPerRunMicrousd: 9_000_000 } } });
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+});
+
+async function hardRequestedTask() {
+  const f = await fixture(), agentId = await f.t.agentOf(TRIAGE), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Look at the new ticket" }, origin: "app", runLimitUsd: 5,
+    owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId } });
+  const workspaceId = f.t.meta(started.taskId).workspaceId;
+  await f.t.finish(workspaceId, f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!.id, "SUCCEEDED", PREPARED);
+  const task = { taskId: started.taskId, workspaceId };
+  expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 4, spendingStop: { calculationInput: { requestedMicrousd: 5_000_000 } } });
+  return { ...f, task };
+}
+it("a later approval cannot silently discard the accepted hard requested bound", async () => {
+  const f = await hardRequestedTask(); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id); expect(request.newLimitUsd).toBe(9);
+  await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(operation => operation.id)).toEqual(operations);
+});
+it("removing a non-binding saved requested bound invalidates its captured digest", async () => {
+  const f = await hardRequestedTask(), saved = f.t.meta(f.task.taskId).spendingStop as { calculationInput: Record<string, unknown> };
+  const input = { ...saved.calculationInput }; delete input.requestedMicrousd;
+  expect(checkedTaskStopSnapshot(saved).effectiveStopMicrousd).toBe(4_000_000);
+  expect(() => checkedTaskStopSnapshot({ ...saved, calculationInput: input })).toThrow("TASK_STOP_CONFIG_INVALID");
 });
