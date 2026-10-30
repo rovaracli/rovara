@@ -36,6 +36,7 @@ function putObserved(deps:LearningDeps,key:{pk:string;sk:string},seen:Row|undefi
 }
 async function context(deps:LearningSettingsDeps,caller:SettingsCaller,project:string) {
  if(caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session for learning settings.");
+ if(deps.audit===undefined||deps.audit.tableName!==deps.tableName||deps.audit.documentClient!==deps.documentClient)throw agentXError("AUDIT_UNAVAILABLE","Learning setting changes require the audit ledger.");
  const actor=await readAllowedDomainActorConditions(deps,{orgId:caller.orgId,project,actorId:caller.developerId});
  const scope=await learningScopeOf(deps,caller.orgId,project);if(!scope)throw stale();
  const key=projectLearningKey(caller.orgId,project,"SETTINGS"),raw=await row(deps,key),same=raw?.projectCreatedAt===scope.projectCreatedAt;
@@ -48,27 +49,34 @@ async function context(deps:LearningSettingsDeps,caller:SettingsCaller,project:s
  return {scope,key,raw,setting,locked,guardCondition,actor,projectCondition};
 }
 function view(setting:LearningSettings,locked:boolean) {return {prComments:locked?"off" as const:setting.prComments,locked,...(locked?{lockedBy:"company" as const}:{}),revision:setting.revision,...(setting.pendingProposalId?{pendingProposal:{id:setting.pendingProposalId}}:{})};}
-async function pending(deps:LearningDeps,scope:LearningScope,id:string) {
+async function pendingIfPresent(deps:LearningDeps,scope:LearningScope,id:string) {
  const key=projectLearningKey(scope.orgId,scope.project,`PROPOSAL#${id}`),raw=await row(deps,key),parsed=proposalSchema.safeParse(raw);
- if(!parsed.success||parsed.data.proposalId!==id||parsed.data.projectCreatedAt!==scope.projectCreatedAt)throw stale();return {key,raw:raw!,value:parsed.data};
+ if(raw===undefined)return undefined;
+ if(!parsed.success||parsed.data.proposalId!==id||parsed.data.projectCreatedAt!==scope.projectCreatedAt)throw stale();return {key,raw,value:parsed.data};
 }
-function terminal(deps:LearningDeps,p:Awaited<ReturnType<typeof pending>>,state:"approved"|"declined"|"cancelled",by:string,decision?:"approve"|"decline"):Tx {
+function terminal(deps:LearningDeps,p:NonNullable<Awaited<ReturnType<typeof pendingIfPresent>>>,state:"approved"|"declined"|"cancelled",by:string,decision?:"approve"|"decline"):Tx {
  return {Update:{TableName:deps.tableName,Key:p.key,UpdateExpression:`SET #state = :terminal, decidedBy = :by${decision?", decision = :decision":""}`,ConditionExpression:"#state = :pending AND projectCreatedAt = :pc AND baseRevision = :base AND #by = :proposer AND expiresAt = :expires AND proposalId = :id",ExpressionAttributeNames:{"#state":"state","#by":"by"},ExpressionAttributeValues:{":proposer":p.value.by,":expires":p.value.expiresAt,":id":p.value.proposalId,":terminal":state,":by":by,":pending":"pending",":pc":p.value.projectCreatedAt,":base":p.value.baseRevision,...(decision?{":decision":decision}:{})}}};
 }
 async function commit(deps:LearningSettingsDeps,caller:SettingsCaller,c:Awaited<ReturnType<typeof context>>,next:LearningSettings,items:Tx[],sole=false) {
  const audited=await auditedWrite(deps.audit===undefined?{}:{audit:deps.audit},()=>[learningSettingsAuditEvent({orgId:caller.orgId,actor:{kind:"member",id:caller.developerId},occurredAt:next.changedAt,project:c.scope.project,revision:next.revision,enabled:next.prComments==="on",selfConfirmedSoleOwner:sole})]);
+ if(audited.items.length!==1||audited.events.length!==1)throw agentXError("AUDIT_UNAVAILABLE","Learning setting changes require the audit ledger.");
  const actions=[putObserved(deps,c.key,c.raw,{entityType:"LEARNING_SETTINGS",orgId:caller.orgId,...next}),...items,...audited.items];if(actions.length>100)throw stale();
  try{await deps.documentClient.send(new TransactWriteCommand({TransactItems:actions}));}catch(error){if(error instanceof Error&&error.name==="TransactionCanceledException")throw stale();throw error;}
  await flushLearningEvents(deps,audited.events);
+}
+async function retryPrWithdrawal(deps:LearningDeps,scope:LearningScope):Promise<void> {
+ try{const {withdrawPrDependentSuggestions}=await import("./grouping.js");await withdrawPrDependentSuggestions(deps,scope);}
+ catch{console.log(JSON.stringify({component:"learning",event:"pr_withdrawal_deferred"}));}
 }
 export async function writeLearningSettings(deps:LearningSettingsDeps,caller:SettingsCaller,project:string,body:unknown) {
  const parsed=LearningSettingsBodySchema.safeParse(body);if(!parsed.success)throw agentXError("CONFIG_INVALID","Learning settings body is not valid.");const input=parsed.data,c=await context(deps,caller,project);
  if(input.expectedRevision!==c.setting.revision)throw stale();const now=deps.now(),changedAt=new Date(now).toISOString();
  const next:LearningSettings={...c.setting,revision:c.setting.revision+1,changedBy:caller.developerId,changedAt};const items:Tx[]=[...c.actor,c.projectCondition,c.guardCondition];
- const old=c.setting.pendingProposalId?await pending(deps,c.scope,c.setting.pendingProposalId):undefined;
+ const old=c.setting.pendingProposalId?await pendingIfPresent(deps,c.scope,c.setting.pendingProposalId):undefined;
  if(input.prComments==="off"){
+  if(c.setting.prComments==="off"&&c.setting.pendingProposalId===undefined){await retryPrWithdrawal(deps,c.scope);return {applied:true as const,settings:view(c.setting,c.locked===true)};}
   next.prComments="off";delete next.pendingProposalId;if(old?.value.state==="pending")items.push(terminal(deps,old,"cancelled",caller.developerId));
-  await commit(deps,caller,c,next,items);const {withdrawPrDependentSuggestions}=await import("./grouping.js");await withdrawPrDependentSuggestions(deps,c.scope);
+  await commit(deps,caller,c,next,items);await retryPrWithdrawal(deps,c.scope);
   return {applied:true as const,settings:view(next,c.locked===true)};
  }
  if(c.locked)throw agentXError("FORBIDDEN","PR-comment learning is locked off by your company.");
@@ -81,13 +89,18 @@ export async function writeLearningSettings(deps:LearningSettingsDeps,caller:Set
 }
 export async function decideLearningSettings(deps:LearningSettingsDeps,caller:SettingsCaller,project:string,id:string,body:unknown) {
  const parsed=LearningProposalDecisionBodySchema.safeParse(body);if(!parsed.success||!z.string().uuid().safeParse(id).success)throw agentXError("CONFIG_INVALID","Learning decision body is not valid.");
- const c=await context(deps,caller,project),p=await pending(deps,c.scope,id),decision=parsed.data.decision;
+ const c=await context(deps,caller,project),p=await pendingIfPresent(deps,c.scope,id),decision=parsed.data.decision;
+ if(c.setting.pendingProposalId===id&&(p===undefined||(p.value.state==="pending"&&Date.parse(p.value.expiresAt)<=deps.now()))){
+  const next:LearningSettings={...c.setting,revision:c.setting.revision+1,changedBy:caller.developerId,changedAt:new Date(deps.now()).toISOString()};delete next.pendingProposalId;
+  await commit(deps,caller,c,next,[...c.actor,c.projectCondition,c.guardCondition,...(p===undefined?[]:[terminal(deps,p,"cancelled",caller.developerId,decision)])]);return {settings:view(next,c.locked===true)};
+ }
+ if(p===undefined)throw stale();
  if(p.value.state!=="pending"){if(p.value.decidedBy===caller.developerId&&p.value.decision===decision)return {settings:view(c.setting,c.locked===true)};throw stale();}
  if(c.setting.pendingProposalId!==id||c.setting.revision!==p.value.baseRevision||Date.parse(p.value.expiresAt)<=deps.now())throw stale();
  let conditions:Tx[],sole=false;
  if(decision==="approve"){
   if(c.locked)throw agentXError("FORBIDDEN","PR-comment learning is locked off by your company.");
-  const evidence=await readSecondPersonApprovalEvidence(deps,{orgId:caller.orgId,project,proposerId:p.value.by,approverId:caller.developerId});sole=decideSecondPersonApproval(evidence.decisionInput).mode==="sole_owner_exception";conditions=evidence.conditions;
+  const evidence=await readSecondPersonApprovalEvidence(deps,{orgId:caller.orgId,project,proposerId:p.value.by,approverId:caller.developerId});sole=decideSecondPersonApproval(evidence.decisionInput).mode==="sole_owner_exception";if(sole&&parsed.data.soleOwnerAcknowledged!==true)throw agentXError("FORBIDDEN","Explicitly acknowledge the sole-owner learning exception.");conditions=evidence.conditions;
  }else conditions=[...c.actor,c.projectCondition];
  const next:LearningSettings={...c.setting,prComments:decision==="approve"?"on":"off",revision:c.setting.revision+1,changedBy:caller.developerId,changedAt:new Date(deps.now()).toISOString()};delete next.pendingProposalId;
  await commit(deps,caller,c,next,[...conditions,c.guardCondition,terminal(deps,p,decision==="approve"?"approved":"declined",caller.developerId,decision)],sole);return {settings:view(next,c.locked===true)};

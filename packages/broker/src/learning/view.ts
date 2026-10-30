@@ -1,3 +1,6 @@
+import { dependsOnPr } from "./pr-visibility.js";
+import { prCaptureOff } from "./settings.js";
+import { withdrawPrDependentSuggestions } from "./grouping.js";
 // v1.2 learning loop: `GET /v1/app/projects/{p}/learning` (design 6.2). Everything the project's learning screen shows, in one read-only answer.
 //
 // Who reads: anyone who can see the project (`projectFor`: another company's project and one the caller cannot see answer the same `PROJECT_NOT_FOUND`). What they get depends on who they
@@ -39,6 +42,7 @@ export const LEARNING_VIEW_PER_COMPANY_PER_MINUTE = 300;
 const RATE_WINDOW_MS = 60_000;
 
 export interface LearningViewDeps extends StandingDeps {
+  audit?: LearningDeps["audit"];
   now: () => number;
   /** The caller's role in the project: its name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another company's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: Parameters<typeof projectAllows>[0] }>;
@@ -80,10 +84,13 @@ async function settingsView(deps: LearningViewDeps, learning: LearningDeps, scop
   const parsed = LearningSettingsSchema.safeParse(stored);
   const locked = guardrails.prCommentLearning === "locked_off";
   const own = parsed.success && parsed.data.prComments === "on" ? "on" as const : "off" as const;
+  const pendingId=parsed.success?parsed.data.pendingProposalId:undefined;
+  const pending=pendingId===undefined?undefined:await getLearningItem(learning,scope,`PROPOSAL#${pendingId}`);
+  const livePending=pending?.["state"]==="pending"&&pending["proposalId"]===pendingId&&typeof pending["expiresAt"]==="string"&&Date.parse(pending["expiresAt"])>deps.now();
   return {
     prComments: locked ? "off" : own, locked,
     ...(locked ? { lockedBy: "company" as const } : {}),
-    ...(parsed.success && parsed.data.pendingProposalId !== undefined ? { pendingProposal: { id: parsed.data.pendingProposalId } } : {}),
+    ...(pendingId !== undefined && livePending ? { pendingProposal: { id: pendingId } } : {}),
     ...(parsed.success ? { revision: parsed.data.revision } : {}),
   };
 }
@@ -111,13 +118,17 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const checked = await learningScopeChecked(deps, caller.orgId, project);
   if (checked === undefined) throw agentXError("NOT_FOUND", "Rovara isn't learning from this project right now.");
   const { scope } = checked;
-  const learning: LearningDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+  const learning: LearningDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
   // Read now, not from the sign-in: a person demoted since they signed in is not a member.
   const standing = await readStanding(deps, caller.orgId, caller.developerId, project);
   const member = standing === "member";
   const maintainer = projectAllows(found.role, "edit_settings");
   const canDecide = canAcceptSuggestion({ standing, maintainer });
 
+  if (deps.audit !== undefined && await prCaptureOff(learning, scope)) {
+    try { await withdrawPrDependentSuggestions(learning, scope); }
+    catch { console.log(JSON.stringify({ component: "learning", event: "pr_withdrawal_deferred" })); }
+  }
   const [settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
     settingsView(deps, learning, scope),
     readList(learning, scope, "SUGGESTION#", LEARNING_VIEW_SUGGESTIONS_SCANNED_MAX),
@@ -137,12 +148,13 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const members = new Map((wanted.length === 0 ? [] : await readMembers(learning, scope, wanted)).map((entry) => [entry.c.id, entry.c] as const));
   // The proposed text is the newest source's words: it is not shown when any source's author was erased (an erase that stopped half way has not reached the suggestion yet).
   const holdsErased = (suggestion: LearningSuggestion) => suggestion.correctionIds.some((id) => members.get(id)?.author === "erased");
-  const suggestions = shown.map((suggestion) => ({
+  const visibleMembers = settings.prComments === "off" ? new Map([...members].filter(([, c]) => c.source !== "pr_comment")) : members;
+  const suggestions = shown.filter(s => settings.prComments !== "off" || !dependsOnPr(s, members)).map((suggestion) => ({
     id: suggestion.id, stage: suggestion.stage, status: suggestion.status,
     ...(member && suggestion.proposedText !== undefined && !holdsErased(suggestion) ? { proposedText: suggestion.proposedText } : {}),
     sourceCount: suggestion.correctionIds.filter((id) => members.has(id)).length,
     allFromOnePerson: suggestion.allFromOnePerson, lessSafe: suggestion.lessSafe, lessSafeWords: suggestion.kinds, overlaps: suggestion.overlaps,
-    sources: sourceViews(suggestion, members, member), revision: suggestion.revision,
+    sources: sourceViews(suggestion, visibleMembers, member), revision: suggestion.revision,
     // Per suggestion, with the rule Accept authorises by (standing.ts): the screen cannot offer what the API will refuse.
     canDecide: canAcceptSuggestion({ standing, maintainer }),
   }));

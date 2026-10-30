@@ -413,7 +413,15 @@ describe("task-wide current PR feedback reconciliation", () => {
     expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(true);
     expect(after.artifacts.map(a => a.bytes)).toEqual(before.artifacts.map(a => a.bytes));
     expect(after.workflow().feedbackReview?.bundleRefs).toEqual(before.workflow().feedbackReview?.bundleRefs);expect(callbacks).toBe(2);
-    after.input.deliveryId = "delivery-2";expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(false);expect(callbacks).toBe(4);
+    after.input.deliveryId = "delivery-2";expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(false);expect(callbacks).toBe(2);
+  });
+  it("B8 review M6 capture has one 1.5-second budget and ignores a late result", async () => {
+    vi.useFakeTimers();try {
+      const f=await fixture();let finish:()=>void=()=>undefined,calls=0;
+      f.input.onFeedbackRead=()=>new Promise<void>(resolve=>{finish=resolve;calls++;});
+      const running=f.module.reconcileTaskPullRequestFeedback(f.input);await vi.advanceTimersByTimeAsync(1501);expect(await running).toBe(true);expect(calls).toBe(1);expect(f.workflow().feedbackReview?.status).toBe("COLLECTING");
+      finish();await vi.advanceTimersByTimeAsync(1);expect(calls).toBe(1);
+    }finally{vi.useRealTimers();}
   });
   it("persists both current PR bundles and ignores duplicate or delayed event bodies", async () => {
     const f = await fixture();

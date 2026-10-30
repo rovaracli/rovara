@@ -1,3 +1,5 @@
+import { takeRateAt } from "../developer/page-comments.js";
+import { orgScoped } from "@agentx/contracts";
 import { writeLearningSettings, decideLearningSettings, skippedPrCommentCount, type LearningSettingsDeps } from "./settings.js";
 // v1.2 learning loop: the React routes under `/v1/app/projects/{p}/learning` (design 6.2). B3 owns Remember and Forget; B6 and B8 add the rest to `routeLearning`, which answers
 // `undefined` for a path or method it does not own, so the caller falls through to its own "not found".
@@ -53,6 +55,14 @@ function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
   throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);
 }
 
+async function settingsBudget(deps:LearningSettingsDeps,caller:DeveloperCaller):Promise<void> {
+  for(const bucket of [{actor:caller.developerId,limit:10},{actor:"ALL",limit:60}]) {
+    let accepted:boolean;
+    try{accepted=await takeRateAt(deps,{pk:orgScoped(caller.orgId,"LEARNING_SETTINGS_WRITES"),sk:bucket.actor},bucket.limit,60000);}
+    catch{throw agentXError("RUNTIME_UNAVAILABLE","Learning setting request budget could not be checked.");}
+    if(!accepted)throw agentXError("TOO_MANY_REQUESTS","Too many learning setting requests. Try again in a minute.");
+  }
+}
 export async function routeLearning(deps: LearningRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<LearningAnswer | undefined> {
   const matched = LEARNING_PATH.exec(url.pathname);
   // `GET …/learning`: the screen's one read. Anyone who can see the project; what they get depends on their live standing (view.ts). It needs only the table, so it is answered even where agents are not set up.
@@ -60,7 +70,7 @@ export async function routeLearning(deps: LearningRouteDependencies, caller: Dev
     const learning = { documentClient: deps.task.documentClient, tableName: deps.task.tableName, now: () => deps.task.now() };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const page = async () => {
-      const answer = await viewLearning({ ...learning, projectFor: (who, rawName) => deps.projectFor(who, rawName) }, caller, matched[1]!);
+      const answer = await viewLearning({ ...learning, ...(deps.audit === undefined ? {} : { audit: deps.audit }), projectFor: (who, rawName) => deps.projectFor(who, rawName) }, caller, matched[1]!);
       if (answer.settings.prComments !== "on") return answer;
       return { ...answer, skippedUnlinked: await skippedPrCommentCount(learning, caller.orgId, decodeURIComponent(matched[1]!)) };
     };
@@ -73,6 +83,7 @@ export async function routeLearning(deps: LearningRouteDependencies, caller: Dev
   if ((method === "PUT" && rest === "settings") || (method === "POST" && settingDecision !== null)) {
     if (caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session for learning settings.");
     if (deps.settings === undefined) throw agentXError("NOT_FOUND", "Learning settings are not available.");
+    await settingsBudget(deps.settings,caller);
     const { name } = await deps.projectFor(caller, matched[1]!);
     return settingDecision === null ? writeLearningSettings(deps.settings, caller, name, body()) : decideLearningSettings(deps.settings, caller, name, settingDecision[1]!, body());
   }

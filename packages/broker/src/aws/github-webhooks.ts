@@ -379,10 +379,18 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     const reads: Array<{ pr: NonNullable<WorkflowSnapshot["pullRequests"]>[number]; feedback: GitHubPullRequestFeedback; url: string; fullName: string }> = [];
     const captureFeedback = async () => {
       if (input.observationMode === "merge" || input.onFeedbackRead === undefined) return;
-      for (const { pr, feedback } of reads) {
-        try { await input.onFeedbackRead({ taskId: linked.taskId, project: task.project, orgId: task.orgId, repositoryId: pr.repositoryId }, feedback.comments); }
-        catch { console.log(JSON.stringify({ component: "broker", event: "learning.pr_capture_failed" })); }
-      }
+      let abandoned = false, timer: ReturnType<typeof setTimeout> | undefined;
+      const work = (async () => {
+        for (const { pr, feedback } of reads) {
+          if (abandoned) break;
+          try { await input.onFeedbackRead!({ taskId: linked.taskId, project: task.project, orgId: task.orgId, repositoryId: pr.repositoryId }, feedback.comments); }
+          catch { if (!abandoned) console.log(JSON.stringify({ component: "broker", event: "learning.pr_capture_failed" })); }
+        }
+        return "done" as const;
+      })();
+      const limit = new Promise<"timeout">(resolve => { timer = setTimeout(() => { abandoned = true; resolve("timeout"); }, 1500); });
+      try { if (await Promise.race([work, limit]) === "timeout") console.log(JSON.stringify({ component: "broker", event: "learning.pr_capture_timeout" })); }
+      finally { clearTimeout(timer); }
     };
     for (const pr of [...(current.pullRequests ?? [])].sort((a, b) => a.repositoryId.localeCompare(b.repositoryId) || a.number - b.number)) {
       const url = await input.repositoryUrl(task.project, task.startingRevision, pr.repositoryId, task.orgId);
@@ -601,15 +609,14 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       const nothingToReview = prior === undefined && (alreadyReviewed
         || (observations.every(o => o.eligibleCommentIds.length === 0) && bundles.every(b => b.comments.length === 0)));
       if (same && sameThreadObservations(prior.threadObservations ?? [], observations) && next === current) {
-        // This snapshot is already committed. A new delivery may finish a previously capped or failed capture without rewriting its bundles.
-        if (headTrees.length === 0) { await captureFeedback();return false; }
+        if (headTrees.length === 0) return false;
       } else if (nothingToReview) {
         // Feedback only in resolved threads: nothing to review, but the threads are remembered as seen, so a later reply
         // in one of them is compared with what was there.
         if (observations.length > 0 && !sameThreadObservations(current.feedbackThreadObservations ?? [], observations)) {
           next = WorkflowSnapshotSchema.parse({ ...next, revision: next.revision + 1, feedbackThreadObservations: observations, updatedAt: input.now });
         }
-        if (next === current && headTrees.length === 0) { await captureFeedback();return false; }
+        if (next === current && headTrees.length === 0) return false;
       } else {
         // A step is running (the review of earlier feedback): nothing can be collected now, so nothing is stored. The
         // delivery is kept, and the recovery sweep collects again once the step is done.
