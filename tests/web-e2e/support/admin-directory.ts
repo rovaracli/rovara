@@ -1,5 +1,5 @@
 import { commitRegisteredProjectAllowedDomains } from "../../../packages/broker/src/org/project-allowed-domains.js";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
 import { installationBindingCheck, requireRepositoriesConnected } from "../../../packages/broker/src/org/github-connection.js";
 import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "../../../packages/broker/src/org/project-working-branch-provider.js";
@@ -22,6 +22,7 @@ export function createAdminDirectory() {
  const restoreUpdate = "SET #status = :active, archiveRevision = :next REMOVE archivedAt, archivedBy";
  const membershipUpdate = "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)";
  const companyLossUpdate = membershipUpdate + ", approvalLastCompanyEligibleLossAt = :lossAt";
+ const removalFinishUpdate = "SET #state = :final, finishedAt = :at, #counts = :counts";
  const put = (row: Row) => rows.set(keyOf(row), structuredClone(row));
  function setRole(id: string, role: OrgRole, org: string = FIXTURE_ORG) {
   put({ ...orgMemberKey(org, id), orgId: org, developerId: id, role, joinedAt: "2026-10-01T00:00:00.000Z" });put({ ...developerOrgKey(id), orgId: org, role });
@@ -34,6 +35,7 @@ export function createAdminDirectory() {
  put({ ...modelSourcesKey(FIXTURE_ORG),entityType:"ORG_MODEL_SOURCES",revision:1,sources:[],order:["personal-chatgpt","rovara"],credentials:[],removing:[],updatedBy:FIXTURE_DEVELOPER,updatedAt:"2026-10-27T12:00:00Z" });
  function condition(expression: string | undefined, row: Row | undefined, names: Record<string, string> = {}, values: Row = {}): boolean {
   if (expression === undefined) return true;
+  if (expression === "attribute_not_exists(pk) OR removedAt < :removedAt") return row === undefined || (typeof row.removedAt === "string" && typeof values[":removedAt"] === "string" && row.removedAt < values[":removedAt"]);
   if (expression === "attribute_not_exists(pk) OR indexExpiresAt <= :now") return row === undefined || (typeof row.indexExpiresAt === "number" && typeof values[":now"] === "number" && row.indexExpiresAt <= values[":now"]);
   return expression.split(/\s+AND\s+/).every(part => {
    if (part === "attribute_not_exists(pk)") return row === undefined;
@@ -87,7 +89,7 @@ export function createAdminDirectory() {
   const checks = actions.map(action => {
    const write = action.Update ?? action.ConditionCheck ?? action.Put ?? action.Delete;
    if (write === undefined) throw new Error("Unsupported fixture transaction item.");
-   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", "SET revokedAt = :at, revokedBy = :by, revision = :next", archiveUpdate, restoreUpdate, membershipUpdate, companyLossUpdate, "SET approvalLastMaintainerLossAt = :lossAt", "SET latestRevision = :next"].includes(typeof write.UpdateExpression === "string" ? write.UpdateExpression : "")) throw new Error("Unsupported fixture update expression.");
+   if ("UpdateExpression" in write && !["SET #role = :role", "SET #role = :role, roleUpdatedAt = :at", "SET revokedAt = :at, revokedBy = :by, revision = :next", archiveUpdate, restoreUpdate, membershipUpdate, companyLossUpdate, "SET approvalLastMaintainerLossAt = :lossAt", "SET latestRevision = :next", removalFinishUpdate].includes(typeof write.UpdateExpression === "string" ? write.UpdateExpression : "")) throw new Error("Unsupported fixture update expression.");
    const expression = `${write.ConditionExpression ?? ""} ${"UpdateExpression" in write && typeof write.UpdateExpression === "string" ? write.UpdateExpression : ""}`;
    const tokens = new Set(expression.match(/[:#][A-Za-z0-9_]+/g) ?? []);
    for (const token of tokens) { if (!Object.hasOwn(token.startsWith("#") ? write.ExpressionAttributeNames ?? {} : write.ExpressionAttributeValues ?? {}, token)) throw new Error("Missing fixture expression attribute."); }
@@ -112,6 +114,7 @@ export function createAdminDirectory() {
      put({ ...row, approvalMembershipVersion: Number(row?.approvalMembershipVersion ?? 0) + 1, approvalTrackingSince: row?.approvalTrackingSince ?? values[":at"], ...(update.UpdateExpression === companyLossUpdate ? { approvalLastCompanyEligibleLossAt: values[":lossAt"] } : {}) });continue;
     }
     if (update.UpdateExpression === "SET approvalLastMaintainerLossAt = :lossAt") { put({ ...row, approvalLastMaintainerLossAt: values[":lossAt"] });continue; }
+    if (update.UpdateExpression === removalFinishUpdate) { if (row === undefined || typeof values[":final"] !== "string") throw new Error("Invalid fixture removal finish.");put({ ...row, state: values[":final"], finishedAt: values[":at"], counts: values[":counts"] });continue; }
     if (update.UpdateExpression === "SET latestRevision = :next") { if(row===undefined||!Number.isSafeInteger(values[":next"]))throw new Error("Invalid fixture catalog update.");put({...row,latestRevision:values[":next"]});continue; }
     if (update.UpdateExpression === archiveUpdate) { put({ ...update.Key, ...row, entityType: values[":type"], name: values[":name"], status: values[":archived"], archivedAt: values[":at"], archivedBy: values[":by"], archiveRevision: values[":next"], createdAt: row?.createdAt ?? values[":at"], createdBy: row?.createdBy ?? values[":unknown"] });continue; }
     if (update.UpdateExpression === restoreUpdate) { if (row === undefined) throw new Error("Missing restore fixture meta.");const next: Row = { ...row, status: values[":active"], archiveRevision: values[":next"] };delete next.archivedAt;delete next.archivedBy;put(next);continue; }
@@ -146,6 +149,7 @@ export function createAdminDirectory() {
    put({ ...slackBindingKey(FIXTURE_ORG, teamId, channelId), entityType: "SLACK_BINDING", teamId, channelId, projectName: "payments", updatedAt: "2026-10-01T00:00:00Z" });
   },
   setRole,
+  addMember(name: string, role: OrgRole) { const id = createHash("sha256").update(name).digest("hex");setRole(id, role);put({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name, provider: "cloud" }); },
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
