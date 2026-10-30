@@ -105,3 +105,26 @@ for(const [status,label] of [["unchecked","Not checked yet"],["checking","Checki
 for(const path of ["/app/admin/agents","/app/admin/agents/rovara-code/versions"])it(`B32 shipped console hides ${path} without agent reads`,async()=>{const f=mount(path,{shipped:true});await screen.findByRole("heading",{name:"Not found"});expect(screen.queryByRole("link",{name:"Agents"})).toBeNull();expect(f.request.mock.calls.some(([r])=>r.path.includes("/agents"))).toBe(false);f.close();});
 
 it("B32 member project maintainer has own-project settings entry and no admin navigation",async()=>{const value=projectFixture();value.project.setup.status="failed";const f=mount("/app/projects/payments",{role:"member",shipped:true,respond:async r=>r.path.endsWith("/overview")?{status:200,body:value}:{status:200,body:{notices:[],next:"settled"}}});await screen.findByRole("heading",{name:"payments"});expect(screen.getByRole("link",{name:"Setup needs attention"}).getAttribute("href")).toBe("/app/onboard?project=payments&step=setup");expect(screen.queryByRole("link",{name:/^Admin$/})).toBeNull();expect(screen.queryByRole("navigation",{name:"Administration"})).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/projects/")).every(([r])=>r.path.includes("/projects/payments/"))).toBe(true);f.close();});
+it("opens website editing from fresh active admin project detail without changing navigation", async () => {
+ const f = mount("/app/admin/projects/payments", { shipped: true, respond: async request => ({ status: 200, body: request.path.includes("allowed-websites") ? { kind: "review", status: "review", orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", baseRevision: 3, contextDigest: "b".repeat(64), allowedDomains: ["docs.acme.dev"], defaultDomains: ["github.com"], staffDomains: [{ domain: "docs.acme.dev", status: "pending" }], liveProposal: null } : request.path.endsWith("/members") ? { members: [] } : project }) });
+ await screen.findByRole("heading", { name: "Allowed websites" });
+ expect(f.request.mock.calls.some(([r]) => r.path.includes("allowed-websites"))).toBe(false);
+ fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
+ expect(screen.getByText("github.com")).toBeTruthy();expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+ expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
+});
+it("B33 member maintainer opens company-pinned website editing on the shipped own-project route", async () => {
+ let revoked = false;
+ const value = projectFixture({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
+ const f = mount("/app/projects/payments", { role: "member", shipped: true, respond: async r => r.path.endsWith("/overview") ? { status: 200, body: value } : r.path.includes("/allowed-websites") ? revoked ? { status: 403, body: { error: { code: "FORBIDDEN" } } } : { status: 200, body: { kind: "review", status: "review", orgId: value.orgId, project: "payments", baseRevision: 1, contextDigest: "b".repeat(64), allowedDomains: [], defaultDomains: ["github.com"], staffDomains: [], liveProposal: null } } : { status: 200, body: { notices: [], next: "settled" } } });
+ await screen.findByRole("button", { name: "Edit allowed websites" });fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
+ expect(screen.queryByRole("link", { name: /^Admin$/ })).toBeNull();expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();
+ revoked = true;await act(async () => { window.dispatchEvent(new Event("focus")); });await screen.findByText(/Website settings could not be checked/);
+ expect(screen.queryByRole("button", { name: "Review website change" })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
+});
+for (const state of ["viewer", "archived"] as const) it(`B33 own-project ${state} has no website mutation entry`, async () => {
+ const value = projectFixture({ orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
+ if (state === "viewer") value.you = { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false };else { value.project.status = "archived";value.you.canEditSettings = false; }
+ const f = mount("/app/projects/payments", { role: "member", shipped: true, respond: async r => ({ status: 200, body: r.path.endsWith("/overview") ? value : { notices: [], next: "settled" } }) });
+ await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();expect(f.request.mock.calls.some(([r]) => r.path.includes("allowed-websites"))).toBe(false);f.close();
+});

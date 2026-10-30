@@ -1,3 +1,5 @@
+import { clearProjectAllowedDomainProposals } from "./project-allowed-domains-cleanup.js";
+import { approvalGrantChange, approvalCompanyChange } from "./approval-membership.js";
 import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
 import { inviteCreateBodyHash } from "./invite-creation.js";
@@ -164,6 +166,12 @@ export class OrgStore {
     ];
   }
 
+  /** Existing companies gain a generation and conservative tracking start. A
+   * missing tracking start never proves the previous 24 hours were safe. */
+  private async approvalMembershipChange(orgId: OrgId, at: string, companyEligibleLost = false): Promise<TransactItem[]> {
+    return await approvalCompanyChange({ ...this.input, now: () => new Date(at) }, orgId, companyEligibleLost);
+  }
+
   private async transact(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
     try {
       await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
@@ -187,7 +195,11 @@ export class OrgStore {
   async getOrg(orgId: OrgId): Promise<OrgRecord | undefined> {
     const item = await this.get(orgMetaKey(orgId));
     if (item === undefined) return undefined;
-    const org = strip(item) as unknown as OrgRecord;
+    const publicFields = strip(item);
+    delete publicFields.approvalMembershipVersion;
+    delete publicFields.approvalTrackingSince;
+    delete publicFields.approvalLastCompanyEligibleLossAt;
+    const org = publicFields as unknown as OrgRecord;
     // Release 0.4.16: the default name a first sign-in made from an email ("ravi@example.com's team") is never shown to members or invitees.
     const name = safeOrgName(org.name);
     return name === org.name ? org : { ...org, name };
@@ -249,7 +261,7 @@ export class OrgStore {
     const event = await this.joinEvent({ orgId, developerId: input.developerId, role: "owner", joinedAt, via: "org_created" });
     await this.transact(
       [
-        this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
+        this.put(orgMetaKey(orgId), "ORG", { ...org, approvalMembershipVersion: 0, approvalTrackingSince: joinedAt }),
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
         // Plan 6: when the flag is on, a new org runs Rovara Code version 2 from its first task, as an explicit pin. Otherwise (and for an org with no settings item) it stays on version 1 until an admin adopts 2.
@@ -266,8 +278,8 @@ export class OrgStore {
     const joinedAt = this.iso();
     const event = await this.joinEvent({ orgId: input.orgId, developerId: input.developerId, role: input.role, joinedAt, via: "sign_in" });
     await this.transact(
-      [...this.membershipItems({ ...input, joinedAt }), ...this.pendingFor(event)],
-      (failed) => (failed.has(0) || failed.has(1) || failed.has(2) ? alreadyInOrg() : undefined),
+      [...this.membershipItems({ ...input, joinedAt }), ...this.pendingFor(event), ...await this.approvalMembershipChange(input.orgId, joinedAt)],
+      (failed) => (failed.has(0) || failed.has(1) || (input.email !== undefined && failed.has(2)) ? alreadyInOrg() : coded("CHANGE_STALE", "the organization's members changed; try again")),
     );
     await this.flush(event);
   }
@@ -396,7 +408,11 @@ export class OrgStore {
       ...this.pendingFor(event),
       // A closed org (or one whose last owner is closing it) takes no new members. closeOrg writes `closingAt` before it checks that its
       // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
-      { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(orgId), ConditionExpression: "attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } },
+      { Update: { TableName: this.input.tableName, Key: orgMetaKey(orgId),
+        UpdateExpression: "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)",
+        ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": nowIso },
+      } },
     ];
     await this.transact(items, (failed) => {
       if (failed.has(0)) return inviteInvalid();
@@ -489,8 +505,9 @@ export class OrgStore {
         },
         ...guard,
         ...this.pendingFor(event),
+        ...await this.approvalMembershipChange(orgId, at, (current === "owner" || current === "admin") && role === "member"),
       ],
-      (failed) => (failed.has(2) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : coded("CHANGE_STALE", "the organization's members changed; try again")),
+      (failed) => (guard.length > 0 && failed.has(2) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : coded("CHANGE_STALE", "the organization's members changed; try again")),
     );
     await this.flush(event);
   }
@@ -529,6 +546,7 @@ export class OrgStore {
     const marker = memberRemovalQueueKey(this.iso(), orgId, developerId);
     const items = this.removalItems(input, role, pointers, guard, [
       ...this.pendingFor(event),
+      ...await this.approvalMembershipChange(orgId, this.iso(), role === "owner" || role === "admin"),
       ...(hook === undefined ? [] : [{ Put: { TableName: this.input.tableName, Item: { ...marker, entityType: "MEMBER_REMOVAL", orgId, developerId, by } } }]),
     ]);
     await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("CHANGE_STALE", "the organization's members changed; try again") : undefined));
@@ -569,6 +587,7 @@ export class OrgStore {
     }
     // Mandatory before teardown/final close: failures retain closingAt so a fresh close resumes bounded cleanup.
     await clearWorkingBranchSaveReceipts(this.input, orgId);
+    await clearProjectAllowedDomainProposals(this.input, orgId);
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
@@ -595,7 +614,7 @@ export class OrgStore {
     await deps.clearSessions?.(orgId);
     const [sole] = members;
     if (sole === undefined) return;
-    await this.deleteMemberData(orgId, sole.developerId);
+    await this.deleteMemberData(orgId, sole.developerId, true);
     const closedAt = this.iso();
     // The close, the due item for the shred and both audit items commit together: a close that is recorded was scheduled, and the reverse.
     const closed = await tryAuditEvent(this.deps(), () => auditOrgClosed({
@@ -606,8 +625,8 @@ export class OrgStore {
       [
         {
           Update: {
-            TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at REMOVE closingAt",
-            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": closedAt },
+            TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at, approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one REMOVE closingAt",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": closedAt, ":zero": 0, ":one": 1 },
           },
         },
         ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, sole.role, await this.emailPointersOf(deps.emails ?? [], sole.developerId), [], [...this.pendingFor(closed), ...shred]),
@@ -691,9 +710,18 @@ export class OrgStore {
   }
 
   /** A member's project grants and monthly limit (and the proxy-sync marker for it), which end with their membership. */
-  private async deleteMemberData(orgId: OrgId, developerId: string): Promise<void> {
+  private async deleteMemberData(orgId: OrgId, developerId: string, allowClosing = false): Promise<void> {
     for (const grant of await this.queryPartition(memberGrantsPk(orgId, developerId), MEMBER_GRANT_SK_PREFIX)) {
-      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: { pk: grant.pk, sk: grant.sk } }));
+      const project = String(grant.sk).slice(MEMBER_GRANT_SK_PREFIX.length);
+      const fields = ["role", "projectRole", "grantId"] as const;
+      const names = Object.fromEntries(fields.map((field, index) => [`#f${String(index)}`, field]));
+      const values = Object.fromEntries(fields.flatMap((field, index) => grant[field] === undefined ? [] : [[`:v${String(index)}`, grant[field]]]));
+      const condition = fields.map((field, index) => grant[field] === undefined ? `attribute_not_exists(#f${String(index)})` : `#f${String(index)} = :v${String(index)}`).join(" AND ");
+      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: {
+        TableName: this.input.tableName, Key: { pk: grant.pk, sk: grant.sk },
+        ConditionExpression: condition, ExpressionAttributeNames: names,
+        ...(Object.keys(values).length === 0 ? {} : { ExpressionAttributeValues: values }),
+      } }, ...await approvalGrantChange({ ...this.input, now: () => new Date(this.input.now()) }, orgId, project, grant.projectRole === "maintainer", { allowClosing })] }));
     }
     await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: budgetSyncedKey(orgId, developerId) }));
     const key = orgSettingsKey(orgId, "BUDGET");

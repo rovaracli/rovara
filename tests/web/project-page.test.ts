@@ -79,3 +79,13 @@ it("starts through the canonical runs API with a fresh default request id for ea
 it("focuses the loaded project heading once and leaves an active form alone during refresh", async () => {
  const f = setup();const heading = await screen.findByRole("heading", { name: "payments" });await waitFor(() => expect(document.activeElement).toBe(heading));const focus = vi.spyOn(heading, "focus");fireEvent.click(screen.getByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));const input = await screen.findByRole("textbox", { name: "What should Payments expert do?" });await waitFor(() => expect(document.activeElement).toBe(input));f.answer(projectFixture({ project: { ...projectFixture().project, description: "Updated project purpose" } }));await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });await screen.findByText("Updated project purpose");expect(document.activeElement).toBe(input);expect(focus).not.toHaveBeenCalled();f.close();
 });
+
+it("offers company-pinned website settings to an own-project maintainer without admin navigation", async () => {
+ const f = setup({ ...projectFixture(), orgId: "org_aaaaaaaaaaaaaaaaaaaa" });
+ await screen.findByRole("heading", { name: "payments" });
+ expect(screen.getByRole("button", { name: "Edit allowed websites" })).toBeTruthy();
+ expect(screen.queryByRole("navigation", { name: "Administration" })).toBeNull();f.close();
+});
+it("holds website editing when an older overview has no company pin", async () => {
+ const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();f.close();
+});

@@ -1,3 +1,5 @@
+import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
+import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 // Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
 import { getTaskStopProject } from "../org/task-stop-project.js";
 // Lane A G1: existing agent money limit, no initialization or management.
@@ -316,6 +318,7 @@ export interface DeveloperRouteDependencies {
    * GitHub's view of it. Without it the route answers NOT_FOUND.
    */
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
+  projectAllowedDomains?: Pick<AllowedDomainBrowserDependencies, "registerApproved">;
   /** Lane B: pinned, explicitly org-bound read-only branch provider; absent fails closed. */
   projectWorkingBranches?: () => Required<Pick<WorkingBranchListDependencies, "checkRepository" | "listBranches">> & { finish: () => Promise<void> };
   projectWorkingBranchPreview?: () => Required<Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">> & { finish: () => Promise<void> };
@@ -1044,7 +1047,7 @@ function archiveDepsOf(deps: DeveloperRouteDependencies): ProjectArchiveDependen
 
 /** Where egress items are kept and how a change reaches the firewall (Plan 2, Task 18). */
 function egressDepsOf(deps: DeveloperRouteDependencies): EgressDomainsDependencies {
-  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })) };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })), ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
 }
 
 /** `GET /v1/app/projects/{name}`: no access, no such project and another org's project all answer the same 404 PROJECT_NOT_FOUND. */
@@ -1442,6 +1445,7 @@ async function putProjectSettings(deps: DeveloperRouteDependencies, caller: Deve
     cloud: deps.cloud === true,
     egress: egressDepsOf(deps),
     ...deps.projectSettings,
+    allowedDomainAuthorityConditions: (who, project) => readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer?.signInTableName ?? "", now: deps.now }, { orgId: who.orgId, project, actorId: who.developerId }),
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
   }, caller, name, body);
@@ -1939,6 +1943,11 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
+  // Website proposal routes accept only the trusted opaque-cookie adapter.
+  // Reject token callers before authentication or any project/proposal lookup.
+  if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
+  }
   // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
   const authenticateSession = async (sessionId: string) => {
     try { return await authenticateDeveloperSessionId(deps, sessionId); }
@@ -2039,6 +2048,17 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
     if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
   }
+  const websiteReview = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites$/.exec(url.pathname);
+  if (request.method === "GET" && websiteReview !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteReview[1]!, { operation: "review", expectedOrgId: url.searchParams.get("expectedOrgId") });
+  if (request.method === "POST" && websiteReview !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteReview[1]!, { operation: "save", body: jsonBody(request) });
+  const websiteProposalCreate = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals$/.exec(url.pathname);
+  if (request.method === "POST" && websiteProposalCreate !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalCreate[1]!, { operation: "propose", body: jsonBody(request) });
+  const websiteProposalStatus = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && websiteProposalStatus !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalStatus[1]!, { operation: "status", proposalId: websiteProposalStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
+  const websiteProposalDecision = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/proposals\/([^/]+)\/(approve|cancel|reject)$/.exec(url.pathname);
+  if (request.method === "POST" && websiteProposalDecision !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalDecision[1]!, { operation: websiteProposalDecision[3] as "approve" | "cancel" | "reject", proposalId: websiteProposalDecision[2]!, body: jsonBody(request) });
+  const websiteRequestStatus = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/requests\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && websiteRequestStatus !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteRequestStatus[1]!, { operation: "request-status", requestId: websiteRequestStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
   const workingBranchContextRoute = /^\/v1\/app\/projects\/([^/]+)\/working-branches$/.exec(url.pathname);
   if (request.method === "POST" && workingBranchContextRoute !== null) {
     if(caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session for working branch settings.");

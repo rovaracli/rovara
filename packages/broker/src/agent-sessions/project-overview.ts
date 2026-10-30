@@ -104,6 +104,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
   const open = page.status !== "archived";
   const canViewSpend = projectAllows(role, "view_spend");
   const answer = {
+    orgId,
     project: {
       name, ...(page.description === undefined ? {} : { description: page.description }), status: page.status, ...(page.latestRevision === undefined ? {} : { latestRevision: page.latestRevision }),
       // The summary now carries the repository's registered name (lane B); the overview contract is unchanged and shows only these two fields.
