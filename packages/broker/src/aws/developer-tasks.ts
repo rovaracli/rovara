@@ -1,3 +1,4 @@
+import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
@@ -2102,6 +2103,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
   let spendingStop: CapturedTaskStop | undefined;
+  let spendingScopeChecks: TransactItem[] = [];
   // Human task starts capture once after live scope checks and before monthly
   // admission, workspace creation or key effects. Other paid starter adapters
   // must be connected before the controller can enable enrollment.
@@ -2121,6 +2123,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(requestedMicrousd === undefined ? {} : { requestedMicrousd }),
       });
       if (captured.kind === "captured") {
+        spendingScopeChecks = await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project }, async () => {
+          const fresh = await deps.checkAccess(request.project);
+          await requireNewWorkAllowed(deps, deps.orgId, request.project, fresh.role, "task");
+        });
         const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
         if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
         if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending."));
@@ -2270,7 +2276,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ]),
   ];
   const spendingActorStart = items.length;
-  if (spendingStop !== undefined) items.push(...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }));
+  if (spendingStop !== undefined) items.push(...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks);
   try {
     await deps.actions.transact(items);
   } catch (error) {
