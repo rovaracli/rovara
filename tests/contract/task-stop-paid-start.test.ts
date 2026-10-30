@@ -1623,3 +1623,37 @@ for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`regi
     else { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
   }
 });
+
+it("spending-rule expiry commits an immutable terminal receipt and replays it without money", async () => {
+  const f = await approvalWindow("company"), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "EXPIRY" };
+  const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  const receipt = f.t.db.get(key);
+  expect(receipt).toMatchObject({ entityType: "SPEND_REQUEST_EXPIRY", version: 1, orgId: TEST_ORG, spendRequestId: f.spendRequest.spendRequestId,
+    kind: "run_limit", status: "EXPIRED", reason: "spending_rules_changed", actor: { kind: "system" } });
+  expect(receipt?.termsDigest).toMatch(/^[a-f0-9]{64}$/);
+  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toBeDefined();
+  expect(f.t.db.get(key)).toEqual(receipt); expect(f.t.meta(f.task.taskId)).toEqual(before);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
+it("a terminal expiry receipt conflict rolls back request expiry and keeps the pending ask", async () => {
+  const f = await approvalWindow("company"), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "EXPIRY" };
+  f.t.db.set({ ...key, entityType: "TEST_CONFLICT", sentinel: true });
+  const before = f.t.meta(f.task.taskId);
+  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toBeDefined();
+  expect(f.t.db.get({ ...key, sk: "META" })).toMatchObject({ status: "PENDING" });
+  expect(f.t.db.get(key)).toMatchObject({ sentinel: true }); expect(f.t.meta(f.task.taskId)).toEqual(before);
+});
+it("expiry cannot attribute a terminal receipt to request terms that changed at commit", async () => {
+  const f = await approvalWindow("company"), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "META" }, send = f.t.db.send.bind(f.t.db); let raced = false;
+  const winningLimit = (f.spendRequest.newLimitUsd ?? 0) + 1;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
+      raced = true; f.t.db.set({ ...f.t.db.get(key)!, newLimitUsd: winningLimit });
+    }
+    return send(command);
+  };
+  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toBeDefined();
+  expect(raced).toBe(true); expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", newLimitUsd: winningLimit });
+  expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
+});
