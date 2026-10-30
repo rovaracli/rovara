@@ -812,6 +812,23 @@ export function projectPlaybookKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_PLAYBOOK#${keyPart(project, "a project name")}`), sk: "META" };
 }
 
+/** The partition holding everything the learning loop keeps for one project: its corrections, suggestions, rules and counters. */
+export function projectLearningPk(orgId: OrgId, project: string): string {
+  return orgScoped(orgId, `PROJECT_LEARNING#${keyPart(project, "a project name")}`);
+}
+
+/** One item of a project's learning partition (`STATE`, `CORRECTION#<createdAt>#<id>`, `SUGGESTION#<id>`, ...). The sort key is the caller's, so it is checked to stay one segment list. */
+export function projectLearningKey(orgId: OrgId, project: string, sk: string): OrgKey {
+  if (sk.length === 0 || /[\p{Cc}\p{Cf}]/u.test(sk)) throw new Error("a learning sort key can't be empty or hold a control character");
+  return { pk: projectLearningPk(orgId, project), sk };
+}
+
+/** The resume point of a company-wide learning walk (`close`, `sweep`, `erase#<developerId>`); outside the project partitions, and it holds no text. */
+export function learningWalkKey(orgId: OrgId, kind: string): OrgKey {
+  if (kind.length === 0 || /[\p{Cc}\p{Cf}]/u.test(kind)) throw new Error("a learning walk kind can't be empty or hold a control character");
+  return { pk: orgScoped(orgId, "LEARNING_WALK"), sk: kind };
+}
+
 /** How long recent tasks of one project took, per path (`QUICK` or `FULL`), for the plan's time estimate. */
 export function durationHistoryKey(orgId: OrgId, project: string, path: "QUICK" | "FULL"): OrgKey {
   return { pk: orgScoped(orgId, `DURATION_HISTORY#${keyPart(project, "a project name")}`), sk: path };

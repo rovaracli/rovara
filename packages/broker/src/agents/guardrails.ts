@@ -6,6 +6,7 @@ import { budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentGuardrailsSchema,
+  AgentGuardrailsWriteSchema,
   AutonomySchema,
   BUILTIN_AGENTS,
   DEFAULT_AGENT_GUARDRAILS,
@@ -80,7 +81,7 @@ export async function writeGuardrails(
   options: { actor: BudgetActor; expectedRevision?: number; request?: RequestMark; /** A person confirmed a change that makes something less safe; the audit event says so. */ widened?: boolean },
 ): Promise<StoredGuardrails> {
   if (options?.actor === undefined) throw budgetActorRefused();
-  const parsed = AgentGuardrailsSchema.safeParse(value);
+  const parsed = AgentGuardrailsWriteSchema.safeParse(value);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "guardrails"}: ${parsed.error.issues[0]?.message ?? "is not valid"}`);
   const expectedRevision = options.expectedRevision ?? (await readGuardrailsWithRevision(deps, orgId)).revision;
   return deps.store.putGuardrails({ actor: options.actor, orgId, guardrails: parsed.data, expectedRevision, by, ...(options.request === undefined ? {} : { request: options.request }), ...(options.widened === true ? { widened: true } : {}) });

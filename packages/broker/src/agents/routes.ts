@@ -6,7 +6,7 @@ import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  AgentGuardrailsSchema,
+  AgentGuardrailsWriteSchema,
   AgentPublishBodySchema as PublishBodySchema,
   AgentRollbackBodySchema as RollbackBodySchema,
   AgentBudgetBodySchema as BudgetBodySchema,
@@ -205,7 +205,7 @@ const ProjectAiBodySchema = z.object({
   memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
-const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema.refine(value => usdToWholeMicrodollars(value.maxPerRunCeilingUsd) !== undefined, { path: ["maxPerRunCeilingUsd"], message: "must have at most 6 decimal places" }) }).strict();
+const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsWriteSchema.refine(value => usdToWholeMicrodollars(value.maxPerRunCeilingUsd) !== undefined, { path: ["maxPerRunCeilingUsd"], message: "must have at most 6 decimal places" }) }).strict();
 
 export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
