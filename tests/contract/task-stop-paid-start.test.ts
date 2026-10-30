@@ -1012,7 +1012,7 @@ for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(captures).toBe(0);
 });
 
-it("a newly reviewed held preparation retains native org authority after cap approval", async () => {
+for (const source of ["valid", "closing", "cap_source"] as const) it(`a newly reviewed held preparation retains native ${source} authority after cap approval`, async () => {
   const f = await fixture();
   f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
   const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app",
@@ -1025,11 +1025,15 @@ it("a newly reviewed held preparation retains native org authority after cap app
   const task = f.t.meta(started.taskId), prepare = f.t.operations(task.workspaceId).find(operation => operation.kind === "prepare")!, send = f.t.db.send.bind(f.t.db); let changed = false;
   f.t.db.send = async command => {
     if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.UpdateExpression === "SET updatedAt = :now REMOVE budgetPause")) {
-      changed = true; f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      changed = true;
+      if (source === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      if (source === "cap_source") f.t.db.set({ ...f.t.meta(started.taskId), budgetUsd: 99 });
     }
     return send(command);
   };
   expect((await f.t.decide(MAYA, record.spendRequestId)).spendRequest.status).toBe("APPROVED");
-  expect(changed).toBe(true); expect(f.t.outboxOf(prepare.id)).toBeUndefined();
-  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  expect(changed).toBe(true);
+  if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
 });

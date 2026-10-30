@@ -2754,7 +2754,7 @@ function resumeRequestId(spendRequestId: string, what: string): string {
  * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
  * setup watch starts and the pause is removed. The preparation's success then starts the task, or wakes the agent-step engine.
  */
-async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, nativeChecks: readonly TransactItem[] = []): Promise<void> {
   const held = task.budgetPause?.firstDispatch;
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
@@ -2773,9 +2773,15 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
       ExpressionAttributeValues: { ":now": iso(deps), ":operation": held.operationId },
     } },
   ];
+  const admitted = nativeChecks.length === 0 ? undefined : withAdmittedTaskSource(deps.tableName, task, items);
+  const nativeStart = items.length;
+  const dispatchItems = [...(admitted?.items ?? items), ...nativeChecks];
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: dispatchItems }));
   } catch (error) {
+    const failed = failedIndexes(error);
+    if (nativeChecks.length > 0 && [...(failed ?? [])].some(index => index >= nativeStart)) throw budgetActorRefused();
+    if (admitted !== undefined && failed?.has(admitted.sourceIndex)) throw agentXError("CHANGE_STALE", "The held preparation's accepted spending source changed. Review it before starting work.");
     const conflict = await chargeFailure(deps, charge, task.taskId, error);
     if (conflict === "member" || conflict === "organization") throw await limitError(deps, { developerId: task.developerId } as DeveloperCaller, conflict, limits);
     // Another resume dispatched it first, or the task closed meanwhile: either way there is nothing to dispatch.
@@ -2820,7 +2826,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     if (receipt.agentRunRevision !== null) input = { ...input, expectedPausedAgentRevision: receipt.agentRunRevision };
   }
   if (input.firstDispatch) {
-    await dispatchHeldStart(deps, task);
+    await dispatchHeldStart(deps, task, input.nativeRecoveryChecks);
     return;
   }
   // A plan blocked on its run limit starts coding by this approval and nothing else (`resumeAfterRunLimitApproval`); a repeat of it is the same request.
