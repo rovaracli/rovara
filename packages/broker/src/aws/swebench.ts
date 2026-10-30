@@ -8,11 +8,11 @@ import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 // deployment's limit on concurrent runs (spec 052), writes the run's launch file, starts the eval
 // state machine, and applies the runner's callbacks. The Slack service polls the run and posts to
 // the thread; the broker never holds a Slack token (D11).
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
-  OrgIdSchema, OrgRoleSchema, orgMemberKey,
+  OrgIdSchema, OrgRoleSchema, orgMemberKey, calculateTaskStop,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -885,7 +885,26 @@ export async function readRun(dependencies: SwebenchDependencies, runId: string)
   const item = await get(dependencies, swebenchRunKey(runId));
   if (item === undefined) return undefined;
   // The state machine records the EC2 instance as ec2InstanceId; the run's instanceId is SWE-bench's.
-  return SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "cancelRequestedBy", "ec2InstanceId", "executionArn"]));
+  let run: SwebenchRun;
+  try { run = SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "cancelRequestedBy", "ec2InstanceId", "executionArn"])); }
+  catch (error) {
+    if (item.spendingStop !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recorded eval spending admission is invalid.");
+    throw error;
+  }
+  const snapshot = run.spendingStop;
+  if (snapshot !== undefined) {
+    const calculated = calculateTaskStop(snapshot.calculationInput);
+    const digest = createHash("sha256").update(JSON.stringify([snapshot.orgId, snapshot.project, null, snapshot.sourceRevisions, snapshot.calculationInput])).digest("hex");
+    if (snapshot.orgId !== run.orgId || snapshot.project !== run.projectName || run.developerId === undefined
+      || snapshot.calculationInput.agentStop.kind !== "inherit" || digest !== snapshot.policyDigest
+      || calculated.kind !== "resolved" || !("approvalCapMicrousd" in calculated)
+      || calculated.effectiveStopMicrousd !== snapshot.effectiveStopMicrousd || calculated.approvalCapMicrousd !== snapshot.approvalCapMicrousd
+      || JSON.stringify(calculated.bindingScopes) !== JSON.stringify(snapshot.bindingScopes)
+      || usdToWholeMicrodollars(run.maxCostUsd) !== snapshot.effectiveStopMicrousd) {
+      throw agentXError("TASK_STOP_CONFIG_INVALID", "The recorded eval spending admission changed.");
+    }
+  }
+  return run;
 }
 
 async function get(dependencies: SwebenchDependencies, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
