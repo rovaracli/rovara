@@ -105,3 +105,28 @@ it("enrolled paid start fences archive/restore ABA even when active status is un
   const reply = await f.start(); expect(changed).toBe(true); expect(reply.status).toBe(403);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
 });
+it("a project-stop numeric edit after capture does not invalidate the accepted payer binding", async () => {
+  const f = await fixture(), send = f.t.db.send.bind(f.t.db); let edited = false;
+  f.t.db.send = async command => {
+    if (!edited && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      edited = true; f.t.db.set({ ...f.t.db.get(f.project)!, revision: 2, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 500_000 } });
+    }
+    return send(command);
+  };
+  const first = await f.start(); expect(edited).toBe(true); expect(first.status, JSON.stringify(first.body)).toBe(200);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toEqual([expect.objectContaining({ budgetUsd: 1.234567 })]);
+  f.request.requestId = randomUUID(); expect((await f.start()).status).toBe(200);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK").map(row => row.budgetUsd).sort()).toEqual([0.5, 1.234567]);
+});
+it("a real project payer change after capture still refuses atomically", async () => {
+  const f = await fixture(), send = f.t.db.send.bind(f.t.db); let edited = false;
+  f.t.db.send = async command => {
+    if (!edited && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      edited = true; f.t.db.set({ ...f.t.db.get(f.project)!, revision: 2, projectPays: true });
+    }
+    return send(command);
+  };
+  const reply = await f.start(); expect(edited).toBe(true); expect(reply.status).toBe(409);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
