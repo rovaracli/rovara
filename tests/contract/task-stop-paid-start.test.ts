@@ -2043,7 +2043,7 @@ for (const failure of ["actor", "seed", "project"] as const) it(`unenrolled cuto
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
 });
 
-for (const race of ["none", "ceiling", "actor", "task", "company", "project", "agent", "org_close", "pointer"] as const) it(`cutover expiry binds reviewed native policy, actor and task: ${race}`, async () => {
+for (const race of ["none", "ceiling", "actor", "task", "company", "project", "agent", "org_close", "pointer", "seed", "agent_raw", "company_raw", "enrollment_raw", "agent_status"] as const) it(`cutover expiry binds reviewed native policy, actor and task: ${race}`, async () => {
   const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
   const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: 5, newLimitUsd: 5, reason: "Complete above-ceiling ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
   f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
@@ -2057,6 +2057,10 @@ for (const race of ["none", "ceiling", "actor", "task", "company", "project", "a
       if (race === "company" || race === "project" || race === "agent") { const changed = race === "company" ? f.policy : race === "project" ? f.project : f.agent; const row = f.t.db.get(changed)!; f.t.db.set({ ...row, revision: Number(row.revision) + 1 }); }
       if (race === "org_close") { const org = orgMetaKey(TEST_ORG); f.t.db.set({ ...f.t.db.get(org)!, closingAt: new Date().toISOString() }); }
       if (race === "pointer") { const pointer = developerOrgKey(ADA.developerId); f.t.db.set({ ...f.t.db.get(pointer)!, role: "member" }); }
+      if (race === "seed") f.t.db.delete({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap" });
+      if (race === "agent_raw" || race === "agent_status") f.t.db.set({ ...f.t.db.get(f.agent)!, ...(race === "agent_raw" ? { maxPerRunUsd: 0.5 } : { status: "archived" }) });
+      if (race === "company_raw") f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+      if (race === "enrollment_raw") f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 2, state: "disabled" } });
     }
     return send(command);
   };
