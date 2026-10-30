@@ -1,15 +1,16 @@
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import { z } from "zod";
-import { orgSettingsKey, ownerBudgetKey, topUpKey, type OrgId, type SpendRequestRecord } from "@agentx/contracts";
+import { agentKey, chainKey, builtinSettingsKey, isBuiltinAgentId, AgentOwnerSchema, orgSettingsKey, ownerBudgetKey, topUpKey, type OrgId, type SpendRequestRecord } from "@agentx/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
-import { staleApproval } from "./approval-source.js";
+import { ownerShare, type BudgetSubject } from "./owner-total.js";
+import { ApprovalSourceSchema, staleApproval } from "./approval-source.js";
 const amount = z.number().finite().nonnegative();
 export const OwnerFinancialTermsSchema = z.object({ version: z.literal(1), basis: z.enum(["base", "effective"]).optional(), owner: z.string().regex(/^[a-f0-9]{64}$/), month: z.string().regex(/^\d{4}-\d{2}$/),
   totalUsd: amount, counterUsd: amount, counterVersion: z.number().int().nonnegative(), capUsd: amount, policyRevision: z.number().int().nonnegative(), carriedUsd: amount, wouldBeUsd: amount, carriedSource: z.object({ key: z.object({ pk: z.string().min(1), sk: z.string().min(1) }).strict(), exists: z.boolean(), fields: z.record(z.string(), z.unknown()) }).strict().optional() }).strict();
 export type OwnerFinancialTerms = NonNullable<SpendRequestRecord["ownerFinancialTerms"]>;
 export function assertOwnerCarriedSource(terms: { month: string; carriedSource?: OwnerFinancialTerms["carriedSource"] }, orgId: OrgId, context?: { agentId?: string; chainId?: string }): void {
   if (terms.carriedSource === undefined) return;
-  if (context === undefined || (context.agentId === undefined && context.chainId === undefined)) throw staleApproval();
+  if (context === undefined || ((context.agentId === undefined) === (context.chainId === undefined))) throw staleApproval();
   const scope = context.chainId !== undefined ? { kind: "chain" as const, chainId: context.chainId } : { kind: "agent" as const, agentId: context.agentId! };
   const key = topUpKey(orgId, terms.month, scope);
   if (terms.carriedSource.key.pk !== key.pk || terms.carriedSource.key.sk !== key.sk) throw staleApproval();
@@ -42,4 +43,27 @@ export function pinOwnerFinancialChecks(items: TransactItem[], checks: TransactI
     update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
     return index;
   });
+}
+
+/** Completeness is evaluated from ORIGINAL counted source terms. Never fill
+ * an old join's missing carrier evidence from a newer row at decision time. */
+export function ownerApprovalTermsComplete(record: SpendRequestRecord): boolean {
+  const raw = record.ownerFinancialTerms, parsed = OwnerFinancialTermsSchema.safeParse(raw);
+  if (raw === undefined || !parsed.success || parsed.data.owner !== record.forOwner) return false;
+  const terms = parsed.data;
+  if (record.change?.op === "confirm_move") return terms.basis === "base" && terms.carriedUsd === 0 && terms.carriedSource === undefined && record.change.owner === terms.owner;
+  if (terms.basis === "base" || record.change === undefined) return false;
+  const source = ApprovalSourceSchema.safeParse(record.approvalSource);
+  if (!source.success || ((record.agentId === undefined) === (record.chainId === undefined))) return false;
+  let key: { pk: string; sk: string };
+  if (record.chainId !== undefined) key = chainKey(record.orgId, record.chainId, "META");
+  else if (record.agentId !== undefined) key = isBuiltinAgentId(record.agentId) ? builtinSettingsKey(record.orgId, record.agentId) : agentKey(record.orgId, record.agentId, "META");
+  else return false;
+  if (source.data.key.pk !== key.pk || source.data.key.sk !== key.sk) return false;
+  const before = z.object({ owner: AgentOwnerSchema.optional(), accountable: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(), status: z.enum(["active", "archived"]).optional(), monthlyBudgetUsd: amount.optional() }).passthrough().safeParse(source.data.fields);
+  if (!before.success) return false;
+  const originalShare = ownerShare(before.data as BudgetSubject);
+  if ((originalShare?.owner !== terms.owner || terms.carriedUsd > 0) && terms.carriedSource === undefined) return false;
+  try { ownerFinancialChecks("validation-only", record.orgId, raw, record); } catch { return false; }
+  return true;
 }

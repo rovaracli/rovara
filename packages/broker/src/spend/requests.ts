@@ -1,5 +1,5 @@
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
-import { OwnerFinancialTermsSchema, ownerFinancialChecks, assertOwnerCarriedSource } from "./owner-approval-terms.js";
+import { OwnerFinancialTermsSchema, ownerFinancialChecks, assertOwnerCarriedSource, ownerApprovalTermsComplete } from "./owner-approval-terms.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
@@ -2204,8 +2204,7 @@ async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: 
     if (record === undefined || record.status !== "PENDING" || record.kind === "month") continue;
     let completeTerms: boolean;
     if (record.kind === "owner_cap") {
-      const terms = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
-      completeTerms = terms.success && terms.data.owner === record.forOwner && (record.change?.op === "confirm_move" ? terms.data.basis === "base" : ApprovalSourceSchema.safeParse(record.approvalSource).success);
+      completeTerms = ownerApprovalTermsComplete(record);
     } else {
       const terms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
       try { completeTerms = terms.success && taskApprovalRecordMatches(terms.data, record); } catch { completeTerms = false; }
