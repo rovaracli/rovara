@@ -1,8 +1,8 @@
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey } from "@agentx/contracts";
+import { TransactWriteCommand, TransactGetCommand } from "@aws-sdk/lib-dynamodb";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup, CODING, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -243,6 +243,34 @@ for (const loss of ["share_removed", "shared_project_viewer"] as const) it(`paid
     return send(command);
   };
   const reply = await f.startOther(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+async function draftStart() {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  f.t.db.delete(projectAgentKey(TEST_ORG, "payments", agentId)); // a draft test run is legitimately off-roster
+  return { ...f, agentId, key, startDraft: () => f.t.api(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", input: { text: "Test the draft" }, version: "draft" }) };
+}
+it("a legitimate off-roster draft starts with its frozen draft revision and captured stop", async () => {
+  const f = await draftStart(), reply = await f.startDraft(); expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+  const tasks = f.t.db.find(row => row.entityType === "DEVELOPER_TASK"); expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({ budgetUsd: 1.234567, origin: "test_run", agent: { agentId: f.agentId, version: "draft", draftRevision: 1 } });
+});
+for (const phase of ["before_policy_capture", "at_native_commit"] as const) it(`paid draft start refuses a real draft edit ${phase}`, async () => {
+  const f = await draftStart(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    const target = phase === "before_policy_capture" ? command instanceof TransactGetCommand
+      : command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK");
+    if (!changed && target) {
+      changed = true; const draft = await f.t.store.getDraft(TEST_ORG, f.agentId); expect(draft).toBeDefined();
+      const saved = await f.t.api(MAYA, "PUT", `/v1/app/agents/${f.agentId}/draft`, { expectedRevision: draft!.revision, overlay: { ...CODING, instructions: "A newly edited draft." } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    }
+    return send(command);
+  };
+  const reply = await f.startDraft(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
