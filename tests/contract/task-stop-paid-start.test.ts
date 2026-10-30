@@ -2412,3 +2412,17 @@ it("setup draft preparation carries the same accepted spending admission", async
   expect(prepare[0]).toMatchObject({ spendingTaskId: task.taskId, spendingAdmission: task.spendingAdmission });
   expect(task.spendingAdmission).toBeDefined();
 });
+
+it("setup draft callback reuses its admitted window after company tightening", async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer");
+  const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-draft", { requestId: randomUUID() });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+  const task = f.t.db.find(row => row.entityType === "DEVELOPER_TASK")[0]!;
+  const workspaceId = String(task.workspaceId), prepare = f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!;
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
+  await f.t.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+  const next = f.t.operations(workspaceId).filter(operation => operation.kind === "task");
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({ spendingTaskId: task.taskId, spendingAdmission: task.spendingAdmission });
+  expect(f.t.meta(String(task.taskId))).toMatchObject({ budgetUsd: 1.234567, spendingStop: task.spendingStop, spendingAdmission: task.spendingAdmission });
+});
