@@ -937,3 +937,17 @@ it("an approved agent window resumes when the original answered pause has no not
   expect(f.t.db.get(key)).toMatchObject({ state: "RUNNING", spendingAdmission: { requestId: decisionId } });
   expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(0);
 });
+
+for (const loss of ["closing", "cap_source"] as const) it(`a plain-task approval fences ${loss} at the actual paid operation commit`, async () => {
+  const f = await approvalWindow(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      changed = true;
+      if (loss === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      else f.t.db.set({ ...f.t.meta(f.task.taskId), budgetUsd: 99 });
+    }
+    return send(command);
+  };
+  expect((await f.t.decide(BEN, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(changed).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
