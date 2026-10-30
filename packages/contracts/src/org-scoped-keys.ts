@@ -870,3 +870,120 @@ export function reviewNudgeLedgerKey(taskId: string, repositoryId: string, numbe
 export function codeMilestoneKey(taskId: string, kind: string, n: number): { pk: string; sk: string } {
   return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `CODE_MILESTONE#${keyPart(kind, "a milestone kind")}#${paddedCounter(n, "a milestone number")}` };
 }
+
+// ---- Team record (learning v2). One DynamoDB table, `TeamRecord`, one partition per workspace (the org) and project. A workspace's rows never
+// share a partition with another's, and every global index key starts with the workspace. Source ids are hashed into index keys because a source's
+// own id may hold a "#". The table's TTL attribute is `indexExpiresAt` (INDEX_EXPIRY_ATTRIBUTE).
+
+/** The project segment of a partition for a row that belongs to no project. A project name starts with a letter, so this never collides. */
+export const TEAM_RECORD_NO_PROJECT = "_workspace";
+
+/** The two indexes of the TeamRecord table: GSI1 finds rows by their source (delete at the source), GSI2 by the person (erase). */
+export const TEAM_RECORD_GSI1 = { index: "gsi1", partition: "gsi1pk" } as const;
+export const TEAM_RECORD_GSI2 = { index: "gsi2", partition: "gsi2pk" } as const;
+/** GSI3 finds rows by their scope (a Slack channel, a repository): a deleted channel, a membership change, a channel that turned private. */
+export const TEAM_RECORD_GSI3 = { index: "gsi3", partition: "gsi3pk" } as const;
+
+const TEAM_RECORD_COUNTER_WIDTH = 12;
+const teamRecordCounter = (value: number, what: string): string => {
+  if (!Number.isInteger(value) || value < 0 || value >= 10 ** TEAM_RECORD_COUNTER_WIDTH) throw new Error(`${what} is a whole number below 10^${String(TEAM_RECORD_COUNTER_WIDTH)}`);
+  return String(value).padStart(TEAM_RECORD_COUNTER_WIDTH, "0");
+};
+
+/** The partition holding one project's record rows, facts, lessons, skills, load manifests and source settings in one workspace. */
+export function teamRecordPk(orgId: OrgId, project?: string): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#P#${project === undefined ? TEAM_RECORD_NO_PROJECT : keyPart(project, "a project name")}`;
+}
+
+/** The first characters of the partition of any one workspace, for a walk of everything it holds (org close). */
+export function teamRecordWorkspacePrefix(orgId: OrgId): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#`;
+}
+
+/** The workspace a record partition belongs to, or undefined for a key that is not one. */
+export function orgOfTeamRecordPk(pk: string): OrgId | undefined {
+  const parsed = OrgIdSchema.safeParse(/^WS#(org_[0-9a-z]{20})#P#/.exec(pk)?.[1]);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * A hash of a source's own id (so a "#" in it cannot move a key boundary): sha256 over the system, a NUL and the id, as 64 hex. The lake's `source_hash`
+ * column is the same value, so a delete at a source reaches the hot row, the vector and the lake row by one key.
+ */
+export function teamRecordSourceHash(system: string, sourceId: string): string {
+  if (system.length === 0 || system.includes("\u0000")) throw new Error("a source system can't be empty or hold a NUL");
+  return createHash("sha256").update(`${system}\u0000${sourceId}`).digest("hex");
+}
+
+/** `REC#<time>#<id>`: a record event, in time order. `id` is the event's uuid. */
+export function recordEventKey(orgId: OrgId, project: string | undefined, occurredAt: string, eventId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `REC#${canonicalInstant(occurredAt)}#${keyPart(eventId, "an event id")}` };
+}
+export const RECORD_EVENT_SK_PREFIX = "REC#";
+
+/** The GSI1 partition value of every row that came from one source item: its record events and the derivation links of the facts built from it. */
+export function recordSourceIndexValue(orgId: OrgId, system: string, sourceId: string): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#SRC#${keyPart(system, "a source system")}#${teamRecordSourceHash(system, sourceId)}`;
+}
+/** The GSI3 partition value of every row of one scope (`slack:T1/C9`, `github:repo/123`; a scope is already prefixed with its source). */
+export function recordScopeIndexValue(orgId: OrgId, scope: string): string {
+  if (scope.length === 0) throw new Error("a scope can't be empty");
+  return `WS#${OrgIdSchema.parse(orgId)}#SCOPE#${createHash("sha256").update(scope).digest("hex")}`;
+}
+/** The GSI2 partition value of every row a person's actions made (person erase). */
+export function recordActorIndexValue(orgId: OrgId, developerId: string): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#ACTOR#${keyPart(developerId, "a developer id")}`;
+}
+
+export function recordFactKey(orgId: OrgId, project: string | undefined, factId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `FACT#${keyPart(factId, "a fact id")}` };
+}
+export const RECORD_FACT_SK_PREFIX = "FACT#";
+
+/** A link from a source item to a fact distilled from it, so a delete at a source that stored no row (retention B) still finds its facts. */
+export function recordDerivationKey(orgId: OrgId, project: string | undefined, system: string, sourceId: string, factId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `DERIV#${teamRecordSourceHash(system, sourceId)}#${keyPart(factId, "a fact id")}` };
+}
+export const RECORD_DERIVATION_SK_PREFIX = "DERIV#";
+
+export function lessonKey(orgId: OrgId, project: string, lessonId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `LESSON#${keyPart(lessonId, "a lesson id")}` };
+}
+export const LESSON_SK_PREFIX = "LESSON#";
+export function lessonVersionKey(orgId: OrgId, project: string, lessonId: string, version: number): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `LESSON#${keyPart(lessonId, "a lesson id")}#V#${teamRecordCounter(version, "a lesson version")}` };
+}
+/** The project's lesson-set version counter (monotonic; a load manifest records it so a task's context can be reproduced). */
+export function lessonSetKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: "LESSONSET" };
+}
+export function learnedSkillKey(orgId: OrgId, project: string, skillId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `SKILL#${keyPart(skillId, "a skill id")}` };
+}
+export function learnedSkillVersionKey(orgId: OrgId, project: string, skillId: string, version: number): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `SKILL#${keyPart(skillId, "a skill id")}#V#${teamRecordCounter(version, "a skill version")}` };
+}
+/** What the agent loaded for one stage dispatch. An eval run writes `EVALLOAD#` instead, so the live counters never see it. */
+export function loadManifestKey(orgId: OrgId, project: string, taskId: string, stage: string, round: number, evalRun = false): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `${evalRun ? "EVALLOAD" : "LOAD"}#${keyPart(taskId, "a task id")}#${keyPart(stage, "a stage")}#${paddedCounter(round, "a round")}` };
+}
+export function recordSourceKey(orgId: OrgId, project: string, system: string, scope: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `SOURCE#${keyPart(system, "a source system")}#${teamRecordSourceHash(system, scope)}` };
+}
+export const RECORD_SOURCE_SK_PREFIX = "SOURCE#";
+export function memorySnapshotKey(orgId: OrgId, project: string, snapshotId: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: `SNAPSHOT#${keyPart(snapshotId, "a snapshot id")}` };
+}
+/** The company lock on the learning mode, in the workspace's own (project-less) partition. */
+export function learningModeLockKey(orgId: OrgId): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: "MODE_LOCK" };
+}
+/** A queued delete of rows hidden at a source (a tombstone request the delete worker finishes), in the workspace's own partition. */
+export function recordDeleteQueueKey(orgId: OrgId, at: string, requestId: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `DELQ#${canonicalInstant(at)}#${keyPart(requestId, "a request id")}` };
+}
+export const RECORD_DELETE_QUEUE_SK_PREFIX = "DELQ#";
+/** The project's learning mode (Off, Collect, Suggest, On), where the settings writer stores it. */
+export function learningModeKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: teamRecordPk(orgId, project), sk: "MODE" };
+}

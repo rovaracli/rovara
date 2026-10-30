@@ -191,6 +191,25 @@ export const AUDIT_ACTIONS = [
   "process.rolled_back",
   "playbook.default_process_changed",
   "company.change_applied_to_project",
+  // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
+  "record.source_added",
+  "record.source_changed",
+  "record.source_removed",
+  "record.tombstoned",
+  "record.erased",
+  "lesson.mode_changed",
+  "lesson.proposed",
+  "lesson.activated",
+  "lesson.approved",
+  "lesson.edited",
+  "lesson.rejected",
+  "lesson.retired",
+  "lesson.expired",
+  "lesson.withdrawn",
+  "lesson.refused",
+  "lesson.promoted",
+  "lesson.rolled_back",
+  "lesson.snapshot_created",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -220,6 +239,8 @@ export const AUDIT_TARGET_KINDS = [
   "spend_policy",
   "model_source",
   "process",
+  "lesson",
+  "record_source",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -332,6 +353,26 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
+  // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
+  // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
+  "record.source_added": ["source", "retention", "restricted"],
+  "record.source_changed": ["source", "fromRetention", "toRetention", "enabled"],
+  "record.source_removed": ["source"],
+  "record.tombstoned": ["source", "cause", "count"],
+  "record.erased": ["cause", "rows", "facts", "lessons", "vectors"],
+  "lesson.mode_changed": ["fromMode", "toMode", "locked"],
+  "lesson.proposed": ["lessonType", "tier"],
+  "lesson.activated": ["lessonType", "tier", "auto"],
+  "lesson.approved": ["tier", "approvals", "soleOwner"],
+  "lesson.edited": ["tier", "fromTier"],
+  "lesson.rejected": ["tier"],
+  "lesson.retired": ["cause", "tier"],
+  "lesson.expired": ["tier"],
+  "lesson.withdrawn": ["cause"],
+  "lesson.refused": ["refusal"],
+  "lesson.promoted": ["tier"],
+  "lesson.rolled_back": ["fromSetVersion", "toSetVersion"],
+  "lesson.snapshot_created": ["lessonSetVersion", "lessonCount"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

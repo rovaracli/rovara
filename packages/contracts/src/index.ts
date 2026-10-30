@@ -199,3 +199,7 @@ export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
+
+// Learning v2: the Team record and lessons (R1).
+export * from "./team-record.js";
+export * from "./lessons.js";

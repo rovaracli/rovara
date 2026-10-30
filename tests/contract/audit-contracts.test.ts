@@ -175,6 +175,10 @@ describe("the event catalog", () => {
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
+      // Team record and lessons (learning v2, R1)
+      "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "lesson.mode_changed", "lesson.proposed",
+      "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
+      "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -184,7 +188,7 @@ describe("the event catalog", () => {
       "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
       "spend_policy", "model_source",
-      "process",
+      "process", "lesson", "record_source",
     ]);
   });
 
