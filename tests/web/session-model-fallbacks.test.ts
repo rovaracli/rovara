@@ -13,12 +13,8 @@ import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 
-/** The session as lane C's view will send it: the task carries `modelFallbacks` (strict contracts do not know it on this branch yet, so it is added after the fixture parses). */
-function withFallbacks(modelFallbacks: unknown, present = true) {
- const base = fixture();
- if (base.body.kind !== "task") throw new Error("fixture must be a task");
- return { ...base, body: { kind: "task", task: present ? { ...base.body.task, modelFallbacks } : base.body.task } };
-}
+/** The session as the server sends it: the task carries `modelFallbacks` and the whole fixture goes through the strict task and session view schemas. */
+const withFallbacks = (modelFallbacks?: unknown) => fixture({}, modelFallbacks === undefined ? {} : { modelFallbacks });
 function setup(value: unknown, theme: "light" | "dark" = "light") {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
@@ -37,7 +33,7 @@ it("says which model a stage used and which one was unavailable", async () => {
  f.close();
 });
 it("says the preferred model was unavailable when none is named", async () => {
- const f = setup(withFallbacks([{ stage: "code_review", used: "openai/gpt-5.5", wanted: null, reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }], true), "dark");
+ const f = setup(withFallbacks([{ stage: "code_review", used: "openai/gpt-5.5", wanted: null, reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }]), "dark");
  const region = await screen.findByRole("region", { name: "Model changes" });
  expect(region.textContent).toContain("Code review");
  expect(region.textContent).toContain("Used openai/gpt-5.5 because the preferred model was unavailable.");
@@ -53,8 +49,8 @@ it("lists one line per stage, in the order given", async () => {
  expect(lines).toEqual(["Plan Used m/a because m/b was unavailable.", "Security review Used m/c because the preferred model was unavailable."]);
  f.close();
 });
-it("shows nothing for an empty list, a missing field, or a field of the wrong shape", async () => {
- for (const value of [withFallbacks([]), withFallbacks(undefined, false), withFallbacks("nope"), withFallbacks([{ stage: "build", used: 7, wanted: null }])]) {
+it("shows nothing for an empty list or a task without the field", async () => {
+ for (const value of [withFallbacks([]), withFallbacks()]) {
   const f = setup(value);
   await screen.findByRole("region", { name: "Work progress" });
   expect(notes()).toBeNull();
@@ -62,21 +58,18 @@ it("shows nothing for an empty list, a missing field, or a field of the wrong sh
   f.close();
  }
 });
-it("keeps one bad entry from hiding the good ones", async () => {
- const f = setup(withFallbacks([{ stage: "build", used: 7, wanted: null }, { stage: "plan", used: "m/a", wanted: "m/b", reasonCode: "MODEL_STALE" }]));
- const region = await screen.findByRole("region", { name: "Model changes" });
- expect(region.querySelectorAll("li")).toHaveLength(1);
- expect(region.textContent).toContain("Used m/a because m/b was unavailable.");
- f.close();
+it("is refused by the strict task view when an entry is malformed, so the screen never sees one", () => {
+ const bad = [{ stage: "build", used: 7, wanted: null, reasonCode: "MODEL_STALE" }, { stage: "build", used: "m/a", wanted: null, reasonCode: "raw provider exception" }, { stage: "build", used: "m/a", wanted: "m/\u0007b", reasonCode: "MODEL_STALE" }];
+ for (const entry of bad) expect(() => withFallbacks([entry])).toThrow();
+ expect(() => withFallbacks("nope")).toThrow();
+ expect(() => withFallbacks(Array(65).fill({ stage: "build", used: "m/a", wanted: null, reasonCode: "MODEL_STALE" }))).toThrow();
 });
-it("shows hostile model text as plain text: no markup and no control characters", async () => {
- const hostile = "x<img src=x onerror=window.__pwned=1>‮\u0007y";
- const f = setup(withFallbacks([{ stage: "<b>build</b>", used: hostile, wanted: hostile, reasonCode: "MODEL_STALE" }]));
+it("shows hostile model text as plain text: no markup", async () => {
+ const hostile = "x<img src=x onerror=window.__pwned=1>y";
+ const f = setup(withFallbacks([{ stage: "build", used: hostile, wanted: hostile, reasonCode: "MODEL_STALE" }]));
  const region = await screen.findByRole("region", { name: "Model changes" });
  expect(region.querySelector("img,b,script")).toBeNull();
- expect(region.textContent).toContain("x<img src=x onerror=window.__pwned=1>[U+202E][U+0007]y");
- expect(region.textContent).not.toContain("‮");
- expect(region.textContent).not.toContain("\u0007");
+ expect(region.textContent).toContain("Used " + hostile + " because " + hostile + " was unavailable.");
  expect("__pwned" in window).toBe(false);
  f.close();
 });
