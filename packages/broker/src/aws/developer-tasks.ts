@@ -2133,6 +2133,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
           spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole }, async () => {
             if (deps.agentRuns === undefined) throw budgetActorRefused();
             await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
+          }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            return deps.agentRuns.store.listShares(deps.orgId, agentId);
           }));
         }
         const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
