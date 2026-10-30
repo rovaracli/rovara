@@ -6,7 +6,7 @@ import { z } from "zod";
 import {
   AgentGuardrailsSchema, AgentIdSchema, OrgIdSchema, OrgRoleSchema, TaskStopAdmissionInputSchema,
   agentGuardrailsKey, agentKey, agentXError, builtinSettingsKey, calculateTaskStop, developerOrgKey,
-  isBuiltinAgentId, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, projectAiKey,
+  isBuiltinAgentId, orgMemberKey, orgMetaKey, orgScoped, orgProjectCatalogKey, orgSettingsKey, projectAiKey,
   type TaskStopAdmissionInput, type TaskStopBindingScope,
 } from "@agentx/contracts";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
@@ -56,7 +56,9 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
   const builtin = isBuiltinAgentId(agentId);
   const keys = [orgMemberKey(orgId, developerId), developerOrgKey(developerId), orgMetaKey(orgId),
     orgSettingsKey(orgId, "TASK_STOP_POLICY"), agentGuardrailsKey(orgId), orgProjectCatalogKey(orgId, project),
-    projectAiKey(orgId, project), builtin ? builtinSettingsKey(orgId, agentId) : agentKey(orgId, agentId, "META")];
+    projectAiKey(orgId, project), builtin ? builtinSettingsKey(orgId, agentId) : agentKey(orgId, agentId, "META"),
+    { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap" },
+    { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#upgrade" }];
   let response: z.infer<typeof responseSchema>;
   try {
     // A single serializable read: never split the four policies across Gets or
@@ -75,6 +77,19 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
   }
   const member = row(0, true), pointer = row(1, true), org = row(2, true);
   if (member.developerId !== developerId || member.role !== role || pointer.role !== role || org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
+  // Immutable, non-TTL seed receipts distinguish a never-enrolled legacy org
+  // from a seeded org whose canonical policy disappeared. Read them in the
+  // SAME snapshot; absence is never translated into configured inheritance.
+  const receipts = [8, 9].flatMap(index => {
+    if (rows[index] === undefined) return [];
+    const receipt = row(index);
+    if (receipt.entityType !== "TASK_STOP_SEED" || receipt.version !== 1
+      || receipt.source !== (index === 8 ? "bootstrap" : "upgrade")
+      || !["created", "preserved"].includes(String(receipt.outcome))
+      || !positiveRevision(receipt.policyRevision)) throw invalid();
+    return [receipt];
+  });
+  if (rows[3] === undefined && receipts.length === 0) return { kind: "disabled" };
   const company = row(3);
   if (company.entityType !== "ORG_TASK_STOP_POLICY" || !positiveRevision(company.revision)
     || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(company, field))) throw invalid();
@@ -82,6 +97,8 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
   if (!object(enrollment) || enrollment.version !== 1) throw invalid();
   if (enrollment.state === "disabled" || enrollment.state === "ready") return { kind: "disabled" };
   if (enrollment.state !== "enabled") throw invalid();
+  if (receipts.length === 0) throw missing();
+  if (receipts.some(receipt => Number(receipt.policyRevision) > Number(company.revision))) throw invalid();
   const ceiling = row(4), catalog = row(5), settings = row(6), agent = row(7);
   if (ceiling.entityType !== "AGENT_GUARDRAILS" || !positiveRevision(ceiling.revision)
     || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(ceiling, field))) throw invalid();
