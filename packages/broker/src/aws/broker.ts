@@ -7129,6 +7129,12 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           ConditionExpression: "#pointerType = :pointerType AND taskId = :pointerTask AND developerId = :pointerDeveloper",
           ExpressionAttributeNames: { "#pointerType": "entityType" },
           ExpressionAttributeValues: { ":pointerType": pointer.entityType, ":pointerTask": pointer.taskId, ":pointerDeveloper": pointer.developerId } } });
+        if (dependencies.developer === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task work authority is unavailable.");
+        const peopleDependencies = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
+          developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies) },
+        await ownerCallerOf(dependencies, task, "model-key-work-authority"), undefined, null);
+        const peopleFence = await systemTaskDispatchAccessFence(peopleDependencies, task);
+        keyAuthority.push(peopleFence ?? taskAccessFence(dependencies.tableName, task.taskId));
       }
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
