@@ -41,3 +41,13 @@ it("B34 browser client rejects a proposed target or approval outcome for a diffe
  await expect(api.propose({ requestId, teamId, channelId, expectedContextDigest })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
  await expect(api.approve({ requestId: approvalId, proposalId: requestId, teamId, channelId })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
 });
+
+for (const decision of ["cancel", "reject"] as const) it(`B35 ${decision} and decision readback pin the exact proposal and UUID without retries`, async () => {
+ const proposalId = "22222222-2222-4222-8222-222222222222", result = { kind: "decision", orgId, project, decision: { requestId, proposalId, state: decision === "cancel" ? "cancelled" : "rejected", createdAt: "2026-10-30T00:00:00Z", expiresAt: "2026-10-31T00:00:00Z" } };
+ const f = fakeHost(async () => ({ status: 200, body: result })), api = createProjectSlackApi(f.host, orgId, project);
+ expect(await api.decide({ requestId, proposalId, decision })).toEqual(result);expect(await api.decisionStatus(requestId)).toEqual(result);
+ expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "POST", retry: "never", path: `/v1/app/projects/${project}/slack-channel/proposals/${proposalId}/${decision}`, body: { expectedOrgId: orgId, requestId } });
+ expect(f.request.mock.calls[1]?.[0]).toMatchObject({ method: "GET", retry: "never", path: `/v1/app/projects/${project}/slack-channel/decisions/${requestId}?expectedOrgId=${orgId}` });
+ const wrong = fakeHost(async () => ({ status: 200, body: { ...result, decision: { ...result.decision, proposalId: requestId } } }));
+ await expect(createProjectSlackApi(wrong.host, orgId, project).decide({ requestId, proposalId, decision })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+});
