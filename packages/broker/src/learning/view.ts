@@ -3,7 +3,7 @@
 // Who reads: anyone who can see the project (`projectFor`: another company's project and one the caller cannot see answer the same `PROJECT_NOT_FOUND`). What they get depends on who they
 // are, read live (standing.ts), never from the sign-in:
 //   - The top-level `canDecide` is true only for a project member with the maintainer role (an org owner or admin counts): it is what the screen uses to show Dismiss and Remove. Each
-//     suggestion's own `canDecide` is whether this caller may ACCEPT it: a live maintainer, or an author of one of its sources who still has standing. Both come from `canAcceptSuggestion`
+//     suggestion's own `canDecide` is whether this caller may ACCEPT it: a live member with How we work edit rights (the same as the top-level one: being an author grants nothing). Both come from `canAcceptSuggestion`
 //     (standing.ts), the rule Accept itself uses; the deciding routes check again.
 //   - Correction text (each source's `label` and the suggestion's `proposedText`) goes only to a project MEMBER (the same test capture uses). A viewer, or a person who reaches the project
 //     only through its Slack channel, sees that suggestions exist, their stage and how many sources, but no one's words.
@@ -116,7 +116,7 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const standing = await readStanding(deps, caller.orgId, caller.developerId, project);
   const member = standing === "member";
   const maintainer = projectAllows(found.role, "edit_settings");
-  const canDecide = canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, []);
+  const canDecide = canAcceptSuggestion({ standing, maintainer });
 
   const [settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
     settingsView(deps, learning, scope),
@@ -144,7 +144,7 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
     allFromOnePerson: suggestion.allFromOnePerson, lessSafe: suggestion.lessSafe, lessSafeWords: suggestion.kinds, overlaps: suggestion.overlaps,
     sources: sourceViews(suggestion, members, member), revision: suggestion.revision,
     // Per suggestion, with the rule Accept authorises by (standing.ts): the screen cannot offer what the API will refuse.
-    canDecide: canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, suggestion.correctionIds.flatMap((id) => { const author = members.get(id)?.author; return author === undefined ? [] : [author]; })),
+    canDecide: canAcceptSuggestion({ standing, maintainer }),
   }));
 
   // The dismissed patterns: the id of the pattern (what Reopen takes), the stage and kind of the suggestion it came from, and when. No text from either.

@@ -86,12 +86,12 @@ export async function companyIsOpen(deps: StandingDeps, orgId: OrgId): Promise<b
 }
 
 /**
- * Who may accept a suggestion (design 5.1, L3): a person with standing in the project who is a maintainer, or who wrote one of the suggestion's corrections. THE one rule: Accept authorises
- * with it and the learning view's per-suggestion `canDecide` is computed with it, so the screen and the API cannot disagree. `authors` are the authors of the suggestion's corrections.
+ * Who may accept a suggestion (design 5.1, L3): a person with standing in the project who has How we work edit rights (`edit_settings`: a maintainer), the same right any publish needs. Being the
+ * author of one of its corrections grants nothing; it only means an author is not barred from accepting their own suggestion when they hold the right. THE one rule: Accept authorises with it
+ * and the learning view's per-suggestion `canDecide` is computed with it, so the screen and the API cannot disagree.
  */
-export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean; developerId: string }, authors: readonly string[]): boolean {
-  if (who.standing !== "member") return false;
-  return who.maintainer || authors.includes(who.developerId);
+export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean }): boolean {
+  return who.standing === "member" && who.maintainer;
 }
 
 /** The standing of each distinct person, for the re-check at Accept (at most 25 people at once). */
