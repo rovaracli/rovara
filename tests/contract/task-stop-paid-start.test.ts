@@ -1011,3 +1011,25 @@ for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow
   if (recovery === "valid") expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(captures).toBe(0);
 });
+
+it("a newly reviewed held preparation retains native org authority after cap approval", async () => {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app",
+    owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, runLimitUsd: 0 });
+  const old = f.t.requestOf(started.taskId)[0]!; await f.t.decide(MAYA, old.spendRequestId, "DENY");
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "enabled" }, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: started.taskId, kind: "run_limit", scope: { kind: "task", taskId: started.taskId }, amountUsd: 5, newLimitUsd: 5,
+    requestedBy: { kind: "system" }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "Review the held preparation under current spending rules." });
+  const task = f.t.meta(started.taskId), prepare = f.t.operations(task.workspaceId).find(operation => operation.kind === "prepare")!, send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.UpdateExpression === "SET updatedAt = :now REMOVE budgetPause")) {
+      changed = true; f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+    }
+    return send(command);
+  };
+  expect((await f.t.decide(MAYA, record.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(changed).toBe(true); expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+});
