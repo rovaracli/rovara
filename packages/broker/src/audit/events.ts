@@ -533,6 +533,46 @@ export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { p
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
 }
 
+// v1.2 learning loop ----------------------------------------------------------------------------------------------------
+// The project is a name-keyed target (pseudonymized by the appender). Facts are ids, counts, flags and fixed words: no builder takes a correction's, a rule's or a note's text.
+
+/** `occurrence`: the suggestion id (a suggestion opens once). `sourceKinds` is a comma-joined list of fixed words. */
+export function auditRuleSuggested(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; sourceCount: number; sourceKinds: string; lessSafe: boolean; fromOnePerson: boolean }): AuditEventInput {
+  return build("rule.suggested", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, sourceCount: input.sourceCount, sourceKinds: input.sourceKinds, lessSafe: input.lessSafe, fromOnePerson: input.fromOnePerson });
+}
+
+/** `occurrence`: the rule id. Also part of the id: the outcome, so a rule that waited for a person and was then applied has an event for each. `processVersion` is present when published. */
+export function auditRuleAccepted(input: AuditBuilderBase & { projectName: string; suggestionId: string; ruleId: string; stage: string; processAgentId: string; outcome: "published" | "awaiting_approval"; processVersion?: number; approvalId?: string; edited: boolean; lessSafe: boolean }): AuditEventInput {
+  return build("rule.accepted", input, { kind: "project", name: input.projectName }, {
+    suggestionId: input.suggestionId, ruleId: input.ruleId, stage: input.stage, processAgentId: input.processAgentId, outcome: input.outcome, processVersion: input.processVersion, approvalId: input.approvalId, edited: input.edited, lessSafe: input.lessSafe,
+  }, [input.outcome]);
+}
+
+/** `occurrence`: the rule id. `approvalOutcome` is `declined`, `expired` or `failed`. */
+export function auditRuleNotApplied(input: AuditBuilderBase & { projectName: string; suggestionId: string; ruleId: string; approvalOutcome: "declined" | "expired" | "failed" }): AuditEventInput {
+  return build("rule.not_applied", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, ruleId: input.ruleId, approvalOutcome: input.approvalOutcome });
+}
+
+/** `occurrence`: the suggestion id. The note a person gave is never a fact. */
+export function auditRuleDismissed(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; dismissKind: string }): AuditEventInput {
+  return build("rule.dismissed", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, dismissKind: input.dismissKind });
+}
+
+/** `occurrence`: the id of the published version that took the rule out. */
+export function auditRuleRolledBack(input: AuditBuilderBase & { projectName: string; ruleId: string; processAgentId: string; processVersion: number }): AuditEventInput {
+  return build("rule.rolled_back", input, { kind: "project", name: input.projectName }, { ruleId: input.ruleId, processAgentId: input.processAgentId, processVersion: input.processVersion });
+}
+
+/** `occurrence`: the request id of the Remember or Forget. Also part of the id: the op, so a forgotten correction has its own event. */
+export function auditRuleCorrectionRemembered(input: AuditBuilderBase & { projectName: string; correctionId: string; stage: string; standing: string; op: "remember" | "forget" }): AuditEventInput {
+  return build("rule.correction_remembered", input, { kind: "project", name: input.projectName }, { correctionId: input.correctionId, stage: input.stage, standing: input.standing, op: input.op }, [input.op]);
+}
+
+/** `occurrence`: `auditOccurrence(project, settings revision)`. `enabled` says whether PR-comment learning is on after the change. */
+export function auditProjectLearningChanged(input: AuditBuilderBase & { projectName: string; revision: number; enabled: boolean; selfConfirmedSoleOwner: boolean }): AuditEventInput {
+  return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
+}
+
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });

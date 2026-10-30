@@ -10,8 +10,11 @@ const HOME_TEXT_MAX = 300;
 const HOME_LABEL_MAX = 60;
 const HOME_HREF_MAX = 2048;
 
-/** The kinds of card. Plan 5 fills `approval`, `spend_request`, `plan`, `pull_request` and `failure`; `question` and `offer` are for sources later plans register. */
-export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer"] as const;
+/**
+ * The kinds of card. Plan 5 fills `approval`, `spend_request`, `plan`, `pull_request` and `failure`; `question` and `offer` are for sources later plans register. `rule_suggestion` (v1.2 learning
+ * loop) is one card per project with suggested rules to review, for the project's maintainers; an older client reads it as "unknown".
+ */
+export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion"] as const;
 export type HomeCardKind = (typeof HOME_CARD_KINDS)[number];
 /** The kinds a person may dismiss; every other card goes away when it is done. */
 export const HOME_DISMISSIBLE_KINDS = ["failure", "offer"] as const;
@@ -25,7 +28,7 @@ export const HOME_DISMISS_DAYS = 30;
 export const HOME_NOT_DISMISSIBLE = "This card goes away when it's done.";
 
 /** `<kind>:<id>`: the kind, a colon and the id that kind uses (an approval id, a session id, …), nothing else. */
-export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer):[A-Za-z0-9_-]{1,150}$/u;
+export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer|rule_suggestion):[A-Za-z0-9_-]{1,150}$/u;
 export const HomeCardIdSchema = z.string().regex(HOME_CARD_ID_PATTERN);
 
 const HrefSchema = z.string().url().max(HOME_HREF_MAX).refine((value) => /^https?:\/\//iu.test(value), "href: a web address");

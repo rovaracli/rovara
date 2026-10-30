@@ -175,6 +175,8 @@ describe("the event catalog", () => {
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
+      // v1.2 learning loop (B7)
+      "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -210,7 +212,29 @@ describe("the event catalog", () => {
     "process.rolled_back": { target: { kind: "process", id: "agt_1" }, keys: ["fromVersion", "toVersion", "safety"], sample: { fromVersion: 3, toVersion: 2, safety: "safe" } },
     "playbook.default_process_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "processKind"], sample: { revision: 4, processKind: "builtin" } },
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
+    // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.
+    "rule.suggested": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"], sample: { suggestionId: "sug_1", stage: "build", sourceCount: 2, sourceKinds: "comment,send_back", lessSafe: false, fromOnePerson: false } },
+    "rule.accepted": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"], sample: { suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome: "published", processVersion: 4, edited: true, lessSafe: false } },
+    "rule.not_applied": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "approvalOutcome"], sample: { suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "declined" } },
+    "rule.dismissed": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "dismissKind"], sample: { suggestionId: "sug_1", stage: "build", dismissKind: "wrong" } },
+    "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
+    "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
+    "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
   } as const;
+
+  // I10: the learning events hold no text.
+  it("I10: no rule.* or project.learning_changed fact can hold text, and a text-like fact is refused", () => {
+    const learning = AUDIT_ACTIONS.filter((action) => action.startsWith("rule.") || action === "project.learning_changed");
+    expect(learning).toHaveLength(7);
+    const textLike = /text|note|body|wording|comment|message|content|title|label/i;
+    for (const action of learning) {
+      for (const key of AUDIT_FACT_KEYS[action]) expect(key, `${action}.${key}`).not.toMatch(textLike);
+      for (const key of ["text", "proposedText", "dismissNote", "note", "comment"]) {
+        const spec = PLAYBOOK_FACTS[action as keyof typeof PLAYBOOK_FACTS];
+        expect(AuditEventInputSchema.safeParse(event({ action, target: spec.target, facts: { ...spec.sample, [key]: "Use the shared retry helper." } })).success, `${action}.${key}`).toBe(false);
+      }
+    }
+  });
 
   for (const [action, spec] of Object.entries(PLAYBOOK_FACTS)) {
     it(`${action} has exactly its fixed fact keys, takes them, and refuses an unknown one`, () => {

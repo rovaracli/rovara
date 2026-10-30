@@ -168,6 +168,29 @@ function event(orgId: string, n: number, subjects: Array<[string, string]> = [["
   });
 }
 
+describe("eraseAuditSubject and the learning loop (B7)", () => {
+  it("clears the person's learning data after the tombstone, and again on a repeat of the request", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const asked: Array<[string, string]> = [];
+    const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async (orgId, developerId) => { asked.push([orgId, developerId]); } };
+    await eraseAuditSubject(deps, request());
+    await eraseAuditSubject(deps, request());
+    expect(asked).toEqual([[A, "dev_1"], [A, "dev_1"]]);
+  });
+
+  it("answers that the request should be sent again when the learning clean-up fails, after the details are erased, and logs the error's name only", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async () => { throw new Error("SECRET-CORRECTION-WORDS"); } };
+    await expect(eraseAuditSubject(deps, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(b.keyItems(A).find((item) => item.sk === "SUBJECT#dev_1")).toHaveProperty("erasedAt");
+    expect(JSON.stringify(b.logs)).not.toContain("SECRET-CORRECTION-WORDS");
+    const again = await eraseAuditSubject({ ...b.erase, eraseLearning: async () => undefined }, request());
+    expect(again.alreadyErased).toBe(true);
+  });
+});
+
 describe("eraseAuditSubject", () => {
   it("replaces the person's key with a tombstone and puts audit.subject_erased in one transaction across the keys and State tables", async () => {
     const b = bench();
