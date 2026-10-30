@@ -1297,7 +1297,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   }
   if (approvalStop !== undefined && !(forPlan && !planBlocked)) {
     values[":spendingStop"] = approvalStop; sets.push("spendingStop = :spendingStop");
-    for (const field of ["project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "spendingStop", "budgetBaselineUsd"] as const) same(field, task[field]);
+    for (const field of ["project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "spendingStop", "spendingAdmission", "budgetBaselineUsd"] as const) same(field, task[field]);
   }
   const update = {
     Update: {
@@ -1555,6 +1555,13 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     const admission = current === undefined || approvalStop === undefined || change?.resume !== true ? undefined
       : await deps.spendRequests?.prepareApprovalAdmission?.({ orgId: record.orgId, taskId: current.taskId, decisionRequestId: body.requestId, spendRequestId: record.spendRequestId, snapshot: approvalStop });
     const admissionStart = extra.length;
+    if (admission?.taskReference === true) {
+      const update = change?.items.find(item => item.Update?.Key?.pk === taskKey(current!.taskId).pk && item.Update.Key.sk === "META")?.Update;
+      if (update === undefined || update.UpdateExpression === undefined) throw budgetActorRefused();
+      const parts = update.UpdateExpression.split(" REMOVE ");
+      update.UpdateExpression = `${parts[0]}, spendingAdmission = :approvalAdmission${parts[1] === undefined ? "" : ` REMOVE ${parts[1]}`}`;
+      update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ":approvalAdmission": admission.reference };
+    }
     if (admission !== undefined) extra.push(...admission.items);
     // A run held at its start is dispatched by the resume; the due item lets the settlement run try again if that fails now (M-1).
     // A plan blocked on its run limit (`resume: "implement"`) is started by the same list: the approval commits the limit, the start is made after it, and a start
@@ -1595,8 +1602,8 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
       if (planned.admission !== undefined) {
         const start = ending.length + (planned.change?.items.length ?? 0) + planned.admissionStart;
-        if (failed?.has(start + 1)) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already names another spending admission.");
-        if (failed?.has(start)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+        if (failed?.has(start + planned.admission.receiptIndex)) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already names another spending admission.");
+        if (planned.admission.runSourceIndex !== undefined && failed?.has(start + planned.admission.runSourceIndex)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
       }
       if (originalRequestIndex !== undefined && failed?.has(originalRequestIndex)) {
         const currentRequest = await getSpendRequest(deps, record.orgId, record.spendRequestId);

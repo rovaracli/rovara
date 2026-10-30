@@ -76,6 +76,8 @@ export interface DeveloperTaskRecord {
   budgetUsd?: number;
   /** Immutable numeric capture for this accepted admission; not an authority lease. */
   spendingStop?: CapturedTaskStop;
+  /** Durable receipt of the approved plain-task window; never fresh money. */
+  spendingAdmission?: import("@agentx/contracts").SpendingAdmissionReference;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */
   budgetBaselineUsd?: number;
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */

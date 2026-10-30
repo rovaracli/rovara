@@ -952,7 +952,7 @@ for (const loss of ["closing", "cap_source"] as const) it(`a plain-task approval
   expect(changed).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
 
-it("plain approval acknowledgement loss repairs once from its committed receipt without current financial settings", async () => {
+for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", "changed_origin"] as const) it(`plain approval acknowledgement loss uses a ${receiptState} receipt without current financial settings`, async () => {
   const f = await approvalWindow(), decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0;
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
@@ -967,11 +967,16 @@ it("plain approval acknowledgement loss repairs once from its committed receipt 
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({
     transitionKind: "spend-approval", spendRequestId: f.spendRequest.spendRequestId, agentRunRevision: null, spendingStop: { effectiveStopMicrousd: 15_000_000 } });
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  const receiptKey = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` };
+  if (receiptState === "missing") f.t.db.delete(receiptKey);
+  if (receiptState === "corrupt") f.t.db.set({ ...f.t.db.get(receiptKey)!, version: 999 });
+  if (receiptState === "changed_reference") f.t.db.set({ ...f.t.meta(f.task.taskId), spendingAdmission: { requestId: randomUUID(), actorId: MAYA.developerId, intentHash: "a".repeat(64) } });
+  if (receiptState === "changed_origin") f.t.db.set({ ...f.t.meta(f.task.taskId), origin: "app" });
   f.t.db.delete(f.policy); captures = 0;
   expect((await f.t.decide(BEN, f.spendRequest.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
-  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (receiptState === "valid" ? 1 : 0));
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
-  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1); expect(captures).toBe(0);
-  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(0);
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (receiptState === "valid" ? 1 : 0)); expect(captures).toBe(0);
+  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(receiptState === "valid" ? 0 : 1);
 });
