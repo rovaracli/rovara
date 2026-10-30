@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectMetaKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { randomUUID } from "node:crypto";
@@ -706,4 +706,13 @@ for (const corrupt of ["digest", "cap"] as const) it(`M47 eval replay refuses a 
   expect(replay.status, JSON.stringify(replay.body)).toBe(409);
   expect(replay.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
   expect(h.startExecution).toHaveBeenCalledTimes(1);
+});
+
+it("M47 an archived project cannot start a new enrolled eval", async () => {
+  const h = await enrolledEvalBroker(), key = projectMetaKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(key), ...key, entityType: "PROJECT_META", orgId: TEST_ORG, name: "payments", status: "archived", archivedAt: new Date().toISOString() });
+  const reply = await start(h.handler);
+  expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
 });
