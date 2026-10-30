@@ -1534,11 +1534,11 @@ for (const state of ["ownerless", "ownerless_race"] as const) it(`model keys ret
   else { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
 });
 
-for (const state of ["valid", "lost_at_commit"] as const) it(`a real registered PEOPLE owner retains model-key work authority: ${state}`, async () => {
+for (const state of ["valid", "lost_at_commit", "share_at_commit"] as const) it(`a real registered PEOPLE owner retains model-key work authority: ${state}`, async () => {
   const slackUserId = "U0M47PPL1", creator = { developerId: developerIdForSlackUser(slackUserId), name: "Maya Chen", provider: "slack" as const, sessionId: randomUUID(), slackUserId };
   const f = await fixture(1_234_567, { developerExtra: {
     taskPeopleConfiguration: { peopleChangesEnabled: true },
-    taskPersonProof: async input => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.channelIds }),
+    taskPersonProof: async input => ({ ok: true, user: { id: input.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.channelIds.filter(id => id === SLACK_CHANNEL) }),
     taskPeopleDisplayRead: async input => input.operation === "proof"
       ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
         user: { id: input.request.slackUserId, teamId: SLACK_TEAM, name: creator.name }, memberOf: input.request.channelIds } }
@@ -1562,15 +1562,20 @@ for (const state of ["valid", "lost_at_commit"] as const) it(`a real registered 
   await f.t.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
   const plan = f.t.taskOps(workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
-    if (state === "lost_at_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
-      raced = true; f.t.db.set({ ...people, revision: Number(people.revision) + 1, orphaned: true, people: [] });
+    if (state !== "valid" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true;
+      if (state === "lost_at_commit") f.t.db.set({ ...people, revision: Number(people.revision) + 1, orphaned: true, people: [] });
+      else {
+        const current = f.t.meta(taskId), share = current.share as Record<string, unknown>;
+        f.t.db.set({ ...current, share: { ...share, channelId: "C0M47ALT1" }, shareVersion: Number(current.shareVersion ?? 0) + 1 });
+      }
     }
     return send(command);
   };
   const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(reply.status).toBe(state === "valid" ? 200 : 503);
-  if (state === "lost_at_commit") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(taskId).modelKeyIds).toBeUndefined(); }
+  if (state !== "valid") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(taskId).modelKeyIds).toBeUndefined(); }
 });
 
 for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`registered OIDC PEOPLE identity remains current for model keys: ${state}`, async () => {
