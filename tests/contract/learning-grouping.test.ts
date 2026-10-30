@@ -75,6 +75,8 @@ describe("W1 and W2: what forms a suggestion", () => {
     const result = await group(world);
     expect(suggestions(world)).toEqual([]);
     expect(result.opened).toEqual([]);
+    // The same task twice is not a repeat either: both are counted, neither is a repeat.
+    expect(await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false })).toMatchObject({ memberCorrections: 2, repeats: 0 });
     // A third, from another task, is what makes it a repeat.
     await add(world, LINT_B, { task: "t-other" });
     await group(world);
@@ -434,12 +436,11 @@ describe("W10: the metric counts each correction once, even when grouping fails 
     const a = await add(world, RETRY_A);
     const b = await add(world, RETRY_B);
     const c = await add(world, RETRY_C);
-    await add(world, RETRY_A, { task: "t1" }); // same task as the first: not a repeat of it
     await group(world);
     expect(correction(world, a)?.repeatOf).toBeUndefined();
     expect(correction(world, b)?.repeatOf).toBe(a);
     expect(correction(world, c)?.repeatOf).toBe(b);
-    expect(await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false })).toMatchObject({ memberCorrections: 4, repeats: 2 });
+    expect(await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false })).toMatchObject({ memberCorrections: 3, repeats: 2 });
     expect(LearningCorrectionSchema.safeParse(correction(world, b)).success).toBe(true);
   });
 
