@@ -3,7 +3,7 @@
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, approvalKey, orgMemberKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -12,6 +12,10 @@ import { resolveRecipe } from "../../packages/broker/src/agents/changes.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { acceptRequestId, acceptSuggestion, appendRuleToOverlay, dismissSuggestion, removeRule, removeRuleFromOverlay, reopenDismissed } from "../../packages/broker/src/learning/decide.js";
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
+import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
+import { eraseLearningSubject, learningWalkDeps, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
+import { readFileSync } from "node:fs";
+import { viewLearning } from "../../packages/broker/src/learning/view.js";
 import { forgetCorrection, groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { learningSettler, settleProject } from "../../packages/broker/src/learning/settle.js";
 import type { LearningDecideDeps } from "../../packages/broker/src/learning/settle.js";
@@ -33,6 +37,7 @@ function world(): MergeWorld {
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
   (w.deps as { store: AgentStore }).store = store;
   w.store = store;
+  w.db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, createdAt: "2026-10-01T00:00:00.000Z" });
   return w;
 }
 function decideDeps(w: MergeWorld, overrides: Partial<LearningDecideDeps> = {}): LearningDecideDeps {
@@ -672,3 +677,451 @@ describe("the routes", () => {
     expect(await route(w, MAX, "POST", "suggestions/abc/other", {})).toBeUndefined();
   });
 });
+
+
+// ---- B6 review fixes (C1, I1, I2, I3, L3, minor items). Written first; run against the unfixed code they fail.
+
+const FOREIGN = { steps: { build: { instructions: "Somebody else's unpublished work." } } };
+const notesOf = async (w: MergeWorld, layer: AgentId) => {
+  const agent = (await w.store.get(ORG_A, layer))!;
+  const notes: Array<string | undefined> = [];
+  for (let version = 1; version <= (agent.currentVersion ?? 0); version += 1) notes.push((await w.store.getVersion(ORG_A, layer, version))!.note);
+  return notes;
+};
+const ruleItems = (w: MergeWorld) => w.db.find((entry) => String(entry.sk).startsWith("RULE#"));
+type RawCommand = { input?: { TransactItems?: Array<{ Update?: { Key?: { sk?: string }; ExpressionAttributeValues?: Record<string, unknown> } }> } };
+
+/** A store whose client lets a test run a foreign write right after the first draft save the code under test makes. The foreign write uses an ordinary store on the same table. */
+function interleaved(w: MergeWorld) {
+  const plain = w.store;
+  const hooks: { afterDraftSave?: () => Promise<void> } = {};
+  const client = {
+    send: async (command: unknown) => {
+      const result = await w.db.send(command as never);
+      const items = (command as RawCommand).input?.TransactItems;
+      if (hooks.afterDraftSave !== undefined && items?.some((entry) => entry.Update?.Key?.sk === "DRAFT")) {
+        const run = hooks.afterDraftSave;
+        hooks.afterDraftSave = undefined;
+        await run();
+      }
+      return result;
+    },
+  };
+  const store = new AgentStore({ documentClient: client, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+  (w.deps as { store: AgentStore }).store = store;
+  w.store = store;
+  const foreignSave = (layer: AgentId) => async () => {
+    await plain.saveDraft({ orgId: ORG_A, agentId: layer, overlay: FOREIGN, expectedRevision: (await plain.getDraft(ORG_A, layer))!.revision, by: ARJUN });
+  };
+  return { hooks, plain, foreignSave };
+}
+/** A table client that runs `before` once, just before the first transaction. */
+function beforeFirstTransaction(w: MergeWorld, before: () => void) {
+  let armed = true;
+  return {
+    send: async (command: unknown) => {
+      if (armed && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { armed = false; before(); }
+      return w.db.send(command as never);
+    },
+  };
+}
+
+describe("C1: Accept and Remove publish exactly the draft they saved", () => {
+  it("Accept: a draft saved by someone else between Accept's save and its publish is refused; nothing is published and their draft stays", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const { hooks, plain, foreignSave } = interleaved(w);
+    const id = await suggest(w);
+    hooks.afterDraftSave = foreignSave(layer);
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await plain.get(ORG_A, layer))!.currentVersion).toBe(1);
+    expect((await notesOf(w, layer)).some((note) => note?.startsWith("Suggested rule"))).toBe(false);
+    expect((await plain.getDraft(ORG_A, layer))!.overlay).toEqual(FOREIGN);
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+    expect(ruleItems(w)[0]).toMatchObject({ status: "not_applied" });
+  });
+
+  it("Remove: a draft saved by someone else between Remove's save and its publish is refused; nothing is published and their draft stays", async () => {
+    const w = world();
+    const layer = await processLayer(w, { steps: { build: { instructions: "Run the linter before you finish." } } });
+    const id = await suggest(w);
+    await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    const { hooks, plain, foreignSave } = interleaved(w);
+    hooks.afterDraftSave = foreignSave(layer);
+    expect(await failure(removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() }))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await plain.get(ORG_A, layer))!.currentVersion).toBe(2);
+    expect((await plain.getDraft(ORG_A, layer))!.overlay).toEqual(FOREIGN);
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active" });
+  });
+});
+
+describe("I1: only a refusal before the publish undoes an Accept", () => {
+  it("a failure after the publish (the trigger re-check, with a network error code) never marks the published rule not_applied", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    (w.deps as { triggerHooks?: unknown }).triggerHooks = { recheckTriggersForTarget: async () => { throw Object.assign(new Error("reset"), { code: "ECONNRESET" }); } };
+    const id = await suggest(w);
+    const answer = await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).then(() => "settled");
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
+    expect(answer).toBe("settled");
+    expect(ruleItems(w)[0]).toMatchObject({ status: "active", processVersion: 2 });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepted" });
+  });
+
+  it("a failure while recording the outcome (ECONNRESET) leaves the rule pending, the version published and the draft alone; settlement then completes it", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w);
+    const failing = { send: async (command: unknown) => {
+      if ((command as RawCommand).input?.TransactItems?.some((entry) => entry.Update?.ExpressionAttributeValues?.[":to"] === "active")) throw Object.assign(new Error("reset"), { code: "ECONNRESET" });
+      return w.db.send(command as never);
+    } };
+    await expect(acceptSuggestion(decideDeps(w, { documentClient: failing }), callerOf(w, MAX), "web", id, acceptBody(w, id))).rejects.toMatchObject({ code: "ECONNRESET" });
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(2);
+    expect(ruleItems(w)[0]).toMatchObject({ status: "pending" });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepting" });
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual({ steps: { build: { instructions: RULE } } });
+    w.clock.now += 11 * 60_000;
+    await settleProject(decideDeps(w), SCOPE);
+    expect(ruleItems(w)[0]).toMatchObject({ status: "active", processVersion: 2 });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepted" });
+  });
+
+  it("an error from the publish that is not an AgentX refusal (a network code) is ambiguous: nothing is undone", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w);
+    (w.store as { publish: typeof w.store.publish }).publish = async () => { throw Object.assign(new Error("reset"), { code: "ECONNRESET" }); };
+    await expect(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).rejects.toMatchObject({ code: "ECONNRESET" });
+    expect(ruleItems(w)[0]).toMatchObject({ status: "pending" });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepting" });
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual({ steps: { build: { instructions: RULE } } });
+  });
+
+  it("CONFIG_INVALID from the publish (the stage-choice guard) is a refusal: the draft is restored and the suggestion opens again, for Accept and for Remove", async () => {
+    const w = world();
+    const layer = await processLayer(w, { steps: { build: { instructions: "Run the linter before you finish." } } });
+    const id = await suggest(w);
+    await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    const original = w.store.publish.bind(w.store);
+    (w.store as { publish: typeof w.store.publish }).publish = async () => { throw agentXError("CONFIG_INVALID", "steps.build.model: pick a model for this stage"); };
+    expect(await failure(removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual(await overlayOf(w, layer, 2));
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active" });
+    const second = await suggest(w, { sources: [{ author: PRIYA, task: "t5", text: "Validate every request body with the zod schema before using it." }, { author: ARJUN, task: "t6", text: "Validate request bodies with the zod schema before using them in handlers." }] });
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", second, acceptBody(w, second, "Validate request bodies.")))).toMatchObject({ code: "CONFIG_INVALID" });
+    (w.store as { publish: typeof w.store.publish }).publish = original;
+    expect(suggestionOf(w, second)).toMatchObject({ status: "open" });
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual(await overlayOf(w, layer, 2));
+  });
+});
+
+describe("I2: a waiting Accept or Remove answers 202 like a hand publish", () => {
+  const route = (w: MergeWorld, who: string, path: string, body: unknown) =>
+    routeLearning({ task: {} as never, projectFor: (caller, rawName) => decideDeps(w).projectFor(caller, rawName), decide: decideDeps(w), audit: w.audit.audit }, callerOf(w, who), "POST", new URL(`https://cell.example.com/v1/app/projects/web/learning/${path}`), () => body);
+
+  it("Accept: StatusReply 202 with status, confirmUrl and changes (and the outcome the screens read)", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const reply = await route(w, MAX, `suggestions/${id}/accept`, acceptBody(w, id));
+    expect(reply).toBeInstanceOf(StatusReply);
+    expect((reply as StatusReply).statusCode).toBe(202);
+    expect((reply as StatusReply).body).toMatchObject({ status: "NEEDS_CONFIRMATION", outcome: "awaiting_approval", confirmUrl: expect.stringContaining("/v1/app/approve/") as unknown, changes: expect.any(Array) as unknown });
+  });
+
+  it("Remove: the same 202", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const waiting = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    await decide(w, OLA, approvalIdOf(w, waiting));
+    await settleProject(decideDeps(w), SCOPE);
+    const reply = await route(w, MAX, `rules/${suggestionOf(w, id).ruleId as string}/remove`, { requestId: randomUUID() });
+    expect(reply).toBeInstanceOf(StatusReply);
+    expect((reply as StatusReply).statusCode).toBe(202);
+    expect((reply as StatusReply).body).toMatchObject({ status: "NEEDS_CONFIRMATION", outcome: "awaiting_approval", confirmUrl: expect.any(String) as unknown, changes: expect.any(Array) as unknown });
+  });
+
+  it("an applied Accept is still a plain 200 answer", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    expect(await route(w, MAX, `suggestions/${id}/accept`, acceptBody(w, id))).toEqual({ outcome: "published", version: 2 });
+  });
+});
+
+describe("I3: a Remove that was declined or expired gives the draft back", () => {
+  async function removing(w: MergeWorld) {
+    const layer = await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const waiting = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    await decide(w, OLA, approvalIdOf(w, waiting));
+    await settleProject(decideDeps(w), SCOPE);
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    const asked = await removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() });
+    expect(asked.outcome).toBe("awaiting_approval");
+    return { layer, ruleId, approvalId: approvalIdOf(w, asked) };
+  }
+
+  for (const how of ["declined", "expired"] as const) {
+    it(`${how}: the draft goes back to the published overlay, the rule stays active, and the next Accept is not busy`, async () => {
+      const w = world();
+      const { layer, ruleId, approvalId } = await removing(w);
+      expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual({});
+      if (how === "declined") await decide(w, OLA, approvalId, "DECLINE");
+      else setApprovalStatus(w, approvalId, "EXPIRED");
+      await settleProject(decideDeps(w), SCOPE);
+      expect(item(w, `RULE#${ruleId}`)).not.toHaveProperty("removalApprovalId");
+      expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active" });
+      expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual(await overlayOf(w, layer, 2));
+      const next = await suggest(w, { stage: "build", sources: [{ author: PRIYA, task: "t8", text: "Name database migrations with the date prefix and a short description." }, { author: ARJUN, task: "t9", text: "Database migrations need a date prefix in the name and a short description." }] });
+      expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", next, acceptBody(w, next, "Prefix migrations with the date."))).toMatchObject({ outcome: "published" });
+    });
+  }
+
+  it("leaves a draft alone that is not exactly the published overlay without the rule (someone else's edit)", async () => {
+    const w = world();
+    const { layer, ruleId, approvalId } = await removing(w);
+    await setDraft(w, layer, FOREIGN, ARJUN);
+    await decide(w, OLA, approvalId, "DECLINE");
+    await settleProject(decideDeps(w), SCOPE);
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual(FOREIGN);
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active" });
+  });
+});
+
+describe("L3: a contributor author cannot accept before the project has How we work", () => {
+  it("refuses with the fixed words and a link to the page, and writes nothing", async () => {
+    const w = world();
+    const id = await suggest(w);
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id)));
+    expect(refusal).toMatchObject({ code: "FORBIDDEN" });
+    expect(refusal!.message).toContain("A maintainer needs to set up How we work for this project first");
+    expect(refusal!.message).toContain("https://cell.example.com/app/projects/web?tab=how-we-work");
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+    expect(ruleItems(w)).toEqual([]);
+  });
+});
+
+describe("standing is carried in the transactions", () => {
+  it("a source author who loses their place between the read and the write stops the first attempt (nothing is written)", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w);
+    const deps = decideDeps(w, { documentClient: beforeFirstTransaction(w, () => w.db.delete(orgMemberKey(ORG_A, ARJUN))) });
+    expect(await failure(acceptSuggestion(deps, callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+    expect(ruleItems(w)).toEqual([]);
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+  });
+
+  async function stuckAccept(w: MergeWorld) {
+    const layer = await processLayer(w);
+    const id = await suggest(w);
+    const body = acceptBody(w, id);
+    const original = w.store.publish.bind(w.store);
+    (w.store as { publish: typeof w.store.publish }).publish = async () => { throw agentXError("RUNTIME_UNAVAILABLE", "the table is down"); };
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, body))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    (w.store as { publish: typeof w.store.publish }).publish = original;
+    return { layer, id, body };
+  }
+
+  it("a retry re-reads the source authors: with fewer than 2 sources left it is refused and publishes nothing", async () => {
+    const w = world();
+    const { layer, id, body } = await stuckAccept(w);
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, body))).toMatchObject({ code: "LEARNING_SOURCES_GONE" });
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+  });
+
+  it("a retry carries the standing checks in a transaction: an author lost between the read and the write stops it", async () => {
+    const w = world();
+    const { layer, id, body } = await stuckAccept(w);
+    const deps = decideDeps(w, { documentClient: beforeFirstTransaction(w, () => w.db.delete(orgMemberKey(ORG_A, ARJUN))) });
+    expect(await failure(acceptSuggestion(deps, callerOf(w, MAX), "web", id, body))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+  });
+
+  it("a retry with everyone still in place goes through", async () => {
+    const w = world();
+    const { id, body } = await stuckAccept(w);
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, body)).toEqual({ outcome: "published", version: 2 });
+  });
+});
+
+describe("settleProject pages through every rule", () => {
+  it("settles a waiting rule that sits past the first hundred rules of the project", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    await decide(w, OLA, approvalIdOf(w, answer));
+    for (let n = 0; n < 130; n += 1) {
+      const filler = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      w.db.set({ ...projectLearningKey(ORG_A, "web", `RULE#${filler}`), entityType: "LEARNING_RULE", orgId: ORG_A, id: filler, suggestionId: filler, stage: "build", text: `Filler rule ${String(n)}.`, processAgentId: layer, requestId: filler, status: "active", processVersion: 1, projectCreatedAt: SCOPE.projectCreatedAt });
+    }
+    expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
+    expect(item(w, `RULE#${suggestionOf(w, id).ruleId as string}`)).toMatchObject({ status: "active", processVersion: 2 });
+  });
+});
+
+describe("erase never lets a pending approval publish erased words", () => {
+  it("an awaiting suggestion that still has 2 other sources is withdrawn, its rule is not applied and loses its words, and the draft goes back", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { stage: "review", sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }, { author: MAX, task: "t3", text: RETRY_A }] });
+    const waiting = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id, RETRY_A));
+    const approvalId = approvalIdOf(w, waiting);
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual({ steps: { review: { instructions: RETRY_A } } });
+
+    await eraseLearningSubject(learning(w), ORG_A, PRIYA);
+
+    expect(suggestionOf(w, id)).toMatchObject({ status: "withdrawn" });
+    expect(suggestionOf(w, id).proposedText).toBeUndefined();
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "not_applied" });
+    expect(JSON.stringify(item(w, `RULE#${ruleId}`))).not.toContain("retry helper");
+    expect(item(w, "STATE")).toMatchObject({ pendingRules: 0, openSuggestions: 0 });
+    expect((await w.store.getDraft(ORG_A, layer))!.overlay).toEqual({});
+    // The approval, if a person confirms it now, publishes nothing.
+    await decide(w, OLA, approvalId).catch(() => undefined);
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+    expect(JSON.stringify(await notesOf(w, layer))).not.toContain("retry");
+  });
+});
+
+
+describe("canDecide is per suggestion, from the rule Accept authorises by", () => {
+  const viewOf = async (w: MergeWorld, who: string) => (await viewLearning(decideDeps(w), callerOf(w, who), "web")).suggestions[0]!;
+
+  /** Both directions: what the screen says, and whether Accept lets the person through the authority check. */
+  async function agree(w: MergeWorld, who: string, id: string, expected: boolean) {
+    const seen = await viewOf(w, who).then((one) => one.canDecide, (error: { code?: string }) => error.code);
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, who), "web", id, acceptBody(w, id)));
+    if (expected) {
+      expect(seen).toBe(true);
+      expect(refusal?.code).not.toBe("FORBIDDEN");
+      expect(refusal?.code).not.toBe("PROJECT_NOT_FOUND");
+    } else {
+      expect(seen === false || seen === "PROJECT_NOT_FOUND").toBe(true);
+      expect(["FORBIDDEN", "PROJECT_NOT_FOUND"]).toContain(refusal?.code);
+    }
+  }
+
+  it("a maintainer: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, MAX, id, true);
+  });
+
+  it("an author who still has standing: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, ARJUN, id, true);
+  });
+
+  it("an author who has lost standing (now a viewer): false, and Accept refuses", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    w.db.set({ ...projectMemberKey(ORG_A, ARJUN, "web"), entityType: "MEMBERSHIP", ownerKey: ARJUN, projectName: "web", grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+    w.members.grant(ORG_A, "web", ARJUN, "viewer");
+    await agree(w, ARJUN, id, false);
+  });
+
+  it("a contributor who wrote none of the sources: false, and Accept refuses", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: OLA, task: "t2", text: RETRY_B }] });
+    await agree(w, PRIYA, id, false);
+  });
+
+  it("a viewer: false, and Accept refuses; a person with no place in the project cannot even read it", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    await agree(w, MIA, id, false);
+    await agree(w, "f".repeat(64), id, false);
+  });
+
+  it("is decided suggestion by suggestion: an author sees true only on the suggestion they wrote", async () => {
+    const w = world();
+    await processLayer(w);
+    const mine = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await suggest(w, { stage: "plan", sources: [{ author: MAX, task: "t3", text: "Name database migrations with the date prefix and a short description." }, { author: OLA, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
+    const view = await viewLearning(decideDeps(w), callerOf(w, PRIYA), "web");
+    expect(view.suggestions).toHaveLength(2);
+    expect(view.suggestions.find((one) => one.id === mine)!.canDecide).toBe(true);
+    expect(view.suggestions.find((one) => one.id !== mine)!.canDecide).toBe(false);
+    expect(view.canDecide).toBe(false);
+  });
+
+  it("keeps the tightening: a viewer sees the fixed phrase and no proposed text; a member sees the words", async () => {
+    const w = world();
+    await processLayer(w);
+    await suggest(w);
+    const viewer = await viewOf(w, MIA);
+    expect(viewer.proposedText).toBeUndefined();
+    expect(viewer.sources.every((source) => source.label === "A correction from a project member")).toBe(true);
+    expect((await viewOf(w, ARJUN)).proposedText).toBeDefined();
+  });
+});
+
+
+describe("erase emits rule.withdrawn with the cause `erased`, through the wiring the broker uses", () => {
+  const erasedEvents = (w: MergeWorld) => eventsOf(w, "rule.withdrawn").filter((event) => event.facts?.cause === "erased");
+
+  it("the helper the broker builds its erase and resume dependencies with carries the ledger", () => {
+    const w = world();
+    expect(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => 1, audit: w.audit.audit }).audit).toBe(w.audit.audit);
+    expect("audit" in learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => 1 })).toBe(false);
+  });
+
+  it("broker.ts builds both the erase hook and the walk-resume job through it, with the install's ledger", () => {
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/eraseLearning: learningEraseHook\(learningWalkDeps\(\{[^}]*audit[^}]*\}\)\)/);
+    expect(source).toMatch(/resumeOpenLearningWalks\(learningWalkDeps\(\{[^}]*audit: dependencies\.audit[^}]*\}\)/);
+  });
+
+  it("an erase run with those dependencies writes one rule.withdrawn (erased) per withdrawn suggestion", async () => {
+    const w = world();
+    await processLayer(w);
+    const first = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: MARK_A_TEXT }, { author: ARJUN, task: "t2", text: MARK_B_TEXT }] });
+    await eraseLearningSubject(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit }), ORG_A, PRIYA);
+    expect(suggestionOf(w, first)).toMatchObject({ status: "withdrawn" });
+    expect(erasedEvents(w)).toHaveLength(1);
+    expect(erasedEvents(w)[0]).toMatchObject({ actor: { kind: "system" }, facts: { suggestionId: first, stage: "build", cause: "erased" } });
+    expect(JSON.stringify(erasedEvents(w))).not.toContain(PRIYA);
+  });
+
+  it("a walk that stopped at its budget and was finished by the scheduled resume emits it too", async () => {
+    const w = world();
+    await processLayer(w);
+    const first = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: MARK_A_TEXT }, { author: ARJUN, task: "t2", text: MARK_B_TEXT }] });
+    const deps = learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+    expect((await eraseLearningSubject(deps, ORG_A, PRIYA, { writes: 1 })).status).toBe("running");
+    for (let tick = 0; tick < 10 && w.db.find((entry) => entry.pk === "LEARNING_WALKS_OPEN").length > 0; tick += 1) await resumeOpenLearningWalks(deps, { writes: 5 });
+    expect(suggestionOf(w, first)).toMatchObject({ status: "withdrawn" });
+    expect(erasedEvents(w)).toHaveLength(1);
+  });
+
+  it("a suggestion of an earlier project instance that is withdrawn by the erase has its event too", async () => {
+    const w = world();
+    await processLayer(w);
+    const old = "2026-01-01T00:00:00.000Z";
+    w.db.set({ ...projectLearningKey(ORG_A, "web", "CORRECTION#2026-01-02T00:00:00.000Z#oldc"), entityType: "LEARNING_CORRECTION", orgId: ORG_A, id: "oldc", stage: "build", source: "comment", taskId: "told", sourceRef: { taskId: "told" }, signature: ["h"], author: PRIYA, standing: "member", text: "old words", createdAt: "2026-01-02T00:00:00.000Z", projectCreatedAt: old });
+    w.db.set({ ...projectLearningKey(ORG_A, "web", "SUGGESTION#olds"), entityType: "LEARNING_SUGGESTION", orgId: ORG_A, id: "olds", stage: "plan", status: "open", correctionIds: ["oldc", "oldd"], allFromOnePerson: false, proposedText: "old words", signature: ["h"], lessSafe: false, kinds: [], overlaps: [], revision: 0, createdAt: "2026-01-02T00:00:00.000Z", projectCreatedAt: old });
+    await suggest(w);
+    await eraseLearningSubject(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit }), ORG_A, PRIYA);
+    expect(item(w, "SUGGESTION#olds")).toMatchObject({ status: "withdrawn" });
+    expect(item(w, "SUGGESTION#olds")).not.toHaveProperty("proposedText");
+    expect(erasedEvents(w).some((event) => event.facts?.suggestionId === "olds" && event.facts?.stage === "plan")).toBe(true);
+  });
+});
+const MARK_A_TEXT = "Use the shared retry helper for network calls, with exponential backoff, ZEBRAMARK.";
+const MARK_B_TEXT = "Use the shared retry helper for network calls, with exponential backoff and jitter, QUOKKAMARK.";

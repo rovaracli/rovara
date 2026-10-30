@@ -373,7 +373,7 @@ import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
 import type { AuditEraseDeps } from "../audit/erase.js";
-import { learningEraseHook, resumeOpenLearningWalks } from "../learning/cleanup.js";
+import { learningEraseHook, learningWalkDeps, resumeOpenLearningWalks } from "../learning/cleanup.js";
 import { setLearningHomeSettler } from "../learning/home-source.js";
 import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
@@ -525,7 +525,7 @@ import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spen
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../spend/payer.js";
 import type { settlementBudgets} from "../spend/settlement-job.js";
-import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
+import { learningFirstTick, redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
@@ -1997,8 +1997,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // or what remains of the deadline if that is less; the spend sweep, a resumable cursor, takes what is left after the audit's share, so a long sweep can't
       // starve the others and a late job can't push the later ones past the deadline. A job with no time left is skipped and reported so.
       const startedAt = Date.now();
+      // Every third tick the learning job takes the key audit's share (a busy tick would otherwise never leave it a slice); spend settlement's budget is the same on every tick.
+      const learningPriority = learningFirstTick(startedAt) ? { learningFirst: true } : {};
       const timed = (name: string, pick: keyof ReturnType<typeof settlementBudgets>, run: (budgetMs: number) => Promise<unknown>): SettlementJob =>
-        timedSettlementJob({ name, pick, startedAt, now: Date.now, run });
+        timedSettlementJob({ name, pick, startedAt, now: Date.now, run, ...learningPriority });
       const sources = modelSourceSweepOf(dependencies);
       // Task 26: a backstop for the checks at the mint, where the install routes models at all.
       const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
@@ -2015,11 +2017,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
         ...(keyAudit === undefined ? [] : [timed("audit-model-keys", "audit", (budgetMs) => auditModelKeys(keyAudit, budgetMs))]),
         // v1.2 learning loop: finishes the cleanup walks of closed companies and erased people. After every settlement job (spend settlement is a money job and is never delayed or starved by
-        // it); it has its own 3 s slice and is skipped, with a log line, unless that and a safety margin are left.
+        // it); it has its own 3 s slice and is skipped, with a log line, unless that and a safety margin are left. On every third tick it takes the key audit's share (`learningFirstTick`).
         timedSettlementJob({
-          name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now,
-          onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "spend.settlement_job_skipped", job: name, reason: "not enough time left" })),
-          run: (budgetMs) => resumeOpenLearningWalks({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+          name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
+          onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
+          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
         }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
@@ -19134,7 +19136,7 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
   // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company.
-  eraseLearning: learningEraseHook({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }),
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit })),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

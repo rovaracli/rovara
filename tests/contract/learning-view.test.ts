@@ -14,7 +14,9 @@ import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { captureCorrection } from "../../packages/broker/src/learning/store.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA, ZED } from "../support/agent-session-world.js";
+import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent-session-world.js";
+import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
+import { orgMemberKey, orgMetaKey } from "../../packages/contracts/src/index.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
 const SCOPE = { orgId: ORG_A, project: "web", projectCreatedAt: "2026-10-02T00:00:00.000Z" };
@@ -30,6 +32,7 @@ function world(): MergeWorld {
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
   (w.deps as { store: AgentStore }).store = store;
   w.store = store;
+  w.db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, createdAt: "2026-10-01T00:00:00.000Z" });
   return w;
 }
 const projectFor = (w: MergeWorld) => async (caller: { orgId: typeof ORG_A; developerId: string }, rawName: string) => {
@@ -107,12 +110,14 @@ describe("GET learning: the answer", () => {
     expect(LearningViewAnswerSchema.safeParse(answer).success).toBe(true);
   });
 
-  it("is read-only: it writes nothing", async () => {
+  it("is read-only: it writes nothing to the learning records (only its own read counters)", async () => {
     const w = world();
     await suggest(w);
-    const before = JSON.stringify(w.db.find(() => true));
+    const mine = () => JSON.stringify(w.db.find((entry) => !String(entry.pk).includes("LEARNING_VIEW_READS")));
+    const before = mine();
     await view(w, MAX);
-    expect(JSON.stringify(w.db.find(() => true))).toBe(before);
+    expect(mine()).toBe(before);
+    expect(w.db.find((entry) => String(entry.pk).includes("LEARNING_VIEW_READS")).length).toBe(2);
   });
 
   it("does not show another project instance's items", async () => {
@@ -271,5 +276,125 @@ describe("GET learning: the route", () => {
   it("refuses the stranger through the route as well", async () => {
     const w = world();
     expect(await failure(routed(w, STRANGER, "GET", "/v1/app/projects/web/learning") as Promise<unknown>)).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+});
+
+
+// ---- B6 round: review of the view (erased words, who sees what, throttle, open company, browser-only)
+const MARK_A = "Use the shared retry helper for network calls, with exponential backoff, ZEBRAMARK.";
+const MARK_B = "Use the shared retry helper for network calls, with exponential backoff and jitter, QUOKKAMARK.";
+const MARK_C = "Use the shared retry helper for network calls, with exponential backoff and a cap, OKAPIMARK.";
+
+describe("GET learning: erased words never reach the answer", () => {
+  it("after a person is erased, no suggestion that held their words is listed, and nobody sees them", async () => {
+    const w = world();
+    await suggest(w, [{ author: PRIYA, task: "t1", text: MARK_A }, { author: ARJUN, task: "t2", text: MARK_B }, { author: MAX, task: "t3", text: MARK_C }]);
+    await eraseLearningSubject(learning(w), ORG_A, PRIYA);
+    for (const who of [MAX, ARJUN, MIA, OLA]) {
+      const text = JSON.stringify(await view(w, who));
+      expect(text, who).not.toContain("ZEBRAMARK");
+      expect((await view(w, who)).suggestions).toEqual([]);
+    }
+  });
+
+  it("a walk that stopped half way (the correction already says erased, the suggestion is still open) shows no proposed text and no task, time or label for that source", async () => {
+    const w = world();
+    const id = await suggest(w, [{ author: PRIYA, task: "t1", text: MARK_A }, { author: ARJUN, task: "t2", text: MARK_B }]);
+    const members = w.db.find((entry) => String(entry.sk).startsWith("CORRECTION#"));
+    const erased = members.find((entry) => entry.author === PRIYA)!;
+    w.db.set({ ...erased, author: "erased", text: undefined });
+    delete (w.db.get({ pk: String(erased.pk), sk: String(erased.sk) }) as Record<string, unknown>).text;
+    const card = (await view(w, MAX)).suggestions.find((one) => one.id === id)!;
+    expect(card.proposedText).toBeUndefined();
+    expect(JSON.stringify(card)).not.toContain("ZEBRAMARK");
+    const source = card.sources.find((one) => one.taskId === undefined)!;
+    expect(source).toBeDefined();
+    expect(source).not.toHaveProperty("at");
+    expect(source).not.toHaveProperty("label");
+    expect(source).not.toHaveProperty("href");
+  });
+});
+
+describe("GET learning: a viewer or an outsider sees a fixed phrase and a count, nothing that locates a source", () => {
+  it("has no taskId, time or link per source, and the number of sources", async () => {
+    const w = world();
+    await suggest(w);
+    for (const who of [MIA]) {
+      const card = (await view(w, who)).suggestions[0]!;
+      expect(card.sourceCount).toBe(2);
+      for (const source of card.sources) {
+        expect(source).not.toHaveProperty("taskId");
+        expect(source).not.toHaveProperty("at");
+        expect(source).not.toHaveProperty("href");
+        expect(source.label).toBe("A correction from a project member");
+      }
+    }
+    const outsider = await view(w, ZED, { projectFor: async () => ({ name: "web", role: "maintainer" }) });
+    expect(JSON.stringify(outsider)).not.toMatch(/"taskId"|"href"|"at":/);
+    expect(outsider.suggestions[0]!.sourceCount).toBe(2);
+  });
+});
+
+describe("GET learning: throttled per person and per company", () => {
+  it("answers TOO_MANY_REQUESTS after 30 reads a minute by one person, and the next minute is fine", async () => {
+    const w = world();
+    await suggest(w);
+    for (let n = 0; n < 30; n += 1) await view(w, MAX);
+    expect(await failure(view(w, MAX))).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect((await view(w, OLA)).canDecide).toBe(true);
+    w.clock.now += 61_000;
+    expect((await view(w, MAX)).canDecide).toBe(true);
+  });
+
+  it("answers TOO_MANY_REQUESTS when a company's people together pass its limit", async () => {
+    const w = world();
+    await suggest(w);
+    const limits = { company: 3 };
+    for (const who of [MAX, OLA, PRIYA]) await view(w, who, { limits });
+    expect(await failure(view(w, ARJUN, { limits }))).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+  });
+
+  it("refuses before reading the partition", async () => {
+    const w = world();
+    await suggest(w);
+    for (let n = 0; n < 30; n += 1) await view(w, MAX);
+    const before = w.db.commandNames().length;
+    await failure(view(w, MAX));
+    const after = w.db.commandNames().slice(before);
+    expect(after.every((name) => name === "UpdateCommand" || name === "GetCommand")).toBe(true);
+    expect(after).not.toContain("QueryCommand");
+  });
+});
+
+describe("GET learning: the company must be open", () => {
+  it("is refused for a company that is closing, closed, or has no record", async () => {
+    for (const change of [{ closingAt: "2026-10-30T00:00:00.000Z" }, { closedAt: "2026-10-30T00:00:00.000Z" }]) {
+      const w = world();
+      await suggest(w);
+      w.db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, createdAt: "2026-10-01T00:00:00.000Z", ...change });
+      expect(await failure(view(w, MAX))).toMatchObject({ code: "NOT_FOUND" });
+    }
+    const w = world();
+    await suggest(w);
+    w.db.delete(orgMetaKey(ORG_A));
+    expect(await failure(view(w, MAX))).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("GET learning: another company, through the real project lookup", () => {
+  it("an admin of company B asking for company A's project gets the same PROJECT_NOT_FOUND as for a project that does not exist, and reads nothing of A", async () => {
+    const { loadSlackBroker } = await import("../support/slack-broker.js");
+    await loadSlackBroker();
+    const { routeDeveloperRequest } = await import("../../packages/broker/src/aws/developer-routes.js");
+    const w = world();
+    await suggest(w);
+    w.db.set({ ...orgMetaKey(ORG_B), orgId: ORG_B, createdAt: "2026-10-01T00:00:00.000Z" });
+    w.db.set({ ...orgMemberKey(ORG_B, STRANGER), orgId: ORG_B, developerId: STRANGER, role: "admin" });
+    const caller = { developerId: STRANGER, sessionId: "s", amr: "oidc", name: "Bo", orgId: ORG_B, orgRole: "admin", browserSession: true } as never;
+    const call = (path: string) => failure(routeDeveloperRequest({ documentClient: w.db, tableName: "state", now: () => w.clock.now, developer: {} } as never, { method: "GET", headers: {}, body: "" } as never, new URL(path, "https://app.example.test"), { caller, csrf: "x" }));
+    const other = await call("/v1/app/projects/web/learning");
+    const missing = await call("/v1/app/projects/no-such-project/learning");
+    expect(other).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    expect(other).toEqual(missing);
   });
 });

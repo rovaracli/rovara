@@ -157,7 +157,7 @@ describe("person erase", () => {
   function seedErasure(world: World) {
     for (const project of ["web", "ops"]) {
       seedProject(world.db, TEST_ORG, project);
-      seedItem(world.db, TEST_ORG, project, "STATE", { projectCreatedAt: PROJECT_CREATED, revision: 5, openSuggestions: 2, liveCorrections: 5, pendingRules: 0 });
+      seedItem(world.db, TEST_ORG, project, "STATE", { projectCreatedAt: PROJECT_CREATED, revision: 5, openSuggestions: 3, liveCorrections: 5, pendingRules: 0 });
     }
     correction(world, "web", 1, { author: "dev1", githubUserId: "777", source: "pr_comment" });
     correction(world, "web", 2, { author: "dev2", rememberedBy: "dev1" });
@@ -204,11 +204,12 @@ describe("person erase", () => {
     expect(mine).toMatchObject({ status: "withdrawn", terminalAt: iso(NOW_MS) });
     expect(mine).not.toHaveProperty("proposedText");
     expect(find(world, "web", "SUGGESTION#theirs")).toMatchObject({ status: "open", proposedText: "Use the shared retry helper." });
-    // Privacy comes before "open only": a suggestion being accepted or waiting for a second person is withdrawn when fewer than 2 sources from 2 tasks are left without this person...
+    // Privacy comes before "open only": a suggestion being accepted or waiting for a second person is withdrawn...
     expect(find(world, "web", "SUGGESTION#waiting")).toMatchObject({ status: "withdrawn" });
     expect(find(world, "web", "SUGGESTION#waiting")).not.toHaveProperty("proposedText");
-    // ...and kept when 2 sources from 2 tasks remain; the person's own correction text is gone either way.
-    expect(find(world, "web", "SUGGESTION#accepting3")).toMatchObject({ status: "accepting" });
+    // ...and withdrawn too when 2 sources from 2 tasks remain (B6 review): the rule on its way may be this person's words, and a pending approval must never publish erased text.
+    expect(find(world, "web", "SUGGESTION#accepting3")).toMatchObject({ status: "withdrawn" });
+    expect(find(world, "web", "SUGGESTION#accepting3")).not.toHaveProperty("proposedText");
     expect(find(world, "web", "#c1")).not.toHaveProperty("text");
     expect(find(world, "web", "STATE")).toMatchObject({ openSuggestions: 0, liveCorrections: 5 });
     expect(find(world, "web", "METRIC#2026-10")).toMatchObject({ memberCorrections: 4, repeats: 2 });

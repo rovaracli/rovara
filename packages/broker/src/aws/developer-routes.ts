@@ -1961,6 +1961,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
   }
+  // v1.2 learning (the view and the writes: Remember, Forget, Accept, Dismiss, Reopen, Remove) is browser-only. Refused here, before authentication or any read, so a token learns nothing about a suggestion or rule.
+  if (/^\/v1\/app\/projects\/[^/]+\/learning(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");

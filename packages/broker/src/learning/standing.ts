@@ -8,7 +8,7 @@
 // A record that cannot be read throws. Callers refuse the capture; they never guess a standing.
 import { createHash } from "node:crypto";
 import { GetCommand, type TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { effectiveProjectRole, readProjectMeta } from "../developer/project-roles.js";
 import type { LearningScope } from "./store.js";
 
@@ -76,11 +76,37 @@ export async function readStanding(deps: StandingDeps, orgId: OrgId, developerId
   return role === "maintainer" || role === "contributor" ? "member" : "outsider";
 }
 
+/**
+ * True only while the company exists and is neither closing nor closed (the same test the company-owner and invite writes make: `closingAt` and `closedAt` absent on the org record). A company
+ * with no record is not open.
+ */
+export async function companyIsOpen(deps: StandingDeps, orgId: OrgId): Promise<boolean> {
+  const org = await read(deps, orgMetaKey(orgId));
+  return org !== undefined && org["orgId"] === orgId && org["closingAt"] === undefined && org["closedAt"] === undefined;
+}
+
+/**
+ * Who may accept a suggestion (design 5.1, L3): a person with standing in the project who is a maintainer, or who wrote one of the suggestion's corrections. THE one rule: Accept authorises
+ * with it and the learning view's per-suggestion `canDecide` is computed with it, so the screen and the API cannot disagree. `authors` are the authors of the suggestion's corrections.
+ */
+export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean; developerId: string }, authors: readonly string[]): boolean {
+  if (who.standing !== "member") return false;
+  return who.maintainer || authors.includes(who.developerId);
+}
+
 /** The standing of each distinct person, for the re-check at Accept (at most 25 people at once). */
 export async function readStandings(deps: StandingDeps, orgId: OrgId, project: string, developerIds: readonly string[]): Promise<Map<string, LearningStanding>> {
   const distinct = [...new Set(developerIds)];
   if (distinct.length > 25) throw new Error("too many people to check at once");
   const entries = await Promise.all(distinct.map(async (id) => [id, await readStanding(deps, orgId, id, project)] as const));
+  return new Map(entries);
+}
+
+/** `readStandings`, with the conditions that keep each member's standing true at the write (empty for anyone who is not a member). One entry per distinct person. */
+export async function readStandingsChecked(deps: StandingDeps, orgId: OrgId, project: string, developerIds: readonly string[]): Promise<Map<string, { standing: LearningStanding; checks: StandingCheck[] }>> {
+  const distinct = [...new Set(developerIds)];
+  if (distinct.length > 25) throw new Error("too many people to check at once");
+  const entries = await Promise.all(distinct.map(async (id) => [id, await readStandingChecked(deps, orgId, id, project)] as const));
   return new Map(entries);
 }
 
