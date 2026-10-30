@@ -2841,7 +2841,18 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const requestId = resumeRequestId(input.spendRequestId, "resume");
   if (task.workflow !== undefined) {
     if (task.workflow.state !== "BLOCKED" || task.workflow.blockReason !== WORKFLOW_BLOCK_REASONS.budgetPaused) return;
-    await retryTaskWorkflow(resumed, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
+    const guarded: DeveloperTaskRouteDependencies = input.spendingAdmission === undefined ? resumed : { ...resumed, actions: { ...deps.actions,
+      acceptTask: (identity, workspaceId, request, extra, options) => deps.actions.acceptTask(identity, workspaceId, request, (operation) => {
+        const items = [...extra(operation)];
+        for (const guard of input.nativeRecoveryChecks ?? []) {
+          const key = guard.ConditionCheck?.Key;
+          const existing = items.find(item => { const other = item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key; return key !== undefined && other !== undefined && key.pk === other.pk && key.sk === other.sk; });
+          if (existing !== undefined) { if (canonicalJson(existing) !== canonicalJson(guard)) throw budgetActorRefused(); } else items.push(guard);
+        }
+        return withAdmittedTaskSource(deps.tableName, task, items).items;
+      }, options),
+    } };
+    await retryTaskWorkflow(guarded, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
     return;
   }
   // A task with no workflow: the system's Continue (its window is the approval's).
@@ -2884,12 +2895,12 @@ const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict()
 export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller,
   input: { taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop }): Promise<PreparedTaskApprovalAdmission | undefined> {
   const access = await authorizeTaskAction(deps, caller, input.taskId, "work"), task = access.task;
-  // Plain coding and agent-step windows share the receipt. Workflow stage
-  // admission remains on its dedicated adapter until that adapter is connected.
-  if (task.agent === undefined || task.workflow !== undefined) return undefined;
+  // The accepted recipe distinguishes agent-step state from coding/workflow
+  // state; every new approved window keeps the same immutable receipt.
+  if (task.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(deps, task.taskId, deps.orgId);
   if (frozen === undefined || frozen.digest !== task.agent.digest) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task's accepted recipe could not be checked.");
-  const agentSteps = recipeRunner(frozen.recipe) === "agent_steps";
+  const agentSteps = task.workflow === undefined && recipeRunner(frozen.recipe) === "agent_steps";
   const runKey = taskAgentRunKey(task.taskId);
   let run: { revision: number } | undefined;
   if (agentSteps) {
@@ -2918,13 +2929,14 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
     intentHash: hashJson({ action: "spend-approval", taskId: task.taskId, spendRequestId: input.spendRequestId, requestId: input.decisionRequestId, policyDigest: snapshot.policyDigest }) };
   const reference = { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash }, pausedRevision = run === undefined ? null : run.revision + 1;
   return { authority, reference, receiptIndex: run === undefined ? 0 : 1,
+    ...(task.workflow === undefined ? {} : { workflowRevision: task.workflow.revision }),
     ...(run === undefined ? { taskReference: true as const } : { expectedPausedAgentRevision: run.revision + 1, runSourceIndex: 0 }),
     items: [...(run === undefined ? [] : [{ Update: { TableName: deps.tableName, Key: runKey, UpdateExpression: "SET spendingAdmission = :admission, #revision = :nextRevision",
       ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
       ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
       ExpressionAttributeValues: { ":admission": reference, ":nextRevision": pausedRevision, ":revision": run.revision, ":state": "PAUSED_BUDGET", ":org": deps.orgId, ":type": "AGENT_RUN" } } }]),
       taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
-        actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: null, admittedAt: iso(deps) })] };
+        actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) })] };
 }
 
 export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {

@@ -1,3 +1,4 @@
+import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { requireAgentAccess, type AgentAccessDeps } from "../agents/access.js";
 import { taskStartProjectAuthorityChecks } from "./task-start-project-authority.js";
@@ -92,7 +93,8 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
   const receipt = await readTaskStopTransition(deps, { orgId: task.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
     intentHash: reference.intentHash, project: task.project, agentId: task.agent.agentId });
   if (receipt === undefined || task.origin !== (receipt.transitionKind === "spend-approval" ? receipt.origin : "app") || task.closedAt !== undefined || !isDeepStrictEqual(task.payer, receipt.payer)
-    || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)) throw invalid();
+    || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)
+    || usdToWholeMicrodollars(task.budgetUsd) !== receipt.spendingStop.effectiveStopMicrousd) throw invalid();
   if (receipt.transitionKind === "spend-approval" && receipt.agentRunRevision === null && !isDeepStrictEqual(task.spendingAdmission, reference)) throw invalid();
   const actor = { orgId: task.orgId, developerId: receipt.actorId, orgRole: receipt.actorRole }, agentId = task.agent.agentId, draft = task.agent.version === "draft";
   const projectChecks = await taskStartProjectAuthorityChecks(deps, { orgId: task.orgId, developerId: actor.developerId, role: actor.orgRole, project: task.project },
@@ -142,4 +144,5 @@ export interface PreparedTaskApprovalAdmission {
   runSourceIndex?: number;
   receiptIndex: number;
   taskReference?: true;
+  workflowRevision?: number;
 }

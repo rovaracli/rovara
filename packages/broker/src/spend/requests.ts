@@ -1561,6 +1561,10 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       const parts = update.UpdateExpression.split(" REMOVE ");
       update.UpdateExpression = `${parts[0]}, spendingAdmission = :approvalAdmission${parts[1] === undefined ? "" : ` REMOVE ${parts[1]}`}`;
       update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ":approvalAdmission": admission.reference };
+      if (admission.workflowRevision !== undefined) {
+        update.ConditionExpression = `(${update.ConditionExpression ?? "attribute_exists(pk)"}) AND workflow.revision = :approvalWorkflowRevision`;
+        update.ExpressionAttributeValues[":approvalWorkflowRevision"] = admission.workflowRevision;
+      }
     }
     if (admission !== undefined) extra.push(...admission.items);
     // A run held at its start is dispatched by the resume; the due item lets the settlement run try again if that fails now (M-1).
