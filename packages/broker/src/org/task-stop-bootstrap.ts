@@ -23,7 +23,7 @@ export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: n
       seedProvenance: { occurrence, source: "bootstrap", reviewRequired: true, seededAt: at },
       updatedBy: "system", updatedAt: at }),
     put({ ...agentGuardrailsKey(orgId), entityType: "AGENT_GUARDRAILS", orgId, revision: 1,
-      guardrails: structuredClone(DEFAULT_AGENT_GUARDRAILS), updatedBy: "system", updatedAt: at }),
+      guardrails: structuredClone(DEFAULT_AGENT_GUARDRAILS), seedProvenance: { occurrence, source: "bootstrap", reviewRequired: true, seededAt: at }, updatedBy: "system", updatedAt: at }),
     put({ pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId,
       version: 1, occurrenceId: occurrence, source: "bootstrap", outcome: "created", completedAt: at, policyRevision: 1, auditOccurrence: event.eventId }),
     // Persist even when delivery runtime isn't wired yet: no audit-free money seed.
@@ -61,7 +61,7 @@ export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(com
   const items: TransactItem[] = [guards[0]!];
   if (policy === undefined) items.push(put({ ...keys[1], orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "disabled" }, seedProvenance: { occurrence, source: "upgrade", reviewRequired: true, seededAt: at }, updatedBy: "system", updatedAt: at }));
   else items.push(guards[1]!);
-  if (ceiling === undefined) items.push(put({ ...keys[2], orgId, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: structuredClone(guardrails), updatedBy: "system", updatedAt: at }));
+  if (ceiling === undefined) items.push(put({ ...keys[2], orgId, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: structuredClone(guardrails), seedProvenance: { occurrence, source: "upgrade", reviewRequired: true, seededAt: at }, updatedBy: "system", updatedAt: at }));
   else items.push(guards[2]!);
   items.push(put({ ...keys[3], orgId, entityType: "TASK_STOP_SEED", version: 1, occurrenceId: occurrence, source: "upgrade", outcome, sourceDigest: createHash("sha256").update(JSON.stringify(rows.slice(0, 3))).digest("hex"), completedAt: at, policyRevision: revision, auditOccurrence: event.eventId }), put({ ...auditPendingItem(event, deps.now()) }));
   await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
