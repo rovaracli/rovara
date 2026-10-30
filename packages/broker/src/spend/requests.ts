@@ -1524,6 +1524,13 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   };
   if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused, actor: decisionActor });
   if (record.kind === "owner_cap") {
+    if (record.ownerFinancialTerms !== undefined) {
+      const source = expirySource(record), update = ending[0]?.Update;
+      if (update === undefined) throw staleApproval();
+      update.ConditionExpression = `(${update.ConditionExpression}) AND (${source.condition})`;
+      update.ExpressionAttributeNames = { ...update.ExpressionAttributeNames, ...source.names };
+      update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...source.values };
+    }
     const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
     if (status === "APPROVED" && record.ownerFinancialTerms !== undefined) {
