@@ -592,7 +592,7 @@ describe("B5 review fixes", () => {
     await add(world, ZOD_A);
     const queries: Array<Record<string, unknown>> = [];
     const send = world.db.send;
-    world.deps.documentClient = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") queries.push(command.input); return send(command as never); } } as never;
+    world.deps.documentClient = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") queries.push(command.input); return send(command); } } as never;
     const result = await group(world);
     expect(result.joined).toHaveLength(2);
     const fallback = queries.filter((input) => JSON.stringify(input.ExpressionAttributeValues ?? {}).includes('":prefix":"CORRECTION#"'));

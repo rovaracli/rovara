@@ -549,7 +549,10 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
   if (c.suggestionId !== undefined) {
     const raw = await getLearningItem(deps, scope, suggestionSk(c.suggestionId));
     const suggestion = raw === undefined ? undefined : parseSuggestion(raw);
-    if (suggestion?.status === "accepted") return { ok: false, reason: "in_accepted_rule" };
+    // Judged by the stored status first: an item that does not read as a suggestion never lets a forget through while a rule may be built from it.
+    const storedStatus = raw?.["status"];
+    if (storedStatus === "accepted") return { ok: false, reason: "in_accepted_rule" };
+    if (storedStatus === "accepting" || storedStatus === "awaiting_approval" || (storedStatus === "open" && suggestion === undefined)) return { ok: false, reason: "suggestion_busy" };
     if (suggestion !== undefined && isLive(suggestion)) {
       if (suggestion.status !== "open") return { ok: false, reason: "suggestion_busy" };
       readSuggestion = suggestion;

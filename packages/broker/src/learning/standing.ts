@@ -7,8 +7,8 @@
 //
 // A record that cannot be read throws. Callers refuse the capture; they never guess a standing.
 import { createHash } from "node:crypto";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, projectMemberKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { GetCommand, type TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgRoleSchema, orgMemberKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { effectiveProjectRole, readProjectMeta } from "../developer/project-roles.js";
 import type { LearningScope } from "./store.js";
 
@@ -18,6 +18,8 @@ export interface StandingDeps {
 }
 
 type Row = Record<string, unknown>;
+/** A condition on a record that a write must still find as it was read (a `ConditionCheck` of the caller's transaction). */
+export type StandingCheck = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
 
 async function read(deps: StandingDeps, key: { pk: string; sk: string }): Promise<Row | undefined> {
   return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Row }).Item;
@@ -28,17 +30,44 @@ async function read(deps: StandingDeps, key: { pk: string; sk: string }): Promis
  * are ignored), a member record that names another person or company, or a grant that names another person or project. An owner or admin of the company maintains every project.
  */
 export async function readProjectRole(deps: StandingDeps, orgId: OrgId, developerId: string, project: string): Promise<ProjectRole | undefined> {
+  return (await readRoleFacts(deps, orgId, developerId, project)).role;
+}
+
+/** The role, and the records it was read from, as `checks`: conditions a transaction can hold the write to, so a removal or downgrade after the read stops the write. */
+async function readRoleFacts(deps: StandingDeps, orgId: OrgId, developerId: string, project: string): Promise<{ role: ProjectRole | undefined; checks: StandingCheck[] }> {
+  const none = { role: undefined, checks: [] };
   const member = await read(deps, orgMemberKey(orgId, developerId));
-  if (member === undefined || member["orgId"] !== orgId || member["developerId"] !== developerId) return undefined;
+  if (member === undefined || member["orgId"] !== orgId || member["developerId"] !== developerId) return none;
   const role = OrgRoleSchema.safeParse(member["role"]);
-  if (!role.success) return undefined;
+  if (!role.success) return none;
   const orgRole: OrgRole = role.data;
-  if (orgRole === "owner" || orgRole === "admin") return effectiveProjectRole({ orgRole, developerId }, undefined, false);
+  const memberCheck: StandingCheck = {
+    ConditionCheck: {
+      TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk) AND #role = :role AND orgId = :org AND developerId = :dev",
+      ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": orgRole, ":org": orgId, ":dev": developerId },
+    },
+  };
+  if (orgRole === "owner" || orgRole === "admin") return { role: effectiveProjectRole({ orgRole, developerId }, undefined, false), checks: [memberCheck] };
   const grant = await read(deps, projectMemberKey(orgId, developerId, project));
-  if (grant === undefined) return undefined;
+  if (grant === undefined) return none;
   // A grant row that names someone else or another project is not this person's grant here.
-  if ((grant["ownerKey"] !== undefined && grant["ownerKey"] !== developerId) || (grant["projectName"] !== undefined && grant["projectName"] !== project)) return undefined;
-  return effectiveProjectRole({ orgRole, developerId }, grant, false);
+  if ((grant["ownerKey"] !== undefined && grant["ownerKey"] !== developerId) || (grant["projectName"] !== undefined && grant["projectName"] !== project)) return none;
+  const granted = effectiveProjectRole({ orgRole, developerId }, grant, false);
+  const storedRole = grant["projectRole"];
+  const grantCheck: StandingCheck = {
+    ConditionCheck: {
+      TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
+      ConditionExpression: `attribute_exists(pk) AND #role = :grantRole AND ${storedRole === undefined ? "attribute_not_exists(projectRole)" : "projectRole = :projectRole"}`,
+      ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":grantRole": grant["role"], ...(storedRole === undefined ? {} : { ":projectRole": storedRole }) },
+    },
+  };
+  return { role: granted, checks: [memberCheck, grantCheck] };
+}
+
+/** `readStanding`, with the conditions that keep it true at the write: the person's company record and project grant as they were read. Empty unless the standing is member. */
+export async function readStandingChecked(deps: StandingDeps, orgId: OrgId, developerId: string, project: string): Promise<{ standing: LearningStanding; checks: StandingCheck[] }> {
+  const { role, checks } = await readRoleFacts(deps, orgId, developerId, project);
+  return role === "maintainer" || role === "contributor" ? { standing: "member", checks } : { standing: "outsider", checks: [] };
 }
 
 /** Member or outsider, as the module comment says. */
@@ -60,11 +89,24 @@ export async function readStandings(deps: StandingDeps, orgId: OrgId, project: s
  * is learned there. Read it at every capture; a project created again under the same name has a new `createdAt` and so a clean partition.
  */
 export async function learningScopeOf(deps: StandingDeps, orgId: OrgId, project: string): Promise<LearningScope | undefined> {
+  return (await learningScopeChecked(deps, orgId, project))?.scope;
+}
+
+/** `learningScopeOf`, with the condition that holds a write to the project as it was read: still active, and still the same instance (the same `createdAt`). */
+export async function learningScopeChecked(deps: StandingDeps, orgId: OrgId, project: string): Promise<{ scope: LearningScope; checks: StandingCheck[] } | undefined> {
   const meta = await readProjectMeta(deps, orgId, project);
   if (meta === undefined || meta.status !== "active") return undefined;
   const time = Date.parse(meta.createdAt);
   if (!Number.isFinite(time)) return undefined;
-  return { orgId, project, projectCreatedAt: new Date(time).toISOString() };
+  return {
+    scope: { orgId, project, projectCreatedAt: new Date(time).toISOString() },
+    checks: [{
+      ConditionCheck: {
+        TableName: deps.tableName, Key: projectMetaKey(orgId, project), ConditionExpression: "attribute_exists(pk) AND #status = :active AND createdAt = :created",
+        ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":active": "active", ":created": meta.createdAt },
+      },
+    }],
+  };
 }
 
 /**
