@@ -177,7 +177,8 @@ describe("subscribing", () => {
     const gone = "9".repeat(63) + "8";
     const logs: Array<Record<string, unknown>> = [];
     expect(await t.run({ authorizationToken: await tokenFor(ORG_A, gone, "lookup"), requestContext: { operation: "EVENT_SUBSCRIBE", channel: projectChannel(ORG_A, "web") } }, { log: (entry) => logs.push(entry) })).toEqual(REFUSED);
-    expect(logs).toEqual([{ event: "realtime.refused", operation: "EVENT_SUBSCRIBE", reason: "project" }]);
+    // The person is read live first (member removal): someone who is not a member is refused there.
+    expect(logs).toEqual([{ event: "realtime.refused", operation: "EVENT_SUBSCRIBE", reason: "member" }]);
     expect(t.w.channelCalls).toEqual([]);
   });
 

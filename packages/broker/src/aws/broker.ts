@@ -439,6 +439,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
+import { requireNotRemoved } from "../org/member-removal/guards.js";
 import { listTeamChannels, readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
@@ -4435,6 +4436,15 @@ function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: A
   }
 }
 
+/** The member behind a Slack user (a merged duplicate counts as the member it was merged into) must not have been removed from the org. */
+async function requireSlackRequesterNotRemoved(dependencies: AwsBrokerDependencies, orgId: OrgId, slackUserId: string): Promise<void> {
+  const native = developerIdForSlackUser(slackUserId);
+  const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const survivor = merges === undefined ? native : await followMerges(merges, native);
+  await requireNotRemoved(dependencies, orgId, native);
+  if (survivor !== native) await requireNotRemoved(dependencies, orgId, survivor);
+}
+
 async function slackServiceIdentity(
   dependencies: AwsBrokerDependencies,
   request: AdaptedHttpRequest,
@@ -4445,6 +4455,9 @@ async function slackServiceIdentity(
   const orgId = await slackTeamOrg(dependencies, context.thread.teamId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  // A person removed from the company is refused here, for every Slack service route (member removal): the identity link, the single-org resolver and the role fallback of
+  // `slackRequesterRole` (which reads a missing member as "member") all stand behind this. A person who never joined has no tombstone and is served as before.
+  await requireSlackRequesterNotRemoved(dependencies, orgId, context.requester.userId);
   const subject = slackThreadSubject(context.thread);
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, subject);
   const own: AuthenticatedIdentity = {

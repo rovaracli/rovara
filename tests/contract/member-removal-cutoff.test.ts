@@ -6,7 +6,8 @@ import { orgMemberKey } from "@agentx/contracts";
 import { createPendingChange, decideApproval, getAnyApproval, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { linkGithubMember, memberForGithubUser } from "../../packages/broker/src/rovara-code/github-members.js";
 import { HOUR, OWNER, SAM, T0, removalWorld } from "../support/member-removal-world.js";
-import { ORG_A, OLA, PRIYA, sessionWorld } from "../support/agent-session-world.js";
+import { ORG_A, OLA, PRIYA } from "../support/agent-session-world.js";
+import { mergeWorld } from "../support/rovara-code-merge-world.js";
 
 describe("sign-in", () => {
   it("a removed person's cookie and CLI token are refused right after S0, before any mover has run", async () => {
@@ -42,7 +43,7 @@ describe("GitHub", () => {
 
 describe("a decision across the removal (G6)", () => {
   async function pending() {
-    const w = sessionWorld();
+    const w = mergeWorld();
     registerApprovalSubjectHandler("agent_publish", async () => undefined);
     const record = await createPendingChange(w.deps, {
       orgId: ORG_A, requestId: randomUUID(), requestedBy: PRIYA,
