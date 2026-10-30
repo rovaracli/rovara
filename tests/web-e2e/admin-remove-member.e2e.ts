@@ -1,3 +1,4 @@
+import type { APIRequestContext } from "@playwright/test";
 import { test, expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
@@ -6,7 +7,7 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "admin" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: FIXTURE_SESSION, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
-const writes = async (request: import("@playwright/test").APIRequestContext) => (await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>).filter(row => row.method === "POST" && row.path.endsWith("/removal"));
+const writes = async (request: APIRequestContext) => (await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>).filter(row => row.method === "POST" && row.path.endsWith("/removal"));
 test("previews a removal, lets the owner choose who takes over, sends it once and shows the receipt", async ({ page, request }) => {
  await request.post("/__mock/admin-add-member", { data: { name: "Cal" } });
  await page.goto("/app/admin/people");
