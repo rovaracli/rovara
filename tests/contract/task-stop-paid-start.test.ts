@@ -1492,3 +1492,21 @@ for (const change of ["operation_org", "operation_id", "task_workspace", "route_
   if (change === "route_between_reads") expect(reads).toBeGreaterThanOrEqual(2);
   expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
 });
+
+it("native key recording holds the actual currentOwner across a takeover race", async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true;
+      f.t.db.set({ ...f.t.meta(task.taskId), currentOwner: { developerId: BEN.developerId, name: "Ben", provider: "oidc", since: new Date().toISOString() } });
+      f.t.db.delete(orgMemberKey(TEST_ORG, BEN.developerId));
+    }
+    return send(command);
+  };
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(raced).toBe(true); expect(reply.status).not.toBe(200);
+  expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
+});
