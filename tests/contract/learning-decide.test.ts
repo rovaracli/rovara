@@ -3,7 +3,7 @@
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -195,6 +195,9 @@ describe("I7: a rule for a reviewing stage waits for a second person, through th
     const id = await suggest(w, { stage: "review" });
     const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
     expect(answer.outcome).toBe("awaiting_approval");
+    // Like a hand publish, a waiting answer always carries the list of changes (possibly empty), and it is the contract's answer.
+    expect(Array.isArray((answer as { changes?: unknown }).changes)).toBe(true);
+    expect(LearningAcceptAnswerSchema.safeParse(answer).success).toBe(true);
     const approvalId = approvalIdOf(w, answer);
     const ruleId = suggestionOf(w, id).ruleId as string;
     expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "awaiting_approval", approvalId });
@@ -480,6 +483,8 @@ describe("Dismiss and reopen", () => {
     const id = await suggest(w);
     const answer = await dismissSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, { expectedRevision: 0, dismissKind: "one_off", note: "SECRET-NOTE-WORDS" });
     expect(answer).toEqual({ suggestion: { id, status: "dismissed" } });
+    // The answer the route sends is the contract's answer: the screens read it with the shared schema.
+    expect(LearningDismissAnswerSchema.safeParse(answer).success).toBe(true);
     const stored = suggestionOf(w, id);
     expect(stored).toMatchObject({ status: "dismissed", dismissKind: "one_off", decidedBy: MAX });
     expect(stored.proposedText).toBeUndefined();
