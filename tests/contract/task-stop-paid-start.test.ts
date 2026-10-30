@@ -880,3 +880,16 @@ it("an agent approval lost acknowledgement repairs from its atomic new admission
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(resumed); expect(captures).toBe(0);
 });
+
+for (const state of ["missing", "corrupt"] as const) it(`an enrolled agent approval refuses ${state} paused-run admission state before approving money`, async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  expect((await f.transition()).status).toBe(200); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, key = { pk: `DEVTASK#${f.task.taskId}`, sk: "AGENT_RUN" };
+  const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  if (state === "missing") f.t.db.delete(key); else f.t.db.set({ ...f.t.db.get(key)!, revision: "unreadable" });
+  await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${request.spendRequestId}`), sk: "META" })).toMatchObject({ status: "PENDING" });
+});
