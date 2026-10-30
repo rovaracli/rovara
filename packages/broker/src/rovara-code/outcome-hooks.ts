@@ -98,16 +98,17 @@ interface Pointer {
   createdAt: string;
   /** The heads the candidate's pull request has had (the commit a review is on says which candidate it is about). */
   heads: string[];
-  /** The checks were seen passing on the candidate's head. */
-  ciPassing: boolean;
+  /** The heads the checks were seen passing on. */
+  passingHeads: string[];
 }
-const HEADS_KEPT = 8;
+
+const stringsOf = (value: unknown): string[] => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+const pointerOf = (item: Record<string, unknown>): Pointer => ({ createdAt: String(item.createdAt), heads: stringsOf(item.heads), passingHeads: stringsOf(item.passingHeads) });
 
 async function readPointer(deps: OutcomeDependencies, taskId: string, round: string): Promise<Pointer | undefined> {
   const item = (await deps.ddb.send(new GetCommand({ TableName: deps.tableName, Key: pointerKey(taskId, round), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   if (typeof item?.createdAt !== "string") return undefined;
-  const heads = Array.isArray(item.heads) ? item.heads.filter((head): head is string => typeof head === "string") : [];
-  return { createdAt: item.createdAt, heads, ciPassing: item.ciPassing === true };
+  return pointerOf(item);
 }
 
 /** The creation time every sample of a candidate shares: kept in the candidate's pointer item, written once. */
@@ -117,7 +118,7 @@ async function creationTimeOf(deps: OutcomeDependencies, task: OutcomeTask, roun
   try {
     await deps.ddb.send(new PutCommand({
       TableName: deps.tableName,
-      Item: { ...pointerKey(task.taskId, round), entityType: "OUTCOME_KEYS", taskId: task.taskId, round, createdAt: now, heads: [], [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + OUTCOME_PENDING_KEPT_DAYS * DAY_SECONDS },
+      Item: { ...pointerKey(task.taskId, round), entityType: "OUTCOME_KEYS", taskId: task.taskId, round, createdAt: now, heads: [], passingHeads: [], [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + OUTCOME_PENDING_KEPT_DAYS * DAY_SECONDS },
       ConditionExpression: NOT_EXISTS,
     }));
     return now;
@@ -129,17 +130,25 @@ async function creationTimeOf(deps: OutcomeDependencies, task: OutcomeTask, roun
   }
 }
 
-/** What the tracking pass saw of a candidate: a head its pull request has had, and checks seen passing on it. Only changes are written. */
-async function notePointer(deps: OutcomeDependencies, task: OutcomeTask, round: string, seen: { head?: string | undefined; ciPassing?: true }): Promise<void> {
-  const pointer = await readPointer(deps, task.taskId, round);
-  if (pointer === undefined) return;
-  const heads = seen.head === undefined || pointer.heads.includes(seen.head) ? pointer.heads : [...pointer.heads, seen.head].slice(-HEADS_KEPT);
-  const ciPassing = pointer.ciPassing || seen.ciPassing === true;
-  if (heads === pointer.heads && ciPassing === pointer.ciPassing) return;
-  await deps.ddb.send(new UpdateCommand({
-    TableName: deps.tableName, Key: pointerKey(task.taskId, round), UpdateExpression: "SET heads = :heads, ciPassing = :ci", ConditionExpression: "attribute_exists(pk)",
-    ExpressionAttributeValues: { ":heads": heads, ":ci": ciPassing },
-  }));
+/**
+ * What the tracking pass saw of a candidate: a head its pull request has had, and a head the checks were seen passing on. Each is appended on its own, in the write itself and only when not listed
+ * already, so two passes at once lose neither and one never undoes the other.
+ */
+async function notePointer(deps: OutcomeDependencies, task: OutcomeTask, round: string, seen: { head?: string | undefined; passingHead?: string | undefined }): Promise<void> {
+  const append = async (attribute: "heads" | "passingHeads", value: string): Promise<void> => {
+    try {
+      await deps.ddb.send(new UpdateCommand({
+        TableName: deps.tableName, Key: pointerKey(task.taskId, round), UpdateExpression: `SET ${attribute} = list_append(if_not_exists(${attribute}, :none), :value)`,
+        ConditionExpression: `attribute_exists(pk) AND (attribute_not_exists(${attribute}) OR NOT contains(${attribute}, :one))`,
+        ExpressionAttributeValues: { ":none": [], ":value": [value], ":one": value },
+      }));
+    } catch (error) {
+      // Listed already (or no pointer): nothing to add.
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
+  };
+  if (seen.head !== undefined) await append("heads", seen.head);
+  if (seen.passingHead !== undefined) await append("passingHeads", seen.passingHead);
 }
 
 /** The rounds the task has samples for, with their pointers. */
@@ -153,7 +162,7 @@ async function pointersOf(deps: OutcomeDependencies, taskId: string): Promise<Ar
     })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of page.Items ?? []) {
       if (typeof item.round !== "string" || typeof item.createdAt !== "string") continue;
-      found.push({ round: item.round, createdAt: item.createdAt, ciPassing: item.ciPassing === true, heads: Array.isArray(item.heads) ? item.heads.filter((head): head is string => typeof head === "string") : [] });
+      found.push({ round: item.round, ...pointerOf(item) });
     }
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
@@ -229,7 +238,7 @@ const allPending = (score: Score): Array<[OutcomeClaim, Score]> => PENDING_CLAIM
 
 /** A person asked for changes on code of these candidates (a request on a pull request, or a round of fixes their comments started): their review and risk samples did not hold. First sight wins. */
 export async function scoreChangesRequested(
-  deps: OutcomeDependencies, task: OutcomeTask, input: { rounds: readonly string[]; reason: "changes_requested_by_person" | "feedback_round_by_person"; now: string },
+  deps: OutcomeDependencies, task: OutcomeTask, input: { rounds: readonly string[]; reason: "changes_requested_by_person" | "feedback_round_approved"; now: string },
 ): Promise<void> {
   try {
     const score: Score = { state: "not_held", reason: input.reason };
@@ -274,7 +283,7 @@ export async function observeCandidateCode(
     await notePointer(deps, task, round, { head: input.head });
     if (!input.ciIsOnHead) return;
     if (input.ci === "failing") await scoreClaims(deps, task, round, [["proves_change", { state: "not_held", reason: "ci_failing" }]], input.now);
-    if (input.ci === "passing") await notePointer(deps, task, round, { ciPassing: true });
+    if (input.ci === "passing" && input.head !== undefined) await notePointer(deps, task, round, { passingHead: input.head });
   } catch (error) {
     noteFailure(deps, "observe", error);
   }
@@ -290,9 +299,12 @@ export async function settleSuperseded(deps: OutcomeDependencies, task: OutcomeT
     const pointer = await readPointer(deps, task.taskId, round);
     if (pointer === undefined) return;
     const asked = (task.workflow.feedbackDecisions ?? []).some((decision) => decision.decision === "APPROVE" && decision.candidates.some((binding) => binding.candidateDigest === input.candidateDigest));
-    if (asked) await scoreChangesRequested(deps, task, { rounds: [round], reason: "feedback_round_by_person", now: input.now });
+    if (asked) await scoreChangesRequested(deps, task, { rounds: [round], reason: "feedback_round_approved", now: input.now });
     const superseded: Score = { state: "no_outcome", reason: "superseded" };
-    await scoreClaims(deps, task, round, [["proves_change", pointer.ciPassing ? { state: "held", reason: "ci_passing" } : superseded],
+    // Checks passing on an earlier head say nothing of the code the candidate ended on: only its final head counts.
+    const finalHead = pointer.heads.at(-1);
+    const passedOnFinal = finalHead !== undefined && pointer.passingHeads.includes(finalHead);
+    await scoreClaims(deps, task, round, [["proves_change", passedOnFinal ? { state: "held", reason: "ci_passing" } : superseded],
       ...[...REVIEW_CLAIMS, "risk_low"].map((claim) => [claim, superseded] as [OutcomeClaim, Score])], input.now);
   } catch (error) {
     noteFailure(deps, "superseded", error);
@@ -310,11 +322,14 @@ export interface EndedPullRequestRead {
 }
 export type EndedPullRequestReader = (repositoryId: string, number: number) => Promise<EndedPullRequestRead>;
 
-const READ_TIMEOUT_MS = 8_000;
-/** A GitHub read is bounded: a hung one is a failed one, and what waits on it goes on. */
-function bounded<T>(work: Promise<T>): Promise<T> {
+/** What one scoring may wait on GitHub in all, and what a settle may (one deadline for all its reads, never one for each). */
+const READ_BUDGET_MS = 8_000;
+/** A GitHub read is bounded by a deadline (an absolute time): a hung one, or one asked for after it, is a failed one, and what waits on it goes on. */
+function bounded<T>(work: Promise<T>, deadline: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(Object.assign(new Error("read timed out"), { name: "OutcomeReadTimeout" })), READ_TIMEOUT_MS);
+    const left = deadline - Date.now();
+    if (left <= 0) { reject(Object.assign(new Error("read deadline passed"), { name: "OutcomeReadTimeout" })); return; }
+    const timer = setTimeout(() => reject(Object.assign(new Error("read timed out"), { name: "OutcomeReadTimeout" })), left);
     work.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error("read failed")); });
   });
 }
@@ -334,7 +349,7 @@ async function reviewsOn(read: EndedPullRequestRead, heads: readonly string[]): 
  */
 export async function scoreMergedCandidate(
   deps: OutcomeDependencies, task: OutcomeTask & { workflow: WorkflowSnapshot },
-  input: { candidateDigest: string; read: EndedPullRequestReader; now: string; merged?: ReadonlyArray<{ repositoryId: string; number: number }> },
+  input: { candidateDigest: string; read: EndedPullRequestReader; now: string; merged?: ReadonlyArray<{ repositoryId: string; number: number }>; deadline?: number },
 ): Promise<"scored" | "nothing" | "failed"> {
   try {
     const round = outcomeRoundOf(input.candidateDigest);
@@ -342,6 +357,7 @@ export async function scoreMergedCandidate(
     if (group.length === 0 || group.some((entry) => entry.state !== "MERGED" && entry.state !== "CLOSED")) return "nothing";
     const merged = input.merged ?? group.filter((entry) => entry.state === "MERGED").sort((left, right) => left.repositoryId.localeCompare(right.repositoryId) || left.number - right.number);
     if (merged.length === 0 || !await anyPending(deps, task, round)) return "nothing";
+    const deadline = input.deadline ?? Date.now() + READ_BUDGET_MS;
     const heads = (await readPointer(deps, task.taskId, round))?.heads ?? [];
     let failing = false;
     let allPassing = true;
@@ -350,12 +366,12 @@ export async function scoreMergedCandidate(
     let reviewed = false;
     let first: { repositoryId: string; number: number; mergeCommit: string | undefined; mergedAt: string | undefined } | undefined;
     for (const entry of merged) {
-      const read = await bounded(input.read(entry.repositoryId, entry.number));
+      const read = await bounded(input.read(entry.repositoryId, entry.number), deadline);
       const ci = read.status.checksUnavailable === true || read.status.checks.length === 0 ? "none" : readCi(read.status, { checksEverSeen: true, lastRovaraPushAt: undefined, now: Date.parse(input.now) }).ci;
       failing ||= ci === "failing";
       allPassing &&= ci === "passing";
       anyPending_ ||= ci === "pending";
-      const said = await bounded(reviewsOn(read, heads));
+      const said = await bounded(reviewsOn(read, heads), deadline);
       changes ||= said === "changes_requested";
       reviewed ||= said !== "none";
       first ??= { repositoryId: entry.repositoryId, number: entry.number, mergeCommit: read.mergeCommit, mergedAt: read.mergedAt };
@@ -380,32 +396,39 @@ export async function scoreMergedCandidate(
 }
 
 /**
- * The task is over (closed, or finished with its pull requests merged or closed): nothing stays pending.
- * - A candidate with a merged pull request is scored from a fresh read; a read that cannot be made (or fails) is `github_unavailable`.
+ * The task is over (closed, or finished and released): nothing stays pending. Every GitHub read of the settle shares ONE deadline (`budgetMs`), so a GitHub that does not answer costs
+ * that long once, however many pull requests there are; what is left when it passes is `github_unavailable`.
+ * - A candidate with a merged pull request is scored from a fresh read (a read that cannot be made is `github_unavailable`; one still waiting on another open pull request is `task_closed`).
  * - A candidate whose pull requests are all closed: read again, so a reopened and merged one scores as merged, one still closed is `closed_unmerged`, and one open now has no outcome.
- *   (A close is never scored at the moment it happens: it may be reopened.)
+ *   (A close is never scored at the moment it happens: it may be reopened. Without a reader the workflow's own record stands.)
  * - A candidate no pull request holds any more was replaced: `superseded`. Anything else: `task_closed`.
  */
 export async function settleTaskOutcomes(
-  deps: OutcomeDependencies, task: OutcomeTask & { workflow?: WorkflowSnapshot | undefined }, now: string, read?: EndedPullRequestReader,
+  deps: OutcomeDependencies, task: OutcomeTask & { workflow?: WorkflowSnapshot | undefined }, now: string, read?: EndedPullRequestReader, budgetMs: number = READ_BUDGET_MS,
 ): Promise<void> {
   try {
     if (task.orgId === undefined) return;
+    const deadline = Date.now() + budgetMs;
+    const unavailable = (round: string) => scoreClaims(deps, task, round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
     for (const pointer of await pointersOf(deps, task.taskId)) {
       try {
         const all = task.workflow?.pullRequests ?? [];
         const prs = all.filter((entry) => outcomeRoundOf(entry.candidateDigest) === pointer.round);
         const withWorkflow = task.workflow === undefined ? undefined : { ...task, workflow: task.workflow };
         if (prs.some((entry) => entry.state === "MERGED") && withWorkflow !== undefined) {
-          const result = read === undefined ? "failed" : await scoreMergedCandidate(deps, withWorkflow, { candidateDigest: prs[0]!.candidateDigest, read, now });
-          if (result === "failed") await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
+          const result = read === undefined ? "failed" : await scoreMergedCandidate(deps, withWorkflow, { candidateDigest: prs[0]!.candidateDigest, read, now, deadline });
+          if (result === "failed") await unavailable(pointer.round);
+          // Another pull request of the candidate is still open and the task is over: it will not be waited for.
+          else if (result === "nothing") await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "task_closed" }), now);
         } else if (prs.length > 0 && prs.every((entry) => entry.state === "CLOSED") && withWorkflow !== undefined) {
           let reads: EndedPullRequestRead[] | undefined;
-          if (read !== undefined) reads = await Promise.all(prs.map((entry) => bounded(read(entry.repositoryId, entry.number)))).catch(() => undefined);
+          if (read !== undefined) reads = await Promise.all(prs.map((entry) => bounded(read(entry.repositoryId, entry.number), deadline))).catch(() => undefined);
           const reopenedMerged = reads === undefined ? [] : prs.filter((_entry, index) => reads[index]!.status.state === "merged");
-          if (reopenedMerged.length > 0 && read !== undefined) {
-            const result = await scoreMergedCandidate(deps, withWorkflow, { candidateDigest: prs[0]!.candidateDigest, read, now, merged: reopenedMerged });
-            if (result === "failed") await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
+          if (read !== undefined && reads === undefined) {
+            await unavailable(pointer.round);
+          } else if (reopenedMerged.length > 0 && read !== undefined) {
+            const result = await scoreMergedCandidate(deps, withWorkflow, { candidateDigest: prs[0]!.candidateDigest, read, now, merged: reopenedMerged, deadline });
+            if (result === "failed") await unavailable(pointer.round);
           } else if (reads !== undefined && reads.some((one) => one.status.state === "open")) {
             await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "task_closed" }), now);
           } else {

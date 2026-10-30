@@ -160,7 +160,7 @@ describe("the plan check's claim", () => {
 });
 
 describe("a person asks for changes", () => {
-  const asked = (w: ReturnType<typeof world>, rounds = [outcomeRoundOf(CANDIDATE)], reason: "changes_requested_by_person" | "feedback_round_by_person" = "changes_requested_by_person", now = T1) =>
+  const asked = (w: ReturnType<typeof world>, rounds = [outcomeRoundOf(CANDIDATE)], reason: "changes_requested_by_person" | "feedback_round_approved" = "changes_requested_by_person", now = T1) =>
     scoreChangesRequested(w.deps, task, { rounds, reason, now });
 
   it("moves the review and risk samples of that candidate to not_held, and leaves the proof alone", async () => {
@@ -192,7 +192,7 @@ describe("a person asks for changes", () => {
 
   it("another candidate's samples are not touched", async () => {
     const w = await seeded();
-    await asked(w, [outcomeRoundOf(SECOND_CANDIDATE)], "feedback_round_by_person");
+    await asked(w, [outcomeRoundOf(SECOND_CANDIDATE)], "feedback_round_approved");
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("pending");
   });
 });
@@ -362,8 +362,30 @@ describe("a fix replaces a candidate", () => {
     const w = await seeded();
     const workflow = { ...workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]), feedbackDecisions: [{ decision: "APPROVE", actorRole: "ROVARA_AUTONOMY", candidates: [{ repositoryId: "web", number: 7, candidateDigest: CANDIDATE }] }] } as unknown as WorkflowSnapshot;
     await settleSuperseded(w.deps, { ...task, workflow }, { candidateDigest: CANDIDATE, now: T2 });
-    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "not_held", reason: "feedback_round_by_person" });
+    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "not_held", reason: "feedback_round_approved" });
     expect(byClaim(w.db, "risk_low")[0]).toMatchObject({ state: "not_held" });
+  });
+
+  it("two observations at once lose neither head, and a head never undoes a passing check seen on another", async () => {
+    const w = await seeded();
+    const at = (head: string, ci: "passing" | "pending") => observeCandidateCode(w.deps, task, { candidateDigest: CANDIDATE, head, ci, ciIsOnHead: true, now: T1 });
+    await Promise.all([at("1".repeat(40), "passing"), at("2".repeat(40), "pending"), at("3".repeat(40), "pending")]);
+    const pointer = w.db.find((item) => item.entityType === "OUTCOME_KEYS")[0]!;
+    expect([...(pointer.heads as string[])].sort()).toEqual(["1".repeat(40), "2".repeat(40), "3".repeat(40)]);
+    expect(pointer.passingHeads).toEqual(["1".repeat(40)]);
+  });
+
+  it("passing checks count for the candidate only on its final head", async () => {
+    const stale = await seeded();
+    await observeCandidateCode(stale.deps, task, { candidateDigest: CANDIDATE, head: "1".repeat(40), ci: "passing", ciIsOnHead: true, now: T1 });
+    await observeCandidateCode(stale.deps, task, { candidateDigest: CANDIDATE, head: "2".repeat(40), ci: "pending", ciIsOnHead: true, now: T1 });
+    await settleSuperseded(stale.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T2 });
+    expect(byClaim(stale.db, "proves_change")[0]).toMatchObject({ state: "no_outcome", reason: "superseded" });
+    const final = await seeded();
+    await observeCandidateCode(final.deps, task, { candidateDigest: CANDIDATE, head: "1".repeat(40), ci: "pending", ciIsOnHead: true, now: T1 });
+    await observeCandidateCode(final.deps, task, { candidateDigest: CANDIDATE, head: "2".repeat(40), ci: "passing", ciIsOnHead: true, now: T1 });
+    await settleSuperseded(final.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T2 });
+    expect(byClaim(final.db, "proves_change")[0]).toMatchObject({ state: "held", reason: "ci_passing" });
   });
 
   function PROVES_B() { return { verdicts: ["proves_change" as const], candidateDigest: SECOND_CANDIDATE }; }
@@ -425,6 +447,31 @@ describe("the task ends", () => {
     const unread = await seeded();
     await settleTaskOutcomes(unread.deps, withReader(undefined, closed), T2);
     expect(samples(unread.db).every((item) => item.state === "closed_unmerged")).toBe(true);
+  });
+
+  it("every read of a settle shares one deadline: a GitHub that never answers costs the budget once, and the rest is github_unavailable", async () => {
+    const w = await seeded();
+    const hanging: EndedPullRequestReader = () => new Promise(() => undefined);
+    const prs = [{ number: 7, state: "MERGED" }, { number: 8, state: "MERGED", repositoryId: "api" }];
+    const started = Date.now();
+    await settleTaskOutcomes(w.deps, withReader(hanging, prs), T2, hanging, 150);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+  });
+
+  it("a closed pull request whose fresh read cannot be made is github_unavailable, not guessed", async () => {
+    const w = await seeded();
+    const failing: EndedPullRequestReader = async () => { throw new Error("secret github text"); };
+    await settleTaskOutcomes(w.deps, withReader(failing, [{ number: 7, state: "CLOSED" }]), T2, failing);
+    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+  });
+
+  it("a candidate whose other pull request is still open when the task ends is not left pending", async () => {
+    const w = await seeded();
+    const reader = readerOf({}, status({ reviews: [person("APPROVED")] })).read;
+    await settleTaskOutcomes(w.deps, withReader(reader, [{ number: 7, state: "MERGED" }, { number: 8, state: "OPEN", repositoryId: "api" }]), T2, reader);
+    expect(samples(w.db).filter((item) => item.state === "pending")).toEqual([]);
+    expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "task_closed")).toBe(true);
   });
 
   it("a settle never fails the close", async () => {

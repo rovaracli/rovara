@@ -15,7 +15,7 @@ export type OutcomeState = z.infer<typeof OutcomeStateSchema>;
 /** Fixed codes for why a sample ended as it did; never free text. */
 export const OUTCOME_REASONS = [
   "plan_approved", "plan_skipped", "plan_changes_requested", "plan_rejected",
-  "merged_no_changes_requested", "merged_without_person_review", "changes_requested_by_person", "feedback_round_by_person",
+  "merged_no_changes_requested", "merged_without_person_review", "changes_requested_by_person", "feedback_round_approved",
   "ci_passing", "ci_failing", "ci_none", "ci_pending", "proof_unavailable",
   "closed_unmerged", "task_closed", "superseded", "github_unavailable",
 ] as const;

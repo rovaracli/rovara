@@ -66,8 +66,8 @@ describe("a feedback round", () => {
     w.setWorkflow({ feedbackDecisions: [decision(actorRole)] });
     w.github.statuses.set(7, status({ draft: false, checks: passing }));
     await trackPullRequest(deps, TASK_ID);
-    expect(sampleOf(w, "review_pass:CRITIC")).toMatchObject({ state: "not_held", reason: "feedback_round_by_person" });
-    expect(sampleOf(w, "risk_low")).toMatchObject({ state: "not_held", reason: "feedback_round_by_person" });
+    expect(sampleOf(w, "review_pass:CRITIC")).toMatchObject({ state: "not_held", reason: "feedback_round_approved" });
+    expect(sampleOf(w, "risk_low")).toMatchObject({ state: "not_held", reason: "feedback_round_approved" });
     expect(sampleOf(w, "proves_change").state).toBe("pending");
   });
 

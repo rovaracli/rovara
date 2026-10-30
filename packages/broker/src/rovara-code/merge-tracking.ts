@@ -712,7 +712,7 @@ async function trackOne(
       for (const decision of task.workflow.feedbackDecisions ?? []) {
         if (decision.decision !== "APPROVE") continue;
         const rounds = decision.candidates.filter((binding) => binding.repositoryId === pullRequest.repositoryId && binding.number === pullRequest.number).map((binding) => outcomeRoundOf(binding.candidateDigest));
-        if (rounds.length > 0) await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "feedback_round_by_person", now: when });
+        if (rounds.length > 0) await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "feedback_round_approved", now: when });
       }
     } catch (error) {
       deps.log?.("outcomes.observe_failed", { taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });

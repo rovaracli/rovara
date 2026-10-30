@@ -17,7 +17,7 @@ import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.j
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
 import { outcomeDepsOf, recordPublicationOutcomes } from "../../packages/broker/src/rovara-code/outcome-hooks.js";
-import { captureWorkflowFeedbackNote, decideTaskWorkflow, getTaskDocumentView, inertTaskTitle, promptTagId, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, taskPageUrl, threadNotesPromptSection, workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
+import { captureWorkflowFeedbackNote, decideTaskWorkflow, releaseFinishedTaskQuietly, getTaskDocumentView, inertTaskTitle, promptTagId, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, taskPageUrl, threadNotesPromptSection, workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { GATED_TASK_TURN_REFUSAL, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
@@ -4900,6 +4900,8 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       getBranchHead: vi.fn(async () => state.branch ?? state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
       // The status read the track record scores a merge from (only a version 2 task reads it).
+      // What a merge observation reads (the recovery sweep's event).
+      getPullRequestMergeObservation: vi.fn(async (_url: string, number: number) => ({ ...details(number), headTreeSha: state.tree })),
       getPullRequestStatus: vi.fn(async (_url: string, number: number) => {
         if (state.statusFails) throw new Error("GitHub is down");
         return { number, state: state.pr, draft: false, headSha: state.head, baseBranch: "main", mergeableState: "clean" as const, checks: [{ name: "test", status: "completed" as const, conclusion: "success" as const, required: false, url: "" }],
@@ -5352,6 +5354,73 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     expect(pending.every((item) => item.round === t.fix.digest.slice(0, 16))).toBe(true);
   });
 
+  /** Nothing runs in the task's workspace any more, so its release can go through. */
+  const idleWorkspace = (t: { harness: Harness; workspaceId: string }) => {
+    const workspace = t.harness.db.get(`WORKSPACE#${t.workspaceId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...Object.fromEntries(Object.entries(workspace).filter(([name]) => name !== "activeOperationId")), status: "READY" });
+  };
+  const sampleStates = (t: { samples: () => Array<Record<string, unknown>> }) => t.samples().map((item) => `${String(item.claim)}:${String(item.state)}:${String(item.reason)}`).sort();
+
+  it("the release completes first, even when GitHub never answers the settle's reads: the settle comes after it, in one bounded wait", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    const hanging = () => () => new Promise<never>(() => undefined);
+    const started = Date.now();
+    const outcome = await releaseFinishedTaskQuietly({ tableName: "state", actions: t.harness.actions, documentClient: t.harness.db, outcomeReader: hanging, outcomeSettleBudgetMs: 150 }, t.taskId);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(outcome).toBe("released");
+    const releasedAt = String((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt);
+    expect(releasedAt).toEqual(expect.any(String));
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    // The order: the release was written, and only then were the samples settled.
+    expect(t.samples().every((item) => String(item.scoredAt) >= releasedAt)).toBe(true);
+  });
+
+  it("the recovery sweep's release settles a merged candidate from a fresh read", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    t.gh.state.statusFails = false;
+    const mark = t.harness.db.find((item) => item.pk === "FINISHED_RELEASE")[0]!;
+    t.harness.db.set({ ...mark, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() });
+    await sweep(t.harness);
+    expect((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt).toEqual(expect.any(String));
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
+  /** The recovery sweep's observation of a pull request: it reads against the sweep's request budget and leaves the release to its own pass. */
+  const queued = (t: { harness: Harness }, beforeRequest: () => void) => import("../../packages/broker/src/aws/broker.js").then(({ processGithubWorkflowEvent }) => processGithubWorkflowEvent(t.harness.brokerInput as never,
+    { kind: "PULL_REQUEST", action: "closed", installationId: 0, repositoryId: 0, fullName: "example/demo", number: 42 }, randomUUID(), { observationMode: "merge", budget: { signal: new AbortController().signal, beforeRequest }, release: "queue" }));
+
+  it("in the sweep's queue mode a merged candidate is scored after the observation, and its reads count against the sweep's request budget", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    let requests = 0;
+    await queued(t, () => { requests += 1; });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt).toBeUndefined();
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+    expect(requests).toBeGreaterThan(0);
+  });
+
+  it("with the sweep's request budget spent the samples stay pending for a later pass, which settles them", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    await queued(t, () => { throw new Error("the sweep's GitHub request budget is spent"); });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    await pullRequestEvent(t.harness, "closed");
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
   it("a merged webhook scores the candidate's track record samples from a fresh read of GitHub", async () => {
     const t = await withSamples();
     t.gh.state.pr = "merged";
@@ -5363,6 +5432,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
 
   it("a GitHub read that fails neither stops the event nor leaves samples pending: the release still ran and settled them", async () => {
     const t = await withSamples();
+    idleWorkspace(t);
     t.gh.state.pr = "merged";
     t.gh.state.statusFails = true;
     await pullRequestEvent(t.harness, "closed");

@@ -2095,7 +2095,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return { attempted: 0 };
         });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
-        const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) })
+        const releases = await releasePendingFinishedTasks(releaseDependenciesOf(dependencies))
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
@@ -5885,7 +5885,7 @@ async function healSlackMemberSlots(dependencies: AwsBrokerDependencies, orgId: 
     const key = slackMemberLimitKey(orgId, requester.teamId, requester.userId);
     const member = await getItem<{ count?: number }>(dependencies, key);
     if ((member?.count ?? 0) < effective.memberWorkspaceLimit) return;
-    await releaseFinishedTasksOf({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, key);
+    await releaseFinishedTasksOf(releaseDependenciesOf(dependencies), key);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_heal_failed", error: error instanceof Error ? error.name : "unknown" }));
   }
@@ -13238,9 +13238,17 @@ async function completedTurnItems(
 }
 
 /** A finished workflow task gives back its workspace slot and its workspace (releaseFinishedTask); never throws. */
+/** What every release of a finished task needs, the track record's fresh GitHub read included: the settle after a release is the same whichever path made the release. */
+function releaseDependenciesOf(dependencies: AwsBrokerDependencies) {
+  return {
+    tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient,
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    outcomeReader: (task: DeveloperTaskRecord) => endedPullRequestReader(dependencies, task),
+  };
+}
+
 async function releaseIfFinished(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
-  await releaseFinishedTaskQuietly({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
-    outcomeReader: (task) => endedPullRequestReader(dependencies, task) }, taskId);
+  await releaseFinishedTaskQuietly(releaseDependenciesOf(dependencies), taskId);
 }
 
 /** Refresh all linked PRs from the GitHub API before an owner decision (webhook payloads are hints only). */
@@ -13385,7 +13393,7 @@ export async function processGithubWorkflowEvent(
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
   // Track record: after the release, which never waits on it, and never throwing.
-  if (linked !== undefined) await scoreMergedPullRequestOutcomes(dependencies, linked.taskId, linked.repositoryId, event.number);
+  if (linked !== undefined) await scoreMergedPullRequestOutcomes(dependencies, linked.taskId, linked.repositoryId, event.number, options?.budget);
   // Plan 6 Task 20: the merged milestone this save wrote is told to the registered handlers now; one that was not told is told again by the sweep.
   if (linked !== undefined && changed) {
     await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, linked.taskId).catch((error: unknown) => {
@@ -13465,7 +13473,7 @@ async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies
  * Track record: a fresh GitHub read of one of a task's pull requests (its checks and reviews, its merge commit and time, and a person's permission on its repository), for scoring a candidate's
  * samples. Undefined where the provider cannot read a pull request's status or a person's permission: what waits on it is then `github_unavailable`, never guessed.
  */
-function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): EndedPullRequestReader | undefined {
+function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, budget?: GithubMergeReadBudget): EndedPullRequestReader | undefined {
   const github = dependencies.githubPullRequests;
   if (task.orgId === undefined || github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined) return undefined;
   const orgId = task.orgId;
@@ -13474,14 +13482,16 @@ function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: Devel
     const url = await webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId);
     if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
     const scope = githubScope(dependencies, orgId);
-    const status = await github.getPullRequestStatus!.call(github, url, number, scope);
+    // The sweep's reads count against its request budget (the status and permission reads count themselves; the pull request read is counted here): one that is spent refuses the read, and the samples wait for a later pass.
+    const status = await github.getPullRequestStatus!.call(github, url, number, scope, budget);
+    if (status.state === "merged") budget?.beforeRequest();
     const details = status.state === "merged" && github.getPullRequest !== undefined ? await github.getPullRequest.call(github, url, number, scope).catch(() => undefined) : undefined;
     return {
       status, mergeCommit: details?.mergeCommit, mergedAt: details?.mergedAt,
       permission: (login) => {
         const key = `${url}:${login.toLowerCase()}`;
         let found = permissions.get(key);
-        if (found === undefined) { found = github.getRepositoryPermission!.call(github, url, login, scope); permissions.set(key, found); }
+        if (found === undefined) { found = github.getRepositoryPermission!.call(github, url, login, scope, budget); permissions.set(key, found); }
         return found;
       },
     };
@@ -13492,13 +13502,13 @@ function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: Devel
  * Track record: a pull request the workflow now records as merged has its candidate's samples scored, from GitHub's answer read now, not from the tracking item. Only a version 2 task, and nothing
  * is read once no sample of the candidate is open. A close is not scored here (it may be reopened; the task's end settles it). Best effort: it never throws.
  */
-async function scoreMergedPullRequestOutcomes(dependencies: AwsBrokerDependencies, taskId: string, repositoryId: string, number: number): Promise<void> {
+async function scoreMergedPullRequestOutcomes(dependencies: AwsBrokerDependencies, taskId: string, repositoryId: string, number: number, budget?: GithubMergeReadBudget): Promise<void> {
   try {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
     const workflow = task?.workflow;
     if (task === undefined || workflow === undefined || task.orgId === undefined || workflow.definitionVersion !== "1.1.0") return;
     const ended = workflow.pullRequests?.find((entry) => entry.repositoryId === repositoryId && entry.number === number);
-    const read = endedPullRequestReader(dependencies, task);
+    const read = endedPullRequestReader(dependencies, task, budget);
     if (ended === undefined || ended.state !== "MERGED" || read === undefined) return;
     await scoreMergedCandidate(outcomeDepsOf(dependencies), { taskId, orgId: task.orgId, project: task.project, agent: task.agent, workflow }, { candidateDigest: ended.candidateDigest, read, now: new Date().toISOString() });
   } catch (error) {

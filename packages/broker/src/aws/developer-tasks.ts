@@ -8086,6 +8086,8 @@ export type ReleaseDeps = {
   modelAccess?: ModelAccess;
   /** Track record: a fresh GitHub read of one of the task's pull requests, for settling a merged candidate's samples when the task ends. Without it such samples are `github_unavailable`. */
   outcomeReader?: (task: DeveloperTaskRecord) => EndedPullRequestReader | undefined;
+  /** How long the settle's reads may take in all (default 8 seconds). */
+  outcomeSettleBudgetMs?: number;
 };
 
 /**
@@ -8135,11 +8137,18 @@ function releaseTurnId(taskId: string): string {
  * the slot alone.
  */
 export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
+  const outcome = await releaseFinishedTaskNow(deps, task);
+  // Track record, after the release is done (it never waits on GitHub): samples still open when the task ends are settled, from fresh reads that share one short deadline. Best effort.
+  if (outcome === "released" || outcome === "already_released") {
+    await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString(), deps.outcomeReader?.(task), deps.outcomeSettleBudgetMs);
+  }
+  return outcome;
+}
+
+async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
   await recordFinishedRunCost(deps, task);
-  // Track record: samples still open when the task ends have no outcome to be scored against. Best effort.
-  await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString(), deps.outcomeReader?.(task));
   // Plan 6 Task 7: a version 2 task's duration, if the pull request's write didn't get there first.
   await noteFinishedTaskDuration({ documentClient: deps.documentClient, tableName: deps.tableName }, task);
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
