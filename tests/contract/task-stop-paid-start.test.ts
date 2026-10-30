@@ -539,3 +539,18 @@ it("Continue-as-task receipt recovery refuses a closing org before redriving the
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect((await f.transition()).status).toBe(403); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
+
+for (const loss of ["member", "closing", "people"] as const) it(`Continue-as-task keeps ${loss} authority native through the actual resumed operation commit`, async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      changed = true;
+      if (loss === "member") f.t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+      else if (loss === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      else f.t.db.set({ pk: `DEVTASK#${f.task.taskId}`, sk: "PEOPLE", revision: 1, schemaVersion: 999 });
+    }
+    return send(command);
+  };
+  const reply = await f.transition(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
