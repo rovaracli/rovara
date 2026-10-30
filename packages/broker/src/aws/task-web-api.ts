@@ -42,6 +42,8 @@ export interface TaskPageState {
   canAsk: boolean;
   canManagePeople: boolean;
   canTakeOwnership: boolean;
+  /** v1.2 learning loop: set (true) only for a person with standing in the project, who may use Remember on this task. Absent for everyone else. */
+  canRemember?: boolean;
   /** Read-only E2E projection loaded from the current server-owned CHECKS admission and evidence. */
   e2ePresentation?: DeveloperTaskView["e2ePresentation"];
 }
@@ -97,7 +99,7 @@ export interface TaskWebApiDependencies {
   /** Must run the full access check on every call. */
   taskState(caller: DeveloperCaller, taskId: string): Promise<TaskPageState>;
   /** The comments, and the suggestions that still apply (names and "you" only), as the open page refreshes them. */
-  listComments(caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions?: unknown[] }>;
+  listComments(caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions?: unknown[]; canRemember?: boolean }>;
   createComment(caller: DeveloperCaller, taskId: string, input: PageCommentInput): Promise<{ comment: PageCommentView; duplicate?: boolean; askRefused?: string }>;
   editComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number; text: string }): Promise<{ comment: PageCommentView }>;
   deleteComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number }): Promise<{ comment: PageCommentView }>;
@@ -244,7 +246,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         }
         if (endpoint === "comments") {
           const listed = await deps.listComments(caller, taskId);
-          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [] });
+          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [], ...(listed.canRemember === undefined ? {} : { canRemember: listed.canRemember }) });
         }
         const state = await deps.taskState(caller, taskId);
         const current = parseCookie(request.headers, CSRF_COOKIE);
@@ -254,6 +256,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
           ...(state.peopleRevision === undefined ? {} : { peopleRevision: state.peopleRevision }),
           canRead: state.canRead, canComment: state.canComment, canSuggest: state.canSuggest, canDecide: state.canDecide,
           canAsk: state.canAsk, canManagePeople: state.canManagePeople, canTakeOwnership: state.canTakeOwnership, csrf,
+          ...(state.canRemember === undefined ? {} : { canRemember: state.canRemember }),
           ...(state.e2ePresentation === undefined ? {} : { e2ePresentation: state.e2ePresentation }),
         });
         response.headers["set-cookie"] = csrfCookie(csrf);
