@@ -36,3 +36,19 @@ test("the model rows stay readable on a phone", async ({ page, context, request,
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });
 });
+test("a publish refused for a model choice says which stage and why, with the page that fixes it", async ({ page, context, request, baseURL }) => {
+ await openHowWeWork(page, context, request, baseURL, { width: 1280, height: 900 });
+ const build = page.getByRole("region", { name: "Build" });
+ await build.getByRole("combobox", { name: "Model" }).selectOption({ label: "Opus 5.5" });
+ await page.getByRole("button", { name: "Save draft" }).click();
+ await expect(page.getByText("Draft saved. Review changes to publish it.")).toBeVisible();
+ await page.getByRole("button", { name: "Review changes" }).click();
+ const dialog = page.getByRole("dialog", { name: "Review changes" });
+ await dialog.getByRole("button", { name: "Publish" }).click();
+ const refusal = dialog.getByRole("alert");
+ await expect(refusal.getByText("Your company locked this stage's model choice.")).toBeVisible();
+ await expect(refusal.getByText("Build", { exact: true })).toBeVisible();
+ await expect(refusal.getByRole("link", { name: "How to fix this" })).toHaveAttribute("href", "/app/admin/how-we-work");
+ await expect(refusal).not.toContainText("STAGE_LOCKED");
+ await checkA11y(page, { theme: "dark" });
+});

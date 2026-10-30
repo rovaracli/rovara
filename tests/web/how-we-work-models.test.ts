@@ -216,14 +216,20 @@ describe("editable model rows", () => {
   expect(f.calls().filter(call => call.endsWith("/draft"))).toEqual([]);
  });
 
+ it("says the draft changed when the server refuses the stale draft the way it does (PLAYBOOK_STALE with the DRAFT_STALE sentence)", async () => {
+  await open({ read: draft => draft === null ? stageModelsBody() : { status: 409, body: { error: { code: "PLAYBOOK_STALE", message: "DRAFT_STALE: This process draft changed. Reload and try again." } } } });
+  expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
+ });
+
  it("says the draft changed when the read is refused as stale", async () => {
   await open({ read: draft => draft === null ? stageModelsBody() : { status: 409, body: { error: { code: "DRAFT_STALE", message: "Stale." } } } });
   expect(await screen.findByText("This draft changed. Reload and try again.")).toBeTruthy();
  });
 
- it("keeps the read-only rows and the old note when the stage-models read is not there", async () => {
+ it("names no model, only the note, when the stage-models read is not there", async () => {
   await open({ read: () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } }) });
-  expect(within(card("Build")).getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
+  expect(within(card("Build")).queryByText("anthropic/claude-sonnet-4-6")).toBeNull();
+  expect(within(card("Build")).getByText("The models of this stage can't be shown right now. Reload to try again.")).toBeTruthy();
   expect(within(card("Build")).queryByRole("combobox")).toBeNull();
  });
 

@@ -92,8 +92,10 @@ describe("the How we work tab", () => {
  it("shows the model rows read only, with the note", async () => {
   await open();
   const build = card("Build");
-  expect(within(build).getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
-  expect(within(build).getByText("Model choice per stage is coming; today models come from the project's model settings.")).toBeTruthy();
+  // V3: the view decides no model, so without the resolver's read the card says so and names none.
+  expect(within(build).queryByText("anthropic/claude-sonnet-4-6")).toBeNull();
+  expect(within(build).queryByText("The project's model settings")).toBeNull();
+  expect(within(build).getByText("The models of this stage can't be shown right now. Reload to try again.")).toBeTruthy();
   expect(within(build).queryByRole("combobox")).toBeNull();
  });
 
@@ -231,6 +233,42 @@ describe("review and publish", () => {
   refuse = false;
   fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
   await within(dialog).findByText(/Published as version 3/u);
+ });
+});
+
+describe("a publish refused for its model choices", () => {
+ const refuse = (message: string): Handler => (request, url) => url.pathname.endsWith("/publish") ? { status: 400, body: { error: { code: "CONFIG_INVALID", message } } } : undefined;
+ const refused = async (message: string) => {
+  await open({ handle: refuse(message) });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
+  fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+  const dialog = await screen.findByRole("dialog", { name: "Review changes" });
+  await within(dialog).findByText("What changes");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+  return dialog;
+ };
+
+ it("shows each stage's fixed sentence, with the page that fixes it, instead of the codes", async () => {
+  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build /app/admin/models/sources; STAGE_LOCKED code_review /app/admin/how-we-work; MODEL_FORBIDDEN plan_check");
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).getByText("Build")).toBeTruthy();
+  expect(within(alert).getByText("This account has no fresh verified access to this model.")).toBeTruthy();
+  expect(within(alert).getByText("Your company locked this stage's model choice.")).toBeTruthy();
+  expect(within(alert).getByText("Your company's rules do not allow this model.")).toBeTruthy();
+  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/models/sources", "/app/admin/how-we-work"]);
+  expect(alert.textContent).not.toContain("MODEL_NOT_VERIFIED");
+ });
+
+ it("shows an ordinary refusal as the server wrote it, and reads a link only from the app's own pages", async () => {
+  const plain = await refused("The draft has a problem.");
+  expect((await within(plain).findByRole("alert")).textContent).toContain("The draft has a problem.");
+ });
+
+ it("does not read a message that has a word it does not know", async () => {
+  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build //evil.example/x");
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).queryByRole("link")).toBeNull();
+  expect(alert.textContent).toContain("//evil.example/x");
  });
 });
 

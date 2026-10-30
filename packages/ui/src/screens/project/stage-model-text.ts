@@ -46,3 +46,5 @@ export function candidateBlock(candidate: StageCandidate): string | undefined {
  if (candidate.status === "verified") return undefined;
  return candidate.status === "unverified" ? NOT_VERIFIED_TEXT : candidate.status === "stale" ? REFUSAL_TEXT.MODEL_STALE : REFUSAL_TEXT.MODEL_FORBIDDEN;
 }
+/** Every stage by name, for a refusal that can name any of them. */
+export const STAGE_LABELS: Readonly<Record<StageId, string>> = { understand: "Understand", plan: "Plan", plan_check: "Plan check", build: "Build", code_review: "Code review", security_review: "Security review", pull_request: "Pull request" };

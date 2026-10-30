@@ -19,7 +19,8 @@ const listed = (entries: ReadonlyArray<Entry<string>>): RowValue[] => entries.ma
 const SAFETY: Mark = { source: "rovara", locked: true, lockedBy: "rovara" };
 
 export function stageRows(stage: StageRead, view: Pick<ViewRead, "stages">): Row[] {
- const names = new Map(view.stages.map(other => [other.id, other.name])), who: RowValue[] = [of(stage.who.model, stage.who.model.value ?? "The project's model settings", "Model"), of(stage.who.thinking, stage.who.thinking.value ?? "Not set", "Thinking")];
+ const names = new Map(view.stages.map(other => [other.id, other.name])), who: RowValue[] = [];
+ // V3: no model or thinking value is read from this view: it decides none. The stage models come from the resolver's own read (api/stage-models.ts).
  if (stage.who.differentCompanyFrom.value.length > 0) who.push(of(stage.who.differentCompanyFrom, stage.who.differentCompanyFrom.value.map(id => names.get(id) ?? id).join(", "), "Different AI company from"));
  const may: RowValue[] = [of(stage.may.tools, stage.may.tools.value === null ? "Any tool this stage is given" : stage.may.tools.value.join(", "), "Tools")];
  if (stage.may.readOnly) may.push({ text: "Can read, can't change files", mark: SAFETY });
