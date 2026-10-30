@@ -391,6 +391,16 @@ export function runCostKey(orgId: OrgId, project: string, agentId: AgentId, path
   return { pk: orgScoped(orgId, `RUN_COST#${project}#${agentId}#${path}`), sk: `${canonicalInstant(endedAt)}#${taskId}` };
 }
 
+/** One track-record sample (a claim in one round of one task), listed by project and stage; `createdAt` is an instant, `round` a workflow revision or a candidate digest prefix. */
+export function outcomeSampleKey(orgId: OrgId, project: string, stage: string, createdAt: string, taskId: string, claim: string, round: string): OrgKey {
+  return { pk: orgScoped(orgId, `OUTCOME#${keyPart(project, "a project")}#${keyPart(stage, "a stage")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(taskId, "a task id")}#${keyPart(claim, "a claim")}#${keyPart(round, "a round")}` };
+}
+
+/** The copy of a scored sample, listed by when it was scored, so the rate reads exactly the last 30 days by score time. */
+export function outcomeScoredKey(orgId: OrgId, project: string, stage: string, scoredAt: string, taskId: string, claim: string, round: string): OrgKey {
+  return { pk: orgScoped(orgId, `OUTCOME_SCORED#${keyPart(project, "a project")}#${keyPart(stage, "a stage")}`), sk: `${canonicalInstant(scoredAt)}#${keyPart(taskId, "a task id")}#${keyPart(claim, "a claim")}#${keyPart(round, "a round")}` };
+}
+
 /** The total of the monthly budgets of every active agent one person owns (`totalUsd`, changed with ADD in the same transaction as the agent). */
 export function ownerBudgetKey(orgId: OrgId, developerId: string): OrgKey {
   return { pk: orgScoped(orgId, `OWNER_AGENT_BUDGET#${developerId}`), sk: "TOTAL" };

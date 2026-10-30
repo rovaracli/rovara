@@ -176,6 +176,7 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 // Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
 export * from "./test-proof.js";
+export * from "./outcomes.js";
 
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
