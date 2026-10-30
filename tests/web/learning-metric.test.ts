@@ -122,3 +122,10 @@ describe("the Same correction given twice block", () => {
   await screen.findByRole("region", { name: "Same correction given twice" });await expectNoAxeViolations(f.container);
  });
 });
+
+describe("last month's share rounds like this month's", () => {
+  it("reads an exact half the same way on both sides (57 of 200 in both months is 'same')", async () => {
+    const { lastMonthChange } = await import("../../packages/ui/src/screens/project/learning-text.js");
+    expect(lastMonthChange(29, 0.285).arrow).toBeUndefined();
+  });
+});

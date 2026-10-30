@@ -129,7 +129,7 @@ export const percentOf = (part: number, whole: number) => whole === 0 ? 0 : Math
 export const shareText = (repeats: number, corrections: number) => `${String(percentOf(repeats, corrections))}% this month (${String(repeats)} of ${String(corrections)})`;
 export const soFarText = (corrections: number) => `(${String(corrections)} so far this month)`;
 /** Against last month, by the rounded percents: lower is the good direction. The arrow is for the eye only; the words carry the direction. */
-export const lastMonthChange = (thisPercent: number, lastShare: number): { arrow?: string; words: string } => { const last = Math.round(lastShare * 100);return last === thisPercent ? { words: METRIC_TEXT.SAME } : { arrow: last < thisPercent ? "↑ " : "↓ ", words: `${last < thisPercent ? "up" : "down"} from ${String(last)}% last month` }; };
+export const lastMonthChange = (thisPercent: number, lastShare: number): { arrow?: string; words: string } => { const last = Math.round(Number((lastShare * 100).toFixed(6)));return last === thisPercent ? { words: METRIC_TEXT.SAME } : { arrow: last < thisPercent ? "↑ " : "↓ ", words: `${last < thisPercent ? "up" : "down"} from ${String(last)}% last month` }; };
 /** The listed repeats added up. When the server stopped reading corrections at its cap (`repeatsAfterRuleLabel`), the real number can only be larger, so it is "at least"; the label's own number is never shown. */
 export const afterRuleText = (total: number, capped: boolean) => `${capped ? "At least " : ""}${plural(total, "repeat", "repeats")} came after a rule was accepted`;
 export const ruleRepeatsText = (stageName: string, repeats: number, capped: boolean) => `${stageName} rule: ${capped ? "at least " : ""}${plural(repeats, "repeat", "repeats")}`;
