@@ -169,3 +169,15 @@ it("does not carry an exhausted critic attempt count across a newer plan",async(
  const result=await resolveAndAuthorizeTaskFallback(deps,{orgId:input.orgId,taskId:input.taskId,workspaceId:input.workspaceId,operationId:input.operationId,fence:input.fence,request:{...input.request,binding},verifiedClaims:{...input.verifiedClaims,modelPolicy:binding}});
  expect(result.model.provider).toBe("amazon-bedrock");expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);
 });
+
+it("ignores worker-supplied environment fallback preferences and uses server defaults",async()=>{
+ const {defaultWorkerModel}=await import("../../packages/broker/src/agents/dispatch.js");
+ const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
+ const {h,deps,input}=await fixture();
+ const expected=defaultWorkerModel();
+ const injected={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us").find(id=>id!==expected.modelId)!};
+ const result=await resolveAndAuthorizeTaskFallback(deps,{orgId:input.orgId,taskId:input.taskId,workspaceId:input.workspaceId,operationId:input.operationId,fence:input.fence,request:{...input.request,reason:"missing_key",environmentFallback:injected},verifiedClaims:input.verifiedClaims});
+ expect(result.model).toMatchObject(expected);
+ expect(result.model.modelId).not.toBe(injected.modelId);
+ expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);
+});
