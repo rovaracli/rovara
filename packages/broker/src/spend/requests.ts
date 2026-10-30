@@ -2195,10 +2195,19 @@ export async function expireLegacySpendingRequests(deps: SpendRequestDependencie
 /** Explicit bounded task-approval phase. Page exhaustion is not enrollment
  * readiness: owner financial terms and rollout/editing gates remain separate. */
 export async function expireUnapprovableTaskStopRequests(deps: SpendRequestDependencies, actor: AgentCaller, input: SpendingRequestPageInput): Promise<SpendingRequestPageResult> {
-  if (actor.orgId !== input.orgId || (actor.orgRole !== "owner" && actor.orgRole !== "admin") || await orgRoleOf(deps, actor.orgId, actor.developerId) !== actor.orgRole) throw budgetActorRefused();
+  await requireSpendingCutoverActor(deps, actor, input.orgId);
   return expireSpendingRequestPage(deps, input, actor);
 }
-async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: SpendingRequestPageInput, actor?: AgentCaller): Promise<SpendingRequestPageResult> {
+/** Unified bounded phase: owner financial evidence remains independent of task
+ * ceilings. Exhausting a page is never an enrollment/readiness certificate. */
+export async function expireUnapprovableSpendingRequests(deps: SpendRequestDependencies, actor: AgentCaller, input: SpendingRequestPageInput): Promise<SpendingRequestPageResult> {
+  await requireSpendingCutoverActor(deps, actor, input.orgId);
+  return expireSpendingRequestPage(deps, input, actor, true);
+}
+async function requireSpendingCutoverActor(deps: SpendRequestDependencies, actor: AgentCaller, orgId: OrgId): Promise<void> {
+  if (actor.orgId !== orgId || (actor.orgRole !== "owner" && actor.orgRole !== "admin") || await orgRoleOf(deps, actor.orgId, actor.developerId) !== actor.orgRole) throw budgetActorRefused();
+}
+async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: SpendingRequestPageInput, actor?: AgentCaller, reviewOwners = false): Promise<SpendingRequestPageResult> {
   const partition = openSpendRequestsKey(input.orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk;
   if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > PAGE || (input.cursor !== undefined && (input.cursor.pk !== partition || typeof input.cursor.sk !== "string" || Object.keys(input.cursor).some(key => key !== "pk" && key !== "sk")))) throw agentXError("CONFIG_INVALID", "Invalid spending-request maintenance page.");
   const page = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": partition }, ConsistentRead: true, Limit: input.limit,
@@ -2222,8 +2231,8 @@ async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: 
         return { examined: (page.Items ?? []).length, expired, complete: false, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
       }
       expired += 1;
-    } else if (actor !== undefined && record.kind !== "owner_cap") {
-      const result = await expireTaskStopCutoverApproval(deps, actor, record.spendRequestId);
+    } else if (actor !== undefined && (record.kind !== "owner_cap" || reviewOwners)) {
+      const result = record.kind === "owner_cap" ? await expireOwnerCapCutoverApproval(deps, actor, record.spendRequestId) : await expireTaskStopCutoverApproval(deps, actor, record.spendRequestId);
       if (result.kind === "retry") return { examined: (page.Items ?? []).length, expired, complete: false, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
       if (result.kind === "expired") expired += 1;
     }
