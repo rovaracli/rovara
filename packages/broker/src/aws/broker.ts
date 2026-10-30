@@ -7102,6 +7102,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+    if (current.fence !== claims.fence || TERMINAL.has(current.status)) throw agentXError("STALE_FENCE", "The operation can no longer ask for model access.");
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
     // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
@@ -7128,7 +7129,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
-        ...(task.spendingStop === undefined ? {} : { guardRecord: items => withAdmittedTaskSource(dependencies.tableName, task, items).items }),
+        ...(task.spendingStop === undefined ? {} : { guardRecord: items => guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items) }),
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
@@ -7216,6 +7217,26 @@ async function liveRouteOf(routing: RoutingDependencies, operation: OperationRec
     throw agentXError("MODEL_NOT_ALLOWED", "The AI source this step was running on is no longer available to your company. Ask an admin to check your AI sources, then continue the task.");
   }
   return { alias: recorded.alias, sourceId: recorded.sourceId };
+}
+
+/** Merge the accepted operation source into its existing key-list update. */
+function guardModelKeyOperation(operation: OperationRecord, input: TransactItems): TransactItems {
+  const Key = operationKey(operation.workspaceId, operation.id), items = [...input];
+  const index = items.findIndex(item => item.Update?.Key?.pk === Key.pk && item.Update.Key.sk === Key.sk);
+  const update = items[index]?.Update;
+  if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation key record is unavailable.");
+  const names: Record<string, string> = {}, values: Record<string, unknown> = {};
+  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId"].map(field => {
+    const name = `#admittedOp_${field}`, value = `:admittedOp_${field}`;
+    if (update.ExpressionAttributeNames?.[name] !== undefined || update.ExpressionAttributeValues?.[value] !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation source condition is ambiguous.");
+    names[name] = field;
+    const source = operation as unknown as Record<string, unknown>;
+    if (source[field] === undefined) return `attribute_not_exists(${name})`;
+    values[value] = source[field]; return `${name} = ${value}`;
+  });
+  items[index] = { Update: { ...update, ConditionExpression: `(${update.ConditionExpression ?? "attribute_exists(pk)"}) AND ${conditions.join(" AND ")}`,
+    ExpressionAttributeNames: { ...update.ExpressionAttributeNames, ...names }, ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ...values } } };
+  return items;
 }
 
 /** What `handleModelAccess` knows of the work a key is for: the input of `mintOperationKey` less the key's lifetime. */
