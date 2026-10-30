@@ -2381,3 +2381,13 @@ for (const origin of ["event", "schedule"] as const) it(`autonomous ${origin} re
   await expect(startAgentRun(f.t.starter(), { ...request, requestId: randomUUID() })).rejects.toMatchObject({ code: "TASK_STOP_ZERO" });
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(1);
 });
+
+it("setup draft paid start captures the company stop through its actual app route", async () => {
+  const f = await fixture();
+  f.t.grantRole(MAYA, "maintainer");
+  const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-draft", { requestId: randomUUID() });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+  const tasks = f.t.db.find(row => row.entityType === "DEVELOPER_TASK");
+  expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({ purpose: "setup_draft", budgetUsd: 1.234567, spendingStop: { effectiveStopMicrousd: 1234567 } });
+});
