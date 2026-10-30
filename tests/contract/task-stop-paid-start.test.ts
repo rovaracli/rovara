@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -61,6 +61,24 @@ for (const loss of ["member", "pointer", "closing"] as const) it(`enrolled paid 
       if (loss === "member") f.t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
       else if (loss === "pointer") f.t.db.delete(developerOrgKey(MAYA.developerId));
       else f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+    }
+    return send(command);
+  };
+  const reply = await f.start(); expect(changed).toBe(true); expect(reply.status).toBe(403);
+  expect(reply.body.error).toMatchObject({ code: "FORBIDDEN" });
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+});
+
+for (const loss of ["project_archive", "project_viewer"] as const) it(`enrolled paid start fences ${loss} at its native commit`, async () => {
+  const f = await fixture(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  const grant = projectMemberKey(TEST_ORG, MAYA.developerId, "payments");
+  f.t.db.set({ ...grant, entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true;
+      if (loss === "project_archive") f.t.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived", archivedAt: new Date().toISOString() });
+      else f.t.db.set({ ...f.t.db.get(grant)!, role: "viewer", projectRole: "viewer", grantId: randomUUID() });
     }
     return send(command);
   };
