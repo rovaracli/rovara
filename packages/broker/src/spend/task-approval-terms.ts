@@ -1,3 +1,4 @@
+import { checkedTaskMaxPerRun } from "../org/task-stop-window.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { TaskStopAdmissionInputSchema, RunCheckoutSchema, PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
@@ -42,6 +43,7 @@ export function taskApprovalPolicyDigest(snapshot: CapturedTaskStop): string {
   return digest([snapshot.sourceRevisions, input.companyDefault, input.ceilingMicrousd, input.projectStop, input.agentStop]);
 }
 export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: CapturedTaskStop, record: SpendRequestRecord): TaskApprovalTerms {
+  checkedTaskMaxPerRun(task);
   const originalFields = taskApprovalFields(task), firstDispatch = task.budgetPause?.firstDispatch ?? null, runLimit = taskRunLimitMicrousd(task), proposed = usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd);
   return TaskApprovalTermsSchema.parse({ version: 1, sourcePresence: true, sourceKey: taskKey(task.taskId), sourceRevision: task.spendingStop?.capturedAt ?? null,
     sourceDigest: digest({ originalFields, firstDispatch }), originalFields, firstDispatch,

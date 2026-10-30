@@ -47,6 +47,13 @@ export function taskMaxPerRunForAdmission(admission: CapturedTaskStop): number |
   return input.approvedMaxPerRunMicrousd ?? input.committedMaxPerRunMicrousd
     ?? (input.agentStop.kind === "limited" ? Math.min(input.agentStop.stopMicrousd, admission.approvalCapMicrousd) : undefined);
 }
+/** A persisted task stop cannot be replaced by a missing or changed scalar. */
+export function checkedTaskMaxPerRun(task: Pick<DeveloperTaskRecord, "maxPerRunUsd" | "spendingStop">): number | undefined {
+  const actual = task.maxPerRunUsd === undefined ? undefined : usdToWholeMicrodollars(task.maxPerRunUsd);
+  if (task.maxPerRunUsd !== undefined && actual === undefined) throw invalid();
+  if (task.spendingStop !== undefined && taskMaxPerRunForAdmission(checkedTaskStopSnapshot(task.spendingStop)) !== actual) throw invalid();
+  return actual;
+}
 const receiptSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
@@ -113,6 +120,7 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
   if (receipt === undefined || task.origin !== (receipt.transitionKind === "spend-approval" ? receipt.origin : "app") || task.closedAt !== undefined || !isDeepStrictEqual(task.payer, receipt.payer)
     || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)
     || usdToWholeMicrodollars(task.budgetUsd) !== receipt.spendingStop.effectiveStopMicrousd) throw invalid();
+  checkedTaskMaxPerRun(task);
   if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null && task.budgetPause?.firstDispatch !== undefined && !isDeepStrictEqual(task.budgetPause.firstDispatch, receipt.firstDispatch)) throw invalid();
   if (receipt.transitionKind === "spend-approval" && receipt.agentRunRevision === null && !isDeepStrictEqual(task.spendingAdmission, reference)) throw invalid();
   const actor = { orgId: task.orgId, developerId: receipt.actorId, orgRole: receipt.actorRole }, agentId = task.agent.agentId, draft = task.agent.version === "draft";

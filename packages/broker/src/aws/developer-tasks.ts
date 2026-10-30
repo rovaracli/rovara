@@ -1,7 +1,7 @@
 import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
-import { taskMaxPerRunForAdmission, withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
+import { checkedTaskMaxPerRun, taskMaxPerRunForAdmission, withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -2687,6 +2687,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
       ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
     });
     if (captured.kind === "captured") {
+      checkedTaskMaxPerRun(task);
       if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
       if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
       windowStop = captured;
@@ -3023,6 +3024,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
   });
   const { payer, place, projectPays } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
   if (captured.kind === "captured") {
+    checkedTaskMaxPerRun(task);
     if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
     if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
     const checks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
