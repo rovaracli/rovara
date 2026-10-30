@@ -444,6 +444,15 @@ export async function createWorkflowE2E(options: {
 
   // The prepared workspace: a real repository with one commit, and the manifest preparation would leave.
   const root = await createFixtureDirectory("agentx-e2e-");
+  // The worker's base-rule-file reader keeps scratch folders in the temporary directory and sweeps those older than an hour by the clock's reading. Several test files run at once and
+  // some move the fake clock hours ahead, so with one shared temporary directory a sweep in one file removed a read in progress in another, and its review stopped with
+  // "couldn't verify the base rule files". Each harness gets a temporary directory of its own (beside the workspace, not in it) for as long as its test runs.
+  const privateTemporary = await createFixtureDirectory("agentx-e2e-tmp-");
+  const previousTemporary = process.env["TMPDIR"];
+  process.env["TMPDIR"] = privateTemporary;
+  try {
+    onTestFinished(() => { if (previousTemporary === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = previousTemporary; });
+  } catch { /* created outside a test: the file keeps its own temporary directory */ }
   const repoDirectory = join(root, "repo", "demo");
   await mkdir(repoDirectory, { recursive: true });
   const git = async (args: string[], env?: NodeJS.ProcessEnv): Promise<string> =>
