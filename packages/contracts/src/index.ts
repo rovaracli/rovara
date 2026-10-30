@@ -161,7 +161,7 @@ export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInvi
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
 
 // Lane A G1: pure finite stop calculation and exact display; no runtime admission.
-export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
+export { calculateTaskStop, TaskStopAdmissionInputSchema, type TaskStopAdmissionInput, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
 export { formatUsdMicrodollars } from "./money-format.js";
 
 // Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
