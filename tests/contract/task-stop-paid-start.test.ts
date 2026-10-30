@@ -1418,3 +1418,22 @@ for (const change of ["archive", "roster"] as const) it(`key recording refuses c
   expect(raced).toBe(true); expect(reply.status).not.toBe(200);
   expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
 });
+
+it("initial and planned operations retain their admitted task window reference", async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), reference = f.t.meta(task.taskId).spendingAdmission;
+  const operations = f.t.db.find(row => row.entityType === "OPERATION" && row.workspaceId === task.workspaceId);
+  expect(operations.length).toBeGreaterThanOrEqual(2);
+  for (const operation of operations) expect(operation).toMatchObject({ spendingTaskId: task.taskId, spendingAdmission: reference });
+});
+it("removing both task admission fields cannot downgrade an admitted operation to legacy key minting", async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, changed = { ...f.t.meta(task.taskId) };
+  delete changed.spendingStop; delete changed.spendingAdmission; f.t.db.set(changed);
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
+});
