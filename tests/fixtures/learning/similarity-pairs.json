@@ -26,7 +26,7 @@
     { "id": "dup-confusable-cyrillic", "kind": "confusable", "similar": true, "a": "Always run the linter before committing changes.", "b": "Alwаys run the linter bеfore committing chаnges." },
     { "id": "dup-confusable-greek", "kind": "confusable", "similar": true, "a": "Never log request bodies because they can contain customer data.", "b": "Νever lοg request bοdies becaυse they can contain customer data." },
     { "id": "dup-confusable-fullwidth", "kind": "confusable", "similar": true, "a": "Wrap the database calls in a typed error.", "b": "Ｗrap the ｄatabase ｃalls in a ｔyped ｅrror." },
-    { "id": "dup-confusable-zero-width", "kind": "confusable", "similar": true, "a": "Set a timeout on every outbound request.", "b": "Set a time​out on every out‮bound request." },
+    { "id": "dup-confusable-zero-width", "kind": "confusable", "similar": true, "a": "Set a timeout on every outbound request.", "b": "Set a time\u200Bout on every out\u202Ebound request." },
 
     { "id": "neg-tests", "kind": "negated", "similar": false, "a": "Always add tests for new functions.", "b": "Never add tests for new functions." },
     { "id": "neg-any", "kind": "negated", "similar": false, "a": "Use the any type when the shape is unknown.", "b": "Do not use the any type when the shape is unknown." },
