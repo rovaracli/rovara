@@ -9,7 +9,7 @@ import type {StageModelCaller} from "./read.js";
 type Deps=ModelPolicyReader&StageEvidenceDependencies;
 const forbidden=()=>agentXError("FORBIDDEN","Only a current company owner or admin can read model policy.");
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","The company model settings could not be read. Reload and try again.");
-async function authority(deps:Deps,caller:StageModelCaller) {
+export async function requireCompanyModelPolicyAuthority(deps:ModelPolicyReader,caller:StageModelCaller) {
  if(!/^[a-f0-9]{64}$/u.test(caller.developerId)) throw forbidden();
  const keys=[orgMemberKey(caller.orgId,caller.developerId),developerOrgKey(caller.developerId),orgMetaKey(caller.orgId)];
  const rows=await Promise.all(keys.map(async Key=>{try{return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}catch{throw unavailable();}}));
@@ -17,7 +17,7 @@ async function authority(deps:Deps,caller:StageModelCaller) {
  if(rows.some((row,index)=>row===undefined||row.pk!==keys[index]!.pk||row.sk!==keys[index]!.sk)||member?.orgId!==caller.orgId||member.developerId!==caller.developerId||(member.role!=="owner"&&member.role!=="admin")||pointer?.orgId!==caller.orgId||pointer.role!==member.role||org?.orgId!==caller.orgId||org.closingAt!==undefined||org.closedAt!==undefined)throw forbidden();
 }
 export async function getCompanyModelSelectionPolicy(deps:Deps,caller:StageModelCaller) {
- await authority(deps,caller);
+ await requireCompanyModelPolicyAuthority(deps,caller);
  const orgId:OrgId=caller.orgId;
  const policy=await readModelSelectionPolicy(deps,orgId);
  const stored=await effectiveSources(deps.routing,orgId,"");
@@ -35,6 +35,6 @@ export async function getCompanyModelSelectionPolicy(deps:Deps,caller:StageModel
   const name=catalogModel(model)?.name??model.modelId;const label=[...name.replace(/[\p{Cc}\p{Cf}]/gu,"")].slice(0,64).join("")||"Model";
   return {model,label,provider:model.provider,company:modelCompany(model),status:blocked?"denied" as const:verified?"verified" as const:"unverified" as const,...(blocked?{blockedReason:"MODEL_FORBIDDEN" as const}:verified?{}:{blockedReason:"MODEL_NOT_VERIFIED" as const})};
  });
- await authority(deps,caller);
+ await requireCompanyModelPolicyAuthority(deps,caller);
  return ModelSelectionPolicyResponseSchema.parse({...policy,candidates:Object.fromEntries(STAGE_IDS.map(stage=>[stage,candidates]))});
 }

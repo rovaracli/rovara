@@ -1,3 +1,4 @@
+import {previewCompanyModelPolicy} from "../model-selection/policy-preview.js";
 import { getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
 import { getStageModels } from "../model-selection/read.js";
 import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
@@ -2100,6 +2101,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
   }
   // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  if (request.method === "POST" && url.pathname === "/v1/app/org/model-selection-policy/preview") {
+    if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy preview query is invalid.");
+    return previewCompanyModelPolicy({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,...(deps.agentSessions?.cursorKey===undefined?{}:{cursorKey:deps.agentSessions.cursorKey}),
+      loadSnapshot:(who,name,policy)=>loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,store:deps.agents?.store,routing:deps.agents?.modelRouting??{}},who,name,undefined,undefined,policy),
+    },caller,jsonBody(request));
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
     if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");
     return getCompanyModelSelectionPolicy({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, routing: deps.agents?.modelRouting ?? {} }, caller);

@@ -89,3 +89,12 @@ it("retains absent and stored playbook and selection inputs without another read
  expect(stored.selectionSnapshot).toEqual({exists:true,model});
  expect(stored.playbookSnapshot).toEqual({exists:true,revision:4,defaultProcess:{kind:"builtin"}});
 });
+
+it("previews a proposed company tuple without saving it or losing the current revision binding",async()=>{
+ const {w,deps}=fixture(),caller={orgId:ORG_A,developerId:MAX},before=structuredClone([...w.db.items]);
+ const proposed={version:1 as const,revision:0,rankingVersion:"g3-v1" as const,stepOverrides:{build:{model:{provider:"anthropic",modelId:"claude-opus-4"},locked:false}}};
+ const snap=await loadStageModelSnapshot(deps,caller,"web",undefined,undefined,proposed);
+ expect(snap.stages.find(row=>row.stage==="build")?.companyDefault).toMatchObject({model:proposed.stepOverrides.build.model});
+ expect([...w.db.items]).toEqual(before);
+ await expect(loadStageModelSnapshot(deps,caller,"web",undefined,undefined,{...proposed,revision:1})).rejects.toThrow("could not be read");
+});
