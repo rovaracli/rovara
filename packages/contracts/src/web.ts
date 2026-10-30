@@ -108,3 +108,8 @@ export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
+
+// Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
+export * from "./evidence.js";
+export * from "./decision-cards.js";
+export * from "./test-environment.js";
