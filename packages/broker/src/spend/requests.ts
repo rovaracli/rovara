@@ -1,7 +1,7 @@
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
 import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
-import { checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
+import { savedTaskStopBounds, checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
 import type { BudgetSubject } from "./owner-total.js";
@@ -619,7 +619,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
           const snapshot = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
             await requireNativeProjectWorkRole(deps, source, actor);
             await requireAgentAccess(deps, actor, agentId, source.agent?.version === "draft" ? "edit" : "use");
-          } }, { orgId: draft.orgId, developerId, role, project: source.project, agentId,
+          } }, { orgId: draft.orgId, developerId, role, project: source.project, agentId, ...savedTaskStopBounds(source.spendingStop),
             pathLimitMicrousd: source.spendingStop?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(source.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null });
           if (snapshot.kind === "captured") draft.approvalTerms = makeTaskApprovalTerms(source, snapshot, draft);
         }
@@ -1532,7 +1532,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
       if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
-      agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+      agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, ...savedTaskStopBounds(previous),
       ...(record.kind === "max_per_run" || task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
       pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
     });

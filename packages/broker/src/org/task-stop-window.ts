@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { requireAgentAccess, type AgentAccessDeps } from "../agents/access.js";
@@ -22,6 +23,8 @@ const snapshotSchema = z.object({
   calculationInput: TaskStopAdmissionInputSchema,
   sourceRevisions: z.object({ company: revision, ceiling: revision, projectCatalog: revision, project: revision, agent: revision }).strict(),
 }).strict().superRefine((value, context) => {
+  const digest = createHash("sha256").update(JSON.stringify([value.orgId, value.project, value.agentId, value.sourceRevisions, value.calculationInput])).digest("hex");
+  if (digest !== value.policyDigest) context.addIssue({ code: "custom", message: "Stored admission digest does not agree." });
   const result = calculateTaskStop(value.calculationInput);
   if (result.kind !== "resolved" || !("approvalCapMicrousd" in result) || result.effectiveStopMicrousd !== value.effectiveStopMicrousd
     || result.approvalCapMicrousd !== value.approvalCapMicrousd || JSON.stringify(result.bindingScopes) !== JSON.stringify(value.bindingScopes)) context.addIssue({ code: "custom", message: "Stored admission calculation does not agree." });
@@ -29,6 +32,14 @@ const snapshotSchema = z.object({
 const invalid = () => agentXError("TASK_STOP_CONFIG_INVALID", "The saved spending admission could not be checked. Ask an admin to review Spending.");
 export function checkedTaskStopSnapshot(value: unknown): CapturedTaskStop {
   const parsed = snapshotSchema.safeParse(value); if (!parsed.success) throw invalid(); return parsed.data;
+}
+/** Preserve accepted hard bounds; absent means no recorded bound, while a
+ * corrupt present snapshot always refuses instead of becoming inheritance. */
+export function savedTaskStopBounds(value: unknown): { requestedMicrousd?: number; chainMicrousd?: number; testingMicrousd?: number } {
+  if (value === undefined) return {};
+  const input = checkedTaskStopSnapshot(value).calculationInput;
+  return { ...(input.requestedMicrousd === undefined ? {} : { requestedMicrousd: input.requestedMicrousd }),
+    ...(input.chainMicrousd === undefined ? {} : { chainMicrousd: input.chainMicrousd }), ...(input.testingMicrousd === undefined ? {} : { testingMicrousd: input.testingMicrousd }) };
 }
 const receiptSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,

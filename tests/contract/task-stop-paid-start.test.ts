@@ -1250,3 +1250,20 @@ it("removing a non-binding saved requested bound invalidates its captured digest
   expect(checkedTaskStopSnapshot(saved).effectiveStopMicrousd).toBe(4_000_000);
   expect(() => checkedTaskStopSnapshot({ ...saved, calculationInput: input })).toThrow("TASK_STOP_CONFIG_INVALID");
 });
+
+it("approval at the exact accepted requested bound remains valid and resumes once", async () => {
+  const f = await hardRequestedTask(); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const original = f.t.requestOf(f.task.taskId, "run_limit")[0]!; await f.t.decide(MAYA, original.spendRequestId, "DENY");
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: f.task.taskId, kind: "run_limit", scope: { kind: "task", taskId: f.task.taskId }, amountUsd: 1, newLimitUsd: 5,
+    requestedBy: { kind: "member", developerId: MAYA.developerId }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "Finish within the accepted five-dollar bound." });
+  const operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id);
+  expect((await f.t.decide(MAYA, record.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 5, spendingStop: { effectiveStopMicrousd: 5_000_000, calculationInput: { requestedMicrousd: 5_000_000, approvedRunLimitMicrousd: 5_000_000 } } });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+});
+it("saved admission digest verification tolerates stored map key reordering", async () => {
+  const f = await hardRequestedTask(), saved = checkedTaskStopSnapshot(f.t.meta(f.task.taskId).spendingStop);
+  const reordered = { ...saved, calculationInput: Object.fromEntries(Object.entries(saved.calculationInput).reverse()), sourceRevisions: Object.fromEntries(Object.entries(saved.sourceRevisions).reverse()) };
+  expect(checkedTaskStopSnapshot(reordered)).toEqual(saved);
+});
