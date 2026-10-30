@@ -368,7 +368,10 @@ export async function startModelCheck(deps: ModelCheckDependencies, body: unknow
   const expires = indexExpiresAt(new Date(now + CHECK_TTL_MS).toISOString());
   const latestItem = (id: string) => ({ ...e2eModelCheckLatestKey(), entityType: "E2E_MODEL_CHECK_LATEST", checkId: id, requestedAt: now, state: "pending", fingerprint, [INDEX_EXPIRY_ATTRIBUTE]: expires });
   const writeCheck = async (id: string) => {
+    // This is platform qualification work, not a customer spending admission.
+    // Refuse a runtime/runner change before making a request visible to it.
     await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...e2eModelCheckKey(id), entityType: "E2E_MODEL_CHECK", checkId: id, ...record, prefix, requestedAt: now, state: "pending", [INDEX_EXPIRY_ATTRIBUTE]: expires } }));
+    if (await runnerPrefix(deps, profileId) !== prefix) throw new ModelCheckError(409, "no-model-check-runner", "the qualified model check runner changed; requalify and retry");
     await deps.putObject(`${prefix}${REQUEST_KEY}`, `${JSON.stringify({ ...request, checkId: id })}\n`);
   };
   // One check at a time per runner, held by ONE conditional write of the latest pointer: of two POSTs at once, one wins and the other is told which check is running. A pointer that
