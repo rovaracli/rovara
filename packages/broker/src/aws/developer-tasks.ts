@@ -2841,7 +2841,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
       intentHash: reference.intentHash, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID });
     if (receipt === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved spending admission is missing.");
     if (receipt.transitionKind === "spend-approval" && receipt.spendRequestId !== input.spendRequestId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recovery does not name the approved spending request.");
-    if (input.resume === "implement" && (receipt.transitionKind !== "spend-approval" || receipt.workflowRevision === null || usdToWholeMicrodollars(input.runLimitUsd) !== receipt.spendingStop.effectiveStopMicrousd)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation limit does not match the approved spending admission.");
+    if (input.resume === "implement" && (receipt.transitionKind !== "spend-approval" || receipt.workflowRevision === null || usdToWholeMicrodollars(input.runLimitUsd) !== receipt.spendingStop.calculationInput.approvedRunLimitMicrousd)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation limit does not match the approved spending admission.");
     if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null) {
       if (task.budgetPause?.firstDispatch === undefined) {
         const workspace = await deps.actions.workspace(task.workspaceId);
@@ -2943,6 +2943,7 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
   if (deps.agentRuns === undefined || task.payer === undefined || task.origin === undefined) throw budgetActorRefused();
   await creatorGuard(deps, task);
   const snapshot = checkedTaskStopSnapshot(input.snapshot);
+  if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
   if (snapshot.orgId !== deps.orgId || snapshot.project !== task.project || snapshot.agentId !== task.agent.agentId) throw budgetActorRefused();
   const authorize = async () => {
     await authorizeTaskAction(deps, caller, task.taskId, "work");
@@ -4344,7 +4345,10 @@ export async function resumeAfterRunLimitApproval(
   if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
   }
-  const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
+  const admitted = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+  if (admitted !== undefined && (admitted.calculationInput.approvedRunLimitMicrousd !== usdToWholeMicrodollars(input.runLimitUsd) || usdToWholeMicrodollars(task.budgetBaselineUsd) === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation window does not match its approved admission.");
+  const admittedBudgetUsd = admitted === undefined ? input.runLimitUsd : admitted.effectiveStopMicrousd / 1_000_000;
+  const baselineUsd = admitted === undefined ? await capWindowBaseline(deps, task) ?? 0 : task.budgetBaselineUsd;
   const receivedAt = iso(deps);
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
@@ -4358,7 +4362,7 @@ export async function resumeAfterRunLimitApproval(
       ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND attribute_not_exists(closedAt)${task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}`,
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies), ":now": receivedAt,
-        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": input.runLimitUsd, ":baseline": baselineUsd,
+        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": admittedBudgetUsd, ":baseline": baselineUsd,
         ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) },
     } },
     putNew(turnTable(deps), aiToolTurn({

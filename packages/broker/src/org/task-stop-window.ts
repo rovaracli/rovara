@@ -18,7 +18,7 @@ const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().posi
 const snapshotSchema = z.object({
   kind: z.literal("captured"), schemaVersion: z.literal(2), orgId: OrgIdSchema, project: z.string().min(1).max(256), agentId: AgentIdSchema,
   capturedAt: z.string().datetime(), policyDigest: sha, effectiveStopMicrousd: TaskStopMicrousdSchema, approvalCapMicrousd: TaskStopMicrousdSchema,
-  bindingScopes: z.array(z.enum(["company_ceiling", "company_default", "project", "agent", "path", "approved_run", "approved_max_per_run", "requested", "chain", "testing"])).min(1),
+  bindingScopes: z.array(z.enum(["company_ceiling", "company_default", "project", "agent", "path", "approved_run", "approved_max_per_run", "committed_max_per_run", "requested", "chain", "testing"])).min(1),
   calculationInput: TaskStopAdmissionInputSchema,
   sourceRevisions: z.object({ company: revision, ceiling: revision, projectCatalog: revision, project: revision, agent: revision }).strict(),
 }).strict().superRefine((value, context) => {

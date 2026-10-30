@@ -15,7 +15,7 @@ const CaptureIdentity = z.object({
   orgId: OrgIdSchema, developerId: z.string().regex(/^[a-f0-9]{64}$/), role: OrgRoleSchema,
   project: z.string().min(1).max(256), agentId: AgentIdSchema,
   pathLimitMicrousd: z.unknown(), approvedRunLimitMicrousd: z.unknown().optional(),
-  requestedMicrousd: z.unknown().optional(), chainMicrousd: z.unknown().optional(), testingMicrousd: z.unknown().optional(),
+  committedMaxPerRunMicrousd: z.unknown().optional(), requestedMicrousd: z.unknown().optional(), chainMicrousd: z.unknown().optional(), testingMicrousd: z.unknown().optional(),
 }).strict();
 export type TaskStopCaptureRequest = z.infer<typeof CaptureIdentity>;
 export interface TaskStopCaptureDependencies {
@@ -146,6 +146,7 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
   }
   const data = TaskStopAdmissionInputSchema.safeParse({ schemaVersion: 2, companyDefault, ceilingMicrousd, projectStop, agentStop,
     pathLimitMicrousd: identity.pathLimitMicrousd,
+    ...(identity.committedMaxPerRunMicrousd === undefined ? {} : { committedMaxPerRunMicrousd: identity.committedMaxPerRunMicrousd }),
     ...(identity.approvedRunLimitMicrousd === undefined ? {} : { approvedRunLimitMicrousd: identity.approvedRunLimitMicrousd }),
     ...(identity.requestedMicrousd === undefined ? {} : { requestedMicrousd: identity.requestedMicrousd }),
     ...(identity.chainMicrousd === undefined ? {} : { chainMicrousd: identity.chainMicrousd }),
@@ -163,10 +164,11 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
 }
 
 /** Reuses one already captured economic snapshot with a proposed approval. */
-export function approveCapturedTaskStop(snapshot: CapturedTaskStop, approvedLimitMicrousd: unknown, operation: "run_limit" | "max_per_run" = "run_limit"): CapturedTaskStop {
+export function approveCapturedTaskStop(snapshot: CapturedTaskStop, approvedLimitMicrousd: unknown, operation: "run_limit" | "max_per_run" = "run_limit", purpose: "admission" | "approval_allowance" = "admission"): CapturedTaskStop {
   const { approvedRunLimitMicrousd: _oldRun, approvedMaxPerRunMicrousd: _oldMax, ...basis } = snapshot.calculationInput;
   void _oldRun; void _oldMax;
-  const parsed = TaskStopAdmissionInputSchema.safeParse({ ...basis, ...(operation === "max_per_run" ? { approvedMaxPerRunMicrousd: approvedLimitMicrousd } : { approvedRunLimitMicrousd: approvedLimitMicrousd }) });
+  const { committedMaxPerRunMicrousd: _committed, ...allowance } = basis; void _committed;
+  const parsed = TaskStopAdmissionInputSchema.safeParse({ ...(purpose === "approval_allowance" ? allowance : basis), ...(operation === "max_per_run" ? { approvedMaxPerRunMicrousd: approvedLimitMicrousd } : { approvedRunLimitMicrousd: approvedLimitMicrousd }) });
   if (!parsed.success) throw invalid();
   const calculation = calculateTaskStop(parsed.data);
   if (calculation.kind === "refused") throw agentXError(calculation.reason, "This approval is above the company ceiling. Ask an admin to raise the ceiling first; that change needs a second person.");

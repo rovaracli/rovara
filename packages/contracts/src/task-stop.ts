@@ -23,12 +23,13 @@ export const TaskStopAdmissionInputSchema = z.object({
  pathLimitMicrousd: TaskStopMicrousdSchema,
  approvedRunLimitMicrousd: TaskStopMicrousdSchema.optional(),
  approvedMaxPerRunMicrousd: TaskStopMicrousdSchema.optional(),
+ committedMaxPerRunMicrousd: TaskStopMicrousdSchema.optional(),
  requestedMicrousd: TaskStopMicrousdSchema.optional(),
  chainMicrousd: TaskStopMicrousdSchema.optional(),
  testingMicrousd: TaskStopMicrousdSchema.optional(),
 }).strict().refine(value => value.approvedRunLimitMicrousd === undefined || value.approvedMaxPerRunMicrousd === undefined, { message: "A capture must name one approved limit kind." });
 export type TaskStopAdmissionInput = z.infer<typeof TaskStopAdmissionInputSchema>;
-export type TaskStopBindingScope = "company_ceiling" | "company_default" | "project" | "agent" | "path" | "approved_run" | "approved_max_per_run" | "requested" | "chain" | "testing";
+export type TaskStopBindingScope = "company_ceiling" | "company_default" | "project" | "agent" | "path" | "approved_run" | "approved_max_per_run" | "committed_max_per_run" | "requested" | "chain" | "testing";
 export type TaskStopCalculation =
  | { kind: "resolved"; effectiveStopMicrousd: number; bindingScopes: TaskStopBindingScope[]; usesCompanyDefault: boolean; enforcement: "not_connected" }
  | { kind: "resolved"; effectiveStopMicrousd: number; approvalCapMicrousd: number; bindingScopes: TaskStopBindingScope[]; usesCompanyDefault: boolean; enforcement: "not_connected" }
@@ -54,6 +55,7 @@ export function calculateTaskStop(input: unknown): TaskStopCalculation {
   }
   candidates.push({ scope: policy.approvedRunLimitMicrousd === undefined ? "path" : "approved_run", value: policy.approvedRunLimitMicrousd ?? policy.pathLimitMicrousd });
   if (policy.approvedMaxPerRunMicrousd !== undefined) candidates.push({ scope: "approved_max_per_run", value: policy.approvedMaxPerRunMicrousd });
+  if (policy.committedMaxPerRunMicrousd !== undefined) candidates.push({ scope: "committed_max_per_run", value: policy.committedMaxPerRunMicrousd });
   for (const [scope, value] of [["requested", policy.requestedMicrousd], ["chain", policy.chainMicrousd], ["testing", policy.testingMicrousd]] as const) {
    if (value !== undefined) candidates.push({ scope, value });
   }

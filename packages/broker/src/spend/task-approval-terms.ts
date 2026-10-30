@@ -32,7 +32,7 @@ export const TaskApprovalTermsSchema = z.object({
   if (asked.runLimit !== taskRunLimitMicrousd(fields) || asked.budget !== usdToWholeMicrodollars(fields.budgetUsd === undefined ? PER_TASK_BUDGET_USD : fields.budgetUsd)
     || asked.baseline !== usdToWholeMicrodollars(fields.budgetBaselineUsd === undefined ? 0 : fields.budgetBaselineUsd)
     || asked.maxPerRun !== (fields.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(fields.maxPerRunUsd))) context.addIssue({ code: "custom", message: "Asked figures do not agree with the original source." });
-  if (value.operation === "max_per_run" ? proposed.runLimit !== asked.runLimit || proposed.maxPerRun === null || proposed.budget !== Math.min(asked.runLimit, proposed.maxPerRun) || proposed.window !== "keep" : proposed.runLimit !== proposed.budget || proposed.maxPerRun !== asked.maxPerRun) context.addIssue({ code: "custom", message: "The proposed figures change another spending limit." });
+  if (value.operation === "max_per_run" ? proposed.runLimit !== asked.runLimit || proposed.maxPerRun === null || proposed.budget !== Math.min(asked.runLimit, proposed.maxPerRun) || proposed.window !== "keep" : proposed.budget !== Math.min(proposed.runLimit, asked.maxPerRun ?? proposed.runLimit) || proposed.maxPerRun !== asked.maxPerRun) context.addIssue({ code: "custom", message: "The proposed figures change another spending limit." });
 });
 export type TaskApprovalTerms = z.infer<typeof TaskApprovalTermsSchema>;
 /** Financial policy evidence excludes path/approved/request amounts, which are
@@ -47,7 +47,7 @@ export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: Captu
     sourceDigest: digest({ originalFields, firstDispatch }), originalFields, firstDispatch,
     askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), runLimit, amount: usdToWholeMicrodollars(record.amountUsd),
       maxPerRun: task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd), baseline: usdToWholeMicrodollars(task.budgetBaselineUsd ?? 0) },
-    proposedFiguresMicrousd: { budget: record.kind === "max_per_run" ? Math.min(runLimit ?? NaN, proposed ?? NaN) : proposed, runLimit: record.kind === "max_per_run" ? runLimit : proposed,
+    proposedFiguresMicrousd: { budget: record.kind === "max_per_run" ? Math.min(runLimit ?? NaN, proposed ?? NaN) : Math.min(proposed ?? NaN, task.maxPerRunUsd === undefined ? proposed ?? NaN : usdToWholeMicrodollars(task.maxPerRunUsd) ?? NaN), runLimit: record.kind === "max_per_run" ? runLimit : proposed,
       maxPerRun: record.kind === "max_per_run" ? usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd) : task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd),
       window: record.kind === "planning" || record.resume === "implement" ? "reset" : "keep" },
     countedOwner: tryEffectiveTaskOwner(task)?.developerId ?? null, totalsRevision: null, policyDigest: taskApprovalPolicyDigest(snapshot),
@@ -56,7 +56,7 @@ export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: Captu
 export const taskApprovalSourceMatches = (terms: TaskApprovalTerms, task: DeveloperTaskRecord): boolean => terms.sourceKey.pk === taskKey(task.taskId).pk && digest({ originalFields: taskApprovalFields(task), firstDispatch: task.budgetPause?.firstDispatch ?? null }) === terms.sourceDigest;
 export function taskApprovalRecordMatches(terms: TaskApprovalTerms, record: SpendRequestRecord): boolean {
   return terms.operation === record.kind && terms.askedFiguresMicrousd.amount === usdToWholeMicrodollars(record.amountUsd)
-    && (record.kind === "max_per_run" ? terms.proposedFiguresMicrousd.maxPerRun : terms.proposedFiguresMicrousd.budget) === usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd)
+    && (record.kind === "max_per_run" ? terms.proposedFiguresMicrousd.maxPerRun : terms.proposedFiguresMicrousd.runLimit) === usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd)
     && terms.proposedFiguresMicrousd.window === (record.kind === "planning" || record.resume === "implement" ? "reset" : "keep");
 }
 /** Merge the original source into the request's existing task write, or append

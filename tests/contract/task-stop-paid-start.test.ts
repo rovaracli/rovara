@@ -1040,16 +1040,20 @@ for (const source of ["valid", "closing", "cap_source"] as const) it(`a newly re
   if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
 });
 
-for (const recovery of ["valid", "closing", "cap_source", "invalid_limit", "wrong_request"] as const) it(`plan acceptance approval repair retains implementation intent and ${recovery} source`, async () => {
+for (const recovery of ["valid", "bounded_valid", "closing", "cap_source", "invalid_limit", "wrong_request"] as const) it(`plan acceptance approval repair retains implementation intent and ${recovery} source`, async () => {
   const f = await fixture();
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 40 } });
   for (let index = 0; index < 5; index += 1) f.t.db.set({ ...runCostKey(TEST_ORG, "payments", ROVARA_CODE_AGENT_ID, "QUICK", new Date(Date.now() - index * 1000).toISOString(), randomUUID()), entityType: "RUN_COST", costUsd: 10 });
+  if (recovery === "bounded_valid") f.t.db.set({ ...f.t.db.get(f.agent)!, stopKind: "limited", maxPerRunUsd: 9 });
   const started = await f.t.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" }); expect(started.status, JSON.stringify(started.body)).toBe(200);
   const taskId = String((started.body.task as { taskId: string }).taskId), workspaceId = f.t.meta(taskId).workspaceId;
   await f.t.finish(workspaceId, f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!.id, "SUCCEEDED", PREPARED);
   const plan = f.t.taskOps(workspaceId).at(-1)!;
   await f.t.artifact(workspaceId, plan.id, "plan.md", planAnswer(planDocument())); await f.t.finish(workspaceId, plan.id, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+  if (recovery === "bounded_valid") {
+    const settings: Record<string, unknown> = { ...f.t.db.get(f.agent)!, revision: 2, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
+  }
   const workflow = f.t.meta(taskId).workflow as { revision: number; artifacts: Array<{ sha256: string }> };
   expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
   const request = f.t.requestOf(taskId, "run_limit")[0]!; expect(request).toMatchObject({ resume: "implement", newLimitUsd: 20 });
@@ -1070,11 +1074,12 @@ for (const recovery of ["valid", "closing", "cap_source", "invalid_limit", "wron
     const held = f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === taskId)[0]!;
     f.t.db.set({ ...held, ...(recovery === "invalid_limit" ? { runLimitUsd: 99 } : { spendRequestId: "spr_00000000000000000000" }) });
   }
+  expect(f.t.meta(taskId)).toMatchObject({ budgetUsd: recovery === "bounded_valid" ? 9 : 20, spendingStop: { effectiveStopMicrousd: recovery === "bounded_valid" ? 9_000_000 : 20_000_000 } });
   f.t.db.delete(f.policy); captures = 0;
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(changed).toBe(recovery !== "invalid_limit" && recovery !== "wrong_request");
   const implementations = () => f.t.taskOps(workspaceId).filter(operation => operation.workflowMode === "IMPLEMENT");
-  expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0);
-  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0); expect(captures).toBe(0);
+  expect(implementations()).toHaveLength(recovery === "valid" || recovery === "bounded_valid" ? 1 : 0);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" || recovery === "bounded_valid" ? 1 : 0); expect(captures).toBe(0);
 });
 for (const source of ["valid", "dispatch_lost", "dispatch_completed", "dispatch_completed_wrong_org", "dispatch_completed_wrong_kind", "changed_operation", "changed_readonly"] as const) it(`held preparation approval lost acknowledgement retains ${source} original dispatch terms`, async () => {
   const f = await fixture();

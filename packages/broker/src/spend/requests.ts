@@ -1275,7 +1275,8 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   } else if (record.kind === "run_limit" || record.kind === "planning") {
     same("budgetUsd", task.budgetUsd);
     names["#budgetUsd"] = "budgetUsd";
-    values[":limit"] = newLimitFor(record, approvedUsd);
+    values[":limit"] = approvalStop === undefined ? newLimitFor(record, approvedUsd) : approvalStop.effectiveStopMicrousd / 1_000_000;
+    if (approvalStop !== undefined && usdToWholeMicrodollars(values[":limit"]) !== approvalStop.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved stop cannot be represented exactly.");
     sets.push("#budgetUsd = :limit");
     resetRunWindow = record.kind === "planning" || record.resume === "implement";
     if (resetRunWindow) {
@@ -1532,6 +1533,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
       agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+      ...(record.kind === "max_per_run" || task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
       pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
     });
     if (captured.kind === "captured") {
@@ -1541,12 +1543,12 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       }
       if (!taskApprovalSourceMatches(parsedTerms.data, task)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
       approvalTerms = parsedTerms.data;
-      const approved = approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null);
+      const approved = approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null, "run_limit", "approval_allowance");
       if (approved.effectiveStopMicrousd !== usdToWholeMicrodollars(newLimitFor(record, approvedUsd))) {
         await expireOne(deps, record, "spending_rules_changed");
         throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
       }
-      approvalStop = record.kind === "max_per_run" ? approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null, "max_per_run") : approved;
+      approvalStop = approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null, record.kind === "max_per_run" ? "max_per_run" : "run_limit");
     }
   }
   const originalRequestIndex = approvalTerms === undefined ? undefined : pinTaskApprovalRequest(ending, record);

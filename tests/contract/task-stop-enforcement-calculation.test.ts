@@ -96,3 +96,13 @@ it("approved per-run windows retain explicit numeric scope and requested bounds"
 it("contradictory approved limit kinds are unavailable", () => {
   expect(result(policy(4 * M, { approvedRunLimitMicrousd: 9 * M, approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "unavailable", reason: "INVALID_OR_MISSING_POLICY" });
 });
+
+it("a later run approval retains its existing task per-run bound", () => {
+  expect(result(policy(14 * M, { approvedRunLimitMicrousd: 14 * M, committedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 9 * M, bindingScopes: ["committed_max_per_run"] });
+});
+it("a committed task per-run bound does not bypass a new approval ceiling", () => {
+  expect(result(policy(14 * M, { ceilingMicrousd: 12 * M, approvedRunLimitMicrousd: 14 * M, committedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "refused", reason: "TASK_STOP_APPROVAL_ABOVE_CEILING" });
+});
+it("lowered ceilings do not retroactively clamp a committed task-specific stop without a new approval", () => {
+  expect(result(policy(20 * M, { ceilingMicrousd: M, committedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 9 * M, bindingScopes: ["committed_max_per_run"] });
+});
