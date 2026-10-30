@@ -2,14 +2,14 @@
 // The one hook is in `sendTaskWorkflowBackToCoding`, which the task page, the developer API, Slack and MCP all reach. The decider's standing is read live, never taken from the task role.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, type WorkflowSnapshot } from "@agentx/contracts";
+import { BUILTIN_AGENTS, EMPTY_RECIPE, createCandidateManifest, type ResolvedRecipe, type WorkflowSnapshot } from "@agentx/contracts";
 import { sendTaskWorkflowBackToCoding, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
-import { LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
+import { LEARNING_PROJECT_WIDE, LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -180,12 +180,44 @@ describe("code send-back capture: the stage", () => {
     expect(corrections(t.harness)).toMatchObject([{ stage: "code" }]);
   });
 
-  it("a task with no program (the built-in recipe) gives the default build step, never a project-wide stage", async () => {
+  /** Freezes `recipe` as the task's agent snapshot, as starting a task with an agent does. */
+  const freeze = (t: Awaited<ReturnType<typeof blockedTask>>, recipe: ResolvedRecipe) =>
+    t.harness.db.set({ pk: `DEVTASK#${t.taskId}`, sk: "RECIPE", entityType: "TASK_RECIPE", orgId: TEST_ORG, recipe, digest: "d".repeat(64) });
+  const rovaraCode = (): ResolvedRecipe => structuredClone(BUILTIN_AGENTS["rovara-code"].versions[0]!.recipe);
+
+  it("(a) a QUICK task with no program and the default recipe gives that recipe's build step, `build`", async () => {
+    const t = await blockedTask();
+    expect(workflowOf(t.harness, t.taskId).program).toBeUndefined();
+    freeze(t, rovaraCode());
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    await t.send(MAYA_CALLER, NOTE);
+    expect(corrections(t.harness)).toMatchObject([{ stage: "build", source: "send_back" }]);
+  });
+
+  it("(b) a recipe whose first build step has another id gives that id (the step stepForOperation picks)", async () => {
+    const t = await blockedTask();
+    const recipe = rovaraCode();
+    recipe.steps = recipe.steps.map((step) => (step.kind === "build" ? { ...step, id: "implement", name: "Implement" } : step.kind === "review" ? { ...step, onFindings: { backTo: "implement", maxRounds: 3 } } : step));
+    freeze(t, recipe);
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    await t.send(MAYA_CALLER, NOTE);
+    expect(corrections(t.harness)).toMatchObject([{ stage: "implement" }]);
+  });
+
+  it("(c) a recipe with no build step gives project-wide", async () => {
+    const t = await blockedTask();
+    freeze(t, { ...structuredClone(EMPTY_RECIPE), steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "none", settings: { instructions: [] } }] });
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    await t.send(MAYA_CALLER, NOTE);
+    expect(corrections(t.harness)).toMatchObject([{ stage: LEARNING_PROJECT_WIDE }]);
+  });
+
+  it("no agent snapshot and no program gives project-wide", async () => {
     const t = await blockedTask();
     expect(workflowOf(t.harness, t.taskId).program).toBeUndefined();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     await t.send(MAYA_CALLER, NOTE);
-    expect(corrections(t.harness)).toMatchObject([{ stage: "build", source: "send_back" }]);
+    expect(corrections(t.harness)).toMatchObject([{ stage: LEARNING_PROJECT_WIDE }]);
   });
 
   it("the plan send-back is unchanged: its stage is still plan, and a given stage is kept", async () => {

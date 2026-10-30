@@ -4252,7 +4252,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   // Slack and MCP. It runs last, after the new coding run has committed and the index is synced, within capture's own time budget: a slow or failing capture cannot fail or hold up the
   // send-back. A replayed request returned early above and never reaches here. The caller is the decider, so the standing is theirs; Rovara's own automatic send-back
   // (`autoSendBackToCodingFromSystem`) is another function and never captures. A code send-back carries no included comments. Slack's fixed note is not a person's reason.
-  await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: codeSendBackStage(next) });
+  await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, next) });
   return view;
 }
 

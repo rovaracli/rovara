@@ -19,7 +19,9 @@
 //
 // Capture never fails the send-back: `captureSendBackQuietly` catches everything and logs fixed words (never the text).
 import { createHash } from "node:crypto";
-import { LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { LEARNING_PROJECT_WIDE, LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { stepForOperation } from "../agents/dispatch.js";
+import { readTaskRecipe } from "../agents/runs.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { COMMENT_STAGE, commentSourceKey } from "./capture-comment.js";
@@ -49,18 +51,31 @@ export interface SendBackOutcome {
   created: string[];
 }
 
-/** The id of the default build step (Rovara Code's recipe, `agent-templates.ts`). A task with no program runs this step's rules when it codes. */
-export const DEFAULT_BUILD_STEP_ID = "build";
-
 /**
- * The stage of a correction from a CODE send-back: the id of the coding step the work was sent back to, taken from the returned workflow's program (the engine put it there when the work went
- * back). A workflow with no program (the built-in recipe, whose coding run reads the `build` step's rules) or a step the learning loop would not accept gives `build`, never a project-wide
- * stage: a lesson from sending code back must not quietly become a rule for plans and reviewers.
+ * The stage of a correction from a CODE send-back: the id of the coding step that will run the work, so the lesson lands on the step that runs. With the task's frozen agent snapshot it is
+ * the step `stepForOperation` picks for a coding run (the program's step the work returned to, else the recipe's FIRST build step: what dispatch uses); never a hard-coded id. Without a
+ * snapshot, a program's own build step; with neither, or when the recipe has no build step (an agent-steps recipe reads only `*`), `LEARNING_PROJECT_WIDE`.
+ * Reading the snapshot can fail: that too gives `LEARNING_PROJECT_WIDE`, never a failed send-back.
  */
-export function codeSendBackStage(returned: Pick<WorkflowSnapshot, "program" | "programStepId">): LearningStage {
+export async function codeSendBackStage(deps: CaptureDeps, orgId: OrgId, taskId: string, returned: Pick<WorkflowSnapshot, "program" | "programStepId">): Promise<LearningStage> {
+  const valid = (id: string | undefined): LearningStage => {
+    const stage = id === undefined ? undefined : LearningStageSchema.safeParse(id);
+    return stage?.success === true ? stage.data : LEARNING_PROJECT_WIDE;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The send-back never waits on this read longer than the capture itself may.
+    const limit = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), SEND_BACK_CAPTURE_BUDGET_MS); });
+    const snapshot = await Promise.race([readTaskRecipe(deps, taskId, orgId), limit]);
+    if (snapshot === "timeout") return LEARNING_PROJECT_WIDE;
+    if (snapshot !== undefined) return valid(stepForOperation(snapshot.recipe, "IMPLEMENT", returned.programStepId)?.id);
+  } catch {
+    return LEARNING_PROJECT_WIDE;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
   const step = returned.program?.steps.find((candidate) => candidate.id === returned.programStepId);
-  const stage = step?.kind === "build" ? LearningStageSchema.safeParse(step.id) : undefined;
-  return stage?.success === true ? stage.data : DEFAULT_BUILD_STEP_ID;
+  return step?.kind === "build" ? valid(step.id) : LEARNING_PROJECT_WIDE;
 }
 
 /** The source key of a send-back: one correction per (task, decision request). */
