@@ -14,6 +14,18 @@ export const WALK_CATALOG_PAGE = 25;
 export const WALK_DEFAULT_WRITES = 1000;
 export const WALK_DEFAULT_MILLIS = 20_000;
 
+/**
+ * The index of open walks. A walk's own item lives in its company's partition, so nothing can list the companies that have a walk to finish; a closed company and an erased person
+ * make no further requests, so a walk that stopped at its budget needs something that finds it. One small item per running `close` / `erase#` walk (`sk` = `<orgId>#<kind>`) is written
+ * when the walk starts, before its own item, and deleted when it finishes; the scheduled run (`resumeOpenLearningWalks`) reads this partition. It holds no text. An entry whose walk item is
+ * gone (a crash between the two deletes) is removed by that run once it is `WALK_INDEX_STALE_MS` old; a younger one may belong to a walk that is just starting.
+ */
+export const WALK_INDEX_PK = "LEARNING_WALKS_OPEN";
+export const WALK_INDEX_STALE_MS = 15 * 60_000;
+export const walkIndexKey = (orgId: OrgId, kind: string) => ({ pk: WALK_INDEX_PK, sk: `${orgId}#${kind}` });
+/** `sweep` is the retention sweep's own lap, driven by the reconciler; only the walks that must be finished are indexed. */
+export const isIndexedWalkKind = (kind: string) => kind === "close" || kind.startsWith("erase#");
+
 export interface WalkLimits { writes?: number; millis?: number; projects?: number }
 
 export interface WalkBudget {
@@ -64,6 +76,9 @@ export async function runLearningWalk(deps: LearningDeps, input: { orgId: OrgId;
   const stored = await read();
   try {
     if (stored === undefined) {
+      if (isIndexedWalkKind(kind.data)) {
+        await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...walkIndexKey(input.orgId, kind.data), entityType: "LEARNING_WALK_OPEN", orgId: input.orgId, kind: kind.data, since: at() } }));
+      }
       await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: fresh(0, at()), ConditionExpression: "attribute_not_exists(pk)" }));
       row = { status: "running", afterProject: undefined, projectsDone: 0, version: 0 };
     } else {
@@ -125,6 +140,7 @@ export async function runLearningWalk(deps: LearningDeps, input: { orgId: OrgId;
       }));
     } else {
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key, ConditionExpression: "version = :seen", ExpressionAttributeValues: { ":seen": row.version } }));
+      if (isIndexedWalkKind(kind.data)) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: walkIndexKey(input.orgId, kind.data) }));
     }
   } catch (error) {
     if (isConditionFailure(error)) return result("busy");
@@ -137,16 +153,34 @@ export async function runLearningWalk(deps: LearningDeps, input: { orgId: OrgId;
  * The job closeOrg runs on each project: deletes every item of the project's learning partition, whatever it is (expired and earlier-project items included), within the run's
  * write budget. A budget that ends inside the partition answers `"partial"`; the next run reads what is left from the start, so nothing is repeated.
  */
-export function clearProjectPartitionJob(deps: LearningDeps): ProjectJob {
+export function clearProjectPartitionJob(deps: LearningDeps, options: { before?: string } = {}): ProjectJob {
   return async ({ orgId, project, budget }) => {
+    const before = options.before;
+    if (before === undefined) {
+      for (;;) {
+        const page = await readLearningPartition(deps, { orgId, project }, { maxItems: 100, maxPages: 1, pageSize: 100 });
+        if (page.items.length === 0) return "done";
+        for (const item of page.items) {
+          if (budget.exhausted()) return "partial";
+          await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] } }));
+          budget.spend(1);
+        }
+      }
+    }
+    // A clear that runs after the project was archived must not touch what a project created again under the same name has written since: items written for a project created at
+    // or after `before` stay. The partition is read forward by a cursor because those items are not deleted.
+    let cursor: string | undefined;
     for (;;) {
-      const page = await readLearningPartition(deps, { orgId, project }, { maxItems: 100, maxPages: 1, pageSize: 100 });
-      if (page.items.length === 0) return "done";
+      const page = await readLearningPartition(deps, { orgId, project }, { maxItems: 100, maxPages: 1, pageSize: 100, ...(cursor === undefined ? {} : { cursor }) });
       for (const item of page.items) {
+        const createdAt = item["projectCreatedAt"];
+        if (typeof createdAt === "string" && createdAt >= before) continue;
         if (budget.exhausted()) return "partial";
         await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] } }));
         budget.spend(1);
       }
+      cursor = page.cursor;
+      if (cursor === undefined) return "done";
     }
   };
 }

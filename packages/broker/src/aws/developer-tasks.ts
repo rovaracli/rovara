@@ -3215,17 +3215,18 @@ export async function decideTaskWorkflow(
     }
     return busyOrClosing(deps, task, error);
   }
-  // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP), after the decision, its detail and the
-  // comment locks have committed. The decider's own standing is read inside; a failure is logged and never fails the send-back.
-  if (request.decision === "REQUEST_CHANGES" && documentType !== undefined) {
-    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: options.note ?? request.reason, included });
-  }
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
   if (request.decision === "APPROVE" && mode === "IMPLEMENT") await deps.startWorkflowE2EBaseline?.({ task: fresh }).catch((error: unknown) => log(deps, { event: "developer.e2e_baseline_not_started", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
+  // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP). It runs last, after the decision, its
+  // detail, the comment locks and the index sync, and within its own small time budget: a slow or failing capture can neither leave the index unsynced nor fail a decision that
+  // committed. The decider's own standing is read inside; a failure is logged. (A crash between the commit and this point loses that one correction: replay never captures. Accepted.)
+  if (request.decision === "REQUEST_CHANGES" && documentType !== undefined) {
+    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: options.note ?? request.reason, included });
+  }
   return { task: view };
 }
 

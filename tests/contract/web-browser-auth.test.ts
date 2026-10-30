@@ -427,6 +427,23 @@ it("refuses explicit cookie review intent belonging to another person before a w
 async function reviewedArchiveBroker(extra:Record<string,unknown>={}){const audit=capturingAuditDeps(),h=await broker({audit:audit.audit,...extra});audit.attach(h.db);const definition=StoredProjectDefinitionSchema.parse({name:"payments",revision:1,repositories:[{name:"web",url:"https://github.com/acme/payments.git",path:"repo/web",defaultBranch:"main",credentialRef:"github-app"}],setup:[],readiness:[],orchestratorInstructions:"Synthetic fixture"});h.db.set({...orgProjectCatalogKey(TEST_ORG,"payments"),entityType:"PROJECT_CATALOG",name:"payments",latestRevision:1});h.db.set({...projectRevisionKey(TEST_ORG,"payments",1),entityType:"PROJECT",definition});return {...h,audit};}
 const reviewedArchiveHeaders={cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)};
 const reviewedArchiveBody=()=>({requestId:randomUUID(),expectedRevision:0,expectedProjectRevision:1,acknowledgeNewWorkStops:true});
+it("reviewed archive clears the project's learning data: one bounded page inline, the rest left to the scheduled run", async () => {
+  const { projectLearningKey } = await import("@agentx/contracts");
+  const { resumeOpenLearningWalks, ARCHIVE_INLINE_WRITES } = await import("../../packages/broker/src/learning/cleanup.js");
+  const h = await reviewedArchiveBroker();
+  const pk = projectLearningKey(TEST_ORG, "payments", "STATE").pk;
+  const stored = () => h.db.find((item) => item.pk === pk).length;
+  h.db.set({ ...projectLearningKey(TEST_ORG, "payments", "STATE"), orgId: TEST_ORG, projectCreatedAt: "2026-10-01T00:00:00.000Z", revision: 1, openSuggestions: 0, liveCorrections: 250, pendingRules: 0 });
+  for (let n = 0; n < 250; n += 1) h.db.set({ ...projectLearningKey(TEST_ORG, "payments", `CORRECTION#2026-10-20T09:00:00.000Z#c${String(n).padStart(4, "0")}`), orgId: TEST_ORG, projectCreatedAt: "2026-10-01T00:00:00.000Z", text: "words" });
+  const result = await h.call("POST", "/v1/web/projects/payments/reviewed-archive", reviewedArchiveHeaders, reviewedArchiveBody());
+  expect(result.status, JSON.stringify(result.body)).toBe(200);
+  expect(h.db.get(projectMetaKey(TEST_ORG, "payments"))?.status).toBe("archived");
+  expect(251 - stored()).toBeLessThanOrEqual(ARCHIVE_INLINE_WRITES);
+  expect(stored()).toBeGreaterThan(100);
+  expect(stored()).toBeLessThan(251);
+  expect(await resumeOpenLearningWalks({ documentClient: h.db, tableName: "state", now: () => Date.now() })).toMatchObject({ walks: 1, done: 1 });
+  expect(stored()).toBe(0);
+});
 it("serves safe reviewed archive preview and explicit archive with canonical receipt through cookie routes",async()=>{const h=await reviewedArchiveBroker();const preview=await h.call("GET","/v1/web/projects/payments/archive-preview");expect(preview.status).toBe(200);expect(preview.body).toMatchObject({orgId:TEST_ORG,project:"payments",status:"active",expectedRevision:0,expectedProjectRevision:1,access:{actions:["archive"]}});const result=await h.call("POST","/v1/web/projects/payments/reviewed-archive",reviewedArchiveHeaders,reviewedArchiveBody());expect(result.status,JSON.stringify(result.body)).toBe(200);expect(result.body).toMatchObject({replayed:false,current:{status:"archived"},receipt:{status:"archived",revision:1}});expect(h.db.get(projectMetaKey(TEST_ORG,"payments"))?.status).toBe("archived");expect(h.audit.recordedBy("project.archived").length).toBe(1);});
 it("protects reviewed archive with session, Origin and CSRF before persistence",async()=>{const h=await reviewedArchiveBroker();for(const headers of [{},{cookie:COOKIE},{cookie:COOKIE,origin:CELL},{...reviewedArchiveHeaders,origin:"https://evil.example"},{...reviewedArchiveHeaders,[APP_CSRF_HEADER]:"wrong"}]){expect([401,403]).toContain((await h.call("POST","/v1/web/projects/payments/reviewed-archive",headers,reviewedArchiveBody())).status);expect(h.db.get(projectMetaKey(TEST_ORG,"payments"))).toBeUndefined();expect(h.audit.recordedBy("project.archived")).toEqual([]);}});
 for(const role of ["owner","admin","member"] as const)it(`checks live ${role} on the cookie reviewed archive route`,async()=>{const h=await reviewedArchiveBroker();seedMembership(h.db,WHO,{orgId:TEST_ORG,role});const result=await h.call("POST","/v1/web/projects/payments/reviewed-archive",reviewedArchiveHeaders,reviewedArchiveBody());expect(result.status).toBe(role==="member"?403:200);expect(h.audit.recordedBy("project.archived").length).toBe(role==="member"?0:1);});
