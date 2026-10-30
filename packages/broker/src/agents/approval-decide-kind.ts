@@ -6,7 +6,7 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stageOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -14,6 +14,8 @@ import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
+import { resolveRecipe } from "./changes.js";
+import { readStageTrackRecord } from "../playbook/track-record.js";
 
 const NAME_MAX = 80;
 const OPEN_AGAIN = "Open the approval again from Rovara.";
@@ -113,6 +115,49 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
   return facts;
 }
 
+/**
+ * v1.2 track record, read-only: for a less-safe change to a project's process, the record of the stage each change is about (the plan check, code and security review, tests), as facts under the
+ * changes. A change about no stage with a record adds nothing, a stage's record is shown once, and a record that cannot be read leaves the page as it was. It decides nothing.
+ */
+async function trackRecordFacts(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<Array<{ label: string; value: string }>> {
+  try {
+    const subject = record.subject;
+    let project: string | undefined;
+    let layerId: string | undefined;
+    if (subject.kind === "playbook_default_process") project = subject.project;
+    else if (subject.kind === "agent_publish" || subject.kind === "agent_rollback") {
+      const live = isBuiltinAgentId(subject.agentId) ? undefined : await deps.store.get(record.orgId, subject.agentId);
+      if (live?.owner.kind === "project") { project = live.owner.project; layerId = live.agentId; }
+    }
+    if (project === undefined || record.changes.length === 0) return [];
+    // The steps the changes can name: Rovara Code's, and the project's process layer's own when it has one.
+    const steps = new Map<string, { id: string; name: string; kind: string }>();
+    const builtin = deps.store.builtinRecipe(ROVARA_CODE_AGENT_ID, await deps.store.pinnedBuiltinVersion(record.orgId, ROVARA_CODE_AGENT_ID));
+    for (const step of builtin.steps) steps.set(`${step.id}|${step.name}`, step);
+    if (layerId !== undefined) {
+      const own = await resolveRecipe(deps, record.orgId, layerId as never, "current").catch(() => undefined);
+      for (const step of own?.steps ?? []) steps.set(`${step.id}|${step.name}`, step);
+    }
+    const stages = [...steps.values()];
+    const wanted = new Set<string>();
+    for (const change of record.changes) { const id = stageOfLessSafeReason(change, stages); if (id !== undefined) wanted.add(id); }
+    const facts: Array<{ label: string; value: string }> = [];
+    const shown = new Set<string>();
+    for (const id of wanted) {
+      const stage = stages.find((entry) => entry.id === id);
+      for (const read of stage === undefined ? [] : await readStageTrackRecord(deps, record.orgId, project, stage.kind) ?? []) {
+        if (shown.has(read.claim)) continue;
+        shown.add(read.claim);
+        const lines = trackRecordLines(read);
+        facts.push(fact(`Record so far: ${lines.title}`, `${lines.rate}.${lines.limits === undefined ? "" : ` ${lines.limits}.`}`));
+      }
+    }
+    return facts;
+  } catch {
+    return [];
+  }
+}
+
 /** What the page shows for an open record: the people and project it concerns, the words of what it does, and for a write the exact call. */
 async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<ConfirmView> {
   const expires = fact("Expires", record.expiresAt);
@@ -166,7 +211,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
-  facts.push(expires);
+  facts.push(...await trackRecordFacts(deps, record), expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };
 }
 
