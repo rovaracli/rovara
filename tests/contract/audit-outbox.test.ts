@@ -79,6 +79,19 @@ async function commitAction(h: Harness, event: AuditEventInput, key = "ACTION#1"
   }));
 }
 
+it("delivers the M47 system policy seed through the transactional outbox without changing its facts", async () => {
+  const h = harness();
+  const event = builders.auditTaskStopPolicySeeded({ orgId: ORG, actor: { kind: "system", id: "rovara" }, occurredAt: "2026-10-20T11:59:00.000Z",
+    occurrence: "bootstrap-v1", source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 });
+  await commitAction(h, event, "TASK_STOP_SEED#1");
+  expect(pendingItems(h.db).map(item => item.event)).toEqual([event]);
+  await flushAuditEvents(h.deps, [event]);
+  expect(pendingItems(h.db)).toEqual([]);
+  expect(h.sqs.queue.map(message => AuditEventInputSchema.parse(JSON.parse(message.body)))).toEqual([event]);
+  expect(event).toMatchObject({ actor: { kind: "system", id: "rovara" }, action: "spending.policy_seeded",
+    facts: { source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 } });
+});
+
 describe("the pending item", () => {
   it("is one unconditional Put of the plan's shape, in the shard of the event id", () => {
     const h = harness();
@@ -758,6 +771,7 @@ describe("I4: the builders", () => {
     ["auditProcessPublished", (occurrence) => builders.auditProcessPublished({ ...base, occurrence, details, agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: false })],
     ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
     ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
+    ["auditTaskStopPolicySeeded", (occurrence) => builders.auditTaskStopPolicySeeded({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 })],
     ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
   ];
 

@@ -85,5 +85,6 @@ for (const invalid of ["missing", "missing_key", "wrong_version"] as const) it(`
   f.t.db.set(row); const before = f.t.db.get(f.s.key);
   await expect(f.decide()).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   expect(f.t.db.get(f.s.key)).toEqual(before);
-  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+  // M47: incomplete original approval terms expire as spending_rules_changed, without a financial write.
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });

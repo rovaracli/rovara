@@ -1283,8 +1283,8 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     await store.addMember({ orgId, developerId: "dev-2", role: "owner" });
     // The two joins that made the org are recorded too; what a test looks at is what comes after them.
-    const setup = capture.recorded().length;
-    const afterSetup = () => capture.recorded().slice(setup);
+    const setupIds = new Set(capture.recorded().map(event => event.eventId));
+    const afterSetup = () => capture.recorded().filter(event => !setupIds.has(event.eventId));
     const beforeTransaction = (change: () => void) => {
       let armed = true;
       const real = db.send.bind(db) as (command: unknown) => Promise<unknown>;

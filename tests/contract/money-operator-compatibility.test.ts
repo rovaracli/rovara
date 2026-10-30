@@ -45,8 +45,8 @@ for (const outer of ["operator", "admin"] as const) it(`one concurrent ${outer}/
   f.db.set({ ...key, entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberOverrides: {}, revision: 1 });
   const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
-    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string } } }> }).TransactItems;
-    if (!raced && items?.some(item => item.Put?.Item?.pk === key.pk)) { raced = true; await (outer === "operator" ? f.admin(800) : f.operator(800)); }
+    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } } }> }).TransactItems;
+    if (!raced && items?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk)) { raced = true; await (outer === "operator" ? f.admin(800) : f.operator(800)); }
     return send(command);
   };
   const change = outer === "operator" ? f.operator : f.admin;
@@ -87,8 +87,8 @@ for (const authority of ["operator", "admin"] as const) it(`refuses ${authority}
   f.db.set({ ...key, entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberOverrides: {}, revision: 1.5 });
   const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
-    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string } } }> }).TransactItems;
-    if (!raced && items?.some(item => item.Put?.Item?.pk === key.pk)) { raced = true; await send(new UpdateCommand({ TableName: "state", Key: key, UpdateExpression: "SET revision = :raw", ExpressionAttributeValues: { ":raw": "changed-corrupt-revision" } })); }
+    const items = (command.input as { TransactItems?: Array<{ Put?: { Item?: { pk?: string; sk?: string } } }> }).TransactItems;
+    if (!raced && items?.some(item => item.Put?.Item?.pk === key.pk && item.Put.Item.sk === key.sk)) { raced = true; await send(new UpdateCommand({ TableName: "state", Key: key, UpdateExpression: "SET revision = :raw", ExpressionAttributeValues: { ":raw": "changed-corrupt-revision" } })); }
     return send(command);
   };
   expect((await (authority === "operator" ? f.operator(500) : f.admin(500)).then(() => undefined, (e: { code?: string }) => e))?.code).toBe("CHANGE_STALE");
