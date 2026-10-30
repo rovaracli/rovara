@@ -1280,7 +1280,7 @@ it("Continue retains the task-specific per-run stop granted by its prior approva
   const request = f.t.requestOf(task.taskId, "max_per_run")[0]!; await f.t.decide(ADA, request.spendRequestId);
   expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9 });
   await f.t.finish(task.workspaceId, f.t.taskOps(task.workspaceId).at(-1)!.id, "SUCCEEDED");
-  const reply = await f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue`, { requestId: randomUUID(), instructions: "Continue within the approved per-run stop." }); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  const reply = await f.t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/continue`, { requestId: randomUUID(), instructions: "Continue within the approved per-run stop." }); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000, calculationInput: { committedMaxPerRunMicrousd: 9_000_000 } } });
 });
 it("a new payer window retains an existing task per-run stop when current agent settings inherit", async () => {
