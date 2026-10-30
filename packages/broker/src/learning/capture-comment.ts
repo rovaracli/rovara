@@ -114,7 +114,7 @@ export async function forgetTaskComment(deps: CaptureCommentDeps, caller: Develo
   if (options.project !== undefined && options.project !== project) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   const scope = await learningScopeOf(deps, caller.orgId, project);
   if (scope === undefined) return { forgotten: true };
-  const source = await getLearningItem(learningDepsOf(deps), scope, sourceSk(commentSourceKey(taskId, commentId)));
+  const source = await getLearningItem(learningDepsOf(deps), scope, sourceSk(scope.projectCreatedAt, commentSourceKey(taskId, commentId)));
   if (source === undefined || typeof source["correctionSk"] !== "string") return { forgotten: true };
   return forgetAt(deps, caller, scope, source["correctionSk"]);
 }
@@ -149,7 +149,7 @@ async function forgetAt(deps: ForgetDeps, caller: DeveloperCaller, scope: Learni
     const items: TransactItem[] = [{ Delete: { TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, sk), ConditionExpression: "attribute_exists(pk)" } }];
     // A comment can be remembered again; an automatic capture keeps its source record, so a retry of the same decision does not bring a forgotten correction back.
     if (correction.source === "comment" && correction.sourceRef.taskId !== undefined && correction.sourceRef.commentId !== undefined) {
-      items.push({ Delete: { TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, sourceSk(commentSourceKey(correction.sourceRef.taskId, correction.sourceRef.commentId))) } });
+      items.push({ Delete: { TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, sourceSk(scope.projectCreatedAt, commentSourceKey(correction.sourceRef.taskId, correction.sourceRef.commentId))) } });
     }
     if (correction.suggestionId !== undefined) {
       const stored = await getLearningItem(learning, scope, suggestionSk(correction.suggestionId));
