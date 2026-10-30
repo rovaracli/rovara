@@ -2369,3 +2369,15 @@ for (const origin of ["event", "schedule"] as const) it(`unenrolled autonomous $
   const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent", agentId } });
   expect(f.t.meta(started.taskId)).toMatchObject({ budgetUsd: 4 }); expect(f.t.meta(started.taskId)).not.toHaveProperty("spendingStop");
 });
+
+for (const origin of ["event", "schedule"] as const) it(`autonomous ${origin} retry preserves its accepted stop while a fresh run observes tightening`, async () => {
+  const f = await fixture(), agentId = await f.t.budgeted(40), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, orgId: TEST_ORG, agentId, revision: 1, stopKind: "inherit" });
+  const request = { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent" as const, agentId } };
+  const started = await startAgentRun(f.t.starter(), request), before = f.t.meta(started.taskId);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
+  const replay = await startAgentRun(f.t.starter(), request);
+  expect(replay.taskId).toBe(started.taskId); expect(f.t.meta(started.taskId)).toEqual(before);
+  await expect(startAgentRun(f.t.starter(), { ...request, requestId: randomUUID() })).rejects.toMatchObject({ code: "TASK_STOP_ZERO" });
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(1);
+});
