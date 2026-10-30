@@ -27,7 +27,7 @@ export function ServiceStatusContent({ orgId, kind, enabled }: { orgId: string; 
   <Link to={kind ? "/app/admin/health" : "/app/admin"}>{kind ? "Back to service status" : "Back to Administration"}</Link>
   {!enabled && <p role="alert">Service status is unavailable while company access is being checked.</p>}
   {current?.failed && <p role="alert">Stored service status could not be verified. Refresh to try another read.</p>}
-  {data && kind === undefined && <><ul>{data.checks.map(check => <li key={check.kind}><Link to={`/app/admin/health/runtime/${check.kind}`}>{name(check.kind)}</Link> — {check.state} · {observation[check.observation]}</li>)}</ul><h2>Not observed here</h2><p>Other doctor checks have no stored report here: Slack, GitHub, connectors, models, alarms, capacity, sign-in and ChatGPT reachability. Their configuration does not prove a successful check.</p></>}
+  {data && kind === undefined && <><ul>{data.checks.map(check => <li key={check.kind}><Link to={`/app/admin/health/runtime/${check.kind}`}>{name(check.kind)}</Link>: {check.state} · {observation[check.observation]}</li>)}</ul><h2>Not observed here</h2><p>Other doctor checks have no stored report here: Slack, GitHub, connectors, models, alarms, capacity, sign-in and ChatGPT reachability. Their configuration does not prove a successful check.</p></>}
   {row && data && <><table><caption>Stored {name(row.kind)} qualification</caption><tbody>
    <tr><th scope="row">Recorded state</th><td>{row.state}</td></tr>
    <tr><th scope="row">Qualification observation</th><td>{observation[row.observation]}</td></tr>

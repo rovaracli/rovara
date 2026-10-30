@@ -36,7 +36,7 @@ for (const [label, checks, configured, observation, copy, state] of states) it(`
 it("B35 Overview lists each runtime with its state and observation label", async () => {
  await mount(async () => ({ status: 200, body: body([{ kind: "web", state: "ready", observation: "warning", reason: "expiring", expiresAt }, { kind: "api", state: "ready", observation: "expired", reason: "expired", expiresAt }]) }));
  const items = (await screen.findAllByRole("listitem")).map(item => item.textContent);
- expect(items).toEqual(["browser runtime — ready · Warning", "API runtime — ready · Expired"]);
+ expect(items).toEqual(["browser runtime: ready · Warning", "API runtime: ready · Expired"]);
  expect(screen.getByText(/Their configuration does not prove a successful check\./)).toBeTruthy();
 });
 it("B35 a 401 sends the person to sign in once, shows no evidence and does not repeat on refresh", async () => {
