@@ -1006,6 +1006,15 @@ describe("the link /s/<id>", () => {
     const comment = await t.browser(`/review/${taskId}/task/api/comments`, OMAR, { method: "POST", body: { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "hello", ask: false } });
     expect(`${String(comment.status)} ${comment.body}`).toContain("not_allowed");
     expect(comment.status).toBe(403);
+    // v1.2 learning loop (B3): the Remember and Forget paths are wired to the page API and refuse a person who may not comment, whatever they hold in the session.
+    const remember = await t.browser(`/review/${taskId}/task/api/comments/${randomUUID()}/remember`, OMAR, { method: "POST", body: {} });
+    expect(remember.status, remember.body).toBeGreaterThanOrEqual(403);
+    expect(remember.status, remember.body).toBeLessThanOrEqual(404);
+    expect(remember.body).not.toContain("correction");
+    // The React route is wired too: a body that is not strict is refused by the learning route (400), not answered as an unknown path.
+    const react = await t.dev(MAYA, "POST", "/v1/app/projects/payments/learning/remember", { standing: "member" });
+    expect(react.status, JSON.stringify(react.body)).toBe(400);
+    expect(JSON.stringify(react.body)).toContain("CONFIG_INVALID");
     const take = await t.browser(`/review/${taskId}/task/api/people/take-ownership`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedPeopleRevision: 1 } });
     expect(take.status, take.body).toBe(404);
     const decide = await t.browser(`/review/${taskId}/task/api/decision`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] } });

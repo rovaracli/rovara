@@ -10,7 +10,7 @@ import {
   LEO, MAYA_ADMIN, OMAR, PRIYA, PROJECT, PROJECT_CREATED_AT, RETRY_TEXT, SAM, learningItems, learningTask, seedComment, seedGrant, seedMember, seedPerson, seedProject, takeOver,
 } from "../support/learning-page.js";
 
-const learningDeps = (fixture: PageTaskFixture) => ({ documentClient: fixture.db, tableName: "state", now: fixture.deps.now });
+const learningDeps = (fixture: PageTaskFixture) => ({ documentClient: fixture.db, tableName: "state", now: () => fixture.deps.now() });
 const scope = { orgId: TEST_ORG, project: PROJECT, projectCreatedAt: PROJECT_CREATED_AT };
 const remember = (fixture: PageTaskFixture, who: typeof PRIYA, commentId: string) => rememberTaskComment(fixture.deps, who, fixture.taskId, commentId);
 const forget = (fixture: PageTaskFixture, who: typeof PRIYA, commentId: string) => forgetTaskComment(fixture.deps, who, fixture.taskId, commentId);
@@ -34,7 +34,7 @@ describe("Remember this", () => {
     const fixture = membersTask();
     const comment = seedComment(fixture, SAM, RETRY_TEXT);
     const answer = await remember(fixture, PRIYA, comment.commentId);
-    expect(answer).toEqual({ correction: { id: expect.any(String), standing: "member", stage: "plan" } });
+    expect(answer).toEqual({ correction: { id: answer.correction.id, standing: "member", stage: "plan" } });
     const [stored] = corrections(fixture);
     const correction = LearningCorrectionSchema.parse(Object.fromEntries(Object.entries(stored!).filter(([key]) => !["pk", "sk", "entityType", "orgId"].includes(key))));
     expect(correction).toMatchObject({

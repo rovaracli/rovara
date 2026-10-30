@@ -7,7 +7,8 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
   CommentDocumentSchema, CommentTargetSchema, DECISION_COMMENTS_MAX, PAGE_API_BODY_MAX_BYTES, PAGE_NOTE_MAX_CHARS,
-  TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema,
+  LearningTaskPageBodySchema, TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema,
+  type LearningForgetAnswerSchema, type LearningRememberAnswerSchema,
   type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView,
 } from "@agentx/contracts";
 import type { DeveloperTaskView } from "@agentx/contracts";
@@ -19,7 +20,7 @@ import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { CSRF_COOKIE, PRIVATE_HEADERS, SESSION_COOKIE, csrfCookie, isCsrfToken, parseCookie, safeResponse, type WebResponse } from "./web-session.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete)|suggestions|decision|retry|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
+export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete|remember|forget)|suggestions|decision|retry|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
 /** Any path under the task page's API, known or not: it is the API's to answer, never the PR feedback page's. */
 export const TASK_PAGE_API_PREFIX = new RegExp(`^/review/(${UUID})/task/api(/|$)`, "i");
 
@@ -101,6 +102,10 @@ export interface TaskWebApiDependencies {
   editComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number; text: string }): Promise<{ comment: PageCommentView }>;
   deleteComment(caller: DeveloperCaller, taskId: string, input: { commentId: string; rev: number }): Promise<{ comment: PageCommentView }>;
   setSuggestion(caller: DeveloperCaller, taskId: string, input: PageSuggestionInput): Promise<unknown>;
+  /** v1.2 learning loop: "Remember this" on a comment. It must check the caller's own standing in the project, not only their role on the task. Without it the path is not found. */
+  rememberComment?: (caller: DeveloperCaller, taskId: string, commentId: string) => Promise<z.infer<typeof LearningRememberAnswerSchema>>;
+  /** v1.2 learning loop: "Forget" on a remembered comment. Without it the path is not found. */
+  forgetComment?: (caller: DeveloperCaller, taskId: string, commentId: string) => Promise<z.infer<typeof LearningForgetAnswerSchema>>;
   /** Must refuse a caller who may not decide with an error carrying `pageReason: "owners_only"`. */
   decide(caller: DeveloperCaller, taskId: string, input: PageDecisionInput): Promise<{ revision: number }>;
   /** Retries a blocked application round (the owner only; any other block is refused) and answers the new revision. Without it, the retry path is not found. */
@@ -287,6 +292,13 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         if (receipt.status === "COMMITTED") return json(200, receipt);
         const result = await deps.confirmPeopleRequest(caller, taskId, peopleRequestId);
         return json(result.status === "PENDING" ? 202 : 200, result);
+      }
+      if (endpoint === "comments" && commentId !== undefined && (action === "remember" || action === "forget")) {
+        const learn = action === "remember" ? deps.rememberComment : deps.forgetComment;
+        if (learn === undefined) return json(404, { error: "not_found" });
+        // The body is empty and strict: standing, author and stage are never the caller's to say.
+        if (!LearningTaskPageBodySchema.safeParse(value).success) return invalid();
+        return json(200, await learn(caller, taskId, commentId));
       }
       if (endpoint === "comments" && commentId !== undefined) {
         if (action === "edit") {

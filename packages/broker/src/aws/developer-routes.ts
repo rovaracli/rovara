@@ -200,6 +200,8 @@ import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
 import { projectProcessOf } from "../playbook/project-process.js";
+import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
+import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
 import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
@@ -1981,6 +1983,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           editComment: (caller, taskId, input) => editPageComment(routeDeps(caller), caller, taskId, input),
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
+          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId),
+          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
           retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
           readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
@@ -2139,6 +2143,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
+  }
+  // v1.2 learning loop: Remember and Forget (more routes are added to learning/routes.ts by later steps).
+  if (LEARNING_PATH.test(url.pathname)) {
+    const learned = await routeLearning({ task: developerTaskRouteDependencies(deps, caller), projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName) }, caller, request.method, url, () => jsonBody(request));
+    if (learned !== undefined) return learned;
   }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {

@@ -33,7 +33,7 @@ describe("task page API: Remember and Forget paths", () => {
       rememberComment: async (who: DeveloperCaller, task: string, comment: string) => { calls.push({ name: "remember", who, taskId: task, commentId: comment }); return { correction: { id: "c1", standing: "member" as const, stage: "plan" } }; },
       forgetComment: async (who: DeveloperCaller, task: string, comment: string) => { calls.push({ name: "forget", who, taskId: task, commentId: comment }); return { forgotten: true as const }; },
     } as unknown as TaskWebApiDependencies;
-    return { calls, deps: { ...base, ...overrides } as TaskWebApiDependencies };
+    return { calls, deps: { ...base, ...overrides } };
   }
   const run = async (d: TaskWebApiDependencies, request: AdaptedHttpRequest) => {
     const response = await createTaskWebApi(d)(request, new URL(`${ORIGIN}${request.path}`));
@@ -74,18 +74,19 @@ describe("task page API: Remember and Forget paths", () => {
   });
 
   it("is not found where the dependency is not wired", async () => {
-    const { deps: d } = deps({ rememberComment: undefined, forgetComment: undefined });
+    const { rememberComment: _remember, forgetComment: _forget, ...unwired } = deps().deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+    const d: TaskWebApiDependencies = unwired;
     expect((await run(d, post(rememberPath, {}))).statusCode).toBe(404);
     expect((await run(d, post(forgetPath, {}))).statusCode).toBe(404);
   });
 
   it("answers a refusal in the page's words", async () => {
     const refuse = (pageReason: string, code: string) => async () => { throw Object.assign(new Error("no"), { code, pageReason }); };
-    const forbidden = await run(deps({ rememberComment: refuse("not_allowed", "FORBIDDEN") as never }).deps, post(rememberPath, {}));
+    const forbidden = await run(deps({ rememberComment: refuse("not_allowed", "FORBIDDEN") }).deps, post(rememberPath, {}));
     expect([forbidden.statusCode, forbidden.json.error]).toEqual([403, "not_allowed"]);
-    const slow = await run(deps({ rememberComment: refuse("slow_down", "TASK_BUSY") as never }).deps, post(rememberPath, {}));
+    const slow = await run(deps({ rememberComment: refuse("slow_down", "TASK_BUSY") }).deps, post(rememberPath, {}));
     expect(slow.statusCode).toBe(429);
-    const hidden = await run(deps({ forgetComment: refuse("", "TASK_NOT_FOUND") as never }).deps, post(forgetPath, {}));
+    const hidden = await run(deps({ forgetComment: refuse("", "TASK_NOT_FOUND") }).deps, post(forgetPath, {}));
     expect(hidden.statusCode).toBe(404);
   });
 });
@@ -133,7 +134,7 @@ describe("React routes: /v1/app/projects/{p}/learning/remember and corrections/{
     await expect(call(deps, PRIYA, "POST", "/v1/app/projects/web/learning/remember", body)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
     const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META")!;
     fixture.db.set({ ...record, project: "web" });
-    await expect(call(deps, PRIYA, "POST", rememberUrl, body)).rejects.toMatchObject({ code: expect.stringMatching(/TASK_NOT_FOUND|PROJECT_NOT_FOUND/) });
+    await expect(call(deps, PRIYA, "POST", rememberUrl, body)).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
     expect(learningItems(fixture.db)).toEqual([]);
   });
 

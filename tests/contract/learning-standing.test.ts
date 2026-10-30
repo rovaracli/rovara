@@ -103,6 +103,6 @@ describe("the project scope", () => {
     expect(learningSalt(base)).toBe(learningSalt({ ...base }));
     expect(learningSalt({ ...base, project: "web" })).not.toBe(learningSalt(base));
     expect(learningSalt({ ...base, projectCreatedAt: "2026-10-02T00:00:00.000Z" })).not.toBe(learningSalt(base));
-    expect(learningSalt({ ...base, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as never })).not.toBe(learningSalt(base));
+    expect(learningSalt({ ...base, orgId: "org_zzzzzzzzzzzzzzzzzzzz" })).not.toBe(learningSalt(base));
   });
 });
