@@ -2847,6 +2847,10 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
         const workspace = await deps.actions.workspace(task.workspaceId);
         const mark = await get<{ operationId?: string; taskId?: string; workspaceId?: string }>(deps, setupWatchKey(workspace.createdAt, workspace.id));
         if (mark?.operationId === receipt.firstDispatch.operationId && mark.taskId === task.taskId && mark.workspaceId === task.workspaceId) return;
+        const completedKey = operationKey(task.workspaceId, receipt.firstDispatch.operationId);
+        const completed = await get<Record<string, unknown>>(deps, completedKey);
+        if (completed?.pk === completedKey.pk && completed.sk === completedKey.sk && completed.entityType === "OPERATION" && completed.id === receipt.firstDispatch.operationId
+          && completed.kind === "prepare" && completed.status === "SUCCEEDED" && completed.workspaceId === task.workspaceId && completed.orgId === deps.orgId) return;
         throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved preparation dispatch could not be verified.");
       }
       input = { ...input, firstDispatch: true };
