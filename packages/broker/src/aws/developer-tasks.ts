@@ -1,7 +1,7 @@
 import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
-import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
+import { withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -2845,7 +2845,25 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     return;
   }
   // A task with no workflow: the system's Continue (its window is the approval's).
-  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => input.nativeRecoveryChecks ?? [], { sharedTask: task.shared === true });
+  let paidChecks = input.nativeRecoveryChecks ?? [];
+  if (task.spendingStop !== undefined) {
+    checkedTaskStopSnapshot(task.spendingStop);
+    const access = await authorizeTaskAction(deps, owner, task.taskId, "work"), agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
+    const authorize = async () => {
+      await authorizeTaskAction(deps, owner, task.taskId, "work");
+      if (deps.agentRuns === undefined) throw budgetActorRefused();
+      await requireAgentAccess(deps.agentRuns, owner, agentId, task.agent?.version === "draft" ? "edit" : "use");
+    };
+    const agentRuns = deps.agentRuns;
+    if (agentRuns === undefined) throw budgetActorRefused();
+    paidChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: owner.developerId, role: owner.orgRole }), accessFence(deps, access),
+      ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: owner.developerId, role: owner.orgRole, project: task.project }, authorize),
+      ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId, draft: task.agent?.version === "draft", frozenRecipe: true,
+        process: task.agent?.process === true, developerId: owner.developerId, role: owner.orgRole }, authorize,
+        () => agentRuns.store.listShares(deps.orgId, agentId))];
+    paidChecks = withAdmittedTaskSource(deps.tableName, task, paidChecks).items;
+  }
+  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => paidChecks, { sharedTask: task.shared === true });
   const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
   if (fresh !== undefined) {
     const view = await taskView(deps, fresh, { events: 0, details: false });
