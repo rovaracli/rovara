@@ -2130,7 +2130,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         });
         if (deps.agentRuns !== undefined && prepared !== undefined) {
           const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
-          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true }, async () => {
+          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole }, async () => {
             if (deps.agentRuns === undefined) throw budgetActorRefused();
             await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
           }));

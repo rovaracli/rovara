@@ -1,11 +1,11 @@
 // A frozen numeric stop does not freeze visibility, archive state or roster
 // membership. Hold those live sources in the accepted task transaction.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentGuardrailsSchema, AgentOwnerSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, isBuiltinAgentId, type AgentId, type OrgId } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentOwnerSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, projectMemberKey, isBuiltinAgentId, type AgentId, type OrgId, type OrgRole } from "@agentx/contracts";
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,
-  input: { orgId: OrgId; project: string; agentId: AgentId; draft: boolean; process: boolean }, authorize: () => Promise<void>): Promise<TransactItem[]> {
+  input: { orgId: OrgId; project: string; agentId: AgentId; draft: boolean; process: boolean; developerId: string; role: OrgRole }, authorize: () => Promise<void>): Promise<TransactItem[]> {
   if (isBuiltinAgentId(input.agentId)) {
     const settingsKey = builtinSettingsKey(input.orgId, input.agentId), guardrailsKey = agentGuardrailsKey(input.orgId);
     const rows = await Promise.all([settingsKey, guardrailsKey].map(async Key => {
@@ -44,13 +44,29 @@ export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "docu
       : row.entityType !== "PROJECT_AGENT" || row.project !== input.project) throw budgetActorRefused();
     return row;
   }));
+  const additional: TransactItem[] = [];
+  const owner = AgentOwnerSchema.parse(rows[0]?.owner);
+  if (input.role === "member" && owner.kind === "project" && owner.project !== input.project) {
+    // The agent may belong to a different project than the work. The task's
+    // own project fence cannot stand in for this independent visibility grant.
+    const Key = projectMemberKey(input.orgId, input.developerId, owner.project);
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    const row = response.Item;
+    if (row !== undefined && (row.pk !== Key.pk || row.sk !== Key.sk || (row.orgId !== undefined && row.orgId !== input.orgId)
+      || row.entityType !== "MEMBERSHIP" || row.ownerKey !== input.developerId || row.projectName !== owner.project)) throw budgetActorRefused();
+    const a = new Aliases(), parts = [row === undefined ? `attribute_not_exists(${a.name("pk")})` : `attribute_exists(${a.name("pk")})`];
+    if (row !== undefined) ["entityType", "ownerKey", "projectName", "role", "projectRole", "grantId"].forEach(field => parts.push(row[field] === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(row[field])}`));
+    additional.push({ ConditionCheck: { TableName: deps.tableName, Key, ConditionExpression: parts.join(" AND "), ExpressionAttributeNames: a.names,
+      ...(Object.keys(a.values).length === 0 ? {} : { ExpressionAttributeValues: a.values }),
+    } });
+  }
   // Invoke the existing use/edit policy, rather than duplicating its ownership
   // or sharing rules. These conditions only fence its observed source state.
   await authorize();
-  return sources.map(({ key, fields }, index) => {
+  return [...sources.map(({ key, fields }, index): TransactItem => {
     const row = rows[index]; if (row === undefined) throw budgetActorRefused();
     const a = new Aliases(), parts = [`attribute_exists(${a.name("pk")})`];
     fields.forEach(field => parts.push(row[field] === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(row[field])}`));
     return { ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: parts.join(" AND "), ExpressionAttributeNames: a.names, ExpressionAttributeValues: a.values } };
-  });
+  }), ...additional];
 }
