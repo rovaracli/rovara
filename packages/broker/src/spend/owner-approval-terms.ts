@@ -3,7 +3,7 @@ import { orgSettingsKey, ownerBudgetKey, type OrgId, type SpendRequestRecord } f
 import type { TransactItem } from "../agents/table-writes.js";
 import { staleApproval } from "./approval-source.js";
 const amount = z.number().finite().nonnegative();
-export const OwnerFinancialTermsSchema = z.object({ version: z.literal(1), owner: z.string().regex(/^[a-f0-9]{64}$/), month: z.string().regex(/^\d{4}-\d{2}$/),
+export const OwnerFinancialTermsSchema = z.object({ version: z.literal(1), basis: z.enum(["base", "effective"]).optional(), owner: z.string().regex(/^[a-f0-9]{64}$/), month: z.string().regex(/^\d{4}-\d{2}$/),
   totalUsd: amount, counterUsd: amount, counterVersion: z.number().int().nonnegative(), capUsd: amount, policyRevision: z.number().int().nonnegative(), carriedUsd: amount, wouldBeUsd: amount }).strict();
 export type OwnerFinancialTerms = NonNullable<SpendRequestRecord["ownerFinancialTerms"]>;
 /** One captured counter and policy, used at both creation and actual commit. */

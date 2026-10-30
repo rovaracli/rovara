@@ -1178,10 +1178,12 @@ function canonicalJson(value: unknown): string {
  * Rovara's own move left `owner` over the cap (Task 11's seam): the move already applied and counted, so an `owner_cap` request asks an org admin to confirm it.
  * Once per person while one is open; nothing when the total is within the cap.
  */
-export async function confirmOwnerMove(deps: SpendRequestDependencies, orgId: OrgId, owner: string, cause: "member_merged" | "member_removed" | "project_role_changed", totals: { totalUsd: number; capUsd: number }): Promise<SpendRequestRecord | undefined> {
+export async function confirmOwnerMove(deps: SpendRequestDependencies, orgId: OrgId, owner: string, cause: "member_merged" | "member_removed" | "project_role_changed", totals: { totalUsd: number; capUsd: number; policyRevision?: number; counterVersion?: number }): Promise<SpendRequestRecord | undefined> {
   if (totals.totalUsd <= totals.capUsd) return undefined;
+  if (totals.policyRevision === undefined || totals.counterVersion === undefined) throw staleApproval();
+  const ownerFinancialTerms: NonNullable<SpendRequestRecord["ownerFinancialTerms"]> = { version: 1, basis: "base", owner, month: iso(deps.now()).slice(0, 7), totalUsd: totals.totalUsd, counterUsd: totals.totalUsd, counterVersion: totals.counterVersion, capUsd: totals.capUsd, policyRevision: totals.policyRevision, carriedUsd: 0, wouldBeUsd: totals.totalUsd };
   const made = await createSpendRequest(deps, {
-    orgId, kind: "owner_cap", subject: `OWNER#${owner}`, amountUsd: cleanUsd(totals.totalUsd - totals.capUsd), newLimitUsd: totals.totalUsd,
+    orgId, kind: "owner_cap", subject: `OWNER#${owner}`, forOwner: owner, ownerFinancialTerms, extraItems: () => ownerFinancialChecks(deps.tableName, orgId, ownerFinancialTerms), amountUsd: cleanUsd(totals.totalUsd - totals.capUsd), newLimitUsd: totals.totalUsd,
     reason: ownerCapSentence(await nameOf(deps, owner), totals.totalUsd, totals.capUsd), requestedBy: { kind: "system" }, change: { op: "confirm_move", owner, cause },
   });
   return made.record;
@@ -1430,10 +1432,12 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
   const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, financialChecks: record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms), spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
-    try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] })); }
+    const financial = record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms);
+    try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...financial, ...checks] })); }
     catch (error) {
       const failed = failedIndexes(error);
-      if (failed !== undefined && [...failed].some(index => index >= items.length)) throw budgetActorRefused();
+      if (failed !== undefined && [...failed].some(index => index >= items.length + financial.length)) throw budgetActorRefused();
+      if (failed !== undefined && [...failed].some(index => index >= items.length)) throw staleApproval();
       throw error;
     }
     return;
@@ -1540,7 +1544,8 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     if (status === "APPROVED" && record.ownerFinancialTerms !== undefined) {
       const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
       const terms = parsed.success ? parsed.data : undefined;
-      const current = terms === undefined ? undefined : await effectiveOwnerCap(deps, record.orgId, terms.owner);
+      const base = terms?.basis === "base" ? await getItem(deps, ownerBudgetKey(record.orgId, terms.owner)) : undefined;
+      const current = terms === undefined ? undefined : terms.basis === "base" ? { totalUsd: base?.totalUsd, counterUsd: base?.totalUsd, version: base === undefined ? undefined : base.version ?? 0 } : await effectiveOwnerCap(deps, record.orgId, terms.owner);
       const policy = await readSpendPolicyWithRevision(deps, record.orgId);
       if (terms === undefined || terms.owner !== record.forOwner || terms.month !== iso(deps.now()).slice(0, 7) || current?.version !== terms.counterVersion || current.totalUsd !== terms.totalUsd || current.counterUsd !== terms.counterUsd || policy.revision !== terms.policyRevision || policy.policy.ownerAgentBudgetCapUsd !== terms.capUsd) {
         await expireOne(deps, record, "figures_changed"); throw staleApproval();

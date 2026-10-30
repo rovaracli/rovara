@@ -375,6 +375,8 @@ export async function readOwnerTotal(deps: SpendSettingsDependencies, orgId: Org
 }
 
 export interface OwnerBudgetCheck {
+  /** Original native base-counter version; absent for an unreadable/missing source. */
+  counterVersion?: number;
   /** The total now, the total with the change and the cap, in US dollars. */
   totalUsd: number;
   wouldBeUsd: number;
@@ -393,10 +395,13 @@ export interface OwnerBudgetCheck {
  * budget change is held to the effective total, top-ups included (`ownerBudgetRefusal` with `effective`, Task 33 fix round 1, I-1).
  */
 export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: { orgId: OrgId; owner: string; deltaUsd: number }): Promise<OwnerBudgetCheck> {
-  const [totalUsd, { policy, revision }] = await Promise.all([readOwnerTotal(deps, input.orgId, input.owner), readSpendPolicyWithRevision(deps, input.orgId)]);
+  const [counter, { policy, revision }] = await Promise.all([getItem(deps, ownerBudgetKey(input.orgId, input.owner)), readSpendPolicyWithRevision(deps, input.orgId)]);
+  const totalUsd = typeof counter?.totalUsd === "number" && Number.isFinite(counter.totalUsd) ? counter.totalUsd : 0;
+  const version = counter?.version === undefined ? 0 : counter.version;
+  const counterVersion = counter !== undefined && Number.isInteger(version) && typeof version === "number" && version >= 0 && totalUsd >= 0 ? version : undefined;
   const capUsd = policy.ownerAgentBudgetCapUsd;
   const wouldBeUsd = cleanUsd(totalUsd + input.deltaUsd);
-  return { totalUsd, wouldBeUsd, capUsd, policyRevision: revision, ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
+  return { totalUsd, wouldBeUsd, capUsd, policyRevision: revision, ...(counterVersion === undefined ? {} : { counterVersion }), ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
 }
 
 /**
