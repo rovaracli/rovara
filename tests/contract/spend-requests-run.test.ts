@@ -677,6 +677,59 @@ describe("a merged member", () => {
     expect(t.requests()[0]!.approverIds).toEqual([ADA.developerId]);
     expect(t.requests()[0]).toMatchObject({ movedBy: "system" });
   });
+
+  // Member removal (v1.1), rule 5: the leaver's own requests stay theirs, and only the approvers move.
+  it("a removal keeps requestedBy as the leaver and moves only who may decide (so the successor is never the asker)", async () => {
+    const t = await setup();
+    t.grantRole(OMAR, "contributor");
+    const task = await t.plainTask(OMAR);
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
+    await t.pauseAndEnd(task);
+    const request = t.requests()[0]!;
+    // The leaver both asked and was named to decide.
+    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [CARL.developerId] } as unknown as Record<string, unknown>);
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: ADA.developerId });
+    expect(t.requests()[0]).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [ADA.developerId], status: "PENDING" });
+  });
+
+  it("a removal leaves a request the leaver asked for alone when it names someone else to decide it", async () => {
+    const t = await setup();
+    t.grantRole(OMAR, "contributor");
+    const task = await t.plainTask(OMAR);
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
+    await t.pauseAndEnd(task);
+    const request = t.requests()[0]!;
+    t.db.set({ ...request, requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [BEN.developerId] } as unknown as Record<string, unknown>);
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: ADA.developerId });
+    const after = t.requests()[0]!;
+    expect(after).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, approverIds: [BEN.developerId], status: "PENDING" });
+    expect((after as unknown as Record<string, unknown>).movedBy).toBeUndefined();
+  });
+
+  it("a successor removed between the read and the write gets nothing: the move is refused and the next run reads the successor again", async () => {
+    const t = await setup();
+    t.grantRole(OMAR, "contributor");
+    const task = await t.plainTask(OMAR);
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
+    await t.pauseAndEnd(task);
+    const request = t.requests()[0]!;
+    t.db.set({ ...request, approverIds: [CARL.developerId] } as unknown as Record<string, unknown>);
+    // The successor ADA is removed just before the move's transaction commits.
+    const realSend = t.db.send;
+    let armed = true;
+    t.db.send = async (command) => {
+      if (armed && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("moveRevision")) {
+        armed = false;
+        t.db.delete({ pk: `ORG#${TEST_ORG}`, sk: `MEMBER#${ADA.developerId}` });
+      }
+      return realSend(command);
+    };
+    await expect(onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: DEB.developerId, successorId: ADA.developerId })).rejects.toBeDefined();
+    expect(t.requests()[0]!.approverIds).toEqual([CARL.developerId]);
+    // The next run finds ADA gone and reads the successor again: the person who removed Carl, who is a member.
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: CARL.developerId, by: DEB.developerId, successorId: ADA.developerId });
+    expect(t.requests()[0]!.approverIds).toEqual([DEB.developerId]);
+  });
 });
 
 describe("the confirmation page and the routes", () => {
