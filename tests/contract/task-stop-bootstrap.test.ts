@@ -353,3 +353,31 @@ for (const invalid of ["foreign", "builtin", "extra"] as const) it(`inventory re
   await expect(taskStopBootstrap.upgradeTaskStopAgentInventoryPage({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, limit: 1, cursor })).rejects.toThrow();
   expect(reads).toBe(0);
 });
+
+it("project inheritance inventory traverses bounded native catalog pages", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  for (const project of ["alpha", "beta"]) {
+    f.db.set({ ...orgProjectCatalogKey(orgId, project), orgId, entityType: "PROJECT_CATALOG", name: project, latestRevision: 1 });
+    f.db.set({ ...projectAiKey(orgId, project), orgId, entityType: "PROJECT_AI", project, revision: 1, monthlyBudgetUsd: 50 });
+  }
+  const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopProjectInventoryPage"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("project inventory missing");
+  const invoke = fn as (deps: unknown, input: unknown) => Promise<{ examined: number; updated: number; complete: boolean; cursor?: { pk: string; sk: string } }>, deps = { documentClient: f.db, tableName: "state", now: () => now };
+  const first = await invoke(deps, { orgId, limit: 1 });
+  expect(first).toMatchObject({ examined: 1, updated: 1, complete: false, cursor: orgProjectCatalogKey(orgId, "alpha") });
+  expect(f.db.get(projectAiKey(orgId, "beta").pk, projectAiKey(orgId, "beta").sk)).not.toHaveProperty("taskStopPolicy");
+  expect(await invoke(deps, { orgId, limit: 1, cursor: first.cursor })).toMatchObject({ examined: 1, updated: 1, complete: true });
+  expect(f.db.get(projectAiKey(orgId, "beta").pk, projectAiKey(orgId, "beta").sk)).toMatchObject({ taskStopPolicy: { schemaVersion: 2, kind: "inherit" }, monthlyBudgetUsd: 50 });
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toBeUndefined();
+});
+
+it("project inheritance recognizes native legacy catalog and settings identity without invented org fields", async () => {
+  const f = fixture(), project = "payments", catalogKey = orgProjectCatalogKey(orgId, project), key = projectAiKey(orgId, project);
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  // registerProjectFor and putRevised historically do not persist orgId.
+  f.db.set({ ...catalogKey, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 });
+  f.db.set({ ...key, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50 });
+  expect(await taskStopBootstrap.upgradeTaskStopProjectInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, project })).toMatchObject({ outcome: "updated" });
+  expect(f.db.get(key.pk, key.sk)).toMatchObject({ orgId, project, monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+  expect(f.db.get(catalogKey.pk, catalogKey.sk)).toMatchObject({ orgId, name: project, latestRevision: 2 });
+});
