@@ -114,17 +114,17 @@ export async function upgradeTaskStopProjectInheritance(deps: { documentClient: 
   const keys = [orgMetaKey(orgId), projectAiKey(orgId, project), orgProjectCatalogKey(orgId, project)];
   const response = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })).length(3) }).parse(await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) })));
   const rows = response.Responses.map(entry => entry.Item), [org, resource, catalog] = rows;
-  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["closingAt", "closedAt", "revision", "latestRevision", "taskStopPolicy", "seedProvenance"]);
-  if (org?.orgId !== orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined || resource?.orgId !== orgId || resource.entityType !== "PROJECT_AI" || resource.project !== project || !Number.isSafeInteger(resource.revision) || Number(resource.revision) < 1 || catalog?.orgId !== orgId || catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== project || !Number.isSafeInteger(catalog.latestRevision) || Number(catalog.latestRevision) < 1) throw agentXError("CONFIG_INVALID", "The legacy project spending setting needs repair.");
-  if (Object.hasOwn(resource, "taskStopPolicy")) {
-    z.union([z.object({ schemaVersion: z.literal(1), stopMicrousd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(), z.object({ schemaVersion: z.literal(2), kind: z.literal("inherit") }).strict()]).parse(resource.taskStopPolicy);
-    return { outcome: "preserved" };
-  }
+  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["orgId", "project", "closingAt", "closedAt", "revision", "latestRevision", "taskStopPolicy", "seedProvenance"]);
+  if (org?.orgId !== orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined || resource === undefined || (resource.orgId !== undefined && resource.orgId !== orgId) || resource.entityType !== "PROJECT_AI" || resource.project !== project || !Number.isSafeInteger(resource.revision) || Number(resource.revision) < 1 || catalog === undefined || (catalog.orgId !== undefined && catalog.orgId !== orgId) || catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== project || !Number.isSafeInteger(catalog.latestRevision) || Number(catalog.latestRevision) < 1) throw agentXError("CONFIG_INVALID", "The legacy project spending setting needs repair.");
+  const existingPolicy = Object.hasOwn(resource, "taskStopPolicy");
+  const policy = existingPolicy ? z.union([z.object({ schemaVersion: z.literal(1), stopMicrousd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(), z.object({ schemaVersion: z.literal(2), kind: z.literal("inherit") }).strict()]).parse(resource.taskStopPolicy) : { schemaVersion: 2 as const, kind: "inherit" as const };
+  if (existingPolicy && resource.orgId === orgId && catalog.orgId === orgId) return { outcome: "preserved" };
   const at = new Date(deps.now()).toISOString(), occurrence = `task-stop-inheritance-v1#${orgId}#project#${project}`;
   const base = auditTaskStopPolicySeeded({ orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence, source: "upgrade", mode: "rovara_estimate", revision: Number(resource.revision), ceilingMicrousd: 0 });
-  const event = AuditEventInputSchema.parse({ ...base, target: { kind: "project", id: project }, facts: { mode: "inherit", source: "upgrade", revision: resource.revision, outcome: "updated" } });
-  const source = guards[1]!.ConditionCheck!;
-  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, guards[2]!, { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedPolicy = :seedPolicy, #seedProof = :seedProof", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedPolicy": "taskStopPolicy", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedPolicy": { schemaVersion: 2, kind: "inherit" }, ":seedProof": { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
+  const event = AuditEventInputSchema.parse({ ...base, target: { kind: "project", id: project }, facts: { mode: policy.schemaVersion === 1 ? "limited" : "inherit", source: "upgrade", revision: resource.revision, outcome: "updated" } });
+  const source = guards[1]!.ConditionCheck!, catalogSource = guards[2]!.ConditionCheck!;
+  const catalogWrite: TransactItem = catalog.orgId === orgId ? guards[2]! : { Update: { ...catalogSource, TableName: deps.tableName, Key: keys[2]!, UpdateExpression: "SET #seedOrg = :seedOrg", ExpressionAttributeNames: { ...catalogSource.ExpressionAttributeNames, "#seedOrg": "orgId" }, ExpressionAttributeValues: { ...catalogSource.ExpressionAttributeValues, ":seedOrg": orgId } } };
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, catalogWrite, { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedOrg = :seedOrg, #seedPolicy = :seedPolicy, #seedProof = :seedProof", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedOrg": "orgId", "#seedPolicy": "taskStopPolicy", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedOrg": orgId, ":seedPolicy": policy, ":seedProof": resource.seedProvenance ?? { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
   return { outcome: "updated" };
 }
 
@@ -147,6 +147,28 @@ export async function upgradeTaskStopAgentInventoryPage(deps: { documentClient: 
   let updated = 0, preserved = 0;
   for (const entry of entries) {
     const result = await upgradeTaskStopInheritance(deps, { orgId: parsed.orgId, kind: "agent", agentId: entry.agentId });
+    if (result.outcome === "updated") updated += 1; else preserved += 1;
+  }
+  return { examined: entries.length, updated, preserved, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
+}
+
+/** One bounded native project catalog page; exhaustion is never readiness. */
+export async function upgradeTaskStopProjectInventoryPage(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }, input: { orgId: OrgId; limit: number; cursor?: { pk: string; sk: string } }): Promise<{ examined: number; updated: number; preserved: number; complete: boolean; cursor?: { pk: string; sk: string } }> {
+  const parsed = z.object({ orgId: OrgIdSchema, limit: z.number().int().min(1).max(25), cursor: z.object({ pk: z.string(), sk: z.string().regex(/^PROJECT#.+$/).max(264) }).strict().optional() }).strict().parse(input);
+  const partition = orgScoped(parsed.orgId, "PROJECT_CATALOG");
+  if (parsed.cursor !== undefined && (parsed.cursor.pk !== partition)) throw agentXError("CONFIG_INVALID", "Invalid spending inventory cursor.");
+  const org = z.object({ Item: z.record(z.string(), z.unknown()).optional() }).parse(await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMetaKey(parsed.orgId), ConsistentRead: true }))).Item;
+  if (org?.orgId !== parsed.orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined) throw agentXError("CONFIG_INVALID", "The inventory company must be open.");
+  const keySchema = z.object({ pk: z.literal(partition), sk: z.string().regex(/^PROJECT#.+$/).max(264) }).strict();
+  const page = z.object({ Items: z.array(z.record(z.string(), z.unknown())).max(parsed.limit).optional(), LastEvaluatedKey: keySchema.optional() }).parse(await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": partition }, ConsistentRead: true, Limit: parsed.limit, ...(parsed.cursor === undefined ? {} : { ExclusiveStartKey: parsed.cursor }) })));
+  const entries = (page.Items ?? []).map(row => {
+    const entry = z.object({ pk: z.literal(partition), sk: z.string(), entityType: z.literal("PROJECT_CATALOG"), name: z.string().min(1).max(256), latestRevision: z.number().int().positive() }).parse(row);
+    if (entry.sk !== `PROJECT#${entry.name}` || (row.orgId !== undefined && row.orgId !== parsed.orgId)) throw agentXError("CONFIG_INVALID", "The project inventory needs repair.");
+    return entry;
+  });
+  let updated = 0, preserved = 0;
+  for (const entry of entries) {
+    const result = await upgradeTaskStopProjectInheritance(deps, { orgId: parsed.orgId, project: entry.name });
     if (result.outcome === "updated") updated += 1; else preserved += 1;
   }
   return { examined: entries.length, updated, preserved, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
