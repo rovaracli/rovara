@@ -435,3 +435,24 @@ it("registered built-in inventory is bounded and resumes against the same regist
   }
   expect(f.db.get(policyKey.pk, policyKey.sk)).toBeUndefined();
 });
+
+for (const invalid of ["foreign_org", "stale_registry", "custom_agent"] as const) it(`built-in inventory refuses ${invalid} cursor before reads`, async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const deps = { documentClient: f.db, tableName: "state", now: () => now };
+  const first = await taskStopBootstrap.upgradeTaskStopBuiltinInventoryPage(deps, { orgId, limit: 1 }); expect(first.cursor).toBeDefined();
+  const otherOrg = "org_bbbbbbbbbbbbbbbbbbbb"; f.db.set({ ...orgMetaKey(otherOrg), orgId: otherOrg, entityType: "ORG" });
+  const cursor = { ...first.cursor!, ...(invalid === "stale_registry" ? { registryDigest: "0".repeat(64) } : invalid === "custom_agent" ? { agentId: "agt_aaaaaaaaaaaaaaaaaaaa" } : {}) };
+  const send = f.db.send.bind(f.db); let reads = 0; f.db.send = async command => { reads += 1; return send(command); };
+  await expect(taskStopBootstrap.upgradeTaskStopBuiltinInventoryPage(deps, { orgId: invalid === "foreign_org" ? otherOrg : orgId, limit: 1, cursor })).rejects.toThrow();
+  expect(reads).toBe(0);
+});
+it("a repaired built-in inventory replay preserves earlier committed metadata", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const badKey = builtinSettingsKey(orgId, BUILTIN_AGENT_IDS[1]); f.db.set({ ...badKey, entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 999999 });
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, limit: 6 };
+  await expect(taskStopBootstrap.upgradeTaskStopBuiltinInventoryPage(deps, input)).rejects.toThrow();
+  const key = builtinSettingsKey(orgId, BUILTIN_AGENT_IDS[0]), first = f.db.get(key.pk, key.sk); expect(first).toMatchObject({ stopKind: "inherit" });
+  f.db.set({ ...badKey, entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 1 });
+  expect(await taskStopBootstrap.upgradeTaskStopBuiltinInventoryPage(deps, input)).toMatchObject({ examined: 6, updated: 5, preserved: 1, complete: true });
+  expect(f.db.get(key.pk, key.sk)).toEqual(first);
+});
