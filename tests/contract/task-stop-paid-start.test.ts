@@ -304,6 +304,7 @@ async function continueWindow() {
 it("Continue opens a newly captured exact window and commits its receipt with the operation", async () => {
   const f = await continueWindow(), reply = await f.continue(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 0.5, spendingStop: { effectiveStopMicrousd: 500_000 }, budgetBaselineUsd: 0 });
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ spendingAdmission: { requestId: f.request.requestId, actorId: MAYA.developerId } });
   expect(f.t.db.get(f.receipt)).toMatchObject({ entityType: "SPENDING_ADMISSION", orgId: TEST_ORG, workKind: "task-window", workId: f.task.taskId, requestId: f.request.requestId, spendingStop: { effectiveStopMicrousd: 500_000 } });
 });
 it("Continue refuses a missing enrolled policy without adding an operation or changing the old cap", async () => {
@@ -473,6 +474,7 @@ for (const refusal of ["missing", "zero"] as const) it(`Continue-as-task refuses
 
 it("Continue-as-task records its immutable window in the payer transition transaction", async () => {
   const f = await pausedTestTransition(); expect((await f.transition()).status).toBe(200);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ spendingAdmission: { requestId: f.request.requestId, actorId: MAYA.developerId } });
   const key = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` };
   expect(f.t.db.get(key)).toMatchObject({ entityType: "SPENDING_ADMISSION", workKind: "task-window", workId: f.task.taskId, requestId: f.request.requestId, spendingStop: { effectiveStopMicrousd: 500_000 } });
   const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
@@ -864,6 +866,7 @@ it("an allowed agent run-limit approval replaces the previous window binding and
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
   expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({
     entityType: "SPENDING_ADMISSION", workKind: "task-window", workId: f.task.taskId, spendRequestId: request.spendRequestId, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
 });
