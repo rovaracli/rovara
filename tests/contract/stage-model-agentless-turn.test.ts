@@ -206,3 +206,30 @@ it("uses the canonical merged identity at admission and runtime fallback",async(
  expect(result.status,JSON.stringify(result.body)).toBe(200);
  expect(h.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(1);
 });
+
+for(const variant of ["allowed","viewer","binding-race","policy-race","viewer-race"] as const)it(`channel-only Slack thread sender: ${variant}`,async()=>{
+ const viewer=variant==="viewer";
+ const {developerIdForSlackUser}=await import("../../packages/broker/src/aws/admin-actions.js");const {seedMembership}=await import("../support/developer-task-broker.js");const {projectMemberKey}=await import("@agentx/contracts");
+ const user="U0123456789",actor=developerIdForSlackUser(user);
+ const developer={issuer:"https://cell.example/v1/auth",env:"staging",slackTeamId:SLACK_TEAM,signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>({ok:true as const,memberOf:[SLACK_CHANNEL]})};
+ const h=createAuditedSlackBroker({developer});await registerSlackProject(h.handler);seedMembership(h.db,actor,{orgId:TEST_ORG,role:"member"});h.db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",slackUserId:user,revoked:false});
+ const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000009`,workspace=await ensureWorkspace(h.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
+  if(viewer)h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});
+const conversation=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
+ if(variant.endsWith("race")) {const original=h.db.send.bind(h.db);h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"&&JSON.stringify(command).includes("modelTurnPin")){h.db.send=original;if(variant==="binding-race"){const {slackBindingKey}=await import("@agentx/contracts");const key=slackBindingKey(TEST_ORG,SLACK_TEAM,SLACK_CHANNEL);h.db.set({...h.db.get(key)!,updatedAt:"2026-10-30T20:00:00Z"});}else if(variant==="viewer-race"){h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});}else{const {projectRevisionKey}=await import("@agentx/contracts");const key=projectRevisionKey(TEST_ORG,"payments",1),row=h.db.get(key)!;h.db.set({...row,definition:{...(row.definition as object),developerTasks:{enabled:true,channelMembersMayUse:false}}});}}return original(command);};}
+ const result=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Channel work"});
+ if(variant.endsWith("race")){expect(result.status).not.toBe(202);expect(h.db.find(row=>row.entityType==="OPERATION"&&row.modelTurnPin!==undefined)).toHaveLength(0);}else expect(result.status,JSON.stringify(result.body)).toBe(viewer?403:202);
+});
+it("starts a channel-only developer's first task without a native project grant",async()=>{
+ const {createDeveloperTaskBroker,MAYA}=await import("../support/developer-task-broker.js");const h=await createDeveloperTaskBroker();
+ const result=await h.dev(MAYA,"POST","/v1/dev/tasks",{requestId:randomUUID(),project:"payments",instructions:"Fix",client:"claude-code"});expect(result.status).toBe(200);
+ const task=h.db.get(`DEVTASK#${(result.body.task as {taskId:string}).taskId}`,"META")!,workspaceId=String(task.workspaceId);const active=String(h.db.get(`WORKSPACE#${workspaceId}`,"META")!.activeOperationId);await h.finish(workspaceId,active,"SUCCEEDED");
+ const operation=String(h.db.get(`WORKSPACE#${workspaceId}`,"META")!.activeOperationId);expect(h.db.find(row=>row.entityType==="OUTBOX"&&row.operationId===operation)).toHaveLength(1);
+});
+
+it("uses and fences the real legacy task identity at turn fallback",async()=>{
+ const h=await runtimeTurnFixture(),taskId=randomUUID();const {taskKey,taskPointerKey}=await import("../../packages/broker/src/developer/task-records.js");
+ h.db.set({...taskPointerKey(h.workspaceId),taskId});h.db.set({...taskKey(taskId),taskId,orgId:TEST_ORG,workspaceId:h.workspaceId,project:"payments"});
+ const original=h.db.send.bind(h.db);let fenced=false;h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"){const input=command.input as {TransactItems?:Array<{ConditionCheck?:{Key?:{pk?:string}}}>};fenced=input.TransactItems?.some(item=>item.ConditionCheck?.Key?.pk===`DEVTASK#${taskId}`)??false;}return original(command);};
+ const response=await call(h.handler,{method:"POST",path:h.path,headers:{"x-agentx-callback-capability":h.invocation.callbackCapability},body:h.body});expect(response.status,JSON.stringify(response.body)).toBe(200);expect(fenced).toBe(true);
+});

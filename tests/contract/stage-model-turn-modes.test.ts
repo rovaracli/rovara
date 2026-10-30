@@ -42,3 +42,9 @@ for(const mode of ["REVIEW","PLAN_CRITIQUE"] as const)for(const same of [false,t
  if(same)await expect(action).rejects.toMatchObject({code:"LOCK_UNSATISFIABLE"});
  else {const result=await action;const operation=h.db.get(`WORKSPACE#${workspaceId}`,`OPERATION#${result.operation.id}`)!;expect(operation).toMatchObject({model:f.review,modelPolicy:{stage:mode==="REVIEW"?"code_review":"plan_check"}});}
 });
+
+it("returns a non-retryable structured refusal for split company review locks",async()=>{
+ const f=fixture();const key={pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"},row=f.w.db.get(key)!;
+ f.w.db.set({...row,stepOverrides:{...(row.stepOverrides as object),security_review:{model:f.build,thinkingLevel:null,locked:true}}});
+ await expect(prepareTurnModelPolicy(f.deps,{orgId:ORG_A,project:"web",actorDeveloperId:MAX,workflowMode:"REVIEW",priorModels:{build:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us").at(-1)!}}})).rejects.toMatchObject({code:"LOCK_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});
+});

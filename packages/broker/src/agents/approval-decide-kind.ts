@@ -193,7 +193,7 @@ function outcomeOf(record: AnyApprovalRecord | undefined, decision: "approve" | 
   }
   switch (record?.status) {
     case "APPROVED_FAILED":
-      return { title: "Approved, but it did not go through", message: shownText(record.failure ?? "Rovara could not carry it out.", 400) };
+      return { title: "Approved, but it did not go through", message: shownText(record.failure ?? "Rovara could not carry it out.", 400),...(record.modelRefusal===undefined?{}:{refusal:record.modelRefusal}) };
     case "APPROVED_DONE": return { message: record.kind === "write" ? "Approved. The action ran." : "Approved. The change was applied." };
     case "APPROVED": return { message: "Approved. The run will go on." };
     default: return { message: "Approved. Rovara is finishing it and will record the result." };

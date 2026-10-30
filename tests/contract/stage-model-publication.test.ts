@@ -162,11 +162,33 @@ it("returns a structured resolver refusal when an approved process cannot apply"
  Object.assign(w.deps,{modelRouting:{sources:{read:async()=>({sources:[],order:[],credentials:[],removing:[],revision:0})}}});
  const request={requestId:randomUUID(),decision:"APPROVE" as const};
  const result=await decideApproval(w.deps,{...w.caller(OLA),orgRole:"admin"},w.approvalIdOf(waiting.confirmUrl),request);
- expect(result).toMatchObject({status:"APPROVED_FAILED",refusal:{reason:"MODEL_NOT_VERIFIED",fixHref:"/app/admin/models/sources"}});
+ expect(result).toMatchObject({status:"APPROVED_FAILED",refusal:{code:"MODEL_NOT_VERIFIED",stage:"understand",reason:"MODEL_NOT_VERIFIED",fixHref:"/app/admin/models/sources"}});
  const {getAnyApproval,expireApprovals}=await import("../../packages/broker/src/agents/approvals.js");
  const approval=await getAnyApproval(w.deps,ORG_A,w.approvalIdOf(waiting.confirmUrl));
- expect(approval).toMatchObject({status:"APPROVED_FAILED",failure:"understand: MODEL_NOT_VERIFIED: Review How we work."});
+ expect(approval).toMatchObject({status:"APPROVED_FAILED",modelRefusal:{code:"MODEL_NOT_VERIFIED",reason:"MODEL_NOT_VERIFIED",stage:"understand",fixHref:"/app/admin/models/sources"},failure:"understand: MODEL_NOT_VERIFIED: Review How we work."});
  w.clock.now+=60*60*1000;expect((await expireApprovals(w.deps,w.clock.now)).redriven).toBe(0);
  expect(await decideApproval(w.deps,{...w.caller(OLA),orgRole:"admin"},w.approvalIdOf(waiting.confirmUrl),request)).toEqual(result);
  expect(await w.store.getVersion(ORG_A,agent.agentId,1)).toBeUndefined();
+});
+
+for(const changed of [false,true])it(`pointer wrapper ${changed?"refuses changed":"permits unchanged"} locked stage choice`,async()=>{
+ const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const {recipeDigest}=await import("@agentx/contracts");
+ const w=fixture(),ids=bedrockClaudeModelIds("us"),model={provider:"amazon-bedrock",modelId:ids[0]!},lock={provider:"amazon-bedrock",modelId:ids.at(-1)!};
+ let agent=await w.store.create({orgId:ORG_A,name:"web pointer lock",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{build:{model}}},purpose:"process",createdBy:MAX});
+ await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(await resolveRecipe(w.deps,ORG_A,agent.agentId,"draft")),by:MAX});agent=(await w.store.get(ORG_A,agent.agentId))!;
+ w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:ORG_A,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:lock,thinkingLevel:null,locked:true}}});
+ const {projectPlaybookKey}=await import("@agentx/contracts");w.db.set({...projectPlaybookKey(ORG_A,"web"),revision:1,defaultProcess:{kind:"project_process",agentId:agent.agentId}});
+ const overlay={steps:{build:{model:changed?lock:model}}};const {applyOverlay}=await import("../../packages/contracts/src/agent-recipe-node.js");
+ const recipe=applyOverlay(await resolveRecipe(w.deps,ORG_A,agent.agentId,1),overlay,{agentId:agent.agentId,name:agent.name,version:1,builtin:false,process:true});
+ const action=assertProcessModelsResolvable(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{overlay},recipe);
+ if(changed)await expect(action).rejects.toMatchObject({code:"STAGE_LOCKED",stage:"build",fixHref:"/app/admin/how-we-work"});else expect((await action).modelContext.companyRevision).toBe(1);
+});
+
+it("compares a pointer target with the active process rather than its own published version",async()=>{
+ const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const {recipeDigest}=await import("@agentx/contracts");
+ const w=fixture(),model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
+ let target=await w.store.create({orgId:ORG_A,name:"web pointer target",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{build:{model}}},purpose:"process",createdBy:MAX});
+ const recipe=await resolveRecipe(w.deps,ORG_A,target.agentId,"draft");await w.store.publish({orgId:ORG_A,agentId:target.agentId,expectedDraftRevision:target.draftRevision,digest:recipeDigest(recipe),by:MAX});target=(await w.store.get(ORG_A,target.agentId))!;
+ w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:ORG_A,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model,thinkingLevel:null,locked:true}}});
+ await expect(assertProcessModelsResolvable(w.deps,{...w.caller(MAX),orgRole:"member"},target,{overlay:{steps:{build:{model}}}},recipe)).rejects.toMatchObject({code:"STAGE_LOCKED",stage:"build"});
 });

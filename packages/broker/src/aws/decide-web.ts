@@ -87,7 +87,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     try {
       const outcome = await kind.decide(target, decision, authority.proof);
       end = "decided";
-      return resultPage(outcome.title ?? (decision === "approve" ? "Approved" : "Declined"), outcome.message);
+      return resultPage(outcome.title ?? (decision === "approve" ? "Approved" : "Declined"), outcome.message,outcome.refusal?.fixHref);
     } catch (error) {
       end = endOfFailure(error);
       if (error instanceof AgentXError) return refusedPage(error.statusCode >= 500 ? 503 : error.statusCode === 403 || error.statusCode === 404 ? error.statusCode : 409, "Nothing was changed", wordsOf(error));

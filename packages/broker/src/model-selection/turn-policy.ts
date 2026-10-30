@@ -39,11 +39,11 @@ export async function prepareTurnModelPolicy(deps:TaskStageLiveDependencies&{sto
  }
  if(context.decision.kind!=="resolved")throw unavailable();
  const decision=context.decision;
- if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(decision.model)||value.decision.sourceId!==decision.sourceId||value.decision.thinkingLevel!==decision.thinkingLevel))throw unavailable();
+ if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(decision.model)||value.decision.sourceId!==decision.sourceId||value.decision.thinkingLevel!==decision.thinkingLevel))throw new ProcessModelRefusal("LOCK_UNSATISFIABLE","code_review","/app/admin/how-we-work");
  const policyChecks=taskModelPolicyAdmissionChecks(deps.tableName,pin);
  const checks=mergeProcessModelAuthorityChecks([contexts.flatMap(value=>value.checks).filter(item=>!policyChecks.some(other=>JSON.stringify(other.ConditionCheck?.Key)===JSON.stringify(item.ConditionCheck?.Key))),policyChecks]);
  const frozen:TurnModelPin={version:1,workflowMode:input.workflowMode,actorDeveloperId:input.actorDeveloperId,agentId,recipe,digest,pin,...(input.payerDeveloperId===undefined?{}:{payerDeveloperId:input.payerDeveloperId})};
- return {frozen,checks,stepName:mapping.stepKind,decision:context.decision,binding:{version:1 as const,stage:context.stage,companyRevision:pin.policy.revision,recipeDigest:digest},model:{...context.decision.model,...(context.decision.thinkingLevel===null?{}:{thinkingLevel:context.decision.thinkingLevel})}};
+ return {frozen,checks,projectRevision:context.projectRevision,stepName:mapping.stepKind,decision:context.decision,binding:{version:1 as const,stage:context.stage,companyRevision:pin.policy.revision,recipeDigest:digest},model:{...context.decision.model,...(context.decision.thinkingLevel===null?{}:{thinkingLevel:context.decision.thinkingLevel})}};
 }
 
 const TurnPin=z.object({version:z.literal(1),workflowMode:z.string().optional(),actorDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u),payerDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u).optional(),agentId:AgentIdSchema,recipe:ResolvedRecipeSchema,digest:z.string().regex(/^[a-f0-9]{64}$/u),pin:z.unknown()}).strict();

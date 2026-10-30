@@ -1,3 +1,4 @@
+import {ProcessModelRefusal} from "./process-refusal.js";
 import {approvedProjectModel,stageChoiceOf} from "./stage-inputs.js";
 // Current server-owned process/source snapshot for G3. Read-only; no agent/list or provider fanout.
 import { GetCommand,QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -78,7 +79,7 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
   const group=STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))!;
   const configured=group.map(member=>policy.stepOverrides[member]).filter(row=>row!==undefined);
   const company=configured[0];
-  if(configured.some(row=>JSON.stringify(row)!==JSON.stringify(company))) throw unavailable();
+  if(configured.some(row=>JSON.stringify(row)!==JSON.stringify(company))) throw new ProcessModelRefusal("LOCK_UNSATISFIABLE",stage,"/app/admin/how-we-work");
   for(const choice of [own,inherited,company]){add(choice?.model);add(choice?.fallbackModel);}
   const projectSelection=selected?.success?selected.data:undefined;add(projectSelection);add(definition.data.models?.default);
   const defaults=inherited===undefined&&company===undefined?undefined:{...inherited,...company};

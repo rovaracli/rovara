@@ -6417,11 +6417,11 @@ async function taskOperationParts(
     if(turnActor===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
     const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
     const actorDeveloperId=await followMerges(signInStore,turnActor);
-    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId});
     const payerDeveloperId=planOwner===undefined?undefined:await followMerges(signInStore,planOwner);
     const referenceScope={orgId,workspaceId:workspace.id,conversationId:input.conversationId,taskId:task?.taskId??workspace.id};
     const turnOperations=turnMapping?.stages.some(stage=>stage==="code_review"||stage==="security_review"||stage==="plan_check")?await queryAllItems(dependencies,`WORKSPACE#${workspace.id}`,"OPERATION#"):[];
     turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,workflowMode:input.workflowMode??"IMPLEMENT",priorModels:taskStageReferences(turnOperations,referenceScope),...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
+    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId,projectRevision:turnPolicy.projectRevision});
     turnPolicy.checks.push(...actorChecks,...taskStageReferenceChecks(dependencies.tableName,turnOperations,referenceScope,turnPolicy.binding.stage));
   }
   if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"&&turnPolicy===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");

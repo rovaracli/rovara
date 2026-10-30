@@ -1,4 +1,6 @@
 import {mergeProcessModelAuthorityChecks} from "./authority.js";
+import {taskKey,taskPointerKey} from "../developer/task-records.js";
+import type {DeveloperApiConfiguration} from "../aws/developer-routes.js";
 import {queryAllItems} from "../aws/admin-reads.js";
 import {taskStageReferences,taskStageReferenceChecks} from "./task-references.js";
 import {readTurnActorChecks} from "./turn-authority.js";
@@ -16,7 +18,7 @@ import type {TaskModelAuthorizationDependencies} from "./authorize-fallback.js";
 import type {TransactItem} from "../agents/table-writes.js";
 const refused=()=>agentXError("MODEL_NOT_ALLOWED","The turn's pinned stage model cannot use this fallback. Check How we work.");
 async function read(deps:TaskModelAuthorizationDependencies,Key:{pk:string;sk:string}) {return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}
-export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDependencies,input:{orgId:OrgId;workspaceId:string;operationId:string;fence:number;verifiedClaims:CallbackClaims;request:unknown}) {
+export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDependencies&{developer?:DeveloperApiConfiguration},input:{orgId:OrgId;workspaceId:string;operationId:string;fence:number;verifiedClaims:CallbackClaims;request:unknown}) {
  const request=TaskModelFallbackRequestSchema.parse(input.request),claims=input.verifiedClaims;
  if(!claims.actions.includes("model-fallback")||claims.expiresAt<=Math.floor(deps.now()/1000)||claims.workspaceId!==input.workspaceId||claims.operationId!==input.operationId||claims.fence!==input.fence||canonicalJson(claims.modelPolicy)!==canonicalJson(request.binding))throw refused();
  const [operation,workspace]=await Promise.all([read(deps,operationKey(input.workspaceId,input.operationId)),read(deps,{pk:`WORKSPACE#${input.workspaceId}`,sk:"META"})]);
@@ -25,20 +27,26 @@ export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDepe
  const frozen=parseTurnModelPin(operation.modelTurnPin,input.orgId,workspace.projectName);
  const mode=typeof operation.workflowMode==="string"?operation.workflowMode:"IMPLEMENT",mapping=turnStagesForMode(mode);
  if(mapping.stages[0]!==binding.data.stage||frozen.workflowMode!==undefined&&frozen.workflowMode!==mode)throw refused();
- const scope={orgId:input.orgId,workspaceId:input.workspaceId,conversationId:String(operation.conversationId),taskId:input.workspaceId};
+ const pointer=await read(deps,taskPointerKey(input.workspaceId));
+ const task=typeof pointer?.taskId==="string"?await read(deps,taskKey(pointer.taskId)):undefined;
+ if(pointer!==undefined&&(typeof pointer.taskId!=="string"||task===undefined))throw refused();
+ if(task!==undefined&&(task.orgId!==input.orgId||task.workspaceId!==input.workspaceId||task.project!==workspace.projectName))throw refused();
+ const scope={orgId:input.orgId,workspaceId:input.workspaceId,conversationId:String(operation.conversationId),taskId:typeof task?.taskId==="string"?task.taskId:input.workspaceId};
  const operations=await queryAllItems(deps,`WORKSPACE#${input.workspaceId}`,"OPERATION#");
  if(binding.data.companyRevision!==frozen.pin.policy.revision||binding.data.recipeDigest!==frozen.digest)throw refused();
- const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId});
  const project=workspace.projectName;
  const contexts=await Promise.all(mapping.stages.map(stage=>loadPinnedTaskStageContext(deps,{orgId:input.orgId,project,agentId:frozen.agentId,recipe:frozen.recipe,digest:frozen.digest,pin:frozen.pin,stage,priorModels:taskStageReferences(operations,scope),deniedModels:[request.failedModel],defaultPreferred:request.failedModel,excludePersonalPlan:true,...(frozen.payerDeveloperId===undefined?{}:{payerDeveloperId:frozen.payerDeveloperId})})));
  const context=contexts[0];if(context===undefined||context.decision.kind!=="resolved")throw refused();
  const resolved=context.decision;
  if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(resolved.model)||value.decision.sourceId!==resolved.sourceId||value.decision.thinkingLevel!==resolved.thinkingLevel))throw refused();
+ const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId,projectRevision:context.projectRevision});
  const decision=context.decision,route=await routeTaskFallback(deps.routing,{orgId:input.orgId,project:workspace.projectName,agent:frozen.agentId,stage:binding.data.stage,model:decision.model,sourceId:decision.sourceId});
  const model={...decision.model,...(decision.thinkingLevel===null?{}:{thinkingLevel:decision.thinkingLevel})};
  const authorization=TaskModelFallbackAuthorizationSchema.parse({version:1,binding:binding.data,model,sourcesRevision:context.sourcesRevision,...(route===undefined?{}:{modelRoute:route.wire})});
  const requestDigest=createHash("sha256").update(canonicalJson(request)).digest("hex"),nextRoute=route===undefined?null:{sourceId:route.sourceId,alias:route.wire.alias,model:decision.model};
- const checks:TransactItem[]=[...mergeProcessModelAuthorityChecks(contexts.map(value=>value.checks)),...actorChecks,...taskStageReferenceChecks(deps.tableName,operations,scope,binding.data.stage),
+ const scopeChecks:TransactItem[]=[{ConditionCheck:{TableName:deps.tableName,Key:taskPointerKey(input.workspaceId),...(pointer===undefined?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"taskId = :task",ExpressionAttributeValues:{":task":pointer.taskId}})}}];
+ if(task!==undefined)scopeChecks.push({ConditionCheck:{TableName:deps.tableName,Key:taskKey(scope.taskId),ConditionExpression:"taskId = :task AND orgId = :org AND workspaceId = :workspace AND #turnProject = :project",ExpressionAttributeNames:{"#turnProject":"project"},ExpressionAttributeValues:{":task":scope.taskId,":org":input.orgId,":workspace":input.workspaceId,":project":workspace.projectName}}});
+ const checks:TransactItem[]=[...scopeChecks,...mergeProcessModelAuthorityChecks(contexts.map(value=>value.checks)),...actorChecks,...taskStageReferenceChecks(deps.tableName,operations,scope,binding.data.stage),
  {ConditionCheck:{TableName:deps.tableName,Key:{pk:`WORKSPACE#${input.workspaceId}`,sk:"META"},ConditionExpression:"orgId = :org AND projectName = :project AND activeOperationId = :operation AND fence = :fence AND #status = :busy",ExpressionAttributeNames:{"#status":"status"},ExpressionAttributeValues:{":org":input.orgId,":project":workspace.projectName,":operation":input.operationId,":fence":input.fence,":busy":"BUSY"}}}];
  const current=ModelSelectionSchema.safeParse(operation.model);if(!current.success)throw refused();
  const predicate="orgId = :org AND id = :operation AND workspaceId = :workspace AND fence = :fence AND #status = :status AND modelPolicy = :binding AND modelTurnPin = :pin AND #model = :before";

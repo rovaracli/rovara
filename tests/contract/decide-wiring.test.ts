@@ -1054,3 +1054,10 @@ describe("the broker's decide-inspect event (what the sign-in function asks)", (
 });
 
 void MAYA;
+
+it("shows a structured stage refusal repair link on the real confirmation result page",async()=>{
+ const {ProcessModelRefusal}=await import("../../packages/broker/src/model-selection/process-refusal.js");
+ const w=world(),id=await w.waitingChange();registerApprovalSubjectHandler("agent_publish",async()=>{throw new ProcessModelRefusal("STAGE_LOCKED","build","/app/admin/how-we-work");});
+ const response=await w.decide(id,await w.session(DANA,id));expect(response.statusCode).toBe(200);expect(response.body).toContain('href="/app/admin/how-we-work"');expect(response.body).toContain("build: STAGE_LOCKED");
+ expect(await w.record(id)).toMatchObject({status:"APPROVED_FAILED",modelRefusal:{code:"STAGE_LOCKED",reason:"STAGE_LOCKED",stage:"build",fixHref:"/app/admin/how-we-work"}});
+});
