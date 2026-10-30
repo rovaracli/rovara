@@ -11,6 +11,7 @@ export * from "./models-node.js";
 export * from "./model-sources.js";
 export * from "./model-providers.js";
 export * from "./errors.js";
+export * from "./edition.js";
 export * from "./connectors-node.js";
 export * from "./credentials.js";
 export * from "./developer.js";
