@@ -1,5 +1,5 @@
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
-import { makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
+import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
 import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -1290,14 +1290,22 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   } else if (record.kind === "max_per_run") {
     same("maxPerRunUsd", task.maxPerRunUsd);
     const stop = newLimitFor(record, approvedUsd);
+    const acceptedRunMicros = approvalStop === undefined ? usdToWholeMicrodollars(runLimitOf(task)) : taskRunLimitMicrousd(task);
+    if (acceptedRunMicros === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The accepted run limit could not be read.");
+    const acceptedRunLimit = acceptedRunMicros / 1_000_000;
+    if (approvalStop !== undefined) {
+      const cap = approvalStop.effectiveStopMicrousd / 1_000_000;
+      if (usdToWholeMicrodollars(cap) !== approvalStop.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved stop cannot be represented exactly.");
+      same("budgetUsd", task.budgetUsd); sets.push("#budgetUsd = :perRunWindow"); values[":perRunWindow"] = cap;
+    }
     names["#maxPerRunUsd"] = "maxPerRunUsd";
     values[":stop"] = stop;
     sets.push("#maxPerRunUsd = :stop");
     if (forThis) {
-      if (approvalStop !== undefined && stop > runLimitOf(task)) { sets.push("#pause = :followRunPause"); values[":followRunPause"] = { scope: { kind: "task", taskId: task.taskId }, at: iso(deps.now()) }; }
+      if (approvalStop !== undefined && stop > acceptedRunLimit) { sets.push("#pause = :followRunPause"); values[":followRunPause"] = { scope: { kind: "task", taskId: task.taskId }, at: iso(deps.now()) }; }
       else removes.push("#pause");
     }
-    if (stop > runLimitOf(task)) raisedPastRunLimit = runLimitOf(task);
+    if (stop > acceptedRunLimit) raisedPastRunLimit = acceptedRunLimit;
   }
   if (approvalStop !== undefined && !(forPlan && !planBlocked)) {
     values[":spendingStop"] = approvalStop; sets.push("spendingStop = :spendingStop");
@@ -1524,7 +1532,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
       agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
-      pathLimitMicrousd: previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+      pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
     });
     if (captured.kind === "captured") {
       const parsedTerms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { RunCheckoutSchema, PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
+import { TaskStopAdmissionInputSchema, RunCheckoutSchema, PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -8,6 +8,12 @@ import type { TransactItem } from "../agents/table-writes.js";
 const fields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop", "closedAt"] as const;
 export function taskApprovalFields(task: DeveloperTaskRecord): Record<string, unknown> {
   return Object.fromEntries(fields.flatMap(field => task[field] === undefined ? [] : [[field, task[field]]]));
+}
+/** The already accepted run basis is distinct from a smaller enforced cap. */
+export function taskRunLimitMicrousd(task: { spendingStop?: unknown; budgetUsd?: unknown }): number | undefined {
+  if (task.spendingStop === undefined) return usdToWholeMicrodollars(task.budgetUsd === undefined ? PER_TASK_BUDGET_USD : task.budgetUsd);
+  const saved = z.object({ calculationInput: TaskStopAdmissionInputSchema }).safeParse(task.spendingStop);
+  return saved.success ? saved.data.calculationInput.approvedRunLimitMicrousd ?? saved.data.calculationInput.pathLimitMicrousd : undefined;
 }
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : typeof value === "object" && value !== null
   ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
@@ -18,15 +24,15 @@ export const TaskApprovalTermsSchema = z.object({
   sourceRevision: z.string().datetime().nullable(), sourceDigest: sha,
   firstDispatch: z.object({ operationId: z.string().uuid(), checkout: z.array(RunCheckoutSchema).optional(), readOnly: z.literal(true).optional() }).strict().nullable(),
   originalFields: z.record(z.string(), z.unknown()).refine(value => Object.keys(value).every(key => fields.some(field => field === key))),
-  askedFiguresMicrousd: z.object({ budget: micros, amount: micros, maxPerRun: micros.nullable(), baseline: micros }).strict(), proposedFiguresMicrousd: z.object({ budget: micros, maxPerRun: micros.nullable(), window: z.enum(["keep", "reset"]) }).strict(),
+  askedFiguresMicrousd: z.object({ budget: micros, runLimit: micros, amount: micros, maxPerRun: micros.nullable(), baseline: micros }).strict(), proposedFiguresMicrousd: z.object({ budget: micros, runLimit: micros, maxPerRun: micros.nullable(), window: z.enum(["keep", "reset"]) }).strict(),
   countedOwner: sha.nullable(), totalsRevision: z.null(), policyDigest: sha, admissionId: z.string().min(1).max(256), operation: z.enum(["run_limit", "max_per_run", "planning"]),
 }).strict().superRefine((value, context) => {
   if (digest({ originalFields: value.originalFields, firstDispatch: value.firstDispatch }) !== value.sourceDigest) context.addIssue({ code: "custom", message: "Original source digest does not agree." });
   const fields = value.originalFields, asked = value.askedFiguresMicrousd, proposed = value.proposedFiguresMicrousd;
-  if (asked.budget !== usdToWholeMicrodollars(fields.budgetUsd === undefined ? PER_TASK_BUDGET_USD : fields.budgetUsd)
+  if (asked.runLimit !== taskRunLimitMicrousd(fields) || asked.budget !== usdToWholeMicrodollars(fields.budgetUsd === undefined ? PER_TASK_BUDGET_USD : fields.budgetUsd)
     || asked.baseline !== usdToWholeMicrodollars(fields.budgetBaselineUsd === undefined ? 0 : fields.budgetBaselineUsd)
     || asked.maxPerRun !== (fields.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(fields.maxPerRunUsd))) context.addIssue({ code: "custom", message: "Asked figures do not agree with the original source." });
-  if (value.operation === "max_per_run" ? proposed.budget !== asked.budget || proposed.maxPerRun === null || proposed.window !== "keep" : proposed.maxPerRun !== asked.maxPerRun) context.addIssue({ code: "custom", message: "The proposed figures change another spending limit." });
+  if (value.operation === "max_per_run" ? proposed.runLimit !== asked.runLimit || proposed.maxPerRun === null || proposed.budget !== Math.min(asked.runLimit, proposed.maxPerRun) || proposed.window !== "keep" : proposed.runLimit !== proposed.budget || proposed.maxPerRun !== asked.maxPerRun) context.addIssue({ code: "custom", message: "The proposed figures change another spending limit." });
 });
 export type TaskApprovalTerms = z.infer<typeof TaskApprovalTermsSchema>;
 /** Financial policy evidence excludes path/approved/request amounts, which are
@@ -36,12 +42,12 @@ export function taskApprovalPolicyDigest(snapshot: CapturedTaskStop): string {
   return digest([snapshot.sourceRevisions, input.companyDefault, input.ceilingMicrousd, input.projectStop, input.agentStop]);
 }
 export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: CapturedTaskStop, record: SpendRequestRecord): TaskApprovalTerms {
-  const originalFields = taskApprovalFields(task), firstDispatch = task.budgetPause?.firstDispatch ?? null;
+  const originalFields = taskApprovalFields(task), firstDispatch = task.budgetPause?.firstDispatch ?? null, runLimit = taskRunLimitMicrousd(task), proposed = usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd);
   return TaskApprovalTermsSchema.parse({ version: 1, sourcePresence: true, sourceKey: taskKey(task.taskId), sourceRevision: task.spendingStop?.capturedAt ?? null,
     sourceDigest: digest({ originalFields, firstDispatch }), originalFields, firstDispatch,
-    askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), amount: usdToWholeMicrodollars(record.amountUsd),
+    askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), runLimit, amount: usdToWholeMicrodollars(record.amountUsd),
       maxPerRun: task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd), baseline: usdToWholeMicrodollars(task.budgetBaselineUsd ?? 0) },
-    proposedFiguresMicrousd: { budget: usdToWholeMicrodollars(record.kind === "max_per_run" ? task.budgetUsd ?? PER_TASK_BUDGET_USD : record.newLimitUsd ?? record.amountUsd),
+    proposedFiguresMicrousd: { budget: record.kind === "max_per_run" ? Math.min(runLimit ?? NaN, proposed ?? NaN) : proposed, runLimit: record.kind === "max_per_run" ? runLimit : proposed,
       maxPerRun: record.kind === "max_per_run" ? usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd) : task.maxPerRunUsd === undefined ? null : usdToWholeMicrodollars(task.maxPerRunUsd),
       window: record.kind === "planning" || record.resume === "implement" ? "reset" : "keep" },
     countedOwner: tryEffectiveTaskOwner(task)?.developerId ?? null, totalsRevision: null, policyDigest: taskApprovalPolicyDigest(snapshot),
