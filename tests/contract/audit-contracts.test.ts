@@ -129,6 +129,7 @@ describe("the event catalog", () => {
   "member.joined",
   "member.role_changed",
   "member.removed",
+  "member.removal_completed",
   "member.left",
   "member.renamed",
   "org.closed",

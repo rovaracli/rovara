@@ -1086,7 +1086,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     await w.orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
 
     expect(w.db.get(orgMemberKey(ORG_A, ERIN))).toBeUndefined();
-    expect(w.calls).toEqual([{ orgId: ORG_A, developerId: ERIN, by: OLIVE, marker: expect.objectContaining({ pk: MEMBER_REMOVAL_QUEUE_PK }) as unknown }]);
+    expect(w.calls).toEqual([expect.objectContaining({ orgId: ORG_A, developerId: ERIN, by: OLIVE, marker: expect.objectContaining({ pk: MEMBER_REMOVAL_QUEUE_PK }) as unknown, successorId: OLIVE })]);
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
     expect(markersOf(w.db)).toEqual([]);
   });

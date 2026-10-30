@@ -196,7 +196,9 @@ describe("member.removed and member.left", () => {
     expect(removed.status).toBe(200);
 
     const [transaction, ...rest] = auditedTransactions(h.transactions);
-    expect(rest).toEqual([]);
+    // The removal's own transaction (S0) holds the member delete and the event; the one after it is the removal's finish, which writes member.removal_completed.
+    expect(rest).toHaveLength(1);
+    expect(capture.recordedBy("member.removal_completed")).toHaveLength(1);
     expect(writes(transaction!, `ORG#${TEST_ORG}`, `MEMBER#${carl.developerId}`)).toBe(true);
     const [event, ...more] = capture.recordedBy("member.removed");
     expect(more).toEqual([]);
@@ -1343,7 +1345,7 @@ describe("answers as today when the intake queue never answers (the remaining si
     expect((await settle(h.dev(MAYA, "POST", "/v1/app/org/leave", { requestId: randomUUID() }))).status).toBe(200);
     expect(h.db.get(orgMemberKey(TEST_ORG, carl.developerId))).toBeUndefined();
     expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeUndefined();
-    expect(capture.pending().map((event) => event.action).sort()).toEqual(["member.left", "member.removed"]);
+    expect(capture.pending().map((event) => event.action).sort()).toEqual(["member.left", "member.removal_completed", "member.removal_completed", "member.removed"]);
   });
 
   it("closing an org", async () => {

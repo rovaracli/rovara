@@ -26,6 +26,9 @@ interface WriteAction {
 
 /** DynamoDB's item size limit: 400 KB, where a KB is 1,024 bytes. */
 export const DYNAMODB_ITEM_MAX_BYTES = 409_600;
+/** DynamoDB's limits on one TransactWriteItems: 100 actions, 4 MB in all. */
+export const TRANSACT_MAX_ACTIONS = 100;
+export const TRANSACT_MAX_BYTES = 4 * 1024 * 1024;
 
 interface InjectedFault {
   command?: string | undefined;
@@ -258,6 +261,13 @@ export class FakeDynamoDb {
       }
       case "TransactWriteCommand": {
         const entries = input.TransactItems as Array<Record<string, Record<string, unknown>>>;
+        // DynamoDB's limits on one transaction: at most 100 actions, and 4 MB across them.
+        if (entries.length > TRANSACT_MAX_ACTIONS) {
+          throw Object.assign(new Error(`1 validation error detected: Value at 'transactItems' failed to satisfy constraint: Member must have length less than or equal to ${String(TRANSACT_MAX_ACTIONS)}`), { name: "ValidationException", $metadata: {} });
+        }
+        if (Buffer.byteLength(JSON.stringify(entries), "utf8") > TRANSACT_MAX_BYTES) {
+          throw Object.assign(new Error("Member must have size less than or equal to 4 MB"), { name: "ValidationException", $metadata: {} });
+        }
         // DynamoDB refuses a transaction that names one item twice, before any condition is evaluated.
         const named = entries.map((entry) => {
           const action = Object.values(entry)[0] as Record<string, unknown>;

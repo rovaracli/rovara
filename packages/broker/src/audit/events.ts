@@ -175,8 +175,16 @@ export function auditMemberRoleChanged(input: AuditBuilderBase & { memberId: str
 }
 
 /** `occurrence`: the request's `requestId`. */
-export function auditMemberRemoved(input: AuditBuilderBase & { memberId: string; role: string }): AuditEventInput {
-  return build("member.removed", input, { kind: "member", id: input.memberId }, { role: input.role });
+export function auditMemberRemoved(input: AuditBuilderBase & { memberId: string; role: string; removalId?: string; successorKind?: "self" | "chosen" }): AuditEventInput {
+  return build("member.removed", input, { kind: "member", id: input.memberId }, { role: input.role, removalId: input.removalId, successorKind: input.successorKind });
+}
+
+/**
+ * `occurrence`: the removal id. Written once, when the removal's last step finished (S7): how it ended and what it did. `related` is the successor and
+ * the person who removed them. Counts only; the per-item events carry the exact list.
+ */
+export function auditMemberRemovalCompleted(input: AuditBuilderBase & { memberId: string; outcome: "done" | "cancelled_rejoined"; wasRole: string; counts: Record<string, number | boolean> }): AuditEventInput {
+  return build("member.removal_completed", input, { kind: "member", id: input.memberId }, { outcome: input.outcome, wasRole: input.wasRole, ...input.counts });
 }
 
 /** `occurrence`: the request's `requestId`. */

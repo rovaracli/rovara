@@ -104,6 +104,7 @@ export * from "./workflow-publication-context.js";
 export * from "./org-node.js";
 export * from "./org-budget-node.js";
 export * from "./org-scoped-keys.js";
+export * from "./member-removal.js";
 export * from "./spend.js";
 export * from "./agent-node.js";
 export * from "./connections.js";

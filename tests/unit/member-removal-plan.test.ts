@@ -2,11 +2,11 @@
 // membership checks of one person into one action, deletes the GitHub link only when it was read (and checks it is still absent when not),
 // caps the email pointers, keeps the tombstone free of any expiry attribute and maps a refused action back to the reason it stands for.
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
 import { MEMBER_REMOVAL_EMAIL_CAP } from "../../packages/contracts/src/member-removal.js";
 import { planMemberRemoval, removalRefusal, type RemovalPlanInput } from "../../packages/broker/src/org/member-removal/plan.js";
 
-const ORG = `org_${"a".repeat(20)}` as OrgId;
+const ORG = `org_${"a".repeat(20)}`;
 const NOW = "2026-10-30T10:00:00.000Z";
 const pointer = (index: number) => `ORG_EMAIL#person${String(index)}@example.com`;
 
@@ -28,7 +28,7 @@ const base = (overrides: Partial<RemovalPlanInput> = {}): RemovalPlanInput => ({
 });
 
 const keyOf = (item: NonNullable<ReturnType<typeof planMemberRemoval>["items"][number]>): string => {
-  const action = (item.Put ?? item.Delete ?? item.Update ?? item.ConditionCheck) as { Key?: { pk: string; sk: string }; Item?: { pk: string; sk: string } };
+  const action = (item.Put ?? item.Delete ?? item.Update ?? item.ConditionCheck) as unknown as { Key?: { pk: string; sk: string }; Item?: { pk: string; sk: string } };
   const key = action.Key ?? action.Item!;
   return `${key.pk}|${key.sk}`;
 };
@@ -51,7 +51,7 @@ describe("planMemberRemoval", () => {
 
   it("checks the caller, the successor and the other owner in one action when they are one person", () => {
     const plan = planMemberRemoval(base({ leaver: { developerId: "leaver", role: "owner" }, otherOwner: { developerId: "owner" } }));
-    const checks = plan.items.filter((item) => item.ConditionCheck !== undefined);
+    const checks = plan.items.filter((item) => item.ConditionCheck !== undefined && keyOf(item) === `${orgMemberKey(ORG, "owner").pk}|${orgMemberKey(ORG, "owner").sk}`);
     expect(checks).toHaveLength(1);
     const condition = checks[0]!.ConditionCheck!;
     expect(condition.Key).toEqual(orgMemberKey(ORG, "owner"));
@@ -104,7 +104,7 @@ describe("planMemberRemoval", () => {
     const linked = planMemberRemoval(base({ github: { githubUserId: "4711" } }));
     expect(linked.layout.github).toHaveLength(2);
     const deletes = linked.layout.github.map((index) => linked.items[index]!.Delete!);
-    expect(deletes.map((d) => d.Key.pk)).toEqual([expect.stringContaining("MEMBER_GITHUB#leaver"), expect.stringContaining("GITHUB_MEMBER#4711")]);
+    expect(deletes.map((d) => String(d.Key?.["pk"]))).toEqual([expect.stringContaining("MEMBER_GITHUB#leaver"), expect.stringContaining("GITHUB_MEMBER#4711")]);
     for (const del of deletes) expect(del.ConditionExpression).toContain("developerId = :leaver");
   });
 

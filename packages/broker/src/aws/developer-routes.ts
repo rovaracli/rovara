@@ -2461,7 +2461,7 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
   const store = signInStoreOf(deps);
   const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
-  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId } });
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId }, callerRole: caller.orgRole });
   await endSessionsAfterRemoval(deps, developerId);
   const name = record?.displayName ?? "That person";
   logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
