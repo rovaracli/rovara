@@ -29,7 +29,7 @@ it("reads at most five catalog projects per page and binds cursors to actor and 
 it("sanitizes project read errors as partial unavailable rows and refuses stale policy or revoked authority",async()=>{
  const f=fixture();f.deps.loadSnapshot=async()=>{throw Error("private provider failure");};
  expect(await previewCompanyModelPolicy(f.deps,f.caller,{version:1,expectedRevision:0,stepOverrides:{}})).toMatchObject({projects:[{project:"web0",impact:"unavailable",reasonCodes:[]}]});
- await expect(previewCompanyModelPolicy(f.deps,f.caller,{version:1,expectedRevision:1,stepOverrides:{}})).rejects.toThrow("CHANGE_STALE");
+ await expect(previewCompanyModelPolicy(f.deps,f.caller,{version:1,expectedRevision:1,stepOverrides:{}})).rejects.toMatchObject({code:"POLICY_STALE",statusCode:409});
  f.db.set({...developerOrgKey(person),orgId:"org_bbbbbbbbbbbbbbbbbbbb",role:"owner"});await expect(previewCompanyModelPolicy(f.deps,f.caller,{version:1,expectedRevision:0,stepOverrides:{}})).rejects.toThrow("FORBIDDEN");
 });
 

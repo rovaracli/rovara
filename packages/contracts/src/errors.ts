@@ -30,6 +30,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "CONFIRMATION_DECLINED",
   "CONFIRMATION_EXPIRED",
   "CHANGE_STALE",
+  "POLICY_STALE",
+  "DRAFT_STALE",
   "ALREADY_IN_ORG",
   "INVITE_INVALID",
   // Lane A: fixed terminal outcomes for reviewed invite revocation.

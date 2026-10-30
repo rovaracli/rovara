@@ -18,6 +18,7 @@ it("loads a process draft through bounded discovery without using store.list",as
  w.store.list=async()=>{throw Error("unbounded list forbidden");};
  const snap=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision);
  expect(snap.process.agentId).toBe(layer.agentId);expect(snap.process.draftRevision).toBe(layer.draftRevision);
+ await expect(loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision+1)).rejects.toMatchObject({code:"DRAFT_STALE",statusCode:409});
 });
 it("does not manufacture a process draft or project on missing storage",async()=>{
  const {deps}=fixture();await expect(loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"missing")).rejects.toThrow();

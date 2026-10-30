@@ -1,3 +1,4 @@
+import { AgentXError } from "@agentx/contracts";
 import { expect, it } from "vitest";
 import { validateStageChoices, getStageModels, validateProjectModelSelection, requireSafeProjectModelSelection } from "../../packages/broker/src/model-selection/read.js";
 import type { StageModelsReadDependencies, StageModelSnapshot } from "../../packages/broker/src/model-selection/read.js";
@@ -30,7 +31,7 @@ it("never exposes draft to a reader, and distinguishes draft-stale from policy s
  const f=fixture();f.deps.projectFor=async()=>({name:"web",canEdit:false});
  await expect(getStageModels(f.deps,caller,"web",{draft:2})).rejects.toThrow("FORBIDDEN");expect(f.reads()).toBe(0);
  const g=fixture();g.snapshot.process.draftRevision=3;
- await expect(getStageModels(g.deps,caller,"web",{draft:2})).rejects.toThrow("DRAFT_STALE");
+ await expect(getStageModels(g.deps,caller,"web",{draft:2})).rejects.toMatchObject({code:"DRAFT_STALE",statusCode:409});
 });
 it("refuses misbound or unbounded server snapshots without truncation",async()=>{
  const f=fixture();f.snapshot.orgId="org_b";
@@ -170,4 +171,11 @@ it("does not accept a formatted approval id and tuple digest without a verified 
  const f=fixture(),choices={build:{model},code_review:{model}},pending=await validateStageChoices(f.deps,caller,"web",choices);
  const result=await validateStageChoices(f.deps,caller,"web",choices,{}, {approvalId:"apr_bbbbbbbbbbbbbbbbbbbb",tupleDigest:pending.approvalTupleDigest});
  expect(result).toMatchObject({ok:false,status:409});
+});
+
+it("preserves typed draft staleness from the snapshot adapter without parsing messages", async () => {
+ const f=fixture();
+ const stale=new AgentXError("DRAFT_STALE", "draft changed",409);
+ f.deps.snapshot=async()=>{throw stale;};
+ await expect(getStageModels(f.deps,caller,"web",{draft:2})).rejects.toBe(stale);
 });

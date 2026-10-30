@@ -52,7 +52,7 @@ export async function loadStageModelSnapshot(deps:StageSnapshotDependencies,call
   if(layer===undefined || layer.status!=="active" || layer.purpose!=="process" || layer.owner.kind!=="project" || layer.owner.project!==project) throw unavailable();
   agentId=layer.agentId;
   if(draftRevision!==undefined) {
-   const draft=await deps.store.getDraft(orgId,agentId);if(draft===undefined || draft.revision!==draftRevision) throw agentXError("PLAYBOOK_STALE","DRAFT_STALE: This process draft changed. Reload and try again.");
+   const draft=await deps.store.getDraft(orgId,agentId);if(draft===undefined || draft.revision!==draftRevision) throw agentXError("DRAFT_STALE","This process draft changed. Reload and try again.");
    recipe=await resolveAgent(deps.store,orgId,agentId,"draft",{draft});overlay=draft.overlay;version=undefined;
   } else {
    if(layer.currentVersion===undefined) throw unavailable();version=layer.currentVersion;

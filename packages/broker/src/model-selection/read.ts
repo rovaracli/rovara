@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {classifyStageChoiceChange} from "./classify.js";
 // Shared broker facade for stage-model reads and project draft/publish validation. No provider calls or writes.
 import { z } from "zod";
-import { agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@agentx/contracts";
+import { AgentXError, agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@agentx/contracts";
 import { resolveStageModel, stageCandidateVerified, type StageModelInput, type StageModelResult } from "./resolver.js";
 export interface StageModelCaller { orgId: string; developerId: string }
 export interface StageModelSnapshot {
@@ -42,9 +42,9 @@ async function load(deps:StageModelsReadDependencies,caller:StageModelCaller,raw
  const project=await deps.projectFor(caller,rawProject);
  if(query.data.draft!==undefined && !project.canEdit) throw agentXError("FORBIDDEN","Only a project maintainer can read model-choice drafts.");
  let snapshot:StageModelSnapshot;
- try {snapshot=await deps.snapshot(caller,project.name,query.data.draft);} catch {throw unavailable();}
+ try {snapshot=await deps.snapshot(caller,project.name,query.data.draft);} catch (error) {if(error instanceof AgentXError && (error.code==="DRAFT_STALE" || error.code==="POLICY_STALE"))throw error;throw unavailable();}
  if(snapshot.orgId!==caller.orgId || snapshot.project!==project.name || snapshot.stages.length!==7 || new Set(snapshot.stages.map(row=>row.stage)).size!==7) throw unavailable();
- if(query.data.draft!==undefined && snapshot.process.draftRevision!==query.data.draft) throw agentXError("PLAYBOOK_STALE","DRAFT_STALE: This process draft changed. Reload and try again.");
+ if(query.data.draft!==undefined && snapshot.process.draftRevision!==query.data.draft) throw agentXError("DRAFT_STALE","This process draft changed. Reload and try again.");
  for(const row of snapshot.stages) if(!STAGE_IDS.includes(row.stage) || row.orgId!==caller.orgId || row.candidates.length>23) throw unavailable();
  return {snapshot,canEdit:project.canEdit};
 }

@@ -27,7 +27,7 @@ export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvid
   if(checking!==undefined&&reference!==undefined&&canonicalModelName(checking)===canonicalModelName(reference))throw new CompanySameModelPolicyRefusal();
  }
  const current=await readModelSelectionPolicy(deps,caller.orgId);
- if(current.revision!==body.expectedRevision)throw agentXError("CHANGE_STALE","The company model policy changed. Reload and review again.");
+ if(current.revision!==body.expectedRevision)throw agentXError("POLICY_STALE","The company model policy changed. Reload and review again.");
  const guardrails=await readGuardrailsWithRevision(deps,caller.orgId);
  const models=new Map<string,ModelIdentifier>();
  for(const row of Object.values(body.stepOverrides))for(const model of [row?.model,row?.fallbackModel])if(model!==undefined)models.set(JSON.stringify([model.provider,model.modelId]),model);

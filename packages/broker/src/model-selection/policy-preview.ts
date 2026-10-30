@@ -20,7 +20,7 @@ export async function previewCompanyModelPolicy(deps:ModelPolicyPreviewDependenc
  const parsed=ModelPolicyPreviewRequestSchema.safeParse(raw);if(!parsed.success)throw invalid();const body=parsed.data;
  await requireCompanyModelPolicyAuthority(deps,caller);
  const policy=await readModelSelectionPolicy(deps,caller.orgId);
- if(policy.revision!==body.expectedRevision)throw agentXError("CHANGE_STALE","The company model policy changed. Reload and try again.");
+ if(policy.revision!==body.expectedRevision)throw agentXError("POLICY_STALE","The company model policy changed. Reload and try again.");
  const proposalDigest=createHash("sha256").update(canonicalJson(body.stepOverrides)).digest("hex");
  const pk=orgProjectCatalogPk(caller.orgId),context=`model-policy-preview:v1:${pk}:${policy.revision}:${proposalDigest}`;
  try{cursorKeyOf(deps);}catch{throw unavailable();}
@@ -44,7 +44,7 @@ export async function previewCompanyModelPolicy(deps:ModelPolicyPreviewDependenc
  }
  let nextCursor:string|undefined;
  if(page.LastEvaluatedKey!==undefined){const key=page.LastEvaluatedKey;if(key.pk!==pk||typeof key.sk!=="string"||!CursorAfter.safeParse(key.sk).success)throw unavailable();nextCursor=sealCursor(deps,caller,context,key.sk);}
- const current=await readModelSelectionPolicy(deps,caller.orgId);if(current.revision!==policy.revision)throw agentXError("CHANGE_STALE","The company model policy changed. Reload and try again.");
+ const current=await readModelSelectionPolicy(deps,caller.orgId);if(current.revision!==policy.revision)throw agentXError("POLICY_STALE","The company model policy changed. Reload and try again.");
  await requireCompanyModelPolicyAuthority(deps,caller);
  return ModelPolicyPreviewResponseSchema.parse({version:1,checkedAt:new Date(deps.now()).toISOString(),policyRevision:policy.revision,mayBeIncomplete:true,projects,...(nextCursor===undefined?{}:{nextCursor})});
 }

@@ -52,3 +52,8 @@ it("refuses company same-as-Build reviewer defaults and locks with fixed repair 
   await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:0,stepOverrides:{build:choice,code_review:choice,security_review:choice}})).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED",reason:"DIFFERENT_FROM_UNSATISFIABLE",fixHref:"/app/admin/how-we-work"});
  }
 });
+
+it("returns typed POLICY_STALE before company policy mutation",async()=>{
+ const f=fixture();
+ await expect(prepareCompanyModelPolicy(f.deps,{orgId,developerId},{version:1,requestId,expectedRevision:1,stepOverrides:{}})).rejects.toMatchObject({code:"POLICY_STALE",statusCode:409});
+});
