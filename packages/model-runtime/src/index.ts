@@ -102,6 +102,9 @@ export interface ChatGptFallback {
   onFallback(reason: ChatGptFallbackReason): void;
 }
 
+// Shared by every runtime/session using the same task fallback.
+const fallbackAuthorizations = new WeakMap<ChatGptFallback, Promise<void>>();
+
 /** A ChatGPT task's plan: its token, and where its requests go once it cannot serve them. */
 interface ChatGptPlan { apiKey: () => Promise<string>; fallback?: ChatGptFallback }
 
@@ -356,9 +359,16 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
   /** The rest of this request, and every later one, on the fallback; told once, with why. */
   const fallBack = async (fallback: ChatGptFallback, reason: ChatGptFallbackReason) => {
     if (fallback.reason === undefined) {
-      await fallback.authorize?.(reason);
-      fallback.reason = reason;
-      try { fallback.onFallback(reason); } catch { /* Reporting must not fail the request it is about. */ }
+      let authorization = fallbackAuthorizations.get(fallback);
+      if (authorization === undefined) {
+        authorization = (async () => {
+          await fallback.authorize?.(reason);
+          fallback.reason = reason;
+          try { fallback.onFallback(reason); } catch { /* Reporting must not fail the request it is about. */ }
+        })();
+        fallbackAuthorizations.set(fallback, authorization);
+      }
+      await authorization;
     }
     const rest = { ...options };
     delete rest.apiKey;

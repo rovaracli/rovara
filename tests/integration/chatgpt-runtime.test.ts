@@ -157,3 +157,18 @@ it("C53 waits for fallback authorization before starting the replacement request
  await vi.waitFor(()=>expect(authorize).toHaveBeenCalledTimes(1));expect(h.defaultCalls).not.toHaveBeenCalled();expect(h.fallback.reason).toBeUndefined();
  allow();expect(await answer).toMatchObject({provider:"anthropic",stopReason:"stop"});expect(h.onFallback).toHaveBeenCalledTimes(1);
 });
+
+it("shares fallback authorization across simultaneous requests", async () => {
+  const permits: Array<() => void> = [];
+  const authorize = vi.fn(() => new Promise<void>(resolve => { permits.push(resolve); }));
+  const h = await planWithFallback([limited], { authorizeFallback: authorize });
+  const answers = [h.ask(), h.ask()];
+  await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const calls = authorize.mock.calls.length;
+  permits.forEach(resolve => resolve());
+  await Promise.all(answers);
+  expect(calls).toBe(1);
+  expect(h.onFallback).toHaveBeenCalledTimes(1);
+  expect(h.defaultCalls).toHaveBeenCalledTimes(2);
+});
