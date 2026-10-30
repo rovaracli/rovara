@@ -40,7 +40,7 @@ it("retains a recipe model beneath partial project and company settings",async()
  const layer=await w.store.create({orgId:ORG_A,name:"web process",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{thinkingLevel:"low"}}},purpose:"process",createdBy:MAX});
  w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",orgId:ORG_A,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{plan:{thinkingLevel:"high",locked:false}}});
  const snap=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",layer.draftRevision);
- for(const stage of ["plan","understand"]) expect(snap.stages.find(row=>row.stage===stage)).toMatchObject({projectChoice:{thinkingLevel:"low"},companyDefault:{model,thinkingLevel:"high"}});
+ for(const stage of ["plan","understand"]) expect(snap.stages.find(row=>row.stage===stage)).toMatchObject({projectChoice:{thinkingLevel:"low"},companyDefault:{model,thinkingLevel:"high"},companyDefaultOrigin:"recipe"});
 });
 
 it("honors recipe null clears without relaxing a company lock",async()=>{

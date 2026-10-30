@@ -29,6 +29,8 @@ export interface StageModelInput {
   companyLock?: StageModelChoice | undefined;
   projectChoice?: StageModelChoice | undefined;
   companyDefault?: StageModelChoice | undefined;
+  /** Provenance of a model inherited below partial company metadata. Server-only. */
+  companyDefaultOrigin?: "recipe" | undefined;
   projectSelection?: ModelIdentifier | undefined;
   projectDefault?: ModelIdentifier | undefined;
   builtinDefault?: ModelIdentifier | undefined;
@@ -44,7 +46,7 @@ export interface StageModelInput {
   /** Only an approval validated against the task's frozen recipe and pinned policy may populate this input. */
   sameModelApproval?: { model: ModelIdentifier; referenceModel: ModelIdentifier } | undefined;
 }
-export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "APPROVED_SAME_MODEL";
+export type StageDecisionReason = "COMPANY_LOCK" | "PROJECT_CHOICE" | "COMPANY_DEFAULT" | "PROJECT_SELECTION" | "PROJECT_DEFAULT" | "BUILTIN_DEFAULT" | "PERSONAL_PLAN_DEFAULT" | "RECIPE_DEFAULT" | "APPROVED_SAME_MODEL";
 export type StageModelResult = { kind: "refusal"; code: StageModelRefusalCode } | {
   kind: "resolved"; model: ModelIdentifier; sourceId: string; thinkingLevel: ThinkingLevel | null;
   reason: StageDecisionReason; locked: boolean; fallback?: ModelFallback;
@@ -95,9 +97,9 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   let explicit = false;
   if (input.companyLock !== undefined) { choice = input.companyLock; reason = "COMPANY_LOCK"; explicit = true; }
   else if (input.projectChoice?.model !== undefined) { choice = input.projectChoice; reason = "PROJECT_CHOICE"; explicit = true; }
-  else if (input.companyDefault?.model !== undefined) { choice = input.companyDefault; reason = "COMPANY_DEFAULT"; explicit = true; }
+  else if (input.companyDefault?.model !== undefined) { choice = input.companyDefault; reason = input.companyDefaultOrigin === "recipe" ? "RECIPE_DEFAULT" : "COMPANY_DEFAULT"; explicit = true; }
   else if (!checking(input.stage) && input.projectSelection !== undefined) { choice = { model: input.projectSelection }; reason = "PROJECT_SELECTION"; }
-  else if (!checking(input.stage) && input.defaultPreferred !== undefined) choice = { model: input.defaultPreferred };
+  else if (!checking(input.stage) && input.defaultPreferred !== undefined) { choice = { model: input.defaultPreferred }; reason = "PERSONAL_PLAN_DEFAULT"; }
   else if (!checking(input.stage) && input.projectDefault !== undefined) { choice = { model: input.projectDefault }; reason = "PROJECT_DEFAULT"; }
   else if (!checking(input.stage) && input.builtinDefault !== undefined) choice = { model: input.builtinDefault };
 

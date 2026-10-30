@@ -179,3 +179,18 @@ it("preserves typed draft staleness from the snapshot adapter without parsing me
  f.deps.snapshot=async()=>{throw stale;};
  await expect(getStageModels(f.deps,caller,"web",{draft:2})).rejects.toBe(stale);
 });
+
+it("attributes the payer's preferred plan model to the person rather than Rovara",async()=>{
+ const f=fixture();
+ f.snapshot.stages.find(row=>row.stage==="build")!.defaultPreferred=other;
+ const result=await getStageModels(f.deps,caller,"web",{});
+ expect(result.stages.find(row=>row.stage==="build")).toMatchObject({effective:{reason:"PERSONAL_PLAN_DEFAULT",decidedBy:"person",model:other}});
+});
+
+it("does not attribute inherited recipe models to company policy",async()=>{
+ const f=fixture();
+ const row=f.snapshot.stages.find(row=>row.stage==="build")!;
+ Object.assign(row,{companyDefault:{model:other},companyDefaultOrigin:"recipe"});
+ const result=await getStageModels(f.deps,caller,"web",{});
+ expect(result.stages.find(row=>row.stage==="build")).toMatchObject({effective:{reason:"RECIPE_DEFAULT",decidedBy:"rovara",model:other}});
+});
