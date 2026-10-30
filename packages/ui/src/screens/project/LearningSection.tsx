@@ -16,7 +16,8 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { stageDomId } from "./HowWeWorkCard.js";
 import { SENT_FOR_CONFIRMATION } from "./PendingConfirmation.js";
 import { cleanRuleText } from "./rule-text.js";
-import { DISMISSED_MESSAGE, DISMISS_OPTIONS, acceptedForText, LEARNING_TEXT as T, REOPENED_MESSAGE, addedMessage, addedToggle, dismissLabel, dismissedToggle, headerText, learningFailure, lessSafeWordsText, overlapText, removedMessage, ruleStatusLabel, sourceKindLabel, stageLabel, standingLabel, taskPageHref, whyText, type Failure } from "./learning-text.js";
+import { SUGGESTED_RULES_ID, useSuggestedRulesLink } from "./use-suggested-rules-link.js";
+import { DISMISSED_MESSAGE, DISMISS_OPTIONS, GONE_MESSAGE, acceptedForText, LEARNING_TEXT as T, REOPENED_MESSAGE, addedMessage, addedToggle, dismissLabel, dismissedToggle, headerText, learningFailure, lessSafeWordsText, overlapText, removedMessage, ruleStatusLabel, sourceKindLabel, stageLabel, standingLabel, taskPageHref, whyText, type Failure } from "./learning-text.js";
 import { useAppHost } from "../../host.js";
 import "./learning.css";
 
@@ -25,6 +26,7 @@ interface Confirmation { confirmUrl?: string; changes: string[]; revision?: numb
 interface Shared { project: string; stages: Stages; names: ReadonlyMap<string, string>; canDecide: boolean; confirmations: Record<string, Confirmation>; onConfirm: (id: string, confirmation: Confirmation | undefined) => void; onDone: (message?: string) => Promise<void> | void }
 /** A write that finds its suggestion or rule gone: the list is read again so the dead card goes away. */
 const isGone = (error: unknown) => error instanceof ApiError && error.code === "NOT_FOUND";
+const OPEN_STATUSES: ReadonlySet<string> = new Set(["open", "accepting", "awaiting_approval"]);
 const asArray = <Item,>(value: readonly Item[] | undefined): readonly Item[] => value ?? [];
 
 function FailureText({ failure, onReload }: { failure: Failure; onReload?: () => void }) {
@@ -53,7 +55,7 @@ function DismissForm({ project, suggestion, onDone, onCancel }: { project: strin
   if (kind === undefined || busy) return;
   setBusy(true);setFailure(undefined);
   try { await api.dismiss(project, suggestion.id, { expectedRevision: suggestion.revision, dismissKind: kind as "wrong", ...(note.trim() === "" ? {} : { note: note.trim() }) });await onDone(DISMISSED_MESSAGE); }
-  catch (error) { setFailure(learningFailure(error, "Couldn't dismiss this suggestion. Try again.", "dismiss"));if (isGone(error)) void onDone(); }
+  catch (error) { setFailure(learningFailure(error, "Couldn't dismiss this suggestion. Try again.", "dismiss"));if (isGone(error)) void onDone(GONE_MESSAGE); }
   finally { setBusy(false); }
  }
  return <fieldset className="rv-learning-dismiss" aria-label={T.DISMISS_LEGEND} disabled={busy}><legend>{T.DISMISS_LEGEND}</legend>
@@ -76,14 +78,14 @@ function SuggestionCard({ suggestion, shared }: { suggestion: SuggestionView; sh
    const result = await api.accept(project, suggestion.id, { expectedRevision: suggestion.revision, stage: suggestion.stage, text: cleaned });
    if (result.kind === "awaiting") { onConfirm(suggestion.id, awaiting(result, suggestion.revision));await onDone(); }
    else await onDone(result.kind === "applied" ? addedMessage(result.version) : T.SAVED);
-  } catch (error) { setFailure(learningFailure(error, "Couldn't accept this suggestion. Try again.", "accept"));if (isGone(error)) void onDone(); }
+  } catch (error) { setFailure(learningFailure(error, "Couldn't accept this suggestion. Try again.", "accept"));if (isGone(error)) void onDone(GONE_MESSAGE); }
   finally { setBusy(false); }
  }
  const readOnlyStatus = status === "accepting" ? T.SAVING : status === "awaiting_approval" ? T.WAITING : undefined, canAccept = suggestion.canDecide === true;
  return <Card className="rv-learning-card" aria-labelledby={"learning-" + suggestion.id}>
   <h3 id={"learning-" + suggestion.id}>Suggested rule for <VisibleText text={label} /></h3>
   <p>Applies to: <strong><VisibleText text={label} /></strong></p>
-  <p className="rv-muted"><VisibleText text={acceptedForText(label)} /></p>
+  <p className="rv-muted"><VisibleText text={acceptedForText(label, suggestion.stage === LEARNING_PROJECT_WIDE)} /></p>
   {suggestion.allFromOnePerson && <p><span className="rv-hww-marker">{T.ONE_PERSON}</span></p>}
   {suggestion.lessSafe && <Banner title={T.LESS_SAFE} tone="warning">{T.LESS_SAFE_BODY}{suggestion.lessSafeWords.length > 0 && <> <VisibleText text={lessSafeWordsText(suggestion.lessSafeWords)} /></>}</Banner>}
   {suggestion.overlaps.length > 0 && <p><VisibleText text={overlapText(suggestion.overlaps)} /></p>}
@@ -108,7 +110,7 @@ function DismissedRow({ item, shared }: { item: DismissedView; shared: Shared })
   if (busy) return;
   setBusy(true);setFailure(undefined);
   try { await api.reopen(shared.project, item.id);await shared.onDone(REOPENED_MESSAGE); }
-  catch (error) { setFailure(learningFailure(error, "Couldn't reopen this suggestion. Try again.", "reopen"));if (isGone(error)) void shared.onDone(); }
+  catch (error) { setFailure(learningFailure(error, "Couldn't reopen this suggestion. Try again.", "reopen"));if (isGone(error)) void shared.onDone(GONE_MESSAGE); }
   finally { setBusy(false); }
  }
  const kind = dismissLabel(item.dismissKind);
@@ -145,11 +147,12 @@ export function LearningSection({ project }: { project: string }) {
  const read = useLearning(project), how = useHowWeWork(project), query = useQueryClient();
  const [show, setShow] = useState<{ dismissed: boolean; rules: boolean }>({ dismissed: false, rules: false }), [notice, setNotice] = useState<string>(), [confirmations, setConfirmations] = useState<Record<string, Confirmation>>({});
  const stages: Stages = how.data?.stages ?? [], names = new Map(stages.map(stage => [stage.id, stage.name])), layerId = how.data === undefined ? undefined : how.data.process.kind === "project_process" ? how.data.process.agentId : how.data.process.draftLayer?.agentId;
+ useSuggestedRulesLink(read.data?.suggestions.some(item => OPEN_STATUSES.has(item.status)) === true);
  if (read.isPending) return <section className="rv-learning" aria-label="Suggested rules"><Skeleton label={T.LOADING} /></section>;
  // The company has not opened the learning loop (the server answers NOT_FOUND): the feature is dormant, not broken, so nothing is shown.
  if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return null;
  if (read.isError || read.data === undefined) return <section className="rv-learning" aria-label="Suggested rules"><p role="alert"><VisibleText text={learningFailureText(read.error)} /></p><Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button></section>;
- const data = read.data, open = data.suggestions.filter(item => item.status === "open" || item.status === "accepting" || item.status === "awaiting_approval"), truncated = asArray(data.truncated);
+ const data = read.data, open = data.suggestions.filter(item => OPEN_STATUSES.has(item.status)), truncated = asArray(data.truncated);
  /** After a decision, the suggestions and everything How we work shows are read again (the version, the rules, the history). */
  async function done(message?: string) {
   setNotice(message);
@@ -158,7 +161,7 @@ export function LearningSection({ project }: { project: string }) {
  const shared: Shared = { project, stages, names, canDecide: data.canDecide, confirmations, onConfirm: (id, confirmation) => setConfirmations(current => { const rest = { ...current };delete rest[id];return confirmation === undefined ? rest : { ...rest, [id]: confirmation }; }), onDone: done };
  const toggle = (key: "dismissed" | "rules", label: string) => <Button className="rv-learning-toggle" aria-expanded={show[key]} onClick={() => setShow(current => ({ ...current, [key]: !current[key] }))}>{label}</Button>;
  return <section className="rv-learning" aria-label="Suggested rules">
-  <div className="rv-learning-head"><h2>{headerText(open.length)}</h2><div className="rv-learning-links">{toggle("dismissed", dismissedToggle(data.dismissed.length))}{toggle("rules", addedToggle(data.rules.length))}</div></div>
+  <div className="rv-learning-head"><h2 id={SUGGESTED_RULES_ID} tabIndex={-1}>{headerText(open.length)}</h2><div className="rv-learning-links">{toggle("dismissed", dismissedToggle(data.dismissed.length))}{toggle("rules", addedToggle(data.rules.length))}</div></div>
   {notice !== undefined && <p role="status">{notice}</p>}
   {open.length === 0 ? <p className="rv-muted">{T.EMPTY}</p> : <ul className="rv-learning-cards" aria-label="Open suggestions">{open.map(item => <li key={item.id}><SuggestionCard suggestion={item} shared={shared} /></li>)}</ul>}
   {show.dismissed && <section aria-label={T.DISMISSED_LIST}>{data.dismissed.length === 0 ? <p className="rv-muted">Nothing has been dismissed.</p> : <ul className="rv-learning-list" aria-label={T.DISMISSED_LIST}>{data.dismissed.map(item => <DismissedRow key={item.id} item={item} shared={shared} />)}</ul>}{truncated.includes("dismissed") && <p className="rv-muted">{T.CUT_SHORT}</p>}</section>}

@@ -122,3 +122,9 @@ it("revalidates forged Home write targets at the API boundary", async () => {
 it("never claims nothing needs you when the server still reports pending items", async () => {
  const f = setup({ cards: [], total: 14 });await screen.findByText("14 things need you");expect(screen.queryByText("Nothing needs you right now")).toBeNull();expect(screen.getByText("Showing 0 of 14")).toBeTruthy();expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();f.close();
 });
+it("shows a suggested-rules card with its title and reason, and Review is an internal link to How we work", async () => {
+ const href = "https://cell.example/app/projects/payments?tab=how-we-work";
+ const f = setup({ cards: [{ cardId: "rule_suggestion:abc123", kind: "rule_suggestion", title: "Suggested rules for \u201cpayments\u201d", reason: "2 suggested rules to review in \u201cpayments\u201d", at: "2026-10-29T12:00:00.000Z", buttons: [{ action: "open", label: "Review", method: "GET", href }] }], total: 1 });
+ expect(await screen.findByRole("heading", { level: 2, name: "Suggested rules for \u201cpayments\u201d" })).toBeTruthy();expect(screen.getByText("2 suggested rules to review in \u201cpayments\u201d")).toBeTruthy();
+ const review = screen.getByRole("link", { name: "Review" });expect(review.getAttribute("href")).toBe("/app/projects/payments?tab=how-we-work");expect(screen.queryByRole("link", { name: /Open session/u })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
+});

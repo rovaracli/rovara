@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { userEvent } from "@testing-library/user-event";
 import { LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LEARNING_TEXT_MAX } from "@agentx/contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -14,10 +15,10 @@ import { h } from "./support/h.js";
 import { diffBody, publishedAgent, LAYER } from "./support/how-we-work-fixture.js";
 import { CONFIRM_URL, LEARNING_PATH, dismissed, learningHost, learningView, rule, source, suggestion } from "./support/learning-fixture.js";
 
-type Options = Parameters<typeof learningHost>[0] & { theme?: "light" | "dark" };
+type Options = Parameters<typeof learningHost>[0] & { theme?: "light" | "dark"; path?: string };
 function setup(options: Options = {}) {
  const cell = learningHost(options), query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
+ const ui = renderUi(h(AppHostProvider, { host: cell.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/projects/payments?tab=how-we-work"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...cell, ...ui, query };
 }
 const open = async (options: Options = {}) => { const world = setup(options);await screen.findByRole("heading", { name: /^Suggested rules/u });return world; };
@@ -59,7 +60,8 @@ describe("the Suggested rules section", () => {
  it("names the project-wide stage in words", async () => {
   await open({ view: learningView({ suggestions: [suggestion({ stage: "*" })] }) });
   expect(within(cards()[0]!).getByText("Applies to:").textContent).toBe("Applies to: Everyone except reviewers (project-wide)");
-  expect(within(cards()[0]!).getByText("Accepted for the Everyone except reviewers (project-wide) step. To use it elsewhere, edit How we work.")).toBeTruthy();
+  expect(within(cards()[0]!).getByText("Accepted for every step except reviewers. To use it elsewhere, edit How we work.")).toBeTruthy();
+  expect(within(cards()[0]!).queryByText(/the Everyone except reviewers/u)).toBeNull();
  });
 
  it("renders a source that holds a link or markdown literally, and links only the server's task path", async () => {
@@ -235,6 +237,26 @@ describe("accepting", () => {
   accept();
   expect((await screen.findByText("That suggestion is gone.")).closest("[role=alert]")).toBeTruthy();
   await waitFor(() => expect(f.learningReads()).toBe(reads + 1));
+ });
+
+ it("keeps a section-level notice after the list is read again, when the suggestion it acted on is gone", async () => {
+  const f = await open({ learn: request => { if (request.method !== "POST") return undefined;f.learning.view = learningView({ suggestions: [suggestion({ id: "sug_2", stage: "*", proposedText: "Keep answers short." })] });return refuse("NOT_FOUND", "That suggestion is gone.", 404); } });
+  expect(cards()).toHaveLength(1);
+  accept();
+  const notice = await screen.findByText("That suggestion is gone. The list was refreshed.");
+  expect(notice.closest("[role=status]")).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Suggested rules (1)" })).toBeTruthy());
+  await waitFor(() => expect(within(cards()[0]!).getByText("Applies to:").textContent).toBe("Applies to: Everyone except reviewers (project-wide)"));
+  expect(screen.getByText("That suggestion is gone. The list was refreshed.")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+ });
+
+ it("shows the same notice when dismissing or reopening finds the suggestion gone", async () => {
+  const f = await open({ view: learningView({ suggestions: [suggestion()], dismissed: [dismissed()] }), learn: request => request.method === "POST" ? refuse("NOT_FOUND", "That suggestion is gone.", 404) : undefined });
+  fireEvent.click(screen.getByRole("button", { name: "Dismissed (1)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+  await screen.findByText("That suggestion is gone. The list was refreshed.");
+  expect(f.learningReads()).toBeGreaterThan(1);
  });
 
  it("shows the resolver's refusal in its fixed sentence, with a link only to this app", async () => {
@@ -429,5 +451,41 @@ describe("accessibility", () => {
   const f = await open({ view: learningView({ suggestions: [suggestion({ allFromOnePerson: true, lessSafe: true, lessSafeWords: ["review"], overlaps: ["Keep changes small."] })], dismissed: [dismissed()], rules: [rule()] }) });
   fireEvent.click(screen.getByRole("button", { name: "Dismissed (1)" }));fireEvent.click(screen.getByRole("button", { name: "Added by suggestions (1)" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss…" }));
   await expectNoAxeViolations(f.container);
+ });
+});
+
+describe("opening How we work from the Home card's link", () => {
+ const scrolled = vi.fn(), original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView")!;
+ afterEach(() => { Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);scrolled.mockReset(); });
+ const spy = () => { HTMLElement.prototype.scrollIntoView = function scroll(this: Element) { scrolled(this); }; };
+ it("scrolls the Suggested rules heading into view and focuses it once, when there are open suggestions", async () => {
+  spy();
+  const f = await open();
+  const heading = screen.getByRole("heading", { name: "Suggested rules (1)" });
+  expect(heading.id).toBe("suggested-rules");
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+  expect(scrolled).toHaveBeenCalledWith(heading);
+  expect(scrolled).toHaveBeenCalledTimes(1);
+  // A later read does not take the focus back.
+  const other = screen.getByRole("button", { name: "Dismissed (0)" });other.focus();
+  await f.query.invalidateQueries({ queryKey: ["learning"] });
+  await waitFor(() => expect(f.learningReads()).toBeGreaterThan(1));
+  expect(document.activeElement).toBe(other);
+  expect(scrolled).toHaveBeenCalledTimes(1);
+ });
+ it("does nothing when there are no open suggestions", async () => {
+  spy();
+  await open({ view: learningView({ suggestions: [] }) });
+  expect(document.activeElement?.id).not.toBe("suggested-rules");
+  expect(scrolled).not.toHaveBeenCalled();
+ });
+ it("does nothing when the person clicks the How we work tab from the overview", async () => {
+  spy();
+  setup({ path: "/app/projects/payments" });
+  await userEvent.setup().click(await screen.findByRole("tab", { name: "How we work" }));
+  const heading = await screen.findByRole("heading", { name: "Suggested rules (1)" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(document.activeElement).not.toBe(heading);
+  expect(scrolled).not.toHaveBeenCalled();
  });
 });

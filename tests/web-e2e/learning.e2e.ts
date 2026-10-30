@@ -56,3 +56,25 @@ test("Suggested rules stay readable on a phone", async ({ page, context, request
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });
 });
+
+const signIn = async (context: BrowserContext, request: APIRequestContext, baseURL: string | undefined) => { await request.post("/__mock/scenario", { data: { name: "project" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]); };
+test("the overview shows how often the same correction was given twice", async ({ page, context, request, baseURL }) => {
+ await signIn(context, request, baseURL);await mockRealtime(page);await page.goto("/app/projects/payments");
+ const block = page.getByRole("region", { name: "Same correction given twice" });
+ await expect(block.getByText("25% this month (3 of 12)")).toBeVisible();
+ await expect(block.getByText("↓ from 40% last month")).toBeVisible();
+ await expect(block.getByText("2 repeats came after a rule was accepted")).toBeVisible();
+ await expect(block.getByRole("link", { name: "Build rule: 2 repeats" })).toHaveAttribute("href", "/app/projects/payments?tab=how-we-work");
+ await expect(block.getByText("Lower is better: it means Rovara is learning your team's corrections.")).toBeVisible();
+ await checkA11y(page, { theme: "dark" });
+});
+test("Home's Review opens How we work at the Suggested rules section", async ({ page, context, request, baseURL }) => {
+ await signIn(context, request, baseURL);await mockRealtime(page);await page.setViewportSize({ width: 1280, height: 500 });await page.goto("/app");
+ await expect(page.getByRole("heading", { name: "Suggested rules for \u201cpayments\u201d", level: 2 })).toBeVisible();
+ await expect(page.getByText("2 suggested rules to review in \u201cpayments\u201d")).toBeVisible();
+ await page.getByRole("link", { name: "Review" }).click();
+ await expect(page).toHaveURL(/\/app\/projects\/payments\?tab=how-we-work$/u);
+ const heading = page.getByRole("heading", { name: "Suggested rules (2)" });
+ await expect(heading).toBeFocused();
+ await expect(heading).toBeInViewport();
+});

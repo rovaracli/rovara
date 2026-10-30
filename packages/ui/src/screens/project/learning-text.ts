@@ -40,8 +40,10 @@ export const LEARNING_TEXT = {
 } as const;
 export const addedMessage = (version: number | undefined) => version === undefined ? "Added. New tasks use it; running tasks keep their version." : `Added in version ${String(version)}. New tasks use it; running tasks keep their version.`;
 export const removedMessage = (version: number | undefined) => version === undefined ? "Removed. New tasks use the change; running tasks keep their version." : `Removed in version ${String(version)}. New tasks use it; running tasks keep their version.`;
-/** Under the stage label: a rule is accepted only for the step it was suggested for. */
-export const acceptedForText = (stageName: string) => `Accepted for the ${stageName} step. To use it elsewhere, edit How we work.`;
+/** Under the stage label: a rule is accepted only for the step it was suggested for; a project-wide one for every step except reviewers. */
+export const acceptedForText = (stageName: string, projectWide = false) => projectWide ? "Accepted for every step except reviewers. To use it elsewhere, edit How we work." : `Accepted for the ${stageName} step. To use it elsewhere, edit How we work.`;
+/** Kept at the top of the section after a write found its suggestion gone and the list was read again. */
+export const GONE_MESSAGE = "That suggestion is gone. The list was refreshed.";
 export const DISMISSED_MESSAGE = "Dismissed. You can reopen it from the Dismissed list.";
 export const REOPENED_MESSAGE = "Reopened. It is back in the suggested rules.";
 export const whyText = (count: number) => `Why: said ${String(count)} ${count === 1 ? "time" : "times"}`;
@@ -111,3 +113,23 @@ export function learningFailure(error: unknown, fallback: string, action?: Learn
  if (refusals !== undefined) return { kind: "refusals", items: refusals.map(refusal => ({ text: `${STAGE_LABELS[refusal.stage]}: ${refusalText(refusal.code)}`, ...(refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) ? { href: refusal.fixHref } : {}) })) };
  return { kind: "message", parts: messageParts(error.message) };
 }
+
+/** "Same correction given twice" on the project overview: numbers and stage names only. */
+export const METRIC_TEXT = {
+ HEADING: "Same correction given twice",
+ NOT_ENOUGH: "Not enough corrections yet",
+ HELP: "Lower is better: it means Rovara is learning your team's corrections.",
+ SAME: "same as last month",
+ AFTER_RULE_LIST: "Repeats after an accepted rule",
+} as const;
+const plural = (count: number, one: string, many: string) => `${String(count)} ${count === 1 ? one : many}`;
+/** A share of this month's corrections, as a whole percent (0 when there were none). */
+export const percentOf = (part: number, whole: number) => whole === 0 ? 0 : Math.round(part / whole * 100);
+export const shareText = (repeats: number, corrections: number) => `${String(percentOf(repeats, corrections))}% this month (${String(repeats)} of ${String(corrections)})`;
+export const soFarText = (corrections: number) => `(${String(corrections)} so far this month)`;
+/** Against last month, by the rounded percents: lower is the good direction. */
+export const lastMonthText = (thisPercent: number, lastShare: number): string => { const last = Math.round(lastShare * 100);return last === thisPercent ? METRIC_TEXT.SAME : `${last < thisPercent ? "↑" : "↓"} from ${String(last)}% last month`; };
+/** A count the server could only read up to its cap comes with a label such as `500+`: shown as "at least". */
+const atLeast = (label: string) => "At least " + visibleText(label.replace(/\+$/u, ""));
+export const afterRuleText = (total: number, label: string | undefined) => label === undefined ? `${plural(total, "repeat", "repeats")} came after a rule was accepted` : `${atLeast(label)} ${label.replace(/\+$/u, "") === "1" ? "repeat" : "repeats"} came after a rule was accepted`;
+export const ruleRepeatsText = (stageName: string, repeats: number, capped: boolean) => capped ? `${stageName} rule: at least ${plural(repeats, "repeat", "repeats")}` : `${stageName} rule: ${plural(repeats, "repeat", "repeats")}`;

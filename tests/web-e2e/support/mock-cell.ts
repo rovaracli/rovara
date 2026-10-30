@@ -28,7 +28,7 @@ import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
-import { learningMock, resetLearning } from "./learning-mock.js";
+import { learningMock, resetLearning, overviewLearning, ruleSuggestionCard } from "./learning-mock.js";
 import { companyPolicyMock, resetCompanyPolicy } from "./company-policy-mock.js";
 import { mockCellOrigin, mockCellPort } from "./port.js";
 const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls");
@@ -187,7 +187,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, AppProjectsResponseSchema.parse({ projects: ["payments", "checkout"].map(name => ({ name, status: "active", latestRevision: 1, repositories: [], myRole: "contributor", setup: { status: "ready" } })) }));return; }
  }
  if (await companyPolicyMock({ url, method, record: value => { evidence.body = value; }, json, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
- if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
+ if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.name === "project" ? { ...current.project, learning: overviewLearning() } : current.project);return; }
  if (current.project !== undefined && current.project.project.name === "payments" && await learningMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
  if (current.project !== undefined && current.project.project.name === "payments" && await howWeWorkMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const code = /^\/v1\/web\/projects\/([^/]+)\/code$/.exec(url.pathname);
@@ -256,7 +256,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, { projects: [] });return; }
  }
  if (url.pathname === "/v1/web/live" && method === "GET") { json(200, LiveResponseSchema.parse({ tiles: (current.live ?? []).filter(tile => (url.searchParams.get("filter") !== "needs_me" || tile.needsYou) && (!url.searchParams.has("project") || tile.project === url.searchParams.get("project"))) }));return; }
- if (url.pathname === "/v1/web/home") { json(200, current.home);return; }
+ if (url.pathname === "/v1/web/home") { json(200, current.name === "project" ? homeFixture({ cards: [ruleSuggestionCard()] }) : current.home);return; }
  if (url.pathname === "/v1/web/realtime/token" && method === "POST") { json(200, RealtimeTokenResponseSchema.parse({ token: "fixture-realtime-value", expiresAt: new Date(Date.now() + 900_000).toISOString(), endpoint: origin.replace("https:", "wss:") + "/event/realtime", channels: { user: userChannel(FIXTURE_ORG, FIXTURE_DEVELOPER), projects: { payments: projectChannel(FIXTURE_ORG, "payments") } } }));return; }
  if (url.pathname === "/v1/web/changes") { json(200, { notices: current.changes ?? [], next: "settled" });return; }
  json(404, { error: { code: "NOT_FOUND", message: "This mock route is not configured." } });return;

@@ -1,6 +1,7 @@
 // The project's learning routes for the "Suggested rules" journey: the view, accept, dismiss, reopen and remove. State lives for one scenario. Bodies are parsed by the contract's strict schemas, as the real routes do.
-import { LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema } from "@agentx/contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
+import { mockCellOrigin } from "./port.js";
 interface Suggestion { id: string; stage: string; text: string; revision: number }
 interface Rule { id: string; stage: string; text: string; status: "active" | "removed"; processVersion: number }
 interface Dismissed { id: string; stage: string; at: string; kind: string; text: string }
@@ -47,3 +48,7 @@ export async function learningMock({ url, method, body, json, record }: MockExch
  if (rule === undefined || rule.status !== "active") { json(404, { error: { code: "NOT_FOUND", message: "That rule is gone." } });return true; }
  state.version += 1;rule.status = "removed";json(200, { outcome: "published", version: state.version });return true;
 }
+
+/** The overview's learning block (3 of 12 corrections repeated, down from 40% last month, 2 repeats after a Build rule) and Home's one "Suggested rules" card, both for the `project` scenario. */
+export const overviewLearning = () => ProjectOverviewLearningSchema.parse({ thisMonth: { repeats: 3, corrections: 12, enoughData: true }, lastMonthShare: 0.4, repeatsAfterRule: [{ ruleId: "rul_old", stage: "build", repeats: 2 }] });
+export const ruleSuggestionCard = () => ({ cardId: "rule_suggestion:abc123", kind: "rule_suggestion" as const, title: "Suggested rules for \u201cpayments\u201d", reason: "2 suggested rules to review in \u201cpayments\u201d", at: "2026-10-29T12:00:00.000Z", buttons: [{ action: "open" as const, label: "Review", method: "GET" as const, href: mockCellOrigin() + "/app/projects/payments?tab=how-we-work" }] });
