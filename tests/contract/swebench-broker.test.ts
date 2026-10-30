@@ -1,3 +1,5 @@
+import { TEST_ORG } from "../support/orgs.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -629,4 +631,12 @@ describe("reading the eval settings from SSM (spec 043 FR-016)", () => {
       expect((error as Error).message).not.toContain("not json");
     }
   });
+});
+
+it("M47 single eval records the authenticated org, project and requesting developer", async () => {
+  const h = await evalBroker(); await enable(h.handler);
+  const reply = await start(h.handler); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  const rows = h.db.find(row => row.entityType === "SWEBENCH_RUN");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ orgId: TEST_ORG, projectName: "payments", developerId: developerIdForSlackUser(member) });
 });
