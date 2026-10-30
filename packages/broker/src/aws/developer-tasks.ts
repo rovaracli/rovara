@@ -1,3 +1,4 @@
+import { resolveAgentForAutonomousRun } from "../agents/roster.js";
 import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
@@ -2104,10 +2105,16 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
   let spendingStop: CapturedTaskStop | undefined;
   let spendingScopeChecks: TransactItem[] = [];
-  // Human task starts capture once after live scope checks and before monthly
-  // admission, workspace creation or key effects. Other paid starter adapters
-  // must be connected before the controller can enable enrollment.
-  if (run?.autonomous !== true) {
+  // Every task captures once after its existing live principal checks and
+  // before monthly admission, workspace creation or key effects.
+  {
+    const authorizeSpendingAgent = async (agentId: NonNullable<typeof prepared>["ref"]["agentId"]): Promise<void> => {
+      if (deps.agentRuns === undefined) { if (run?.autonomous === true) throw budgetActorRefused(); return; }
+      if (run?.autonomous === true) {
+        if (prepared === undefined || prepared.ref.agentId !== agentId || typeof prepared.ref.version !== "number") throw budgetActorRefused();
+        await resolveAgentForAutonomousRun(deps.agentRuns, { orgId: deps.orgId, project: request.project, agentId, version: prepared.ref.version });
+      } else await requireAgentAccess(deps.agentRuns, caller, agentId, prepared?.ref.version === "draft" ? "edit" : "use");
+    };
     try {
       const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
       const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
@@ -2115,7 +2122,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         requireScopeAccess: async input => {
           const fresh = await deps.checkAccess(input.project);
           await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
-          if (deps.agentRuns !== undefined) await requireAgentAccess(deps.agentRuns, caller, input.agentId, prepared?.ref.version === "draft" ? "edit" : "use");
+          await authorizeSpendingAgent(input.agentId);
         },
       }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
         agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd: pathLimitMicrousd ?? null,
@@ -2130,7 +2137,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
           const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
           spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole, ...(prepared.ref.draftRevision === undefined ? {} : { expectedDraftRevision: prepared.ref.draftRevision }) }, async () => {
             if (deps.agentRuns === undefined) throw budgetActorRefused();
-            await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
+            await authorizeSpendingAgent(agentId);
           }, async () => {
             if (deps.agentRuns === undefined) throw budgetActorRefused();
             return deps.agentRuns.store.listShares(deps.orgId, agentId);
