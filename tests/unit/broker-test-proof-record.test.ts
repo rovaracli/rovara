@@ -8,7 +8,7 @@ const OTHER = "b".repeat(64);
 const item = (verdict: TestProof["items"][number]["verdict"]): TestProof["items"][number] => ({
   checkId: "readiness:0", label: "npm test", granularity: "check", verdict,
   reason: verdict === "proves_change" ? "assertion_failed_on_old" : verdict === "does_not_prove" ? "passed_on_old" : "not_a_test_check",
-}) as TestProof["items"][number];
+});
 const proof = (items: TestProof["items"], digest = DIGEST, status: TestProof["status"] = "checked"): TestProof => ({
   schemaVersion: 1, candidateDigest: digest, status, note: "completed", changedTests: { added: items.length, changed: 0, deleted: 0 }, items, durationMs: 10,
 });
