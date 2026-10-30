@@ -1,3 +1,4 @@
+import {ProcessModelRefusal,processModelRefusalBody} from "../model-selection/process-refusal.js";
 import {ModelIdentifierSchema} from "@agentx/contracts";
 import {writeProjectModelSelection} from "../model-selection/selection-write.js";
 import {survivorOf} from "../org/project-members.js";
@@ -2830,6 +2831,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Confirmation and task pages remain isolated even when their adapter throws before rendering.
       const errorPath = request.path.split("?", 1)[0]!;
       const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
+      if (error instanceof ProcessModelRefusal) return json({error:processModelRefusalBody(error)},request.requestId,error.statusCode);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
         const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);

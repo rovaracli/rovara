@@ -1,3 +1,4 @@
+import {ProcessModelRefusal} from "../model-selection/process-refusal.js";
 import {registerCompanyModelPolicyApprovals} from "../model-selection/company-approval.js";
 import {processModelAuthorityChecks,mergeProcessModelAuthorityChecks,modelAuthorityRefused} from "../model-selection/authority.js";
 import {parseStageModelApprovalProof,processApprovalRecipeDigest,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
@@ -115,9 +116,17 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
   const exceptions:StageModelApprovalProof["exceptions"]=result.sameModelExceptions;
   if(approvalId!==undefined) {
     const confirmed=await validateStageChoices(readDeps,effectiveCaller,project,{}, {},{approvalId,tupleDigest:approvedTupleDigest??""});
-    if(!confirmed.ok) throw agentXError("AGENT_REVISION_CONFLICT","The approved model tuple changed. Publish again.");
+    if(!confirmed.ok) {
+      const refusal=confirmed.stages.find(row=>row.kind==="refusal");
+      if(refusal?.kind==="refusal")throw new ProcessModelRefusal(refusal.code,refusal.stage,refusal.fixHref??"/app/admin/how-we-work");
+      throw agentXError("AGENT_REVISION_CONFLICT","The approved model tuple changed. Publish again.");
+    }
   }
-  if(!result.ok&&!result.requiresConfirmation) throw agentXError("CONFIG_INVALID","The model choice cannot be verified. Review How we work before publishing.");
+  if(!result.ok&&!result.requiresConfirmation) {
+    const refusal=result.stages.find(row=>row.kind==="refusal");
+    if(refusal?.kind==="refusal")throw new ProcessModelRefusal(refusal.code,refusal.stage,refusal.fixHref??"/app/admin/how-we-work");
+    throw agentXError("RUNTIME_UNAVAILABLE","The model evidence could not be read.");
+  }
   const revisions=new Set(snapshot.stages.map(row=>row.sourcesRevision));
   if(revisions.size!==1 || snapshot.registeredAt===undefined) throw agentXError("RUNTIME_UNAVAILABLE","The model settings changed while validating.");
   const modelRevisions={companyRevision:snapshot.companyRevision,sourcesRevision:snapshot.stages[0]!.sourcesRevision};
@@ -140,7 +149,21 @@ async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCalle
     deciderChecks=await processModelAuthorityChecks(deps,{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,signedInId:deciderId,developerId:decidingDeveloper,role:decidingRole});
   }
   const authorityChecks=mergeProcessModelAuthorityChecks([requesterChecks,deciderChecks]);
-  return {modelRevisions,modelContext,changes,proof,authorityChecks};
+  return {modelRevisions,modelContext,changes,proof,authorityChecks,exceptions};
+}
+
+/** Pointer changes use the exact publication validator; they cannot create an unconfirmed exception. */
+export async function assertProcessModelsResolvable(
+ deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,
+ options:{approvalBinding?:{approvalId:string;tupleDigest:string};existingProof?:StageModelApprovalProof;deciderId?:string}={},
+) {
+ const result=await processModelRevisions(deps,caller,agent,draft,recipe,options.approvalBinding?.approvalId,options.existingProof,options.deciderId,options.approvalBinding?.tupleDigest);
+ if(result===undefined)throw agentXError("CONFIG_INVALID","A project process is required.");
+ if(result.changes.length>0&&result.proof===undefined) {
+  const exception=result.exceptions[0];
+  if(exception!==undefined)throw new ProcessModelRefusal("DIFFERENT_FROM_UNSATISFIABLE",exception.stage,"/app/admin/how-we-work");
+ }
+ return result;
 }
 
 // ---- who is asked

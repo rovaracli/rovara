@@ -14,7 +14,7 @@ it("refuses an unavailable explicit process model before publication",async()=>{
  const model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
  const agent=await w.store.create({orgId:ORG_A,name:"web process",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{model}}},purpose:"process",createdBy:MAX});
  Object.assign(w.deps,{modelRouting:{sources:{read:async()=>({sources:[],order:[],credentials:[],removing:[],revision:0})}}});
- await expect(publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision})).rejects.toThrow("model choice cannot be verified");
+ await expect(publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision})).rejects.toMatchObject({code:"MODEL_NOT_VERIFIED",stage:"understand",fixHref:"/app/admin/models/sources"});
  expect(await w.store.getVersion(ORG_A,agent.agentId,1)).toBeUndefined();
 });
 
@@ -65,7 +65,7 @@ it("refuses rollback to an explicit model whose source is now unavailable",async
  await w.store.saveDraft({orgId:ORG_A,agentId:agent.agentId,expectedRevision:agent.draftRevision,overlay:{},by:MAX});agent=(await w.store.get(ORG_A,agent.agentId))!;
  await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(await resolveRecipe(w.deps,ORG_A,agent.agentId,"draft")),by:MAX});agent=(await w.store.get(ORG_A,agent.agentId))!;
  Object.assign(w.deps,{modelRouting:{sources:{read:async()=>({sources:[],order:[],credentials:[],removing:[],revision:0})}}});
- await expect(rollbackAgent(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),version:1})).rejects.toThrow("model choice cannot be verified");
+ await expect(rollbackAgent(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),version:1})).rejects.toMatchObject({code:"MODEL_NOT_VERIFIED",stage:"understand",fixHref:"/app/admin/models/sources"});
  expect((await w.store.get(ORG_A,agent.agentId))?.currentVersion).toBe(2);
 });
 
@@ -114,6 +114,26 @@ it("does not publish an implicit same-model reviewer when only the builder's mod
  const key=projectRevisionKey(ORG_A,"web",1),row=w.db.get(key)!;
  w.db.set({...row,definition:{...(row.definition as Record<string,unknown>),models:{default:model,approved:[model]}}});
  const agent=await w.store.create({orgId:ORG_A,name:"web single model",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
- await expect(publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision})).rejects.toThrow("model choice cannot be verified");
+ await expect(publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision})).rejects.toMatchObject({code:"DIFFERENT_FROM_UNSATISFIABLE",stage:"plan_check",fixHref:"/app/admin/how-we-work"});
  expect(await w.store.getVersion(ORG_A,agent.agentId,1)).toBeUndefined();
+});
+
+it("exports the single pointer-path model assertion with the same structured refusal",async()=>{
+ const changes=await import("../../packages/broker/src/agents/changes.js");
+ const wrapper=changes.assertProcessModelsResolvable;
+ expect(wrapper).toBeTypeOf("function");
+ const w=fixture(),model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
+ const agent=await w.store.create({orgId:ORG_A,name:"web pointer",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{model}}},purpose:"process",createdBy:MAX});
+ const draft=(await w.store.getDraft(ORG_A,agent.agentId))!;
+ const recipe=await changes.resolveRecipe(w.deps,ORG_A,agent.agentId,"draft",draft);
+ await expect(wrapper(w.deps,{...w.caller(MAX),orgRole:"member"},agent,draft,recipe)).resolves.toMatchObject({modelRevisions:{companyRevision:0,sourcesRevision:0}});
+ Object.assign(w.deps,{modelRouting:{sources:{read:async()=>({sources:[],order:[],credentials:[],removing:[],revision:0})}}});
+ await expect(wrapper(w.deps,{...w.caller(MAX),orgRole:"member"},agent,draft,recipe)).rejects.toMatchObject({code:"MODEL_NOT_VERIFIED",stage:"understand",fixHref:"/app/admin/models/sources"});
+});
+
+it("serializes only the structured process refusal fields used by HTTP adapters",async()=>{
+ const {ProcessModelRefusal,processModelRefusalBody}=await import("../../packages/broker/src/model-selection/process-refusal.js");
+ const error=new ProcessModelRefusal("STAGE_LOCKED","build","/app/admin/how-we-work");
+ expect(error.statusCode).toBe(409);
+ expect(processModelRefusalBody(error)).toEqual({code:"STAGE_LOCKED",stage:"build",fixHref:"/app/admin/how-we-work",message:"build: STAGE_LOCKED"});
 });
