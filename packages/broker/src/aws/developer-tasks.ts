@@ -1,7 +1,7 @@
 import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
-import { withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
+import { taskMaxPerRunForAdmission, withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -2602,11 +2602,14 @@ function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: Develo
     const sets = ["updatedAt = :now", "budgetUsd = :cap", "spendingStop = :stop"], removes: string[] = [];
     if (baseline !== undefined) { sets.push("budgetBaselineUsd = :baseline"); values[":baseline"] = baseline; }
     if (staleBudgetPause(task)) removes.push("budgetPause");
-    if (admission.calculationInput.agentStop.kind === "limited") {
-      sets.push("maxPerRunUsd = :agentStop"); values[":agentStop"] = Math.min(admission.calculationInput.agentStop.stopMicrousd, admission.approvalCapMicrousd) / 1_000_000;
+    const maxPerRun = taskMaxPerRunForAdmission(admission);
+    if (maxPerRun !== undefined) {
+      const exactMaxUsd = maxPerRun / 1_000_000;
+      if (usdToWholeMicrodollars(exactMaxUsd) !== maxPerRun) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task per-run stop cannot be represented exactly.");
+      sets.push("maxPerRunUsd = :taskStop"); values[":taskStop"] = exactMaxUsd;
     } else if (task.maxPerRunUsd !== undefined) removes.push("maxPerRunUsd");
     const conditions = ["attribute_exists(pk)", "attribute_not_exists(closedAt)"];
-    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "budgetBaselineUsd", "spendingStop"] as const) {
+    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop"] as const) {
       const value = task[field]; conditions.push(value === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(value)}`);
     }
     return [{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: `SET ${sets.join(", ")}${removes.length === 0 ? "" : ` REMOVE ${removes.join(", ")}`}`,
@@ -2679,6 +2682,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
       orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
       pathLimitMicrousd: pathLimitMicrousd ?? null,
+      ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
       ...(requestedMicrousd !== undefined ? { requestedMicrousd } : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: null }),
       ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
     });
@@ -3011,6 +3015,8 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
   const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
     orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent.agentId,
     pathLimitMicrousd: previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+    ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
+    ...(previous?.calculationInput.chainMicrousd === undefined ? {} : { chainMicrousd: previous.calculationInput.chainMicrousd }),
     // The testing allowance belongs to historical spend; this is a new payer.
     ...(previous?.calculationInput.requestedMicrousd !== undefined ? { requestedMicrousd: previous.calculationInput.requestedMicrousd }
       : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: usdToWholeMicrodollars(task.requestedRunLimitUsd) ?? null }),
@@ -3043,7 +3049,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     });
     try {
       await deps.actions.transact([{ Update: { ...item,
-        UpdateExpression: `${item.UpdateExpression?.split(" REMOVE ")[0]}, #transition_origin = :app, payer = :payer, #transition_place = :place, #transition_startedBy = :startedBy REMOVE budgetPause${task.maxPerRunUsd !== undefined && captured.calculationInput.agentStop.kind === "inherit" ? ", maxPerRunUsd" : ""}`,
+        UpdateExpression: `${item.UpdateExpression?.split(" REMOVE ")[0]}, #transition_origin = :app, payer = :payer, #transition_place = :place, #transition_startedBy = :startedBy REMOVE budgetPause${task.maxPerRunUsd !== undefined && taskMaxPerRunForAdmission(captured) === undefined ? ", maxPerRunUsd" : ""}`,
         ConditionExpression: `${item.ConditionExpression} AND ${sourceConditions.join(" AND ")}`,
         ExpressionAttributeNames: { ...item.ExpressionAttributeNames, ...seen.names },
         ExpressionAttributeValues: { ...item.ExpressionAttributeValues, ...seen.values, ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId } },

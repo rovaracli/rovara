@@ -41,6 +41,12 @@ export function savedTaskStopBounds(value: unknown): { requestedMicrousd?: numbe
   return { ...(input.requestedMicrousd === undefined ? {} : { requestedMicrousd: input.requestedMicrousd }),
     ...(input.chainMicrousd === undefined ? {} : { chainMicrousd: input.chainMicrousd }), ...(input.testingMicrousd === undefined ? {} : { testingMicrousd: input.testingMicrousd }) };
 }
+/** Task-specific consent persists independently of later agent inheritance. */
+export function taskMaxPerRunForAdmission(admission: CapturedTaskStop): number | undefined {
+  const input = admission.calculationInput;
+  return input.approvedMaxPerRunMicrousd ?? input.committedMaxPerRunMicrousd
+    ?? (input.agentStop.kind === "limited" ? Math.min(input.agentStop.stopMicrousd, admission.approvalCapMicrousd) : undefined);
+}
 const receiptSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
