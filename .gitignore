@@ -15,6 +15,7 @@ docs/*
 !docs/architecture/
 !docs/runbooks/
 !docs/audit-ledger/
+!docs/enterprise/
 .DS_Store
 Thumbs.db
 *.log
