@@ -120,16 +120,16 @@ export const METRIC_TEXT = {
  NOT_ENOUGH: "Not enough corrections yet",
  HELP: "Lower is better: it means Rovara is learning your team's corrections.",
  SAME: "same as last month",
+ PROJECT_WIDE_RULE: "Project-wide",
  AFTER_RULE_LIST: "Repeats after an accepted rule",
 } as const;
 const plural = (count: number, one: string, many: string) => `${String(count)} ${count === 1 ? one : many}`;
 /** A share of this month's corrections, as a whole percent (0 when there were none). */
-export const percentOf = (part: number, whole: number) => whole === 0 ? 0 : Math.round(part / whole * 100);
+export const percentOf = (part: number, whole: number) => whole === 0 ? 0 : Math.round((part * 100) / whole);
 export const shareText = (repeats: number, corrections: number) => `${String(percentOf(repeats, corrections))}% this month (${String(repeats)} of ${String(corrections)})`;
 export const soFarText = (corrections: number) => `(${String(corrections)} so far this month)`;
-/** Against last month, by the rounded percents: lower is the good direction. */
-export const lastMonthText = (thisPercent: number, lastShare: number): string => { const last = Math.round(lastShare * 100);return last === thisPercent ? METRIC_TEXT.SAME : `${last < thisPercent ? "↑" : "↓"} from ${String(last)}% last month`; };
-/** A count the server could only read up to its cap comes with a label such as `500+`: shown as "at least". */
-const atLeast = (label: string) => "At least " + visibleText(label.replace(/\+$/u, ""));
-export const afterRuleText = (total: number, label: string | undefined) => label === undefined ? `${plural(total, "repeat", "repeats")} came after a rule was accepted` : `${atLeast(label)} ${label.replace(/\+$/u, "") === "1" ? "repeat" : "repeats"} came after a rule was accepted`;
-export const ruleRepeatsText = (stageName: string, repeats: number, capped: boolean) => capped ? `${stageName} rule: at least ${plural(repeats, "repeat", "repeats")}` : `${stageName} rule: ${plural(repeats, "repeat", "repeats")}`;
+/** Against last month, by the rounded percents: lower is the good direction. The arrow is for the eye only; the words carry the direction. */
+export const lastMonthChange = (thisPercent: number, lastShare: number): { arrow?: string; words: string } => { const last = Math.round(lastShare * 100);return last === thisPercent ? { words: METRIC_TEXT.SAME } : { arrow: last < thisPercent ? "↑ " : "↓ ", words: `${last < thisPercent ? "up" : "down"} from ${String(last)}% last month` }; };
+/** The listed repeats added up. When the server stopped reading corrections at its cap (`repeatsAfterRuleLabel`), the real number can only be larger, so it is "at least"; the label's own number is never shown. */
+export const afterRuleText = (total: number, capped: boolean) => `${capped ? "At least " : ""}${plural(total, "repeat", "repeats")} came after a rule was accepted`;
+export const ruleRepeatsText = (stageName: string, repeats: number, capped: boolean) => `${stageName} rule: ${capped ? "at least " : ""}${plural(repeats, "repeat", "repeats")}`;

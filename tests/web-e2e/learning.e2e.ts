@@ -62,7 +62,7 @@ test("the overview shows how often the same correction was given twice", async (
  await signIn(context, request, baseURL);await mockRealtime(page);await page.goto("/app/projects/payments");
  const block = page.getByRole("region", { name: "Same correction given twice" });
  await expect(block.getByText("25% this month (3 of 12)")).toBeVisible();
- await expect(block.getByText("↓ from 40% last month")).toBeVisible();
+ await expect(block.getByText("down from 40% last month")).toBeVisible();
  await expect(block.getByText("2 repeats came after a rule was accepted")).toBeVisible();
  await expect(block.getByRole("link", { name: "Build rule: 2 repeats" })).toHaveAttribute("href", "/app/projects/payments?tab=how-we-work");
  await expect(block.getByText("Lower is better: it means Rovara is learning your team's corrections.")).toBeVisible();

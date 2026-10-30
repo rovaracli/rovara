@@ -52,10 +52,10 @@ describe("the Same correction given twice block", () => {
  });
 
  it("says it fell compared with last month", async () => {
-  expect((await read(block({ lastMonthShare: 0.4 }))).getByText("↓ from 40% last month")).toBeTruthy();
+  expect((await read(block({ lastMonthShare: 0.4 }))).getByText("down from 40% last month")).toBeTruthy();
  });
  it("says it rose compared with last month", async () => {
-  expect((await read(block({ lastMonthShare: 0.1 }))).getByText("↑ from 10% last month")).toBeTruthy();
+  expect((await read(block({ lastMonthShare: 0.1 }))).getByText("up from 10% last month")).toBeTruthy();
  });
  it("says it is the same when the two shares are equal after rounding", async () => {
   const section = await read(block({ lastMonthShare: 0.246 }));
@@ -63,7 +63,7 @@ describe("the Same correction given twice block", () => {
   expect(section.queryByText(/from 25%/u)).toBeNull();
  });
  it("compares the rounded shares, not the raw ones", async () => {
-  expect((await read(block({ thisMonth: { repeats: 1, corrections: 3, enoughData: true }, lastMonthShare: 0.5 }))).getByText("↓ from 50% last month")).toBeTruthy();
+  expect((await read(block({ thisMonth: { repeats: 1, corrections: 3, enoughData: true }, lastMonthShare: 0.5 }))).getByText("down from 50% last month")).toBeTruthy();
  });
 
  it("says there are not enough corrections yet, with the count, and no percent", async () => {
@@ -86,17 +86,28 @@ describe("the Same correction given twice block", () => {
  });
  it("names the project-wide stage in words", async () => {
   const items = await (await read(block({ repeatsAfterRule: [{ ruleId: "rul_1", stage: "*", repeats: 2 }] }))).findAllByRole("listitem");
-  expect(items[0]!.textContent).toBe("Everyone except reviewers (project-wide) rule: 2 repeats");
+  expect(items[0]!.textContent).toBe("Project-wide rule: 2 repeats");
  });
  it("shows a stage it does not know as its id", async () => {
   const items = await (await read(block({ repeatsAfterRule: [{ ruleId: "rul_1", stage: "future-stage", repeats: 2 }] }))).findAllByRole("listitem");
   expect(items[0]!.textContent).toBe("future-stage rule: 2 repeats");
  });
- it("says at least when the server could only count up to its cap", async () => {
-  const section = await read(block({ repeatsAfterRuleLabel: "500+", repeatsAfterRule: [{ ruleId: "rul_1", stage: "build", repeats: 300 }, { ruleId: "rul_2", stage: "plan", repeats: 200 }] }));
-  expect(await section.findByText("At least 500 repeats came after a rule was accepted")).toBeTruthy();
-  expect(section.queryByText(/^500 repeats|500\+/u)).toBeNull();
-  expect((await section.findAllByRole("listitem")).map(item => item.textContent)).toEqual(["Build rule: at least 300 repeats", "Plan rule: at least 200 repeats"]);
+ it("says at least the sum when the server stopped reading corrections at its cap, and never shows the label's number as a count", async () => {
+  const section = await read(block({ repeatsAfterRuleLabel: "500+", repeatsAfterRule: [{ ruleId: "rul_1", stage: "build", repeats: 3 }, { ruleId: "rul_2", stage: "plan", repeats: 2 }] }));
+  expect(await section.findByText("At least 5 repeats came after a rule was accepted")).toBeTruthy();
+  expect((await section.findAllByRole("listitem")).map(item => item.textContent)).toEqual(["Build rule: at least 3 repeats", "Plan rule: at least 2 repeats"]);
+  expect(section.queryByText(/500/u)).toBeNull();
+ });
+ it("says at least 1 repeat in the singular when capped", async () => {
+  expect(await (await read(block({ repeatsAfterRuleLabel: "500+", repeatsAfterRule: [{ ruleId: "rul_1", stage: "build", repeats: 1 }] }))).findByText("At least 1 repeat came after a rule was accepted")).toBeTruthy();
+ });
+ it("computes the share without floating-point drift (57 of 200 is 29%)", async () => {
+  expect((await read(block({ thisMonth: { repeats: 57, corrections: 200, enoughData: true } }))).getByText("29% this month (57 of 200)")).toBeTruthy();
+ });
+ it("gives the direction in words, not only an arrow", async () => {
+  const section = await read(block({ lastMonthShare: 0.4 }));
+  expect(section.getByText("down from 40% last month").closest("span")!.textContent).toContain("down from");
+  expect(section.getByText("↓").getAttribute("aria-hidden")).toBe("true");
  });
 
  it("shows nothing when the overview has no learning block", async () => {

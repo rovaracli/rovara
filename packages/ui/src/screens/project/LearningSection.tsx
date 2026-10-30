@@ -147,7 +147,7 @@ export function LearningSection({ project }: { project: string }) {
  const read = useLearning(project), how = useHowWeWork(project), query = useQueryClient();
  const [show, setShow] = useState<{ dismissed: boolean; rules: boolean }>({ dismissed: false, rules: false }), [notice, setNotice] = useState<string>(), [confirmations, setConfirmations] = useState<Record<string, Confirmation>>({});
  const stages: Stages = how.data?.stages ?? [], names = new Map(stages.map(stage => [stage.id, stage.name])), layerId = how.data === undefined ? undefined : how.data.process.kind === "project_process" ? how.data.process.agentId : how.data.process.draftLayer?.agentId;
- useSuggestedRulesLink(read.data?.suggestions.some(item => OPEN_STATUSES.has(item.status)) === true);
+ useSuggestedRulesLink(read.data !== undefined, read.data?.suggestions.some(item => OPEN_STATUSES.has(item.status)) === true);
  if (read.isPending) return <section className="rv-learning" aria-label="Suggested rules"><Skeleton label={T.LOADING} /></section>;
  // The company has not opened the learning loop (the server answers NOT_FOUND): the feature is dormant, not broken, so nothing is shown.
  if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return null;

@@ -479,6 +479,18 @@ describe("opening How we work from the Home card's link", () => {
   expect(document.activeElement?.id).not.toBe("suggested-rules");
   expect(scrolled).not.toHaveBeenCalled();
  });
+ it("does not take the focus later when the person arrived with no open suggestions and one appears on a refetch", async () => {
+  spy();
+  const f = await open({ view: learningView({ suggestions: [] }) });
+  expect(scrolled).not.toHaveBeenCalled();
+  f.learning.view = learningView({ suggestions: [suggestion()] });
+  const reads = f.learningReads();
+  await f.query.invalidateQueries({ queryKey: ["learning"] });
+  await screen.findByRole("heading", { name: "Suggested rules (1)" });
+  await waitFor(() => expect(f.learningReads()).toBeGreaterThan(reads));
+  expect(scrolled).not.toHaveBeenCalled();
+  expect(document.activeElement?.id).not.toBe("suggested-rules");
+ });
  it("does nothing when the person clicks the How we work tab from the overview", async () => {
   spy();
   setup({ path: "/app/projects/payments" });
