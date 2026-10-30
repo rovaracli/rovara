@@ -341,6 +341,8 @@ export const AppNoteSchema = z.object({
   text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
   answeredAt: z.string().datetime().optional(),
   settledAt: z.string().datetime().optional(),
+  /** Set when the message was also given live to a running step's session (live steer): the next step shows it as already given, not as a fresh message. */
+  liveDeliveredAt: z.string().datetime().optional(),
 }).strict();
 
 export type SlackNote = z.infer<typeof SlackNoteSchema>;

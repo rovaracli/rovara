@@ -18,6 +18,18 @@ export type LiveSteerStep = (typeof LIVE_STEER_STEPS)[number];
 export const LIVE_STEER_AUTHORITIES = ["owner_instruction", "information"] as const;
 export type LiveSteerAuthority = (typeof LIVE_STEER_AUTHORITIES)[number];
 
+/**
+ * The line a step puts in its final answer when the owner's live message asks for a change outside the approved plan (it did not act on it). The worker reads it in code, stops the step with
+ * `WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE`, and the broker turns that into the step's blocked state (the owner decides) and marks the message "needs re-approval".
+ */
+export const LIVE_STEER_REAPPROVAL_MARKER = "RE-APPROVAL NEEDED:" as const;
+
+/** The fixed words a step's operation fails with when it stopped for re-approval; the ids of the owner's messages that asked follow it (server-made ids, never message text). */
+export const WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE = "a live message from the owner asks for a change outside the approved plan" as const;
+
+/** What a message says on its row once its step stopped for re-approval (a fixed word list; the message's text is never repeated). */
+export const LIVE_STEER_REAPPROVAL_REASON = "needs re-approval" as const;
+
 /** The longest message text a live steer carries (the same bound as a task note). */
 export const LIVE_STEER_TEXT_MAX_CHARS = 2_000;
 

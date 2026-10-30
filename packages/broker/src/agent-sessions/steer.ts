@@ -14,6 +14,7 @@ import {
   AppNoteSchema,
   ENDED_SESSION_STATUSES,
   INDEX_EXPIRY_ATTRIBUTE,
+  LIVE_STEER_REAPPROVAL_REASON,
   SESSION_ENDED_MESSAGE,
   SESSION_RETENTION_DAYS,
   WORKFLOW_THREAD_NOTES_MAX,
@@ -353,19 +354,68 @@ export async function deliverSteerToDevice(deps: SteerDependencies, orgId: OrgId
 }
 
 /**
- * A steer the worker took into its running step's session (live steer) is `delivered`: its message, the queue's count and the session's event, as a step taking a note does. The message's note
- * stays (it is read by the next step as before, so nothing is lost when the step fails and runs again). A message not queued any more is left as it is. Never throws: a message left queued is
- * settled by the next step that reads its note, or closed when the session ends. Answers whether it marked the message.
+ * A steer the worker took into its running step's session (live steer) is `delivered`: its message, the queue's count and the session's event, as a step taking a note does, and (with
+ * `taskId`) its note is marked `liveDeliveredAt` in the same transaction, so the next step shows it as already given live rather than as a fresh message. The note stays (a step that fails
+ * and runs again still reads it). A message not queued any more is left as it is. Never throws: a message left queued is settled by the next step that reads its note, or closed when the
+ * session ends. Answers whether it marked the message.
  */
-export async function deliverSteerLive(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<boolean> {
+export async function deliverSteerLive(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string, taskId?: string): Promise<boolean> {
   try {
     const session = await new AgentSessionStore(deps).get(orgId, sessionId);
     if (session === undefined) return false;
     const message = messageOf(await getItem(deps, messageKey(session, messageId)), session);
     if (message?.kind !== "steer" || message.delivery?.state !== "queued") return false;
-    return (await answerMessage(deps, session, message, { state: "delivered" })).wrote;
+    const live: TransactItem[] = taskId === undefined ? [] : [{
+      Update: {
+        TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: `NOTE#${messageId}` },
+        UpdateExpression: "SET liveDeliveredAt = :at", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(liveDeliveredAt)", ExpressionAttributeValues: { ":at": isoOf(deps.now()) },
+      },
+    }];
+    const answered = await answerMessage(deps, session, message, { state: "delivered" }, live);
+    if (answered.wrote) return true;
+    // The note could not be marked (it is gone, or marked already) while the message is still queued: the message is answered without it.
+    if (live.length > 0 && answered.message?.delivery?.state === "queued") return (await answerMessage(deps, session, message, { state: "delivered" })).wrote;
+    return false;
   } catch (error) {
     deps.log?.({ event: "agent_session.steer_deliver_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
+    return false;
+  }
+}
+
+/**
+ * A message the worker took live whose step then stopped for the owner's approval (the step's answer asked for a change outside the approved plan): the message keeps `delivered` and gains the
+ * fixed reason `needs re-approval`, and the session's timeline says so (a `status` line with the author's name, never the message's text). Idempotent: a message already marked, or not a
+ * delivered steer of this session, is left alone. Never throws. Answers whether it marked the message.
+ */
+export async function markSteerNeedsReapproval(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<boolean> {
+  try {
+    const session = await new AgentSessionStore(deps).get(orgId, sessionId);
+    if (session === undefined) return false;
+    const message = messageOf(await getItem(deps, messageKey(session, messageId)), session);
+    if (message?.kind !== "steer" || message.delivery?.state !== "delivered" || message.delivery.reason !== undefined) return false;
+    const at = isoOf(deps.now());
+    const change: TransactItem = {
+      Update: {
+        TableName: deps.tableName, Key: messageKey(session, messageId), UpdateExpression: "SET delivery = :delivery",
+        ConditionExpression: "attribute_exists(pk) AND delivery.#state = :delivered AND attribute_not_exists(delivery.reason)",
+        ExpressionAttributeNames: { "#state": "state" },
+        ExpressionAttributeValues: { ":delivery": { state: "delivered", at: message.delivery.at, reason: LIVE_STEER_REAPPROVAL_REASON }, ":delivered": "delivered" },
+      },
+    };
+    const event = sessionEventItem(deps, session, {
+      eventId: sessionEventId("steer_needs_reapproval", messageId), at, type: "status", actor: { kind: "agent" }, source: message.source === "linear" ? "linear" : "app", messageId,
+      text: `${agentName(session) ?? THE_AGENT} needs the owner's approval for ${message.author.name}'s message: it asks for a change outside the approved plan.`,
+    });
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change, event] }));
+    } catch (error) {
+      if (!onlyTheEventCancelled(error, 1)) throw error;
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change] }));
+    }
+    return true;
+  } catch (error) {
+    // The message was marked meanwhile (a condition failed): nothing more to do. Any other failure is only logged by name.
+    if (failedIndexes(error) === undefined) deps.log?.({ event: "agent_session.steer_reapproval_mark_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
     return false;
   }
 }

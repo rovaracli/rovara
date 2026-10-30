@@ -59,6 +59,8 @@ export interface PiSessionHandle {
   prompt(text: string): Promise<void>;
   /** Queues a message the model reads before its next call, while a prompt runs. */
   steer?(text: string): Promise<void>;
+  /** Whether pi is streaming a prompt now. A message queued on an idle session is used only by the next prompt (or lost when the session ends), so live steer gives one only while this is true. */
+  isStreaming?(): boolean;
   abort(): Promise<void>;
   /** The model and the thinking level the session actually runs with, read back after creation. */
   getModel(): { provider: string; modelId: string; thinkingLevel?: PiThinkingLevel };
@@ -484,6 +486,7 @@ async function createDefaultSession(
       prompt: async (text) => session.prompt(text, { expandPromptTemplates: false }),
       // Pi 0.99 returns a disposition ("handled" | "queued"); the adapter's contract stays Promise<void>.
       steer: async (text) => { await session.steer(text); },
+      isStreaming: () => session.isStreaming,
       abort: async () => session.abort(),
       // A routed session runs on rovara-route under the company's alias; it is reported as the catalog model the route names (Task 27).
       getModel: () => ({

@@ -28,6 +28,14 @@ export interface LiveSteerDependencies extends Pick<SteerDependencies, "document
   callbackSigningKey?: string | undefined;
 }
 
+/**
+ * The kill switch: live steer is on only when the broker's `LIVE_STEER_ENABLED` is exactly "1" (default off). Off, `sendSessionMessage` never enqueues a live steer and a message behaves exactly
+ * as it did before this feature (a note for the next step). Turn it on only after the dispatcher and the worker image that carry `task.liveSteer.v1` are live; it is also the rollback lever.
+ */
+export function liveSteerFromEnvironment(callbackSigningKey: string, env: Record<string, string | undefined> = process.env): { callbackSigningKey: string } | undefined {
+  return env["LIVE_STEER_ENABLED"] === "1" ? { callbackSigningKey } : undefined;
+}
+
 /** How long an undelivered live steer lives in the table (its text is in it): a day is far past the dispatcher's own bounded retries. */
 const OUTBOX_LIFETIME_SECONDS = 86_400;
 

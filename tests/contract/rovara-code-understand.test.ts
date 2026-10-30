@@ -5,7 +5,15 @@ import { fixtureActor } from "../support/money-authority.js";
 //
 // The production flag (`rovaraCodeV2Live` / ROVARA_CODE_V2_FOR_NEW_ORGS) stays off: these tests turn it on through `agents: { rovaraCodeV2Live: true }`.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import type * as liveSteerReapproval from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
+import { settleLiveSteerReapproval } from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
+
+// Wrapped, not replaced: the real function runs; the spy only proves the broker's result path calls it for a re-approval stop.
+vi.mock("../../packages/broker/src/agent-sessions/live-steer-reapproval.js", async (importOriginal) => {
+  const original = await importOriginal<typeof liveSteerReapproval>();
+  return { ...original, settleLiveSteerReapproval: vi.fn(original.settleLiveSteerReapproval) };
+});
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { applyAgentStep, stepForOperation } from "../../packages/broker/src/agents/dispatch.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
@@ -30,6 +38,7 @@ import {
   type IntentAssessment, type IntentQuestion,
 } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "../../packages/contracts/src/live-steer.js";
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/task-workflow-node.js";
 import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -425,6 +434,19 @@ describe("a version 2 task starts by understanding", () => {
     const message = workflowMessage({ taskId: run.taskId, workflow: workflow as never, project: "payments" })!;
     expect(message.text).toContain("couldn't verify the base rule files");
     expect(JSON.stringify(message)).toContain("agentx_workflow_retry_plan");
+  });
+
+  // Live steer: the owner's live message asked for a change outside the approved plan and Understand stopped for it: a visible block with its own fixed reason for the owner to decide, and nothing is planned or restarted.
+  it("blocks with the fixed re-approval reason when the owner's live message asked for a change outside the approved plan, plans nothing, and starts no second Understand", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finish(run.workspaceId, run.operationId, "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapproval });
+    expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
+    await t.sweep();
+    expect(t.operations(run.workspaceId).filter((item) => item.workflowMode === "UNDERSTAND")).toHaveLength(1);
+    // The messages the stop names are marked "needs re-approval" by the broker's result path (the marking itself is tested in live-steer-dispatch.test.ts).
+    expect(vi.mocked(settleLiveSteerReapproval)).toHaveBeenCalledWith(expect.anything(), run.taskId, expect.stringContaining("msg_0123456789abcdefghij"));
   });
 
   // Programs earlier work left running could not be stopped before Understand read anything: it stops visibly, with its own fixed reason, and never starts again by itself.

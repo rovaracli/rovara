@@ -11,6 +11,7 @@ import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonic
 import { SlackThreadWorkspaceResultSchema } from "@agentx/contracts";
 import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
 import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "../../packages/contracts/src/live-steer.js";
 import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -2348,6 +2349,27 @@ describe("exits for blocked work (Task 16)", () => {
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN", state: "RUNNING" });
     expect((await harness.dev(MAYA, "POST", route, body)).status).toBe(200);
     expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(2);
+  });
+
+  // Live steer: the owner's live message asked for a change outside the approved plan and the step stopped for it: its own fixed block reason (the owner decides), never a generic failure, and nothing starts again by itself.
+  it("blocks planning with the fixed re-approval reason when the owner's live message asked for a change outside the approved plan", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
+    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")?.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
+    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapproval });
+    expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+  });
+
+  it("blocks coding with the fixed re-approval reason when the owner's live message asked for a change outside the approved plan, and does not send it back by itself", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
+    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapproval });
+    expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
   });
 
   it("never lets the agent's own check claims stand in when no check was selected: review only records none, and no stored policy stops", async () => {

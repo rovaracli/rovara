@@ -3,10 +3,12 @@
 // ends FAILED. Compute is never started for a message, no operation record is touched, and the text is never in a log or an error.
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { workspaceSessionKey } from "../../packages/contracts/src/index.js";
+import { AppNoteSchema, LIVE_STEER_REAPPROVAL_REASON, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, workspaceSessionKey } from "../../packages/contracts/src/index.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createLiveSteerDispatch } from "../../packages/broker/src/agent-sessions/live-steer-dispatch.js";
 import { deliverSteerLive } from "../../packages/broker/src/agent-sessions/steer.js";
+import { reapprovalMessageIds, settleLiveSteerReapproval } from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
+import { threadNotesPromptSection } from "../../packages/broker/src/aws/developer-tasks.js";
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
 import { agentSessionKey } from "../../packages/contracts/src/index.js";
 import { ORG_A, PRIYA } from "../support/agent-session-world.js";
@@ -132,5 +134,70 @@ describe("the dispatcher delivering a live steer", () => {
     expect(await handler(event(1))).toEqual({ batchItemFailures: [{ itemIdentifier: "m3" }] });
     await handler(event(2));
     expect(s.posts).toHaveLength(0);
+  });
+});
+
+describe("a message given live is not shown again as a fresh message (I4)", () => {
+  const noteOf = (f: Awaited<ReturnType<typeof setup>>["f"]) => AppNoteSchema.parse(Object.fromEntries(Object.entries(f.notes()[0]!).filter(([key]) => key !== "pk" && key !== "sk" && key !== "entityType")));
+
+  it("when the worker's session took it, its note is marked liveDeliveredAt, and the next step's prompt shows it as already given to the running step", async () => {
+    const s = await setup();
+    await s.handler(1);
+    const note = noteOf(s.f);
+    expect(note.liveDeliveredAt).toBe(new Date(s.f.w.clock.now).toISOString());
+    const section = threadNotesPromptSection([note], "n0nce");
+    expect(section).toContain('live_delivered="already given to the running step when it was sent; not a new message"');
+    // The note is still there for a step that fails and runs again.
+    expect(section).toContain("LIVE-TEXT-4471");
+  });
+
+  it("a message the worker did not take (not_running) stays an ordinary note, shown as before", async () => {
+    const s = await setup({ answer: { accepted: true, outcome: "not_running" } });
+    await s.handler(1);
+    const note = noteOf(s.f);
+    expect(note.liveDeliveredAt).toBeUndefined();
+    expect(threadNotesPromptSection([note], "n0nce")).not.toContain("live_delivered");
+  });
+
+  it("delivering still marks the message when its note cannot be marked (the note is gone): the message is answered without it", async () => {
+    const s = await setup();
+    s.f.w.db.delete({ pk: `DEVTASK#${s.f.made.taskId}`, sk: `NOTE#${s.message.messageId}` });
+    await s.handler(1);
+    expect(s.messageNow()["delivery"]).toMatchObject({ state: "delivered" });
+  });
+});
+
+describe("a step that stopped for re-approval marks the owner's message (I2)", () => {
+  const stop = (messageId: string) => `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (${messageId})`;
+
+  it("reads the ids a stop names, and nothing from any other error", () => {
+    expect(reapprovalMessageIds(stop("msg_0123456789abcdefghij"))).toEqual(["msg_0123456789abcdefghij"]);
+    expect(reapprovalMessageIds(`msg_0123456789abcdefghij ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE}`)).toEqual(["msg_0123456789abcdefghij"]);
+    expect(reapprovalMessageIds("the model stopped (msg_0123456789abcdefghij)")).toEqual([]);
+    expect(reapprovalMessageIds(undefined)).toEqual([]);
+  });
+
+  it("the delivered message keeps delivered and gains the fixed reason, the session's timeline says so without the text, and a repeat changes nothing", async () => {
+    const s = await setup();
+    await s.handler(1);
+    const deps = { documentClient: s.f.w.db, tableName: "state", now: () => s.f.w.clock.now };
+    expect(await settleLiveSteerReapproval(deps, s.f.made.taskId, stop(s.message.messageId))).toBe(1);
+    expect(s.messageNow()["delivery"]).toMatchObject({ state: "delivered", reason: LIVE_STEER_REAPPROVAL_REASON });
+    const events = s.f.w.db.find((item) => item.pk === agentSessionKey(ORG_A, s.f.made.sessionId, "META").pk && String(item.sk).startsWith("EVENT#") && item["messageId"] === s.message.messageId);
+    const told = events.find((item) => String(item["text"]).includes("needs the owner's approval"));
+    expect(told).toMatchObject({ type: "status", actor: { kind: "agent" } });
+    expect(JSON.stringify(events)).not.toContain("LIVE-TEXT-4471");
+    expect(await settleLiveSteerReapproval(deps, s.f.made.taskId, stop(s.message.messageId))).toBe(0);
+    expect(events.filter((item) => String(item["text"]).includes("needs the owner's approval"))).toHaveLength(1);
+  });
+
+  it("leaves a message that is still queued, another error, and an unknown task alone", async () => {
+    const s = await setup({ answer: { accepted: true, outcome: "not_running" } });
+    await s.handler(1);
+    const deps = { documentClient: s.f.w.db, tableName: "state", now: () => s.f.w.clock.now };
+    expect(await settleLiveSteerReapproval(deps, s.f.made.taskId, stop(s.message.messageId))).toBe(0);
+    expect(s.messageNow()["delivery"]).toMatchObject({ state: "queued" });
+    expect(await settleLiveSteerReapproval(deps, s.f.made.taskId, "the model stopped")).toBe(0);
+    expect(await settleLiveSteerReapproval(deps, "00000000-0000-4000-8000-000000000000", stop(s.message.messageId))).toBe(0);
   });
 });

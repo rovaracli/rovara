@@ -36,6 +36,8 @@ export const WORKFLOW_BLOCK_REASONS = {
   ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
   /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
   stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
+  /** A step stopped because the owner's live message asked for a change outside the approved plan (WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE): the owner decides. */
+  liveSteerReapproval: "A live message from the owner asks for a change outside the approved plan, so this step stopped for the owner's approval. To approve the change, put it in a note and retry or send the task back; to leave it out, retry the step as it is.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
   leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
   /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */

@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
@@ -45,6 +45,7 @@ import {
 } from "./pi-session.js";
 import { verifyCheckedOutHeads, type PreparationManifest } from "./prepare.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "./cancel.js";
+import { reapprovalStop, steerStreaming } from "./steer-invocation.js";
 import type { FeedbackApprovalAuthorizer, FeedbackBundleReader } from "./callback-client.js";
 import { readCheckHistory, restoreCheckHistory } from "./verification/check-history.js";
 import { candidateUnchangedSinceBase, commitCandidateWorktree, readCandidateRepositories, readCommittedCandidateSourceExport, type CandidateRepositoryInput, type CommittedCandidateSourceExport } from "./verification/candidate.js";
@@ -766,12 +767,12 @@ async function runTask(
   // The sessions of the parts that are running now (parallel parts): a cancel stops them with the main session.
   const partSessions = new Set<PiSessionHandle>();
   // Parallel parts build side by side while the main session waits for them, so a live message goes to the parts that run now, else to the main session.
-  const steerRunningSessions = async (text: string): Promise<void> => {
-    for (const target of partSessions.size > 0 ? [...partSessions] : [session]) await target.steer?.(text);
-  };
+  // Only a session that is streaming a prompt takes a live message (steer-invocation.ts): between two waves of parts, during AgentX's checks or the publish, and after the last turn the answer is
+  // "not taken" and the note is the path.
+  const liveTargets = (): PiSessionHandle[] => (partSessions.size > 0 ? [...partSessions] : [session]);
   const unregisterCancellation = dependencies.cancellationController?.register(invocation.operationId, {
     // Live steer (steer-invocation.ts): a person's message for the running Understand, Plan or Implement session; no other step (reviews, the plan check, setup drafts) takes one.
-    ...(understanding || payloadMode === "PLAN" || payloadMode === "IMPLEMENT" ? { steer: steerRunningSessions } : {}),
+    ...(understanding || payloadMode === "PLAN" || payloadMode === "IMPLEMENT" ? { steer: (text: string) => steerStreaming(liveTargets(), text), streaming: () => liveTargets().some((target) => target.isStreaming?.() === true) } : {}),
     abort: async () => {
       monitor.stop();
       verificationStop.abort();
@@ -1005,6 +1006,9 @@ async function runTask(
         if (promptError !== undefined) throw promptError.error;
         const modelFailure = failedTurn(lastAssistant, { note: lastModelNote });
         if (modelFailure !== undefined) throw modelFailure;
+        // The owner's live message asked for a change outside the approved plan and the step did not act on it: the step stops here and the owner is asked (the broker blocks the step).
+        const reapproval = reapprovalStop(finalText, dependencies.cancellationController?.liveSteers(invocation.operationId) ?? []);
+        if (reapproval !== undefined) throw reapproval;
       };
       /**
        * Rovara Code v2: the independent parts of the approved plan, each in a working copy of its own, up to `maxParallel` at once. Each part is a Pi session of its own on this
@@ -1099,6 +1103,8 @@ async function runTask(
             if (context.signal.aborted) throw new Error("work breakdown part stopped because the operation was cancelled");
             const modelFailure = failedTurn(lastOutcome, { note: lastNote });
             if (modelFailure !== undefined) throw modelFailure;
+            const reapproval = reapprovalStop(lastText, dependencies.cancellationController?.liveSteers(invocation.operationId) ?? []);
+            if (reapproval !== undefined) throw reapproval;
             const treeSha = await capturePartTree(copy, input.repositoryDirectory);
             const summary = (lastText ?? "").trim();
             return { treeSha, ...(summary === "" ? {} : { summary: redactText(summary).slice(0, 2_000) }) };
@@ -1132,6 +1138,9 @@ async function runTask(
             if (spent !== undefined) throw spent;
             const refused = error.causes.find((cause) => cause instanceof AgentXError && cause.code === "MODEL_NOT_ALLOWED");
             if (refused !== undefined) throw refused;
+            // The owner's live message asked for a change outside the approved plan and a part stopped for it: the run ends with the fixed words (the broker blocks the step for the owner).
+            const reapproval = error.causes.find((cause) => cause.message.includes(WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE));
+            if (reapproval !== undefined) throw reapproval;
           }
           throw error;
         }

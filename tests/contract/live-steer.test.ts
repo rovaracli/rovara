@@ -3,9 +3,10 @@
 // (information only). A message can never reach a budget, a tool, a permission or an approval, and its text is in the outbox item and the note and nowhere else (no log, no event).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { TEXT, liveSteerWorld, type Item } from "../support/live-steer-world.js";
+import { KEY, TEXT, liveSteerWorld, type Item } from "../support/live-steer-world.js";
 import { LiveSteerPayloadSchema, WorkerInvocationSchema, liveSteerOperationId, sessionQueuedSteersKey } from "../../packages/contracts/src/index.js";
-import { enqueueLiveSteer, livePersonLabel } from "../../packages/broker/src/agent-sessions/live-steer.js";
+import { enqueueLiveSteer, livePersonLabel, liveSteerFromEnvironment } from "../../packages/broker/src/agent-sessions/live-steer.js";
+import { sendSessionMessage } from "../../packages/broker/src/agent-sessions/messages.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, ORG_A, PRIYA } from "../support/agent-session-world.js";
 
@@ -154,5 +155,26 @@ describe("nothing a person wrote is in a log or an event", () => {
     expect(holders.sort()).toEqual(["DEVTASK/NOTE", "ORG/MESSAGE", "OUTBOX/OUTBOX"]);
     expect(JSON.stringify(f.logs)).not.toContain("LIVE-TEXT-4471");
     expect(JSON.stringify(f.everything().filter((item) => String(item.sk).startsWith("EVENT#")))).not.toContain("LIVE-TEXT-4471");
+  });
+});
+
+describe("the broker's kill switch (I3)", () => {
+  it("is off unless LIVE_STEER_ENABLED is exactly 1: unset, 0, true and anything else give no live steer", () => {
+    expect(liveSteerFromEnvironment(KEY, {})).toBeUndefined();
+    for (const value of ["", "0", "true", "yes", "on", " 1"]) expect(liveSteerFromEnvironment(KEY, { LIVE_STEER_ENABLED: value })).toBeUndefined();
+    expect(liveSteerFromEnvironment(KEY, { LIVE_STEER_ENABLED: "1" })).toEqual({ callbackSigningKey: KEY });
+  });
+
+  it("off: a message to a running step is exactly the old note path (no outbox item, same message and note); on: the live item is written", async () => {
+    const off = world();
+    const offMessage = await sendSessionMessage({ ...off.deps, liveSteer: liveSteerFromEnvironment(KEY, {}) }, off.w.caller(PRIYA), off.made.sessionId, { requestId: randomUUID(), kind: "steer", text: TEXT });
+    expect(off.outbox()).toHaveLength(0);
+    expect(off.notes()).toHaveLength(1);
+    expect(offMessage.delivery?.state).toBe("queued");
+    const on = world();
+    const onMessage = await sendSessionMessage({ ...on.deps, liveSteer: liveSteerFromEnvironment(KEY, { LIVE_STEER_ENABLED: "1" }) }, on.w.caller(PRIYA), on.made.sessionId, { requestId: randomUUID(), kind: "steer", text: TEXT });
+    expect(on.outbox()).toHaveLength(1);
+    expect(on.notes()).toHaveLength(1);
+    expect(onMessage.delivery?.state).toBe("queued");
   });
 });

@@ -60,7 +60,7 @@ export function createLiveSteerDispatch(deps: LiveSteerDispatchDependencies) {
         await finish(record, "invalid");
         return "invalid";
       }
-      const { orgId, sessionId, messageId } = fields.data;
+      const { orgId, sessionId, messageId, taskId } = fields.data;
       // The message may have been answered already (the step read its note, the session ended), and the step it was for may be over: then it is only a note.
       if (!await steerStillQueued(deps, orgId, sessionId, messageId)) { await finish(record, "stale"); return "stale"; }
       const workspace = await read({ pk: `WORKSPACE#${record.workspaceId}`, sk: "META" });
@@ -81,7 +81,7 @@ export function createLiveSteerDispatch(deps: LiveSteerDispatchDependencies) {
       let answer: z.infer<typeof LiveSteerAnswerSchema>;
       try { answer = LiveSteerAnswerSchema.parse(JSON.parse(response.body)); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "the worker's answer to a live message could not be read"); }
       if (answer.outcome === "not_ready") throw agentXError("RUNTIME_UNAVAILABLE", "the step's session is not open yet");
-      if (answer.outcome === "steered") await deliverSteerLive(deps, orgId, sessionId, messageId);
+      if (answer.outcome === "steered") await deliverSteerLive(deps, orgId, sessionId, messageId, taskId);
       await finish(record, answer.outcome);
       return answer.outcome;
     },
