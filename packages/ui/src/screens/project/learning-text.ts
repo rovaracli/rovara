@@ -45,6 +45,10 @@ export const removedMessage = (version: number | undefined) => version === undef
 export const acceptedForText = (stageName: string, projectWide = false) => projectWide ? "Accepted for every step except reviewers. To use it elsewhere, edit How we work." : `Accepted for the ${stageName} step. To use it elsewhere, edit How we work.`;
 /** Kept at the top of the section after a write found its suggestion gone and the list was read again. */
 export const GONE_MESSAGE = "That suggestion is gone. The list was refreshed.";
+/** Kept at the top of the section after Accept, Dismiss or Reopen met a company that turned suggestions off; the list was read again. */
+export const SUGGESTIONS_OFF_MESSAGE = "Suggestions were turned off for your company. The list was refreshed.";
+export const COLLECTING_TEXT = { HEADING: "Learning is collecting", WHERE: "A company owner or admin can turn suggestions on in ", LINK: "Company settings → How we work" } as const;
+export const collectingCount = (corrections: number) => `Suggestions are off for your company. Rovara has collected ${String(corrections)} ${corrections === 1 ? "correction" : "corrections"} so far.`;
 export const DISMISSED_MESSAGE = "Dismissed. You can reopen it from the Dismissed list.";
 export const REOPENED_MESSAGE = "Reopened. It is back in the suggested rules.";
 export const whyText = (count: number) => `Why: said ${String(count)} ${count === 1 ? "time" : "times"}`;
@@ -124,6 +128,7 @@ export const METRIC_TEXT = {
  SAME: "same as last month",
  PROJECT_WIDE_RULE: "Project-wide",
  AFTER_RULE_LIST: "Repeats after an accepted rule",
+ SUGGESTIONS_OFF: "Suggestions are off for your company.",
 } as const;
 const plural = (count: number, one: string, many: string) => `${String(count)} ${count === 1 ? one : many}`;
 /** A share of this month's corrections, as a whole percent (0 when there were none). */

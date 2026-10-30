@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { userEvent } from "@testing-library/user-event";
@@ -507,5 +507,79 @@ describe("opening How we work from the Home card's link", () => {
   await new Promise(resolve => setTimeout(resolve, 50));
   expect(document.activeElement).not.toBe(heading);
   expect(scrolled).not.toHaveBeenCalled();
+ });
+});
+
+describe("while the company's suggestions are off (Learning is collecting)", () => {
+ const collecting = (corrections = 5, overrides: Record<string, unknown> = {}) => learningView({ suggestions: [], suggestionsState: { state: "collecting", corrections }, ...overrides });
+ const OFF = "Suggestions were turned off for your company. The list was refreshed.";
+ it("shows Learning is collecting, with the count and where to turn it on, instead of the empty state", async () => {
+  await open({ view: collecting(5) });
+  const section = screen.getByRole("region", { name: "Suggested rules" });
+  expect(within(section).getByRole("heading", { name: "Learning is collecting" })).toBeTruthy();
+  expect(within(section).getByText("Suggestions are off for your company. Rovara has collected 5 corrections so far.")).toBeTruthy();
+  expect(within(section).getByText(/A company owner or admin can turn suggestions on in/u).textContent).toContain("Company settings → How we work");
+  expect(within(section).getByRole("link", { name: "Company settings → How we work" }).getAttribute("href")).toBe("/app/admin/how-we-work");
+  expect(within(section).queryByText(/^No suggested rules yet/u)).toBeNull();
+  expect(screen.queryAllByRole("region", { name: /^Suggested rule for/u })).toHaveLength(0);
+ });
+ it("says 1 correction in the singular and 0 corrections when there are none", async () => {
+  await open({ view: collecting(1) });
+  expect(screen.getByText("Suggestions are off for your company. Rovara has collected 1 correction so far.")).toBeTruthy();
+ });
+ it("never shows an open suggestion that arrives while collecting", async () => {
+  await open({ view: collecting(0, { suggestions: [suggestion()] }) });
+  expect(screen.getByText("Suggestions are off for your company. Rovara has collected 0 corrections so far.")).toBeTruthy();
+  expect(screen.queryAllByRole("region", { name: /^Suggested rule for/u })).toHaveLength(0);
+  expect(screen.getByRole("heading", { name: "Suggested rules (0)" })).toBeTruthy();
+ });
+ it("still lists the Dismissed and Added by suggestions lists, read-only for Dismissed (no Reopen: the server refuses it while off)", async () => {
+  const f = await open({ view: collecting(3, { dismissed: [dismissed()], rules: [rule()] }) });
+  fireEvent.click(screen.getByRole("button", { name: "Dismissed (1)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Added by suggestions (1)" }));
+  expect(within(screen.getByRole("list", { name: "Dismissed suggestions" })).getByText(/Plan/u)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Reopen" })).toBeNull();
+  expect(within(screen.getByRole("list", { name: "Rules added by suggestions" })).getByText("Run the linter first.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove rule" })).toBeTruthy();
+  expect(f.learningWrites()).toHaveLength(0);
+ });
+ it("shows Reopen again when suggestions are on", async () => {
+  await open({ view: learningView({ suggestions: [], dismissed: [dismissed()], suggestionsState: { state: "on" } }) });
+  fireEvent.click(screen.getByRole("button", { name: "Dismissed (1)" }));
+  expect(screen.getByRole("button", { name: "Reopen" })).toBeTruthy();
+ });
+ it("behaves as today when suggestionsState is missing or on", async () => {
+  await open({ view: learningView({ suggestions: [] }) });
+  expect(screen.getByText("No suggested rules yet. Rovara suggests one when the same correction comes up twice.")).toBeTruthy();
+  expect(screen.queryByText("Learning is collecting")).toBeNull();
+  cleanup();
+  await open({ view: learningView({ suggestions: [suggestion()], suggestionsState: { state: "on" } }) });
+  expect(cards()).toHaveLength(1);
+  expect(screen.queryByText("Learning is collecting")).toBeNull();
+ });
+ it("an Accept refused with LEARNING_SUGGESTIONS_OFF shows its copy, reads the list again and shows the collecting state", async () => {
+  const f = await open({ learn: request => { if (request.method !== "POST") return undefined;f.learning.view = collecting(2);return refuse("LEARNING_SUGGESTIONS_OFF", "untrusted server wording") ; } });
+  const reads = f.learningReads();
+  accept();
+  expect(await screen.findByText(OFF)).toBeTruthy();
+  await waitFor(() => expect(f.learningReads()).toBeGreaterThan(reads));
+  expect(await screen.findByRole("heading", { name: "Learning is collecting" })).toBeTruthy();
+  expect(screen.queryByText(/untrusted server wording/u)).toBeNull();
+  expect(f.learningWrites()).toHaveLength(1);
+ });
+ it("a Dismiss and a Reopen refused with LEARNING_SUGGESTIONS_OFF show the same copy and read again", async () => {
+  const f = await open({ view: learningView({ suggestions: [suggestion()], dismissed: [dismissed()] }), learn: request => request.method === "POST" ? refuse("LEARNING_SUGGESTIONS_OFF", "x") : undefined });
+  fireEvent.click(screen.getByRole("button", { name: "Dismissed (1)" }));
+  const reads = f.learningReads();
+  fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+  expect(await screen.findByText(OFF)).toBeTruthy();
+  await waitFor(() => expect(f.learningReads()).toBeGreaterThan(reads));
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss…" }));fireEvent.click(screen.getByRole("radio", { name: "Wrong or not helpful" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
+  await waitFor(() => expect(f.learningWrites()).toHaveLength(2));
+  expect(await screen.findByText(OFF)).toBeTruthy();
+ });
+ for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
+  const f = await open({ view: collecting(4), theme });
+  await expectNoAxeViolations(f.container);
  });
 });

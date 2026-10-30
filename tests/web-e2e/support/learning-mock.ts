@@ -1,17 +1,22 @@
 // The project's learning routes for the "Suggested rules" journey: the view, accept, dismiss, reopen and remove. State lives for one scenario. Bodies are parsed by the contract's strict schemas, as the real routes do.
-import { ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerSchema, LearningCompanySettingsBodySchema, ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema } from "@agentx/contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
 import { mockCellOrigin } from "./port.js";
 interface Suggestion { id: string; stage: string; text: string; revision: number }
 interface Rule { id: string; stage: string; text: string; status: "active" | "removed"; processVersion: number }
 interface Dismissed { id: string; stage: string; at: string; kind: string; text: string }
 let state = fresh();
+// The company's master switch (for the project and the company page): on and chosen by the company, until a journey sets it with POST /__mock/learning-settings.
+let company = freshCompany();
+function freshCompany() { return { suggestions: "on" as "on" | "off", source: "company" as "company" | "install_default", revision: 1, corrections: 4 }; }
 function fresh() { return { suggestions: [{ id: "sug_build", stage: "build", text: "Add a test for every bug fix.", revision: 1 }, { id: "sug_plan", stage: "plan", text: "Name the files a plan will touch.", revision: 1 }] as Suggestion[], dismissed: [] as Dismissed[], rules: [] as Rule[], version: 2 }; }
-export function resetLearning(): void { state = fresh(); }
+export function resetLearning(): void { state = fresh();company = freshCompany(); }
+const off = () => ({ error: { code: "LEARNING_SUGGESTIONS_OFF", message: "Suggestions are off for this company." } });
 const source = (taskId: string, label: string) => ({ kind: "comment", taskId, label, at: "2026-10-28T10:00:00.000Z", standing: "member", href: `/review/${taskId}/task` });
 const view = () => LearningViewAnswerSchema.parse({
  settings: { prComments: "off", locked: false }, canDecide: true, skippedUnlinked: 0,
- suggestions: state.suggestions.map(item => ({ id: item.id, stage: item.stage, status: "open", proposedText: item.text, allFromOnePerson: false, lessSafe: false, lessSafeWords: [], overlaps: [], sources: [source("tsk_a", "Please add a test."), source("tsk_b", "Tests are missing again.")], revision: item.revision, sourceCount: 2, canDecide: true })),
+ ...(company.suggestions === "off" ? { suggestionsState: { state: "collecting", corrections: company.corrections } } : {}),
+ suggestions: company.suggestions === "off" ? [] : state.suggestions.map(item => ({ id: item.id, stage: item.stage, status: "open", proposedText: item.text, allFromOnePerson: false, lessSafe: false, lessSafeWords: [], overlaps: [], sources: [source("tsk_a", "Please add a test."), source("tsk_b", "Tests are missing again.")], revision: item.revision, sourceCount: 2, canDecide: true })),
  dismissed: state.dismissed.map(item => ({ id: item.id, stage: item.stage, dismissedAt: item.at, dismissKind: item.kind })),
  rules: state.rules.map(item => ({ id: item.id, stage: item.stage, text: item.text, status: item.status, processVersion: item.processVersion })),
 });
@@ -22,6 +27,7 @@ export async function learningMock({ url, method, body, json, record }: MockExch
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  const accept = new RegExp(`^${base}/suggestions/([A-Za-z0-9_-]+)/accept$`).exec(url.pathname), dismiss = new RegExp(`^${base}/suggestions/([A-Za-z0-9_-]+)/dismiss$`).exec(url.pathname), reopen = new RegExp(`^${base}/dismissed/([A-Za-z0-9_-]+)/reopen$`).exec(url.pathname), remove = new RegExp(`^${base}/rules/([A-Za-z0-9_-]+)/remove$`).exec(url.pathname);
  if (method !== "POST" || (accept === null && dismiss === null && reopen === null && remove === null)) return false;
+ if (company.suggestions === "off" && (accept !== null || dismiss !== null || reopen !== null)) { json(409, off());return true; }
  if (accept !== null) {
   const input = LearningAcceptBodySchema.parse(await body());record(input);
   const found = state.suggestions.find(item => item.id === accept[1]);
@@ -49,6 +55,20 @@ export async function learningMock({ url, method, body, json, record }: MockExch
  state.version += 1;rule.status = "removed";json(200, { outcome: "published", version: state.version });return true;
 }
 
+/** Answers GET and PUT /v1/web/org/learning-settings (any scenario) and the journey's POST /__mock/learning-settings, which sets the switch before the page opens. */
+export async function learningSettingsMock({ url, method, body, json, record }: Pick<MockExchange, "url" | "method" | "body" | "json" | "record">): Promise<boolean> {
+ const path = "/v1/web/org/learning-settings", answer = () => LearningCompanySettingsAnswerSchema.parse({ suggestions: company.suggestions, source: company.source, revision: company.revision, canChange: true });
+ if (url.pathname === "/__mock/learning-settings" && method === "POST") { company = { ...company, ...(await body() as Partial<typeof company>) };json(200, { ok: true });return true; }
+ if (url.pathname !== path) return false;
+ if (method === "GET") { json(200, answer());return true; }
+ if (method !== "PUT") return false;
+ const input = LearningCompanySettingsBodySchema.parse(await body());record(input);
+ if (input.expectedRevision !== company.revision) { json(409, { error: { code: "LEARNING_SETTINGS_CHANGED", message: "Changed." } });return true; }
+ company = { ...company, suggestions: input.suggestions, source: "company", revision: company.revision + 1 };json(200, answer());return true;
+}
+
 /** The overview's learning block (3 of 12 corrections repeated, down from 40% last month, 2 repeats after a Build rule) and Home's one "Suggested rules" card, both for the `project` scenario. */
-export const overviewLearning = () => ProjectOverviewLearningSchema.parse({ thisMonth: { repeats: 3, corrections: 12, enoughData: true }, lastMonthShare: 0.4, repeatsAfterRule: [{ ruleId: "rul_old", stage: "build", repeats: 2 }] });
+export const overviewLearning = () => ProjectOverviewLearningSchema.parse({ thisMonth: { repeats: 3, corrections: 12, enoughData: true }, lastMonthShare: 0.4, repeatsAfterRule: [{ ruleId: "rul_old", stage: "build", repeats: 2 }], ...(company.suggestions === "off" ? { suggestions: { state: "collecting", corrections: company.corrections } } : {}) });
 export const ruleSuggestionCard = () => ({ cardId: "rule_suggestion:abc123", kind: "rule_suggestion" as const, title: "Suggested rules for \u201cpayments\u201d", reason: "2 suggested rules to review in \u201cpayments\u201d", at: "2026-10-29T12:00:00.000Z", buttons: [{ action: "open" as const, label: "Review", method: "GET" as const, href: mockCellOrigin() + "/app/projects/payments?tab=how-we-work" }] });
+/** Home's cards for the `project` scenario: the server sends no rule_suggestion card while the company's suggestions are off. */
+export const homeSuggestionCards = () => company.suggestions === "off" ? [] : [ruleSuggestionCard()];

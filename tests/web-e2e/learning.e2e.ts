@@ -78,3 +78,40 @@ test("Home's Review opens How we work at the Suggested rules section", async ({ 
  await expect(heading).toBeFocused();
  await expect(heading).toBeInViewport();
 });
+
+const setSwitch = (request: APIRequestContext, input: Record<string, unknown>) => request.post("/__mock/learning-settings", { data: input });
+test("a project whose company has suggestions off shows Learning is collecting, with no suggestion cards and no Home card", async ({ page, context, request, baseURL }) => {
+ await signIn(context, request, baseURL);await setSwitch(request, { suggestions: "off", source: "install_default", revision: 0, corrections: 4 });await mockRealtime(page);
+ await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/projects/payments");
+ await expect(page.getByRole("region", { name: "Same correction given twice" }).getByText("Suggestions are off for your company.")).toBeVisible();
+ await page.getByRole("tab", { name: "How we work" }).click();
+ const section = page.getByRole("region", { name: "Suggested rules" });
+ await expect(section.getByRole("heading", { name: "Learning is collecting" })).toBeVisible();
+ await expect(section.getByText("Suggestions are off for your company. Rovara has collected 4 corrections so far.")).toBeVisible();
+ await expect(page.getByRole("region", { name: /^Suggested rule for/u })).toHaveCount(0);
+ await section.getByRole("button", { name: "Dismissed (0)" }).click();
+ await expect(section.getByText("Nothing has been dismissed.")).toBeVisible();
+ await checkA11y(page, { theme: "dark" });
+ await page.goto("/app");
+ await expect(page.getByRole("heading", { name: /Suggested rules for/u })).toHaveCount(0);
+});
+test("an admin turns suggestions on from the company How we work page, through the confirm step", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "admin" } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await page.route("**/v1/web/org/model-sources", route => route.fulfill({ json: { sources: [], order: ["rovara"] } }));
+ await setSwitch(request, { suggestions: "off", source: "install_default", revision: 0 });
+ await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/admin/how-we-work");
+ const row = page.getByRole("region", { name: "Rule suggestions" });
+ await expect(row.getByText("Off", { exact: true })).toBeVisible();
+ await expect(row.getByText("(Rovara's default for this install)")).toBeVisible();
+ await row.getByRole("button", { name: "Turn on" }).click();
+ await expect(row.getByText("Turning suggestions on can show suggestions built from corrections collected while they were off.")).toBeVisible();
+ await checkA11y(page, { theme: "dark" });
+ await row.getByRole("button", { name: "Turn on" }).click();
+ await expect(row.getByText("On", { exact: true })).toBeVisible();
+ await expect(row.getByText("(Rovara's default for this install)")).toHaveCount(0);
+ await expect(row.getByRole("button", { name: "Turn off" })).toBeVisible();
+ const put = (await (await request.get("/__mock/requests")).json() as Sent).find(item => item.method === "PUT" && item.path === "/v1/web/org/learning-settings");
+ expect(put?.body).toEqual({ expectedRevision: 0, suggestions: "on" });
+ await checkA11y(page, { theme: "light" });
+});

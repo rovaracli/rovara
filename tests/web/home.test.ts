@@ -122,6 +122,9 @@ it("revalidates forged Home write targets at the API boundary", async () => {
 it("never claims nothing needs you when the server still reports pending items", async () => {
  const f = setup({ cards: [], total: 14 });await screen.findByText("14 things need you");expect(screen.queryByText("Nothing needs you right now")).toBeNull();expect(screen.getByText("Showing 0 of 14")).toBeTruthy();expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();f.close();
 });
+it("shows no suggested-rules card when the server sends none (company suggestions are off)", async () => {
+ const f = setup({ cards: [], total: 0 });await screen.findByRole("heading", { name: "Nothing needs you right now" });expect(screen.queryByRole("heading", { name: /Suggested rules/u })).toBeNull();expect(screen.queryByRole("link", { name: "Review" })).toBeNull();f.close();
+});
 it("shows a suggested-rules card with its title and reason, and Review is an internal link to How we work", async () => {
  const href = "https://cell.example/app/projects/payments?tab=how-we-work";
  const f = setup({ cards: [{ cardId: "rule_suggestion:abc123", kind: "rule_suggestion", title: "Suggested rules for \u201cpayments\u201d", reason: "2 suggested rules to review in \u201cpayments\u201d", at: "2026-10-29T12:00:00.000Z", buttons: [{ action: "open", label: "Review", method: "GET", href }] }], total: 1 });

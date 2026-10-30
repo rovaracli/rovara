@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
@@ -119,6 +119,30 @@ describe("the Same correction given twice block", () => {
 
  for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
   const f = setup(block({ lastMonthShare: 0.4, repeatsAfterRule: [{ ruleId: "rul_1", stage: "build", repeats: 2 }] }), theme);
+  await screen.findByRole("region", { name: "Same correction given twice" });await expectNoAxeViolations(f.container);
+ });
+});
+
+describe("while the company's suggestions are off", () => {
+ const LINE = "Suggestions are off for your company.";
+ it("keeps the metric and adds one line when collecting", async () => {
+  const section = await read(block({ suggestions: { state: "collecting", corrections: 7 } }));
+  expect(section.getByText("25% this month (3 of 12)")).toBeTruthy();
+  expect(section.getByText("Lower is better: it means Rovara is learning your team's corrections.")).toBeTruthy();
+  expect(section.getAllByText(LINE)).toHaveLength(1);
+ });
+ it("shows the line with the not-enough-data wording too", async () => {
+  const section = await read(block({ thisMonth: { repeats: 0, corrections: 2, enoughData: false }, suggestions: { state: "collecting", corrections: 2 } }));
+  expect(section.getByText("Not enough corrections yet")).toBeTruthy();
+  expect(section.getByText(LINE)).toBeTruthy();
+ });
+ it("has no such line when on, or when the field is missing", async () => {
+  expect((await read(block({ suggestions: { state: "on" } }))).queryByText(LINE)).toBeNull();
+  cleanup();
+  expect((await read(block())).queryByText(LINE)).toBeNull();
+ });
+ for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
+  const f = setup(block({ suggestions: { state: "collecting", corrections: 7 } }), theme);
   await screen.findByRole("region", { name: "Same correction given twice" });await expectNoAxeViolations(f.container);
  });
 });

@@ -1,11 +1,12 @@
 // The v1.2 learning loop calls of the project page: the suggestions a project's corrections produced, and deciding them (design §6.2). The server decides who may, what is less safe and which standing counts; this file only sends and reads.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsBodySchema, LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema } from "@agentx/contracts/web";
 import type { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
 import { isConfirmUrl } from "../text/links.js";
 import { createApiClient } from "./client.js";
+import { ApiError } from "./errors.js";
 
 type ViewAnswer = ReturnType<typeof LearningViewAnswerReaderSchema.parse>;
 export type LearningView = ViewAnswer;
@@ -13,6 +14,8 @@ export type SuggestionView = ViewAnswer["suggestions"][number];
 export type RuleView = ViewAnswer["rules"][number];
 export type DismissedView = ViewAnswer["dismissed"][number];
 /** What a decision came to: it applied (`version` when the server says which), it waits for a second person (the confirmation page, when it is this site's), the rule was edited by hand, or an answer this build does not know. */
+export type CompanySuggestionsSettings = ReturnType<typeof LearningCompanySettingsAnswerReaderSchema.parse>;
+export const COMPANY_SETTINGS_PATH = "/v1/app/org/learning-settings";
 export type Decision = { kind: "applied"; version?: number } | { kind: "awaiting"; confirmUrl?: string; changes: string[] } | { kind: "needs_editor"; stage: string } | { kind: "done" };
 
 const base = (project: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/learning";
@@ -35,6 +38,14 @@ export function createLearningApi(host: AppHost) {
   return { kind: "done" };
  };
  return {
+  /** The company's master "suggestions" switch: any member reads it; `canChange` says whether this person may set it. */
+  companySettings: () => api.get(COMPANY_SETTINGS_PATH, LearningCompanySettingsAnswerReaderSchema),
+  /** Sent once from the browser session, never retried: a stale revision, a throttle or a refusal is thrown for the row to show. */
+  async setCompanySettings(input: z.input<typeof LearningCompanySettingsBodySchema>): Promise<CompanySuggestionsSettings> {
+   const result = await api.send("PUT", COMPANY_SETTINGS_PATH, LearningCompanySettingsBodySchema.parse(input), LearningCompanySettingsAnswerReaderSchema, NEVER);
+   if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page.");
+   return result.value;
+  },
   view: (project: string) => api.get(base(project), LearningViewAnswerReaderSchema),
   async accept(project: string, suggestionId: string, input: AcceptInput): Promise<Decision> {
    return decision(await api.send("POST", `${base(project)}/suggestions/${encodeURIComponent(suggestionId)}/accept`, LearningAcceptBodySchema.parse({ requestId: crypto.randomUUID(), ...input }), LearningAcceptAnswerReaderSchema as { parse(value: unknown): Answer }, NEVER));
@@ -53,3 +64,5 @@ export function createLearningApi(host: AppHost) {
 export function useLearningApi() { const host = useAppHost();return useMemo(() => createLearningApi(host), [host]); }
 export const learningKey = (project: string) => ["learning", project] as const;
 export function useLearning(project: string) { const api = useLearningApi();return useQuery({ queryKey: [...learningKey(project), "view"], queryFn: () => api.view(project) }); }
+export const companySettingsKey = ["learning", "company-settings"] as const;
+export function useCompanySuggestionsSettings() { const api = useLearningApi();return useQuery({ queryKey: companySettingsKey, queryFn: () => api.companySettings(), refetchOnWindowFocus: false }); }

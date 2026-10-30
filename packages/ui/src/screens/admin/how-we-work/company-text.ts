@@ -26,3 +26,21 @@ export const IMPACT_TEXT = { unchanged: "No change", changed: "Will change", blo
 export const UNKNOWN_REASON = "This project couldn't be checked.";
 /** A refusal or reason code in its fixed sentence; any other code is the generic one. */
 export const reasonText = (code: string): string => isRefusalCode(code) ? REFUSAL_TEXT[code] : UNKNOWN_REASON;
+
+/** The company "Rule suggestions" row (the master switch of the learning loop). */
+export const SUGGESTIONS = {
+ HEADING: "Rule suggestions",
+ HELP: "Rovara always collects your team's corrections. When suggestions are on, it suggests a rule once the same correction comes up twice.",
+ INSTALL_DEFAULT: "(Rovara's default for this install)",
+ READ_ONLY: "Only a company owner or admin can change this.",
+ CONFIRM: "Turning suggestions on can show suggestions built from corrections collected while they were off.",
+ CHANGED: "Someone else changed this. The setting was refreshed.",
+ FAILED: "Couldn't change the setting. Try again.",
+ LOAD_FAILED: "Couldn't load the suggestions setting.",
+ SAVED_ON: "Suggestions are on.",
+ SAVED_OFF: "Suggestions are off.",
+ TURN_ON: "Turn on",
+ TURN_OFF: "Turn off",
+ CANCEL: "Cancel",
+ RETRY: "Try again",
+} as const;
