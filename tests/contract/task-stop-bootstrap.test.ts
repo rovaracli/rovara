@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -152,4 +152,23 @@ it("upgrade preserves an administrator ceiling and records the actual seed outco
   const event = txn?.map(putItem).map(item => item?.event).find(event => typeof event === "object" && event !== null && "action" in event && event.action === "spending.policy_seeded");
   expect(event).toMatchObject({ actor: { kind: "system", id: "rovara" }, facts: { source: "upgrade", mode: "rovara_estimate", outcome: "created", ceilingMicrousd: 37250000 } });
   expect(f.db.get(policyKey.pk, policyKey.sk)).toMatchObject({ enrollment: { state: "disabled" } });
+});
+
+for (const explicit of [false, true]) it(`legacy agent upgrade records explicit stop kind without inventing money: explicit=${explicit}`, async () => {
+  const f = fixture(), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", key = agentKey(orgId, agentId, "META");
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const original = { ...key, orgId, entityType: "AGENT", agentId, status: "active", revision: 4,
+    monthlyBudgetUsd: 50, ...(explicit ? { maxPerRunUsd: 0.123456 } : {}) };
+  f.db.set(original);
+  const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopInheritance"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("legacy resource upgrade missing");
+  const invoke = fn as (deps: unknown, input: unknown) => Promise<unknown>;
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, kind: "agent", agentId };
+  expect(await invoke(deps, input)).toMatchObject({ outcome: "updated" });
+  const saved = f.db.get(key.pk, key.sk);
+  expect(saved).toMatchObject({ ...original, stopKind: explicit ? "limited" : "inherit", seedProvenance: { source: "upgrade", reviewRequired: true } });
+  if (!explicit) expect(saved).not.toHaveProperty("maxPerRunUsd");
+  const count = f.db.transactions().length;
+  expect(await invoke(deps, input)).toMatchObject({ outcome: "preserved" });
+  expect(f.db.get(key.pk, key.sk)).toEqual(saved); expect(f.db.transactions()).toHaveLength(count);
 });
