@@ -283,6 +283,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { setupWatchKey } from "./stuck-setup.js";
 import { appendOperationEvent } from "./operation-events.js";
 import { setupNoteForStart, withFirstEvent } from "../rovara-code/setup-status.js";
+import { readEarlyRiskSignal } from "../rovara-code/early-risk-signal.js";
 import { operationKey } from "./cancellation.js";
 import { resumeTaskDispatch } from "./task-dispatch-access.js";
 import { feedbackReviewNoticeId } from "../developer/notifications.js";
@@ -1756,6 +1757,9 @@ export async function taskView(
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
+  // full read, and only when this task's pull request was published with risk low.
+  const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;
   return {
     taskId: task.taskId,
     title: task.title,
@@ -1768,6 +1772,7 @@ export async function taskView(
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),
+    ...(earlyRiskSignal === undefined ? {} : { earlyRiskSignal }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
@@ -2321,7 +2326,8 @@ async function readTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperC
     task = await loadOwnedTask(deps, caller, taskId);
     loaded = undefined;
   }
-  const view = await taskView(deps, task, { events, details: true, ...(loaded === undefined ? {} : { loaded }) });
+  // `loadOwnedTask` has just proved the caller is the task's owner, so this view is built for the owner.
+  const view = await taskView(deps, task, { events, details: true, actor: "owner", ...(loaded === undefined ? {} : { loaded }) });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
 }

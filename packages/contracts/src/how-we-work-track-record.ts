@@ -115,5 +115,6 @@ export function earlyRiskSignalText(signal: EarlyRiskSignal): string {
   const total = signal.held + signal.notHeld;
   const lead = signal.enough ? "Early signal" : "Early signal, few samples";
   const cap = signal.capped ? ` (based on the latest ${String(OUTCOME_READ_CAP)})` : "";
+  if (total === 0) return `${lead}: no PRs this project rated low risk have been scored yet (last ${String(signal.windowDays)} days). ${REVERTS_NOT_TRACKED}.`;
   return `${lead}: PRs this project rated low risk were merged with no changes requested by a person ${String(signal.held)} of ${String(total)} times (last ${String(signal.windowDays)} days)${cap}. ${REVERTS_NOT_TRACKED}.`;
 }
