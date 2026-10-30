@@ -338,6 +338,12 @@ export interface SpendRequestRecord {
   resume?: "continue" | "implement" | "plan";
   /** The change an `owner_cap` request applies once approved. */
   change?: OwnerCapChange;
+  /** Original task approval terms. Owner-budget requests use their own source proof. */
+  approvalTerms?: {
+    version: 1; sourcePresence: true; sourceKey: { pk: string; sk: string }; sourceRevision: string | null; sourceDigest: string;
+    originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; amount: number }; proposedFiguresMicrousd: { budget: number };
+    countedOwner: string | null; totalsRevision: null; policyDigest: string; admissionId: string; operation: "run_limit" | "max_per_run" | "planning";
+  };
   /** Original native money-source state; absence is meaningful. */
   approvalSource?: { version: 1; key: { pk: string; sk: string }; exists: boolean; fields: Record<string, unknown> };
   /** The agent an `owner_cap` request is about. */

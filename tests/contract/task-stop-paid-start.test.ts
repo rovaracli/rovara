@@ -1,3 +1,4 @@
+import { createSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
@@ -800,4 +801,37 @@ it("policy edits after approval capture apply to the next admission without reca
   };
   expect((await f.t.decide(BEN, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED"); expect(changed).toBe(true); expect(captures).toBe(1);
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 15, spendingStop: { effectiveStopMicrousd: 15_000_000, sourceRevisions: { company: 1 } } });
+});
+
+it("original task terms are held while the new request itself is committed", async () => {
+  const f = await fixture(); f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const task = await f.t.plainTask(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "SPEND_REQUEST" && item.Put.Item.kind === "run_limit")) {
+      changed = true; f.t.db.set({ ...f.t.meta(task.taskId), budgetUsd: 20 });
+    }
+    return send(command);
+  };
+  await expect(createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: task.taskId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, amountUsd: 5, newLimitUsd: 15,
+    requestedBy: { kind: "member", developerId: MAYA.developerId }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "A new run window was requested." })).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(changed).toBe(true); expect(f.t.requestOf(task.taskId, "run_limit")).toHaveLength(0); expect(f.t.meta(task.taskId).budgetUsd).toBe(20);
+});
+it("original task source remains pinned after decision preflight and before native approval commit", async () => {
+  const f = await approvalWindow(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
+      changed = true; f.t.db.set({ ...f.t.meta(f.task.taskId), payer: { kind: "project", project: "payments" } });
+    }
+    return send(command);
+  };
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" }); expect(changed).toBe(true);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 10, payer: { kind: "project", project: "payments" } });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
+it("corrupt original approval terms expire without synthesizing replacement terms", async () => {
+  const f = await approvalWindow(), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "META" }, before = f.t.meta(f.task.taskId);
+  f.t.db.set({ ...f.t.db.get(key)!, approvalTerms: { ...f.spendRequest.approvalTerms!, version: 999 } });
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });

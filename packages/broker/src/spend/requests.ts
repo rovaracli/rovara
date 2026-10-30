@@ -1,4 +1,6 @@
-import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
+import { requireNativeProjectWorkRole } from "../developer/task-access.js";
+import { makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
+import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { checkedTaskStopSnapshot } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
@@ -605,6 +607,23 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       ...(input.approvalSource === undefined ? {} : { approvalSource: input.approvalSource }),
       createdAt, expiresAt: iso(input.kind === "month" ? monthRequestExpiry(now) : now + SPEND_REQUEST_TTL_DAYS * DAY_MS),
     };
+    if (draft.taskId !== undefined && (draft.kind === "run_limit" || draft.kind === "max_per_run" || draft.kind === "planning")) {
+      const source = await readTask(deps, draft.orgId, draft.taskId), owner = source === undefined ? undefined : tryEffectiveTaskOwner(source);
+      if (source !== undefined && owner !== undefined) {
+        const developerId = draft.requestedBy.kind === "member" ? draft.requestedBy.developerId : draft.requestedFor?.developerId ?? owner.developerId;
+        const role = await orgRoleOf(deps, draft.orgId, developerId);
+        if (role === undefined && source.spendingStop !== undefined) throw budgetActorRefused();
+        if (role !== undefined) {
+          const actor = { orgId: draft.orgId, developerId, orgRole: role }, agentId = source.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
+          const snapshot = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+            await requireNativeProjectWorkRole(deps, source, actor);
+            await requireAgentAccess(deps, actor, agentId, source.agent?.version === "draft" ? "edit" : "use");
+          } }, { orgId: draft.orgId, developerId, role, project: source.project, agentId,
+            pathLimitMicrousd: source.spendingStop?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(source.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null });
+          if (snapshot.kind === "captured") draft.approvalTerms = makeTaskApprovalTerms(source, snapshot, draft);
+        }
+      }
+    }
     const approvers = await spendApprovers(deps, draft);
     const reason = cleanReason(typeof input.reason === "string" ? input.reason : input.reason(approvers, draft.amountUsd));
     // The settlement run looks at it again when an owner's answer is due (an unanswered max per run escalates), else at its expiry (M-5).
@@ -636,13 +655,16 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       ...events.flatMap((event) => auditPending(deps, event)),
       ...(input.request === undefined ? [] : [requestMarkItem(deps, input.request, input.requestResult?.(record, approvers) ?? { spendRequestId: record.spendRequestId })]),
     ];
+    const requestMarkIndex = input.request === undefined ? undefined : items.length - 1;
+    const taskSourceIndex = record.approvalTerms === undefined ? undefined : pinTaskApprovalSource(deps.tableName, items, TaskApprovalTermsSchema.parse(record.approvalTerms));
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     } catch (error) {
       const failed = failedIndexes(error);
       // Another request took the slot first: answer that one.
       if (failed?.has(1) === true) continue;
-      if (failed !== undefined && input.request !== undefined && failed.has(items.length - 1)) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.");
+      if (taskSourceIndex !== undefined && failed?.has(taskSourceIndex)) throw staleApproval();
+      if (requestMarkIndex !== undefined && failed?.has(requestMarkIndex)) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.");
       throw error;
     }
     await flushAuditEvents(deps, events);
@@ -1487,6 +1509,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   if (status === "APPROVED" && record.taskId !== undefined && task === undefined) throw notFound();
   if (task?.closedAt !== undefined) await closedTask();
   let approvalStop: CapturedTaskStop | undefined;
+  let approvalTerms: TaskApprovalTerms | undefined;
   if (status === "APPROVED" && approvedUsd !== undefined && task !== undefined && (record.kind === "run_limit" || record.kind === "max_per_run" || record.kind === "planning")) {
     const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
     // This is a new approval, not a retrofit of the task's committed window.
@@ -1497,16 +1520,23 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
       agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
       pathLimitMicrousd: previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
-      approvedRunLimitMicrousd: usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null,
     });
     if (captured.kind === "captured") {
-      if (captured.effectiveStopMicrousd !== usdToWholeMicrodollars(newLimitFor(record, approvedUsd))) {
+      const parsedTerms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
+      if (!parsedTerms.success || !taskApprovalRecordMatches(parsedTerms.data, record) || parsedTerms.data.policyDigest !== taskApprovalPolicyDigest(captured)) {
+        await expireOne(deps, record, "spending_rules_changed"); throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
+      }
+      if (!taskApprovalSourceMatches(parsedTerms.data, task)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+      approvalTerms = parsedTerms.data;
+      const approved = approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null);
+      if (approved.effectiveStopMicrousd !== usdToWholeMicrodollars(newLimitFor(record, approvedUsd))) {
         await expireOne(deps, record, "spending_rules_changed");
         throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
       }
-      approvalStop = captured;
+      approvalStop = approved;
     }
   }
+  const originalRequestIndex = approvalTerms === undefined ? undefined : pinTaskApprovalRequest(ending, record);
   /** What the approval writes on `current`, and what follows it. */
   const plan = async (current: DeveloperTaskRecord | undefined) => {
     const change = current === undefined || approvedUsd === undefined ? undefined : await taskChange(deps, record, current, approvedUsd, approvalStop);
@@ -1543,6 +1573,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   let planned = await plan(task);
   for (let attempt = 0; ; attempt += 1) {
     const items = [...ending, ...(planned.change?.items ?? []), ...planned.extra];
+    const originalSourceIndex = approvalTerms === undefined ? undefined : pinTaskApprovalSource(deps.tableName, items, approvalTerms);
     const actorStart = items.length;
     items.push(...budgetActorChecks(deps.tableName, record.orgId, decisionActor));
     try {
@@ -1551,6 +1582,14 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     } catch (error) {
       const failed = failedIndexes(error);
       if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
+      if (originalRequestIndex !== undefined && failed?.has(originalRequestIndex)) {
+        const currentRequest = await getSpendRequest(deps, record.orgId, record.spendRequestId);
+        if (currentRequest?.status === "PENDING") { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+      }
+      if (approvalTerms !== undefined && originalSourceIndex !== undefined && failed?.has(originalSourceIndex)) {
+        const current = await readTask(deps, record.orgId, task!.taskId);
+        if (current === undefined || !taskApprovalSourceMatches(approvalTerms, current)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+      }
       // Only the pause moved since it was read (the owner went on, another limit paused it): the approval is made again on the task as it is now, once (I-3).
       const now = attempt === 0 && task !== undefined && failedIndexes(error) !== undefined ? await readTask(deps, record.orgId, task.taskId) : undefined;
       if (task !== undefined && now !== undefined && now.closedAt === undefined && now.budgetUsd === task.budgetUsd && now.maxPerRunUsd === task.maxPerRunUsd && pauseOf(now) !== pauseOf(task)) {

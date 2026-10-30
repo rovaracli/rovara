@@ -161,3 +161,15 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
     policyDigest, effectiveStopMicrousd: calculation.effectiveStopMicrousd, approvalCapMicrousd: calculation.approvalCapMicrousd,
     bindingScopes: calculation.bindingScopes, calculationInput: data.data, sourceRevisions };
 }
+
+/** Reuses one already captured economic snapshot with a proposed approval. */
+export function approveCapturedTaskStop(snapshot: CapturedTaskStop, approvedRunLimitMicrousd: unknown): CapturedTaskStop {
+  const parsed = TaskStopAdmissionInputSchema.safeParse({ ...snapshot.calculationInput, approvedRunLimitMicrousd });
+  if (!parsed.success) throw invalid();
+  const calculation = calculateTaskStop(parsed.data);
+  if (calculation.kind === "refused") throw agentXError(calculation.reason, "This approval is above the company ceiling. Ask an admin to raise the ceiling first; that change needs a second person.");
+  if (calculation.kind !== "resolved" || !("approvalCapMicrousd" in calculation)) throw invalid();
+  const policyDigest = createHash("sha256").update(JSON.stringify([snapshot.orgId, snapshot.project, snapshot.agentId, snapshot.sourceRevisions, parsed.data])).digest("hex");
+  return { ...snapshot, calculationInput: parsed.data, policyDigest, effectiveStopMicrousd: calculation.effectiveStopMicrousd,
+    approvalCapMicrousd: calculation.approvalCapMicrousd, bindingScopes: calculation.bindingScopes };
+}
