@@ -139,7 +139,7 @@ export function eraseProjectJob(deps: LearningDeps, developerId: string): Projec
           let done = false;
           let seen = item;
           for (let attempt = 0; attempt < 2 && !done; attempt += 1) {
-            const closed = await closeSuggestion(deps, { orgId, project, projectCreatedAt: statePc }, { id, expectedRevision: Number(seen["revision"]), status: "withdrawn" });
+            const closed = await closeSuggestion(deps, { orgId, project, projectCreatedAt: statePc }, { id, expectedRevision: Number(seen["revision"]), status: "withdrawn", cause: "erased" });
             done = closed.ok || closed.reason !== "stale";
             if (!done) seen = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] }, ConsistentRead: true })) as { Item?: Item }).Item ?? seen;
           }

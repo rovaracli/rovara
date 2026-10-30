@@ -18,7 +18,7 @@ import {
 } from "@agentx/contracts";
 import type { z } from "zod";
 import type { AuditRuntime } from "../audit/outbox.js";
-import { dismissedEvent, flushLearningEvents, learningEvents, suggestedEvent, systemActor } from "./audit.js";
+import { flushLearningEvents, learningEvents, suggestedEvent, withdrawnEvent, type WithdrawCause } from "./audit.js";
 import { learningExpiry, sameProject, shortLearningExpiry, visibility } from "./retention.js";
 
 type Item = Record<string, unknown>;
@@ -424,6 +424,8 @@ export interface TerminalMove {
   decidedBy?: string;
   ruleId?: string;
   dismissKind?: z.infer<typeof LearningDismissKindSchema>;
+  /** Why Rovara withdrew it (`status: "withdrawn"` only): a fixed word for the `rule.withdrawn` event. Default `sources_gone`. */
+  cause?: WithdrawCause;
 }
 
 /**
@@ -474,9 +476,9 @@ export async function closeSuggestion(deps: LearningDeps, rawScope: LearningScop
   if (current === undefined) return { ok: false, reason: "missing" };
   if ((LEARNING_TERMINAL_STATUSES as readonly string[]).includes(String(current["status"]))) return { ok: false, reason: "already_terminal" };
   if (current["revision"] !== move.expectedRevision) return { ok: false, reason: "stale" };
-  // Rovara withdrew it (its sources went away): the event is the dismissal with the fixed kind `withdrawn`, by the system.
+  // Rovara withdrew it (its sources went away): its own event, by the system, with a fixed cause.
   const audited = move.status === "withdrawn"
-    ? await learningEvents(deps, () => [dismissedEvent(deps, scope, systemActor(), { suggestionId: move.id, stage: String(current["stage"]), dismissKind: "withdrawn" })])
+    ? await learningEvents(deps, () => [withdrawnEvent(deps, scope, { suggestionId: move.id, stage: String(current["stage"]), cause: move.cause ?? "sources_gone" })])
     : { items: [], events: [] };
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...terminalSuggestionItems(deps, scope, move), ...audited.items] }));

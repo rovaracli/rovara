@@ -29,7 +29,7 @@ import { learningSalt, learningScopeChecked, readStandingChecked, type StandingC
 import { captureCorrection, type CaptureInput, type LearningDeps, type LearningScope } from "./store.js";
 import { prepareCorrection } from "./text.js";
 
-type CaptureDeps = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now" | "log">;
+type CaptureDeps = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now" | "log" | "learningAudit">;
 
 export interface SendBackInput {
   /** The person who decided: their standing is read here. */
@@ -62,7 +62,8 @@ export function codeSendBackStage(returned: Pick<WorkflowSnapshot, "program" | "
 /** The source key of a send-back: one correction per (task, decision request). */
 export const sendBackSourceKey = (taskId: string, requestId: string): string => `decision#${taskId}#${requestId}`;
 const correctionIdOf = (sourceKey: string): string => createHash("sha256").update(`learning-correction\0${sourceKey}`, "utf8").digest("hex").slice(0, 32);
-const learningDepsOf = (deps: CaptureDeps): LearningDeps => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now });
+// The Audit Ledger goes along (when the install has one), so the grouping a send-back runs emits `rule.suggested` in the transaction that opens a suggestion.
+const learningDepsOf = (deps: CaptureDeps): LearningDeps => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.learningAudit === undefined ? {} : { audit: deps.learningAudit }) });
 
 // ---- capture
 

@@ -625,13 +625,14 @@ describe("audit: every learning path emits", () => {
     expect(eventsOf(w, "rule.suggested")).toEqual([expect.objectContaining({ actor: { kind: "system", id: "rovara" }, facts: { suggestionId: id, stage: "build", sourceCount: 2, sourceKinds: "comment", lessSafe: false, fromOnePerson: false } })]);
   });
 
-  it("rule.dismissed with the kind `withdrawn` when Rovara withdraws a suggestion (Forget, a source gone)", async () => {
+  it("rule.withdrawn (not rule.dismissed) when Rovara withdraws a suggestion (Forget, a source gone)", async () => {
     const w = world();
     await processLayer(w);
     const id = await suggest(w);
     const one = w.db.find((entry) => String(entry.sk).startsWith("CORRECTION#"))[0]!;
     await forgetCorrection(learning(w), SCOPE, { correctionSk: String(one.sk), actor: PRIYA });
-    expect(eventsOf(w, "rule.dismissed").at(-1)).toMatchObject({ actor: { kind: "system" }, facts: { suggestionId: id, dismissKind: "withdrawn" } });
+    expect(eventsOf(w, "rule.withdrawn").at(-1)).toMatchObject({ actor: { kind: "system" }, facts: { suggestionId: id, stage: "build", cause: "forgotten" } });
+    expect(eventsOf(w, "rule.dismissed")).toEqual([]);
     expect(eventsOf(w, "rule.correction_remembered").at(-1)).toMatchObject({ actor: { id: PRIYA }, facts: { op: "forget" } });
   });
 
