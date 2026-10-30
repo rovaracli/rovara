@@ -1657,3 +1657,44 @@ it("expiry cannot attribute a terminal receipt to request terms that changed at 
   expect(raced).toBe(true); expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", newLimitUsd: winningLimit });
   expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
 });
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const race of [false, true]) it(`owner-cap ${resource} ${operation} retains exactly one actual decider fence: race=${race}`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 40 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const ask = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(ask.status).toBe(202); const requestId = String(ask.body.spendRequestId);
+  const entityKey = { pk: orgScoped(TEST_ORG, `${resource === "agent" ? "AGENT" : "CHAIN"}#${id}`), sk: "META" }, before = f.t.db.get(entityKey), totalBefore = f.t.ownerTotal(BEN);
+  const actorKey = orgMemberKey(TEST_ORG, DEB.developerId), send = f.t.db.send.bind(f.t.db); let checked = false;
+  f.t.db.send = async command => {
+    if (!checked && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === entityKey.pk && item.Update.Key.sk === entityKey.sk)) {
+      checked = true;
+      const actualActorChecks = command.input.TransactItems.filter(item => item.ConditionCheck?.Key?.pk === actorKey.pk && item.ConditionCheck.Key.sk === actorKey.sk);
+      expect(actualActorChecks).toHaveLength(1);
+      if (race) {
+        for (const key of [actorKey, developerOrgKey(DEB.developerId)]) f.t.db.set({ ...f.t.db.get(key)!, role: "member" });
+      }
+    }
+    return send(command);
+  };
+  const decision = f.t.decide(DEB, requestId);
+  if (race) {
+    await expect(decision).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore);
+    expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })).toMatchObject({ status: "PENDING" });
+  } else {
+    expect((await decision).spendRequest.status).toBe("APPROVED"); expect(f.t.ownerTotal(BEN)).toBe(120);
+  }
+  expect(checked).toBe(true);
+});
