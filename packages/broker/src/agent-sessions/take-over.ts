@@ -71,6 +71,8 @@ export interface SessionTakeOverDependencies extends SessionShareDependencies {
   /** The events API the notices are posted to; without it only the feed is written. */
   realtimePublish?: RealtimeConfig | undefined;
   chainOwner?: ChainOwnerMover | undefined;
+  /** Carried to the session routes for a message to the agent: the broker's signing key for live steer (`live-steer.ts`). */
+  liveSteer?: { callbackSigningKey: string } | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 

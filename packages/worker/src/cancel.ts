@@ -3,6 +3,8 @@ import { agentXError } from "@agentx/contracts";
 
 export interface AbortablePiSession {
   abort(): Promise<void>;
+  /** Live steer: queues a message for the running session (pi delivers it after the current tool calls, before the next model call). Absent for a step that takes none. */
+  steer?(text: string): Promise<void>;
 }
 
 export class WorkerOperationCancelledError extends Error {
@@ -74,6 +76,22 @@ export class WorkerCancellationController {
 
   isCancelled(operationId: string): boolean {
     return this.cancelled.has(operationId);
+  }
+
+  /** Whether the operation is registered with a session that takes messages and was not cancelled. */
+  canSteer(operationId: string): boolean {
+    return this.active.get(operationId)?.session?.steer !== undefined && !this.cancelled.has(operationId);
+  }
+
+  /**
+   * Gives a message to the session of a running operation. `not_running`: no such operation is registered, it takes no message, or it was cancelled. A rejection of pi's own is thrown
+   * (the caller turns it into a fixed outcome; the message is never put in it).
+   */
+  async steer(operationId: string, text: string): Promise<"steered" | "not_running"> {
+    const operation = this.active.get(operationId);
+    if (operation?.session?.steer === undefined || this.cancelled.has(operationId)) return "not_running";
+    await operation.session.steer(text);
+    return "steered";
   }
 }
 

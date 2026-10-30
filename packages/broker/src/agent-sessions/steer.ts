@@ -351,3 +351,27 @@ export async function deliverSteerToDevice(deps: SteerDependencies, orgId: OrgId
     deps.log?.({ event: "agent_session.steer_deliver_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
   }
 }
+
+/**
+ * A steer the worker took into its running step's session (live steer) is `delivered`: its message, the queue's count and the session's event, as a step taking a note does. The message's note
+ * stays (it is read by the next step as before, so nothing is lost when the step fails and runs again). A message not queued any more is left as it is. Never throws: a message left queued is
+ * settled by the next step that reads its note, or closed when the session ends. Answers whether it marked the message.
+ */
+export async function deliverSteerLive(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<boolean> {
+  try {
+    const session = await new AgentSessionStore(deps).get(orgId, sessionId);
+    if (session === undefined) return false;
+    const message = messageOf(await getItem(deps, messageKey(session, messageId)), session);
+    if (message?.kind !== "steer" || message.delivery?.state !== "queued") return false;
+    return (await answerMessage(deps, session, message, { state: "delivered" })).wrote;
+  } catch (error) {
+    deps.log?.({ event: "agent_session.steer_deliver_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
+    return false;
+  }
+}
+
+/** Whether a message to the agent is still queued: the live steer's dispatch checks it again before it reaches a session. */
+export async function steerStillQueued(deps: Pick<SteerDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<boolean> {
+  const item = await getItem(deps, messageKey({ orgId, sessionId }, messageId));
+  return messageOf(item, { orgId, sessionId })?.delivery?.state === "queued";
+}

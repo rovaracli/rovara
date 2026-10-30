@@ -36,4 +36,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
   // Mainline #413 (MIDSTEPCOOKIE): the executor syncs the browser's session values before every model call; the application-runtime monitor withholds it on a host whose executor image lacks the session-sync label.
   "task.workflowE2EMidStepSync.v1",
+  // Live steer: a person's message reaches the running Understand, Plan or Implement step's session (steer-invocation.ts).
+  "task.liveSteer.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

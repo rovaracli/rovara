@@ -765,7 +765,13 @@ async function runTask(
   }
   // The sessions of the parts that are running now (parallel parts): a cancel stops them with the main session.
   const partSessions = new Set<PiSessionHandle>();
+  // Parallel parts build side by side while the main session waits for them, so a live message goes to the parts that run now, else to the main session.
+  const steerRunningSessions = async (text: string): Promise<void> => {
+    for (const target of partSessions.size > 0 ? [...partSessions] : [session]) await target.steer?.(text);
+  };
   const unregisterCancellation = dependencies.cancellationController?.register(invocation.operationId, {
+    // Live steer (steer-invocation.ts): a person's message for the running Understand, Plan or Implement session; no other step (reviews, the plan check, setup drafts) takes one.
+    ...(understanding || payloadMode === "PLAN" || payloadMode === "IMPLEMENT" ? { steer: steerRunningSessions } : {}),
     abort: async () => {
       monitor.stop();
       verificationStop.abort();
