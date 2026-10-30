@@ -1920,3 +1920,32 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect(shown.reason).toBe(record.reason); expect(shown.amountUsd).toBe(record.amountUsd);
   expect(shown).not.toHaveProperty("ownerFinancialTerms"); expect(shown).not.toHaveProperty("approvalSource"); expect(shown).not.toHaveProperty("approvalTerms");
 });
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const field of ["maxPerRunUsd", "revision"] as const) it(`owner-cap ${resource} ${operation} keeps initial source ${field} while asking`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 40 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const entityKey = { pk: orgScoped(TEST_ORG, `${resource === "agent" ? "AGENT" : "CHAIN"}#${id}`), sk: "META" }, counterKey = ownerBudgetKey(TEST_ORG, BEN.developerId), send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    const result = await send(command);
+    if (!raced && command instanceof GetCommand && command.input.Key?.pk === counterKey.pk && command.input.Key.sk === counterKey.sk) {
+      raced = true; const row = f.t.db.get(entityKey)!;
+      f.t.db.set({ ...row, [field]: field === "maxPerRunUsd" ? 0.5 : Number(row.revision ?? 0) + 1 });
+    }
+    return result;
+  };
+  const ask = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(raced).toBe(true); expect(ask.status).toBe(409);
+  expect(f.t.requests().some(item => item.agentId === id || item.chainId === id)).toBe(false);
+});
