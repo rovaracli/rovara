@@ -158,3 +158,10 @@ for(const changed of ["company","source","registration","thinking"] as const)it(
  const next=changed==="thinking"?{...choices,code_review:{model,thinkingLevel:"high" as const}}:choices;
  expect(await validateStageChoices(f.deps,caller,"web",next,{},approval)).toMatchObject({ok:false,requiresConfirmation:false});
 });
+
+it("refuses implicit same-model validation even when production snapshot enables legacy runtime fallback",async()=>{
+ const f=fixture();for(const row of f.snapshot.stages){row.allowLegacyDefaultFallback=true;row.candidates=row.candidates.filter(candidate=>candidate.model===model);row.approved=[model];}
+ const result=await validateStageChoices(f.deps,caller,"web",{});
+ expect(result).toMatchObject({ok:false,requiresConfirmation:false});
+ for(const stage of ["plan_check","code_review","security_review"])expect(result.stages.find(row=>row.stage===stage)).toMatchObject({kind:"refusal",code:"DIFFERENT_FROM_UNSATISFIABLE"});
+});

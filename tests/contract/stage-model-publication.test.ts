@@ -108,3 +108,12 @@ for(const role of ["owner","admin","maintainer","contributor","viewer"] as const
  const operation=projectModelSelectionAuthorityChecks(w.deps,{orgId:ORG_A,project:"web",registeredAt:"2026-10-01T00:00:00Z",signedInId:MAX,developerId:MAX});
  if(role==="owner"||role==="admin"||role==="maintainer")await w.db.send(new TransactWriteCommand({TransactItems:await operation}));else await expect(operation).rejects.toThrow("FORBIDDEN");
 });
+
+it("does not publish an implicit same-model reviewer when only the builder's model is allowed",async()=>{
+ const w=fixture(),model={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"};
+ const key=projectRevisionKey(ORG_A,"web",1),row=w.db.get(key)!;
+ w.db.set({...row,definition:{...(row.definition as Record<string,unknown>),models:{default:model,approved:[model]}}});
+ const agent=await w.store.create({orgId:ORG_A,name:"web single model",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
+ await expect(publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision})).rejects.toThrow("model choice cannot be verified");
+ expect(await w.store.getVersion(ORG_A,agent.agentId,1)).toBeUndefined();
+});

@@ -48,7 +48,8 @@ async function load(deps:StageModelsReadDependencies,caller:StageModelCaller,raw
 }
 function decide(snapshot:StageModelSnapshot,choices:Partial<Record<StageId,StageModelChoice>>,validateLocks=false,proposeExceptions=false):{stages:Decision[];inputs:Map<StageId,StageModelInput>;exceptions:Array<{stage:"plan_check"|"code_review"|"security_review";model:ModelIdentifier;referenceModel:ModelIdentifier}>} {
  const inputs=new Map<StageId,StageModelInput>();
- for(const row of snapshot.stages) inputs.set(row.stage,{...row,...(choices[row.stage]===undefined?{}:{projectChoice:choices[row.stage]})});
+ // Publication validation cannot borrow the runtime-only implicit same-model compatibility fallback.
+ for(const row of snapshot.stages) inputs.set(row.stage,{...row,...(proposeExceptions?{allowLegacyDefaultFallback:false}:{}),...(choices[row.stage]===undefined?{}:{projectChoice:choices[row.stage]})});
  const decisions=new Map<StageId,Decision>();
  const exceptions:Array<{stage:"plan_check"|"code_review"|"security_review";model:ModelIdentifier;referenceModel:ModelIdentifier}>=[];
  // Preview references come from this exact input snapshot; dispatch supplies actual pinned references separately.
