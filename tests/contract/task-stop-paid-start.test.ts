@@ -394,8 +394,8 @@ it("Continue refuses a zero current stop without changing the admitted old windo
 
 for (const enrolled of [false, true]) for (const bound of ["path", "requested"] as const) it(`Continue preserves legacy submicro ${bound} only before enrollment=${enrolled}`, async () => {
   const f = await continueWindow(), before = f.t.meta(f.task.taskId);
-  const { spendingStop: _stop, ...legacy } = before;
-  f.t.db.set({ ...legacy, ...(bound === "path" ? { budgetUsd: 0.0000001 } : { requestedRunLimitUsd: 0.0000001 }) });
+  await f.t.set(f.task.taskId, "REMOVE spendingStop");
+  f.t.db.set({ ...f.t.meta(f.task.taskId), ...(bound === "path" ? { budgetUsd: 0.0000001 } : { requestedRunLimitUsd: 0.0000001 }) });
   if (!enrolled) f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
   const reply = await f.continue();
   expect(reply.status, JSON.stringify(reply.body)).toBe(enrolled ? 409 : 200);

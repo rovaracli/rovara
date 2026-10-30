@@ -2671,14 +2671,13 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   if (deps.spendResume === undefined) {
     const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
     const pathLimitMicrousd = previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD);
-    if (pathLimitMicrousd === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task limit can't be checked exactly. Ask an admin to review Spending.");
     const oldBounds = previous?.calculationInput;
     const requestedMicrousd = oldBounds?.requestedMicrousd ?? (task.requestedRunLimitUsd === undefined ? undefined : usdToWholeMicrodollars(task.requestedRunLimitUsd));
-    if (task.requestedRunLimitUsd !== undefined && requestedMicrousd === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The requested limit can't be checked exactly. Ask an admin to review Spending.");
     const authorize = async () => { await authorizeTaskAction(deps, caller, taskId, "work"); };
     const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
       orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
-      pathLimitMicrousd, ...(requestedMicrousd === undefined ? {} : { requestedMicrousd }),
+      pathLimitMicrousd: pathLimitMicrousd ?? null,
+      ...(requestedMicrousd !== undefined ? { requestedMicrousd } : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: null }),
       ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
     });
     if (captured.kind === "captured") {
