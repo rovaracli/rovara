@@ -203,7 +203,7 @@ describe("ingest: the vector", () => {
     expect(row.embeddingRef).toBe(`event:${row.id}`);
     expect(row.embedPending).toBeUndefined();
     expect(w.vectorItems).toHaveLength(1);
-    expect(w.vectorItems[0]!.metadata).toMatchObject({ audience_kind: "restricted", scope: GITHUB_SCOPE, project: "web", trust: "member", tier: "hot", kind: "event", ref: row.id });
+    expect(w.vectorItems[0]!.metadata).toMatchObject({ audience_kind: "restricted", scope: GITHUB_SCOPE, project: "web", trust: "member", tier: "hot", kind: "event", ref: `${row.id}@${row.occurredAt}` });
   });
 
   it("keeps the row with embedPending when the embedding or the index fails, and logs no error text", async () => {

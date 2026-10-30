@@ -172,6 +172,17 @@ export function eventVectorKey(eventId: string): string {
   return `event:${eventId}`;
 }
 
+/** The vector's `ref`: the row's id and its time, because a row's key needs both. */
+export function eventVectorRef(event: Pick<RecordEvent, "id" | "occurredAt">): string {
+  return `${event.id}@${event.occurredAt}`;
+}
+
+/** The row a vector's `ref` names, or undefined when it is not one of ours. */
+export function parseEventVectorRef(ref: string): { id: string; occurredAt: string } | undefined {
+  const match = /^([0-9a-f-]{36})@(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)$/.exec(ref);
+  return match === null ? undefined : { id: match[1] as string, occurredAt: match[2] as string };
+}
+
 async function embedRow(deps: IngestDependencies, event: RecordEvent, text: string, scope: string | undefined, log: RecordLog): Promise<void> {
   const embedder = deps.embedder;
   const vectors = deps.vectors;
@@ -189,7 +200,7 @@ async function embedRow(deps: IngestDependencies, event: RecordEvent, text: stri
         trust: event.trust,
         tier: "hot",
         kind: "event",
-        ref: event.id,
+        ref: eventVectorRef(event),
       },
     }]);
     if (result.failed.length > 0) {
