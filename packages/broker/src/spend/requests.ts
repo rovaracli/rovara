@@ -1,7 +1,7 @@
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
 import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
-import { checkedTaskStopSnapshot } from "../org/task-stop-window.js";
+import { checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
 import type { BudgetSubject } from "./owner-total.js";
@@ -20,7 +20,7 @@ import {
   agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
-  type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
+  SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed } from "../chains/access.js";
@@ -48,7 +48,8 @@ import { cleanUsd, readTopUp } from "./top-ups.js";
 /** What the broker does for a request once it is approved: the parts that live with the developer tasks. */
 export interface SpendRequestHost {
   /** Goes on with a task whose limit was raised (`resumeTaskAfterSpendApproval` in developer-tasks.ts). Never asked for a task in another org. */
-  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number }): Promise<void | "STALE">;
+  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number; spendingAdmission?: SpendingAdmissionReference; expectedPausedAgentRevision?: number }): Promise<void | "STALE">;
+  prepareApprovalAdmission?(input: { orgId: OrgId; taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop }): Promise<PreparedTaskApprovalAdmission | undefined>;
   /** A test run that reached its cap goes on as a normal task of its owner (`POST /v1/app/tasks/{id}/continue-as-task`). */
   continueAsTask?(caller: AgentCaller, taskId: string, body: unknown): Promise<unknown>;
   /** What a task's model keys have spent so far, in dollars (the proxy's figure); how a pause that was never written is worked out from the end. */
@@ -1551,15 +1552,20 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       extra.push(taskEventItem(deps, current, decidedAt, `spr${record.spendRequestId}d`,
         `That is more than this run's ${dollars(change.raisedPastRunLimit)} run limit, so I also asked ${followUpWords} to raise it.`));
     }
+    const admission = current === undefined || approvalStop === undefined || change?.resume !== true ? undefined
+      : await deps.spendRequests?.prepareApprovalAdmission?.({ orgId: record.orgId, taskId: current.taskId, decisionRequestId: body.requestId, spendRequestId: record.spendRequestId, snapshot: approvalStop });
+    const admissionStart = extra.length;
+    if (admission !== undefined) extra.push(...admission.items);
     // A run held at its start is dispatched by the resume; the due item lets the settlement run try again if that fails now (M-1).
     // A plan blocked on its run limit (`resume: "implement"`) is started by the same list: the approval commits the limit, the start is made after it, and a start
     // that was lost is made again by the settlement run (the only way to unblock the plan is this approval, so it must not be lost).
     const implementing = current !== undefined && change?.resume === true && record.kind === "run_limit" && record.resume === "implement" && approvedUsd !== undefined;
-    const held = current !== undefined && change?.resume === true && (change.firstDispatch || implementing) ? heldStartKey(decidedAt, record.orgId, current.taskId) : undefined;
+    const held = current !== undefined && change?.resume === true && (change.firstDispatch || implementing || admission !== undefined) ? heldStartKey(decidedAt, record.orgId, current.taskId) : undefined;
     const runLimitUsd = implementing && approvedUsd !== undefined ? newLimitFor(record, approvedUsd) : undefined;
     if (held !== undefined && change !== undefined) {
       extra.push({ Put: { TableName: deps.tableName, Item: {
         ...held, entityType: "SPEND_HELD_START", orgId: record.orgId, taskId: record.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, expiresAt: record.expiresAt,
+        ...(admission === undefined ? {} : { spendingAdmission: admission.reference, expectedPausedAgentRevision: admission.expectedPausedAgentRevision }),
         ...(runLimitUsd === undefined ? {} : { resume: "implement", runLimitUsd }),
       } } });
       // "Approved, starting" for the task: while it stands the owner is not offered another ask (it is removed with the held start).
@@ -1567,7 +1573,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
         extra.push({ Put: { TableName: deps.tableName, Item: { ...heldPlanStartKey(record.orgId, current!.taskId), entityType: "SPEND_HELD_PLAN_START", orgId: record.orgId, taskId: current!.taskId, spendRequestId: record.spendRequestId, expiresAt: record.expiresAt } } });
       }
     }
-    return { change, followUp, followUpWords, extra, held, runLimitUsd };
+    return { change, followUp, followUpWords, extra, held, runLimitUsd, admission, admissionStart };
   };
   const pauseOf = (current: DeveloperTaskRecord) => `${current.budgetPause?.scope.kind ?? ""}|${current.budgetPause?.firstDispatch?.operationId ?? ""}`;
   let planned = await plan(task);
@@ -1575,13 +1581,23 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     const items = [...ending, ...(planned.change?.items ?? []), ...planned.extra];
     const originalSourceIndex = approvalTerms === undefined ? undefined : pinTaskApprovalSource(deps.tableName, items, approvalTerms);
     const actorStart = items.length;
-    items.push(...budgetActorChecks(deps.tableName, record.orgId, decisionActor));
+    for (const guard of [...budgetActorChecks(deps.tableName, record.orgId, decisionActor), ...(planned.admission?.authority ?? [])]) {
+      const key = guard.ConditionCheck?.Key;
+      const existing = items.find(item => { const other = item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key; return key !== undefined && other !== undefined && other.pk === key.pk && other.sk === key.sk; });
+      if (existing !== undefined) { if (canonicalJson(existing) !== canonicalJson(guard)) throw budgetActorRefused(); }
+      else items.push(guard);
+    }
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
       break;
     } catch (error) {
       const failed = failedIndexes(error);
       if (failed !== undefined && [...failed].some((index) => index >= actorStart)) throw budgetActorRefused();
+      if (planned.admission !== undefined) {
+        const start = ending.length + (planned.change?.items.length ?? 0) + planned.admissionStart;
+        if (failed?.has(start + 1)) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already names another spending admission.");
+        if (failed?.has(start)) { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+      }
       if (originalRequestIndex !== undefined && failed?.has(originalRequestIndex)) {
         const currentRequest = await getSpendRequest(deps, record.orgId, record.spendRequestId);
         if (currentRequest?.status === "PENDING") { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
@@ -1600,7 +1616,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       await refused(error);
     }
   }
-  const { change, followUp, followUpWords, held, runLimitUsd } = planned;
+  const { change, followUp, followUpWords, held, runLimitUsd, admission } = planned;
   await flushAuditEvents(deps, events);
   if (task !== undefined && change !== undefined) {
     if (followUp !== undefined && followUpWords !== undefined) {
@@ -1615,6 +1631,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       try {
         await deps.spendRequests?.resumeTask({
           orgId: record.orgId, taskId: task.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, firstDispatch: change.firstDispatch,
+          ...(admission === undefined ? {} : { spendingAdmission: admission.reference, expectedPausedAgentRevision: admission.expectedPausedAgentRevision }),
           ...(runLimitUsd === undefined ? {} : { resume: "implement" as const, runLimitUsd }),
         });
         if (held !== undefined) await clearHeldStart(deps, held, record.orgId, task.taskId, false, runLimitUsd !== undefined);
@@ -1844,6 +1861,19 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
       if (typeof orgId !== "string" || typeof taskId !== "string" || typeof spendRequestId !== "string") continue;
       const task = await readTask(deps, orgId, taskId);
       const expired = typeof item["expiresAt"] !== "string" || Date.parse(item["expiresAt"]) <= deps.now();
+      if (item["spendingAdmission"] !== undefined) {
+        const reference = SpendingAdmissionReferenceSchema.safeParse(item["spendingAdmission"]);
+        if (!reference.success) { logLine(deps, "spend_request.invalid_admission_reference", { spendRequestId, taskId }); continue; }
+        if (task === undefined || task.closedAt !== undefined || expired || host === undefined) {
+          if (host !== undefined || expired) await clearHeldStart(deps, key, orgId, taskId, false).catch(() => false);
+          continue;
+        }
+        try {
+          await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: item["resetRunWindow"] === true, firstDispatch: false, spendingAdmission: reference.data });
+          if (await clearHeldStart(deps, key, orgId, taskId, false)) dispatched += 1;
+        } catch (error) { logLine(deps, "spend_request.admission_resume_failed", { spendRequestId, taskId, error: errorName(error) }); }
+        continue;
+      }
       if (item["resume"] === "month") {
         // A month's resume (Task 33 fix round 1, I-5): done once the task closed or paused again (it went on, or something else stopped it).
         if (task === undefined || task.closedAt !== undefined || task.budgetPause !== undefined || expired || host === undefined) {

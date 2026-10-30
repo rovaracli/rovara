@@ -1,7 +1,7 @@
-import type { SpendingAdmissionReference } from "@agentx/contracts";
+import { AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
-import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, type TaskStopTransition } from "../org/task-stop-window.js";
+import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -2810,6 +2810,15 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
   // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
   await creatorGuard(deps, task);
+  if (input.spendingAdmission !== undefined) {
+    if (deps.agentRuns === undefined) throw budgetActorRefused();
+    const reference = input.spendingAdmission;
+    input = { ...input, nativeRecoveryChecks: await taskStopTransitionRecoveryChecks(deps.agentRuns, task, reference) };
+    const receipt = await readTaskStopTransition(deps, { orgId: deps.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
+      intentHash: reference.intentHash, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID });
+    if (receipt === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved spending admission is missing.");
+    if (receipt.agentRunRevision !== null) input = { ...input, expectedPausedAgentRevision: receipt.agentRunRevision };
+  }
   if (input.firstDispatch) {
     await dispatchHeldStart(deps, task);
     return;
@@ -2852,6 +2861,46 @@ const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict()
  * ledger lines already written name it). Conditional on the test's pause still being there, so a repeat changes nothing; anyone else gets the 404 a task
  * they can't see gets.
  */
+/** Server-only preparation: a new approval's money is captured by the spend
+ * calculator; this contributes current execution authority and its receipt. */
+export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller,
+  input: { taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop }): Promise<PreparedTaskApprovalAdmission | undefined> {
+  const access = await authorizeTaskAction(deps, caller, input.taskId, "work"), task = access.task;
+  // Agent-step windows are the first adapter. Other dispatch families keep their
+  // existing path until their dedicated admission adapters are connected.
+  if (task.agent === undefined || task.workflow !== undefined) return undefined;
+  const runKey = taskAgentRunKey(task.taskId), raw = await get<Record<string, unknown>>(deps, runKey);
+  if (raw === undefined) return undefined;
+  const parsedRun = AgentRunStateSchema.safeParse(Object.fromEntries(Object.entries(raw).filter(([key]) => !["pk", "sk", "entityType"].includes(key))));
+  if (!parsedRun.success || raw.pk !== runKey.pk || raw.sk !== runKey.sk || raw.entityType !== "AGENT_RUN" || parsedRun.data.orgId !== deps.orgId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The paused run's admission state could not be checked.");
+  const run = parsedRun.data;
+  if (run.state !== "PAUSED_BUDGET" || run.revision >= Number.MAX_SAFE_INTEGER) throw agentXError("CHANGE_STALE", "The run's paused step changed. Review it before approving a new window.");
+  if (deps.agentRuns === undefined || task.payer === undefined) throw budgetActorRefused();
+  await creatorGuard(deps, task);
+  const snapshot = checkedTaskStopSnapshot(input.snapshot);
+  if (snapshot.orgId !== deps.orgId || snapshot.project !== task.project || snapshot.agentId !== task.agent.agentId) throw budgetActorRefused();
+  const authorize = async () => {
+    await authorizeTaskAction(deps, caller, task.taskId, "work");
+    if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, task.agent.agentId, task.agent.version === "draft" ? "edit" : "use");
+  };
+  const authority = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access),
+    ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize),
+    ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, draft: task.agent.version === "draft", frozenRecipe: true,
+      process: task.agent.process === true, developerId: caller.developerId, role: caller.orgRole }, authorize,
+      async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
+  const identity = { orgId: deps.orgId, taskId: task.taskId, requestId: input.decisionRequestId, actorId: caller.developerId, project: task.project, agentId: task.agent.agentId,
+    intentHash: hashJson({ action: "spend-approval", taskId: task.taskId, spendRequestId: input.spendRequestId, requestId: input.decisionRequestId, policyDigest: snapshot.policyDigest }) };
+  const reference = { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash }, pausedRevision = run.revision + 1;
+  return { authority, reference, expectedPausedAgentRevision: pausedRevision,
+    items: [{ Update: { TableName: deps.tableName, Key: runKey, UpdateExpression: "SET spendingAdmission = :admission, #revision = :nextRevision",
+      ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
+      ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
+      ExpressionAttributeValues: { ":admission": reference, ":nextRevision": pausedRevision, ":revision": run.revision, ":state": "PAUSED_BUDGET", ":org": deps.orgId, ":type": "AGENT_RUN" } } },
+      taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
+        actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: null, admittedAt: iso(deps) })] };
+}
+
 export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueAsTaskSchema, value, deps, "continue-as-task");
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));

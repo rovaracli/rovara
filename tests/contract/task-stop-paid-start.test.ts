@@ -1,4 +1,4 @@
-import { createSpendRequest } from "../../packages/broker/src/spend/requests.js";
+import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
@@ -850,4 +850,33 @@ it("an allowed agent run-limit approval replaces the previous window binding and
   expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({
     entityType: "SPENDING_ADMISSION", workKind: "task-window", workId: f.task.taskId, spendRequestId: request.spendRequestId, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
+});
+
+it("an agent approval lost acknowledgement repairs from its atomic new admission without recapturing money", async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  expect((await f.transition()).status).toBe(200); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db);
+  let lost = false, captures = 0;
+  f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) captures += 1;
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
+      lost = true; throw new Error("test acknowledgement lost after approval admission committed");
+    }
+    return result;
+  };
+  await expect(f.t.decide(MAYA, request.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test acknowledgement lost");
+  expect(lost).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ state: "PAUSED_BUDGET", spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000 } });
+  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(1);
+  f.t.db.delete(f.policy); captures = 0;
+  expect((await f.t.decide(MAYA, request.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  const resumed = f.t.taskOps(f.task.workspaceId).map(op => op.id); expect(resumed).toHaveLength(operations.length + 1);
+  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(0);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(resumed); expect(captures).toBe(0);
 });

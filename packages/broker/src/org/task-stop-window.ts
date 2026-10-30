@@ -10,7 +10,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -60,9 +60,11 @@ const transitionSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
   actorRole: OrgRoleSchema, peopleRevision: revision.nullable(),
-  transitionKind: z.literal("continue-as-task"), spendingStop: snapshotSchema, payer: PayerSchema, place: PlaceSchema,
+  transitionKind: z.enum(["continue-as-task", "spend-approval"]), spendRequestId: SpendRequestIdSchema.optional(), spendingStop: snapshotSchema, payer: PayerSchema, place: PlaceSchema,
   agentRunRevision: revision.nullable(), workflowRevision: revision.nullable(), outcome: z.literal("transitioned"), admittedAt: z.string().datetime(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if ((value.transitionKind === "spend-approval") !== (value.spendRequestId !== undefined)) context.addIssue({ code: "custom", message: "Approval admission reference is missing or unexpected." });
+});
 export type TaskStopTransition = z.infer<typeof transitionSchema>;
 export async function readTaskStopTransition(deps: Pick<TableInput, "documentClient" | "tableName">, input: TaskStopWindowIdentity): Promise<TaskStopTransition | undefined> {
   const Key = taskStopWindowKey(input.orgId, input.taskId, input.requestId);
@@ -75,10 +77,10 @@ export async function readTaskStopTransition(deps: Pick<TableInput, "documentCli
   if (row.actorId !== input.actorId || row.intentHash !== input.intentHash) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already accepted a different spending transition. Use a new request ID.");
   return row;
 }
-export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision">): TransactItem {
+export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision"> & { transitionKind?: "spend-approval"; spendRequestId?: string }): TransactItem {
   const Item = transitionSchema.parse({ ...taskStopWindowKey(input.orgId, input.taskId, input.requestId), ...value,
     entityType: "SPENDING_ADMISSION", version: 1, orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId,
-    actorId: input.actorId, intentHash: input.intentHash, transitionKind: "continue-as-task", outcome: "transitioned" });
+    actorId: input.actorId, intentHash: input.intentHash, transitionKind: value.transitionKind ?? "continue-as-task", outcome: "transitioned" });
   return { Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } };
 }
 
@@ -128,4 +130,11 @@ export function withAdmittedTaskSource(tableName: string, task: DeveloperTaskRec
     ExpressionAttributeNames: { ...action.ExpressionAttributeNames, ...names }, ExpressionAttributeValues: { ...action.ExpressionAttributeValues, ...values } };
   items[sourceIndex] = update === undefined ? { ConditionCheck: { ...merged, ConditionExpression: merged.ConditionExpression } } : { Update: { ...update, ...merged } };
   return { items, sourceIndex };
+}
+
+export interface PreparedTaskApprovalAdmission {
+  items: TransactItem[];
+  authority: TransactItem[];
+  reference: SpendingAdmissionReference;
+  expectedPausedAgentRevision: number;
 }
