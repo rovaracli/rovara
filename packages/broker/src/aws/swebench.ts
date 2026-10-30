@@ -235,7 +235,7 @@ export async function startSwebenchRun(
       async () => {
         await requireNativeProjectWorkRole(dependencies, { project: context.projectName }, { orgId, developerId: context.developerId!, orgRole: role });
         const project = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: projectMetaKey(orgId, context.projectName), ConsistentRead: true }));
-        if (project.Item?.status === "archived") throw agentXError("FORBIDDEN", "This project is archived; new eval work cannot start.");
+        if (project.Item !== undefined && (project.Item.status !== "active" || project.Item.archivedAt !== undefined)) throw agentXError("FORBIDDEN", "This project is archived; new eval work cannot start.");
       })];
     if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
   }
