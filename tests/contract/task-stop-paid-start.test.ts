@@ -6,7 +6,7 @@ import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
+import { runCostKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -425,9 +425,10 @@ for (const enrolled of [false, true]) it(`initial human run preserves a legacy s
   }
 });
 
-async function pausedTestTransition(spentUsd?: number) {
+async function pausedTestTransition(spentUsd?: number, history = false) {
   const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
   f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  if (history) for (let index = 0; index < 5; index += 1) f.t.db.set({ ...runCostKey(TEST_ORG, "payments", agentId, "AGENT", new Date(Date.now() - index * 1000).toISOString(), randomUUID()), entityType: "RUN_COST", costUsd: 7 });
   const task = await f.t.runOf(agentId, { version: "draft" });
   if (spentUsd !== undefined) {
     const step = f.t.taskOps(task.workspaceId).at(-1)!;
@@ -892,4 +893,33 @@ for (const state of ["missing", "corrupt"] as const) it(`an enrolled agent appro
   await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${request.spendRequestId}`), sk: "META" })).toMatchObject({ status: "PENDING" });
+});
+
+for (const race of ["none", "approver", "executor"] as const) it(`a distinct approver retains both native actors at an agent approval commit: ${race}`, async () => {
+  const f = await pausedTestTransition(undefined, true);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 40 } });
+  expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId).budgetUsd).toBe(14);
+  await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, decisionId = randomUUID(); expect(request.newLimitUsd).toBe(21);
+  const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let intercepted = false;
+  f.t.db.send = async command => {
+    if (!intercepted && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.transitionKind === "spend-approval")) {
+      intercepted = true;
+      const keys = command.input.TransactItems.map(item => item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key);
+      expect(new Set(keys.map(key => `${String(key?.pk)}|${String(key?.sk)}`)).size).toBe(keys.length);
+      if (race !== "none") f.t.db.delete(orgMemberKey(TEST_ORG, (race === "approver" ? BEN : MAYA).developerId));
+    }
+    return send(command);
+  };
+  const decision = f.t.decide(BEN, request.spendRequestId, "APPROVE", { requestId: decisionId });
+  if (race === "none") {
+    expect((await decision).spendRequest.status).toBe("APPROVED"); expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+    expect(f.t.db.get(`DEVTASK#${f.task.taskId}`, "AGENT_RUN")).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
+  } else {
+    await expect(decision).rejects.toMatchObject({ code: "FORBIDDEN" }); expect(f.t.meta(f.task.taskId)).toEqual(before);
+    expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+    expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${request.spendRequestId}`), sk: "META" })).toMatchObject({ status: "PENDING" });
+  }
+  expect(intercepted).toBe(true);
 });
