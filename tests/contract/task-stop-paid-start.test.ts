@@ -951,3 +951,27 @@ for (const loss of ["closing", "cap_source"] as const) it(`a plain-task approval
   expect((await f.t.decide(BEN, f.spendRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
   expect(changed).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
+
+it("plain approval acknowledgement loss repairs once from its committed receipt without current financial settings", async () => {
+  const f = await approvalWindow(), decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0;
+  f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) captures += 1;
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) {
+      lost = true; throw new Error("test plain approval acknowledgement lost");
+    }
+    return result;
+  };
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test plain approval acknowledgement lost");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 15, spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({
+    transitionKind: "spend-approval", spendRequestId: f.spendRequest.spendRequestId, agentRunRevision: null, spendingStop: { effectiveStopMicrousd: 15_000_000 } });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  f.t.db.delete(f.policy); captures = 0;
+  expect((await f.t.decide(BEN, f.spendRequest.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1); expect(captures).toBe(0);
+  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(0);
+});
