@@ -1,4 +1,5 @@
-import { pinOwnerFinancialChecks } from "./owner-approval-terms.js";
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
+import { pinOwnerFinancialChecks, type OwnerFinancialTerms } from "./owner-approval-terms.js";
 // The one monthly total each person's agent and chain budgets count against (R65), as one implementation for both. The total is a counter
 // (`OWNER_AGENT_BUDGET#<developer>`) that the agent store and the chain store change in the same transaction as the item whose budget moves, so
 // it can't drift from the budgets it adds up. Each store registers a source that adds up its own budgets; the counter is built from every source
@@ -20,6 +21,7 @@ export interface OwnerCap {
   usd: number;
   policyRevision: number;
   seen?: OwnerTotalSeen;
+  carriedSource?: OwnerFinancialTerms["carriedSource"];
 }
 
 /** What a refusal by the cap carries, so the route can answer in words with the figures as they are now (`isOwnerCapRefusal`). */
@@ -240,11 +242,14 @@ export class OwnerBudgets {
         },
       });
     }
+    const carried = cap?.carriedSource, carriedAt = carried === undefined ? undefined : items.length;
+    if (carried !== undefined) items.push(...nativeSnapshotConditions(this.input.tableName, [carried.key], [carried.exists ? carried.fields : undefined], ["amountUsd"]));
     return {
       items,
       classify: (failed) => {
         // The item changed since it was read: that is the answer, whatever the counters make of the old figures.
         if (failed.has(0)) return { kind: "entity" };
+        if (carriedAt !== undefined && failed.has(carriedAt + 1)) return { kind: "totals" };
         if (policyAt !== undefined && failed.has(policyAt + 1)) return { kind: "policy" };
         const capped = counters.capped.find((index) => failed.has(index + 1));
         if (capped !== undefined) return { kind: "cap", owner: counters.owners[capped]! };

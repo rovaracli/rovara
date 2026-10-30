@@ -830,6 +830,7 @@ export async function holdingOwnerCap<T>(
     }
     const checked = await ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
     if ("over" in checked && checked.over.ownerFinancialTerms !== undefined && carriedSource !== undefined) checked.over.ownerFinancialTerms = { ...checked.over.ownerFinancialTerms, carriedSource };
+    if ("ownerCap" in checked && carriedSource !== undefined) checked.ownerCap.carriedSource = carriedSource;
     return checked;
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms }): Promise<StatusReply> => {
