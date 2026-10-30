@@ -4,7 +4,7 @@
 // Each run walks the company's project catalog (walk.ts), reads every learning partition and deletes the items whose time has passed, so text is gone after 180 days even from a
 // project nobody opens. Then it expires open suggestions whose sources have fallen below two. A run deletes at most 500 items, visits at most 50 projects and stops after 20 seconds;
 // the next run resumes from the cursor in `LEARNING_WALK#sweep`. Reads elsewhere already hide an expired item, and nothing is deleted on read.
-import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_SUGGESTION_SOURCES_MIN, projectLearningKey, type OrgId } from "@agentx/contracts";
 import { isExpired, learningItemKind, sameProject } from "./retention.js";
 import { closeSuggestion, readLearningPartition, type LearningDeps } from "./store.js";
@@ -38,16 +38,8 @@ export async function expireLearningItems(
   let deleted = 0, expiredSuggestions = 0;
 
   const job: ProjectJob = async ({ project, budget }) => {
-    const items: Item[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await readLearningPartition(judged, { orgId, project }, { ...(cursor === undefined ? {} : { cursor }), maxItems: 1000, maxPages: 10, pageSize: 100 });
-      items.push(...page.items);
-      cursor = page.cursor;
-    } while (cursor !== undefined);
-
-    const state = items.find((item) => item["sk"] === "STATE");
-    const projectCreatedAt = typeof state?.["projectCreatedAt"] === "string" ? state["projectCreatedAt"] : undefined;
+    const stateRead = await client.send(new GetCommand({ TableName: tableName, Key: projectLearningKey(orgId, project, "STATE"), ConsistentRead: true })) as { Item?: Item };
+    const projectCreatedAt = typeof stateRead.Item?.["projectCreatedAt"] === "string" ? stateRead.Item["projectCreatedAt"] : undefined;
     let correctionsDeleted = 0;
     const settleCounter = async () => {
       if (correctionsDeleted === 0 || projectCreatedAt === undefined) return;
@@ -63,30 +55,41 @@ export async function expireLearningItems(
       correctionsDeleted = 0;
     };
 
-    const expired = items.filter((item) => isExpired(item, nowMs));
+    // One page at a time, with the run's budget checked before each page and each delete: a long partition cannot outrun the time limit.
     const liveIds = new Set<string>();
-    for (const item of items) if (learningItemKind(String(item["sk"])).kind === "CORRECTION" && !isExpired(item, nowMs) && sameProject(item["projectCreatedAt"], projectCreatedAt) && typeof item["id"] === "string") liveIds.add(item["id"]);
-
-    for (const item of expired) {
+    const openSuggestions: Item[] = [];
+    let cursor: string | undefined;
+    do {
       if (budget.exhausted()) { await settleCounter(); return "partial"; }
-      try {
-        await client.send(new DeleteCommand({
-          TableName: tableName, Key: { pk: item["pk"], sk: item["sk"] }, ConditionExpression: `${INDEX_EXPIRY_ATTRIBUTE} <= :now`, ExpressionAttributeValues: { ":now": nowSeconds },
-        }));
-      } catch (error) {
-        // Renewed since it was read: it is not expired any more.
-        if (isConditionFailure(error)) continue;
-        throw error;
+      const page = await readLearningPartition(judged, { orgId, project }, { ...(cursor === undefined ? {} : { cursor }), maxItems: 100, maxPages: 1, pageSize: 100 });
+      cursor = page.cursor;
+      for (const item of page.items) {
+        const kind = learningItemKind(String(item["sk"])).kind;
+        if (isExpired(item, nowMs)) {
+          if (budget.exhausted()) { await settleCounter(); return "partial"; }
+          try {
+            await client.send(new DeleteCommand({
+              TableName: tableName, Key: { pk: item["pk"], sk: item["sk"] }, ConditionExpression: `${INDEX_EXPIRY_ATTRIBUTE} <= :now`, ExpressionAttributeValues: { ":now": nowSeconds },
+            }));
+          } catch (error) {
+            // Renewed since it was read: it is not expired any more.
+            if (isConditionFailure(error)) continue;
+            throw error;
+          }
+          budget.spend(1);
+          deleted += 1;
+          if (kind === "CORRECTION" && sameProject(item["projectCreatedAt"], projectCreatedAt)) correctionsDeleted += 1;
+        } else if (kind === "CORRECTION" && sameProject(item["projectCreatedAt"], projectCreatedAt) && typeof item["id"] === "string") {
+          liveIds.add(item["id"]);
+        } else if (kind === "SUGGESTION" && item["status"] === "open" && sameProject(item["projectCreatedAt"], projectCreatedAt)) {
+          openSuggestions.push(item);
+        }
       }
-      budget.spend(1);
-      deleted += 1;
-      if (learningItemKind(String(item["sk"])).kind === "CORRECTION" && sameProject(item["projectCreatedAt"], projectCreatedAt)) correctionsDeleted += 1;
-    }
+    } while (cursor !== undefined);
     await settleCounter();
 
     if (projectCreatedAt === undefined) return "done";
-    for (const item of items) {
-      if (learningItemKind(String(item["sk"])).kind !== "SUGGESTION" || item["status"] !== "open" || isExpired(item, nowMs) || !sameProject(item["projectCreatedAt"], projectCreatedAt)) continue;
+    for (const item of openSuggestions) {
       const sources = Array.isArray(item["correctionIds"]) ? item["correctionIds"].filter((id) => typeof id === "string" && liveIds.has(id)).length : 0;
       if (sources >= LEARNING_SUGGESTION_SOURCES_MIN) continue;
       if (budget.exhausted()) return "partial";

@@ -47,7 +47,7 @@ describe("learning walk over the project catalog", () => {
     const world = makeWorld();
     for (const name of names(10)) seedProject(world.db, TEST_ORG, name);
     const visited: string[] = [];
-    const run = () => runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "close", job: recordingJob(world, visited), budget: { writes: 4 } });
+    const run = () => runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "close", job: recordingJob(world, visited), budget: { writes: 8 } });
     expect(await run()).toMatchObject({ status: "running", projectsThisRun: 4, projectsDone: 4 });
     expect(walkOf(world, "close")).toMatchObject({ status: "running", afterProject: "p003", projectsDone: 4 });
     expect(await run()).toMatchObject({ status: "running", projectsDone: 8 });
@@ -55,6 +55,15 @@ describe("learning walk over the project catalog", () => {
     expect(visited).toEqual(names(10));
     // A finished close walk leaves nothing behind.
     expect(walkOf(world, "close")).toBeUndefined();
+  });
+
+  it("counts the cursor write of each finished project toward the write budget", async () => {
+    const world = makeWorld();
+    for (const name of names(10)) seedProject(world.db, TEST_ORG, name);
+    const visited: string[] = [];
+    // The job itself writes nothing; only the walk's own cursor writes use the budget.
+    const result = await runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "close", job: recordingJob(world, visited, 0), budget: { writes: 3 } });
+    expect(result).toMatchObject({ status: "running", projectsThisRun: 3, writes: 3 });
   });
 
   it("stops at the project limit and at the time limit", async () => {
@@ -87,8 +96,8 @@ describe("learning walk over the project catalog", () => {
     const world = makeWorld();
     for (const name of names(4)) seedProject(world.db, TEST_ORG, name);
     const job = recordingJob(world, []);
-    await runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "erase#dev1", job, budget: { writes: 1 } });
-    await runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "erase#dev2", job, budget: { writes: 2 } });
+    await runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "erase#dev1", job, budget: { writes: 2 } });
+    await runLearningWalk(world.deps, { orgId: TEST_ORG, kind: "erase#dev2", job, budget: { writes: 4 } });
     expect(walkOf(world, "erase#dev1")).toMatchObject({ projectsDone: 1 });
     expect(walkOf(world, "erase#dev2")).toMatchObject({ projectsDone: 2 });
   });

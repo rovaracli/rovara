@@ -53,7 +53,8 @@ const keyOf = (scope: { orgId: OrgId; project: string }, sk: string) => projectL
 // ---- sort keys
 
 export const correctionSk = (createdAtIso: string, id: string): string => `CORRECTION#${createdAtIso}#${id}`;
-export const sourceSk = (sourceKey: string): string => `SOURCE#${sourceKey}`;
+/** The source record of a source key. The project epoch is in the key, so a project created again can capture a source the old project still holds. */
+export const sourceSk = (projectCreatedAt: string, sourceKey: string): string => `SOURCE#${String(Math.floor(Date.parse(projectCreatedAt) / 1000))}#${sourceKey}`;
 export const suggestionSk = (id: string): string => `SUGGESTION#${id}`;
 export const dismissedSk = (signatureHash: string): string => `DISMISSED#${signatureHash}`;
 const dailySk = (day: string, scope: LearningScope) => `DAILY#${day}#${String(pcSeconds(scope))}`;
@@ -108,10 +109,13 @@ async function ensureState(deps: LearningDeps, scope: LearningScope): Promise<Le
       const older = typeof raw["projectCreatedAt"] !== "string" || !Number.isFinite(Date.parse(raw["projectCreatedAt"])) || Date.parse(raw["projectCreatedAt"]) < Date.parse(scope.projectCreatedAt);
       if (!older) return "stale";
       const revision = typeof raw["revision"] === "number" && Number.isInteger(raw["revision"]) && raw["revision"] >= 0 ? raw["revision"] + 1 : 1;
+      // Replace exactly what was read, including a STATE that lacks a field (a condition cannot compare with a value that is not there).
+      const seenRevision = raw["revision"], seenCreated = raw["projectCreatedAt"];
       await deps.documentClient.send(new PutCommand({
         TableName: deps.tableName, Item: fresh(revision),
-        ConditionExpression: "#revision = :seenRevision AND projectCreatedAt = :seenCreated", ExpressionAttributeNames: { "#revision": "revision" },
-        ExpressionAttributeValues: { ":seenRevision": raw["revision"], ":seenCreated": raw["projectCreatedAt"] },
+        ConditionExpression: `${seenRevision === undefined ? "attribute_not_exists(#revision)" : "#revision = :seenRevision"} AND ${seenCreated === undefined ? "attribute_not_exists(projectCreatedAt)" : "projectCreatedAt = :seenCreated"}`,
+        ExpressionAttributeNames: { "#revision": "revision" },
+        ...(seenRevision === undefined && seenCreated === undefined ? {} : { ExpressionAttributeValues: { ...(seenRevision === undefined ? {} : { ":seenRevision": seenRevision }), ...(seenCreated === undefined ? {} : { ":seenCreated": seenCreated }) } }),
       }));
       return LearningStateSchema.parse(fresh(revision));
     } catch (error) {
@@ -169,18 +173,24 @@ export async function readLearningPartition(deps: LearningDeps, scope: LearningS
   return { items, scanned, ...(more && cursor !== undefined ? { cursor } : {}) };
 }
 
-/** How many live corrections the project holds, counted from the table. More than `limit` is reported as `limit` + 1 (and so is a count the budget could not finish). */
-async function countLiveCorrections(deps: LearningDeps, scope: LearningScope, limit: number): Promise<number> {
+/**
+ * How many corrections of this project are stored, expired ones not yet deleted included: that is what `STATE.liveCorrections` counts (the sweep lowers it as it deletes them), so a
+ * repair from this number cannot be subtracted from twice. More than `limit` is reported as `limit` + 1, and so is a count the budget could not finish.
+ */
+async function countStoredCorrections(deps: LearningDeps, scope: LearningScope, limit: number): Promise<number> {
   let count = 0, cursor: string | undefined;
   for (let pages = 0; pages < 20; pages += 1) {
-    const page = await readLearningPartition(deps, scope, { prefix: "CORRECTION#", ...(cursor === undefined ? {} : { cursor }), maxItems: 500, maxPages: 1, pageSize: 500 });
-    count += page.items.length;
+    const page = await readLearningPartition(deps, { orgId: scope.orgId, project: scope.project }, { prefix: "CORRECTION#", ...(cursor === undefined ? {} : { cursor }), maxItems: 500, maxPages: 1, pageSize: 500 });
+    count += page.items.filter((item) => sameProject(item["projectCreatedAt"], scope.projectCreatedAt)).length;
     if (count > limit) return limit + 1;
     cursor = page.cursor;
     if (cursor === undefined) return count;
   }
   return limit + 1;
 }
+
+/** A full project is counted again no sooner than this after a count that found it full. */
+const RECOUNT_COOLDOWN_MS = 10 * 60_000;
 
 // ---- capture: a correction, its source record, the counters and the caps, in one transaction
 
@@ -213,7 +223,7 @@ export type CaptureResult =
   | { ok: false; reason: CaptureRefusal };
 
 async function existingSource(deps: LearningDeps, scope: LearningScope, sourceKey: string): Promise<CaptureResult | undefined> {
-  const found = await getLearningItem(deps, scope, sourceSk(sourceKey));
+  const found = await getLearningItem(deps, scope, sourceSk(scope.projectCreatedAt, sourceKey));
   if (found === undefined || typeof found["correctionId"] !== "string" || typeof found["correctionSk"] !== "string") return undefined;
   return { ok: true, created: false, correctionId: found["correctionId"], correctionSk: found["correctionSk"], ...(typeof found["bodyDigest"] === "string" ? { bodyDigest: found["bodyDigest"] } : {}) };
 }
@@ -235,17 +245,37 @@ export async function captureCorrection(deps: LearningDeps, rawScope: LearningSc
   const repeat = await existingSource(deps, scope, input.sourceKey);
   if (repeat !== undefined) return repeat;
 
+  const day = at.slice(0, 10);
+  const window = Math.floor(nowMs / 1000 / LEARNING_REMEMBER_WINDOW_SECONDS);
+  const pr = input.limit === "automatic_pr";
+
   if (state.liveCorrections >= LEARNING_LIVE_CORRECTIONS_MAX) {
-    // The counter can run high: the TTL deletes expired corrections without telling it. Count them before refusing, and put the true number back.
-    const live = await countLiveCorrections(deps, scope, LEARNING_LIVE_CORRECTIONS_MAX);
-    if (live >= LEARNING_LIVE_CORRECTIONS_MAX) return { ok: false, reason: "store_full" };
+    // The counter can run high: the TTL deletes expired corrections without telling it. Before counting the table (a read of up to 2,000 items), refuse what the cheap caps refuse.
+    if (input.limit === "remember") {
+      const rate = await getRaw(deps, scope, rateSk(input.actor!, window, scope));
+      if (typeof rate?.["rememberCount"] === "number" && rate["rememberCount"] >= LEARNING_REMEMBER_MAX) return { ok: false, reason: "rate_limited" };
+    } else {
+      const daily = await getRaw(deps, scope, dailySk(day, scope));
+      if (pr && typeof daily?.["prCount"] === "number" && daily["prCount"] >= LEARNING_DAILY_PR_MAX) return { ok: false, reason: "pr_daily_cap" };
+      if (typeof daily?.["autoCount"] === "number" && daily["autoCount"] >= LEARNING_DAILY_AUTOMATIC_MAX) return { ok: false, reason: "daily_cap" };
+    }
+    if (state.recountedAt !== undefined && nowMs - state.recountedAt < RECOUNT_COOLDOWN_MS) return { ok: false, reason: "store_full" };
+    const stored = await countStoredCorrections(deps, scope, LEARNING_LIVE_CORRECTIONS_MAX);
     try {
+      if (stored >= LEARNING_LIVE_CORRECTIONS_MAX) {
+        await deps.documentClient.send(new UpdateCommand({
+          TableName: deps.tableName, Key: keyOf(scope, "STATE"), UpdateExpression: "SET recountedAt = :at", ConditionExpression: "projectCreatedAt = :pc", ExpressionAttributeValues: { ":at": nowMs, ":pc": scope.projectCreatedAt },
+        }));
+        return { ok: false, reason: "store_full" };
+      }
+      // Put the true number back.
       await deps.documentClient.send(new UpdateCommand({
-        TableName: deps.tableName, Key: keyOf(scope, "STATE"), UpdateExpression: "SET liveCorrections = :live",
-        ConditionExpression: "projectCreatedAt = :pc AND liveCorrections = :seen", ExpressionAttributeValues: { ":live": live, ":seen": state.liveCorrections, ":pc": scope.projectCreatedAt },
+        TableName: deps.tableName, Key: keyOf(scope, "STATE"), UpdateExpression: "SET liveCorrections = :stored REMOVE recountedAt",
+        ConditionExpression: "projectCreatedAt = :pc AND liveCorrections = :seen", ExpressionAttributeValues: { ":stored": stored, ":seen": state.liveCorrections, ":pc": scope.projectCreatedAt },
       }));
     } catch (error) {
       if (!isConditionFailure(error)) throw error;
+      if (stored >= LEARNING_LIVE_CORRECTIONS_MAX) return { ok: false, reason: "store_full" };
     }
   }
 
@@ -261,13 +291,10 @@ export async function captureCorrection(deps: LearningDeps, rawScope: LearningSc
   const correction = parsed.data;
   const correctionKey = keyOf(scope, correctionSk(at, correction.id));
 
-  const day = at.slice(0, 10);
-  const window = Math.floor(nowMs / 1000 / LEARNING_REMEMBER_WINDOW_SECONDS);
-  const pr = input.limit === "automatic_pr";
   const items: TransactItem[] = [
     { Put: {
       TableName: deps.tableName,
-      Item: { ...keyOf(scope, sourceSk(input.sourceKey)), entityType: "LEARNING_SOURCE", orgId: scope.orgId, correctionId: correction.id, correctionSk: correctionKey.sk, ...(input.bodyDigest === undefined ? {} : { bodyDigest: input.bodyDigest }), projectCreatedAt: scope.projectCreatedAt, [INDEX_EXPIRY_ATTRIBUTE]: expires },
+      Item: { ...keyOf(scope, sourceSk(scope.projectCreatedAt, input.sourceKey)), entityType: "LEARNING_SOURCE", orgId: scope.orgId, correctionId: correction.id, correctionSk: correctionKey.sk, ...(input.bodyDigest === undefined ? {} : { bodyDigest: input.bodyDigest }), projectCreatedAt: scope.projectCreatedAt, [INDEX_EXPIRY_ATTRIBUTE]: expires },
       ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now`, ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
     } },
     { Put: { TableName: deps.tableName, Item: { ...correctionKey, entityType: "LEARNING_CORRECTION", orgId: scope.orgId, ...correction }, ConditionExpression: "attribute_not_exists(pk)" } },

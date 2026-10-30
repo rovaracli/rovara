@@ -1,6 +1,7 @@
 // v1.2 learning loop, B1: the learning sweep (design §3.2), for tables without a TTL. It deletes learning items whose indexExpiresAt has passed, within a budget, and resumes.
 import { describe, expect, it, vi } from "vitest";
 import { expireLearningItems } from "../../packages/broker/src/learning/sweep.js";
+import { captureCorrection, type CaptureInput } from "../../packages/broker/src/learning/store.js";
 import { learningWalkKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { indexSweepWanted } from "../../packages/broker/src/aws/index-expiry.js";
 import { DAY_MS, NOW_MS, ORG_B, PROJECT_CREATED, epochSeconds, iso, makeWorld, seedCorrection, seedItem, seedProject } from "../support/learning-world.js";
@@ -87,8 +88,8 @@ describe("learning sweep", () => {
   it("takes the 20-second budget from the clock", async () => {
     const world = makeWorld();
     for (let n = 0; n < 6; n += 1) { seedProject(world.db, TEST_ORG, `p${n}`); seedCorrection(world.db, TEST_ORG, `p${n}`, 1, { expiresAtSeconds: epochSeconds(NOW_MS) - 1 }); }
-    // Each read of the clock moves it 4 seconds.
-    const ticking = { ...world.deps, now: () => (world.clock.ms += 4000) };
+    // Each read of the clock moves it 2 seconds.
+    const ticking = { ...world.deps, now: () => (world.clock.ms += 2000) };
     const result = await expireLearningItems(ticking.documentClient, "state", TEST_ORG, new Date(world.clock.ms), () => undefined, { now: ticking.now });
     expect(result.done).toBe(false);
     expect(result.projectsDone).toBeGreaterThan(0);
@@ -124,6 +125,38 @@ describe("learning sweep", () => {
     expect(weak).not.toHaveProperty("proposedText");
     expect(world.db.get(projectLearningKey(TEST_ORG, "web", "SUGGESTION#strong"))).toMatchObject({ status: "open", proposedText: "Use the shared retry helper." });
     expect(world.db.get(projectLearningKey(TEST_ORG, "web", "STATE"))).toMatchObject({ openSuggestions: 1 });
+  });
+
+  it("keeps the live counter right when expired corrections were still stored at the cap (no double subtraction)", async () => {
+    const world = makeWorld();
+    seedProject(world.db, TEST_ORG, "web");
+    for (let n = 0; n < 2000; n += 1) seedCorrection(world.db, TEST_ORG, "web", n, n < 100 ? { expiresAtSeconds: epochSeconds(NOW_MS) - 1 } : {});
+    seedItem(world.db, TEST_ORG, "web", "STATE", { projectCreatedAt: PROJECT_CREATED, revision: 1, openSuggestions: 0, liveCorrections: 2000, pendingRules: 0 });
+    const input = (n: number): CaptureInput => ({ id: `late${n}`, stage: "build", source: "comment", sourceKey: `late-source-${n}`, sourceRef: { taskId: "t" }, taskId: "t", text: "Use the helper.", signature: ["h"], author: "dev1", standing: "member", limit: "remember", actor: `dev${n}` });
+    const stored = () => world.db.find((item) => item.pk === projectLearningKey(TEST_ORG, "web", "STATE").pk && String(item.sk).startsWith("CORRECTION#")).length;
+    // 2,000 corrections are stored, 100 of them past their time but not yet swept: the project is still full.
+    expect(await captureCorrection(world.deps, world.scope, input(1))).toMatchObject({ ok: false, reason: "store_full" });
+    await sweep(world);
+    expect(stored()).toBe(1900);
+    expect(world.db.get(projectLearningKey(TEST_ORG, "web", "STATE"))).toMatchObject({ liveCorrections: 1900 });
+    // The sweep made room for exactly 100, not 200.
+    world.clock.ms += 20 * 60_000; // past the recount cooldown
+    for (let n = 0; n < 100; n += 1) expect(await captureCorrection(world.deps, world.scope, input(n + 10))).toMatchObject({ ok: true });
+    expect(await captureCorrection(world.deps, world.scope, input(999))).toMatchObject({ ok: false, reason: "store_full" });
+    expect(stored()).toBe(2000);
+  });
+
+  it("reads each project a page at a time and checks the time budget between pages", async () => {
+    const world = makeWorld();
+    seedProject(world.db, TEST_ORG, "web");
+    for (let n = 0; n < 600; n += 1) seedCorrection(world.db, TEST_ORG, "web", n);
+    const ticking = { now: () => (world.clock.ms += 6000) };
+    const result = await expireLearningItems(world.db, "state", TEST_ORG, new Date(NOW_MS), () => undefined, { now: ticking.now });
+    expect(result.done).toBe(false);
+    const partitionQueries = world.db.commandNames().filter((name) => name === "QueryCommand").length;
+    // 600 items are 6 pages; the budget (20 s at 6 s a read) stops it well before all of them.
+    expect(partitionQueries).toBeLessThan(6);
+    expect(partitionQueries).toBeGreaterThan(0);
   });
 
   it("walks only this company's projects (I9)", async () => {
