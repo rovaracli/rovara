@@ -331,3 +331,25 @@ it("agent inheritance inventory advances bounded native directory pages without 
   expect(f.db.get(agentKey(orgId, ids[1]!, "META").pk, "META")).toMatchObject({ stopKind: "inherit", monthlyBudgetUsd: 50 });
   expect(f.db.get(policyKey.pk, policyKey.sk)).toBeUndefined();
 });
+
+it("a failed later inventory resource cannot return an advanced checkpoint and a repaired replay preserves earlier commits", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const ids = ["agt_aaaaaaaaaaaaaaaaaaaa", "agt_bbbbbbbbbbbbbbbbbbbb"];
+  for (const agentId of ids) f.db.set({ pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId, entityType: "AGENT_DIRECTORY", agentId });
+  const resource = (agentId: string) => ({ ...agentKey(orgId, agentId, "META"), orgId, entityType: "AGENT", agentId, status: "active", revision: 1, monthlyBudgetUsd: 50 });
+  f.db.set(resource(ids[0]!));
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, limit: 2 };
+  await expect(taskStopBootstrap.upgradeTaskStopAgentInventoryPage(deps, input)).rejects.toThrow();
+  const first = f.db.get(agentKey(orgId, ids[0]!, "META").pk, "META"); expect(first).toMatchObject({ stopKind: "inherit", monthlyBudgetUsd: 50 });
+  expect(f.db.get(agentKey(orgId, ids[1]!, "META").pk, "META")).toBeUndefined();
+  f.db.set(resource(ids[1]!));
+  expect(await taskStopBootstrap.upgradeTaskStopAgentInventoryPage(deps, input)).toMatchObject({ examined: 2, updated: 1, preserved: 1, complete: true });
+  expect(f.db.get(agentKey(orgId, ids[0]!, "META").pk, "META")).toEqual(first);
+});
+for (const invalid of ["foreign", "builtin", "extra"] as const) it(`inventory refuses ${invalid} cursors before reads`, async () => {
+  const f = fixture(); let reads = 0; const send = f.db.send.bind(f.db);
+  f.db.send = async command => { reads += 1; return send(command); };
+  const cursor = { pk: orgScoped(invalid === "foreign" ? "org_bbbbbbbbbbbbbbbbbbbb" : orgId, "AGENT_DIRECTORY"), sk: invalid === "builtin" ? ROVARA_CODE_AGENT_ID : "agt_aaaaaaaaaaaaaaaaaaaa", ...(invalid === "extra" ? { arbitrary: "no" } : {}) };
+  await expect(taskStopBootstrap.upgradeTaskStopAgentInventoryPage({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, limit: 1, cursor })).rejects.toThrow();
+  expect(reads).toBe(0);
+});
