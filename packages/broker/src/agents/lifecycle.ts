@@ -467,14 +467,18 @@ async function resolveSuccessor(deps: LifecycleDeps, removal: RemovalEvent): Pro
   return firstOwner(deps, orgId, developerId);
 }
 
-/** Ends the person's sign-in sessions at the removal's own time, through the sign-in function. A `not_found` answer is an answer (they never signed in); any other failure fails the run. */
-async function endSessionsAt(deps: LifecycleDeps, developerId: string, at: string): Promise<void> {
+/**
+ * Ends the person's sign-in sessions at the removal's own time, through the sign-in function; false when there is none wired (nothing was ended). A `not_found` answer is an
+ * answer (they never signed in); any other failure fails the run.
+ */
+async function endSessionsAt(deps: LifecycleDeps, developerId: string, at: string): Promise<boolean> {
   if (deps.endDeveloperSessions === undefined) {
     log(deps, "member_removal.sign_in_not_wired", { developerId });
-    return;
+    return false;
   }
   const answer = await deps.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at });
   if (!answer.ok && answer.error !== "not_found") throw new Error(`member_removal_sign_in_${answer.error}`);
+  return true;
 }
 
 async function readRemovalRecord(deps: LifecycleDeps, orgId: OrgId, removalId: string): Promise<MemberRemovalRecord | undefined> {
@@ -524,7 +528,7 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: RemovalEvent
     ));
   }
   let signInEnded = false;
-  if (removedAt !== undefined) signInEnded = (await attempt("sign-in", async () => { await endSessionsAt(deps, developerId, removedAt); return true; })) === true;
+  if (removedAt !== undefined) signInEnded = (await attempt("sign-in", () => endSessionsAt(deps, developerId, removedAt))) === true;
   const rejoinedAtStart = removedAt !== undefined && await isMember(deps, orgId, developerId);
   const cut: CutOff = { orgId, developerId, by, ...(removedAt === undefined ? {} : { removedAt }), rejoined: rejoinedAtStart };
   const cutResult = await runMovers(deps, "member_removed.mover_failed", fields, (mover) => mover.cutOff?.(deps, cut));

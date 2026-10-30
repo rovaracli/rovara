@@ -100,12 +100,21 @@ describe("planMemberRemoval", () => {
     expect(without.layout.marker).toBeUndefined();
   });
 
-  it("deletes the GitHub link, both ways, only when the read found it", () => {
-    const linked = planMemberRemoval(base({ github: { githubUserId: "4711" } }));
+  it("deletes the GitHub link, both ways, only when the read found it, each delete passing when the item is already gone", () => {
+    const linked = planMemberRemoval(base({ github: { githubUserId: "4711", reverse: true } }));
     expect(linked.layout.github).toHaveLength(2);
     const deletes = linked.layout.github.map((index) => linked.items[index]!.Delete!);
     expect(deletes.map((d) => String(d.Key?.["pk"]))).toEqual([expect.stringContaining("MEMBER_GITHUB#leaver"), expect.stringContaining("GITHUB_MEMBER#4711")]);
-    for (const del of deletes) expect(del.ConditionExpression).toContain("developerId = :leaver");
+    for (const del of deletes) expect(del.ConditionExpression).toMatch(/^attribute_not_exists\(pk\) OR /);
+  });
+
+  it("deletes only the forward item when it names no account, or when the account's own item is missing or someone else's (it can never fail a removal for ever)", () => {
+    const nameless = planMemberRemoval(base({ github: { reverse: false } }));
+    expect(nameless.layout.github).toHaveLength(1);
+    expect(nameless.items[nameless.layout.github[0]!]!.Delete!.ConditionExpression).toBe("attribute_not_exists(pk) OR attribute_not_exists(githubUserId)");
+    const noReverse = planMemberRemoval(base({ github: { githubUserId: "4711", reverse: false } }));
+    expect(noReverse.layout.github).toHaveLength(1);
+    expect(noReverse.items[noReverse.layout.github[0]!]!.Delete!.ConditionExpression).toBe("attribute_not_exists(pk) OR githubUserId = :github");
   });
 
   it("with no GitHub link it still plans, and checks that none appeared since the read", () => {
@@ -127,7 +136,7 @@ describe("planMemberRemoval", () => {
 
   it("stays far under DynamoDB's 100 actions even with every optional part present", () => {
     const pointers = Array.from({ length: 50 }, (_, index) => pointer(index));
-    const plan = planMemberRemoval(base({ leaver: { developerId: "leaver", role: "owner" }, otherOwner: { developerId: "other" }, successor: { developerId: "third" }, ban: true, github: { githubUserId: "4711" }, emailPointers: pointers }));
+    const plan = planMemberRemoval(base({ leaver: { developerId: "leaver", role: "owner" }, otherOwner: { developerId: "other" }, successor: { developerId: "third" }, ban: true, github: { githubUserId: "4711", reverse: true }, emailPointers: pointers }));
     expect(plan.items.length).toBeLessThanOrEqual(30);
   });
 

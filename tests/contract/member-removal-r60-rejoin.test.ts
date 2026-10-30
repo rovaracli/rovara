@@ -45,6 +45,18 @@ describe("R60 after a rejoin", () => {
     expect(w.db.get(taskKey("task-old"))).toMatchObject({ outcome: "creator_removed", outcomeReason: creatorRemovedMessage("Sam", "Acme") });
   });
 
+  it("continue-as-task keeps the same record, so an old task continued after a rejoin is refused, and the spend-approval resume of it is dropped", async () => {
+    const { w, deps, old, task } = await rejoined();
+    // Continuing a thread as a task, or resuming after a spend approval, re-reads the same task record: its creation time is still before the removal.
+    const continued = { ...old, updatedAt: iso(w.clock.now), workflow: { mode: "continue" } } as unknown as DeveloperTaskRecord;
+    w.db.set(continued as unknown as Record<string, unknown>);
+    await expect(requireCreatorStillMember(deps(), continued)).rejects.toEqual(refused());
+    expect(await creatorGone(deps(), w.orgId, continued)).toBe(true);
+    // A task started fresh after the rejoin and continued the same way runs.
+    const fresh = task("task-fresh", SAM, w.clock.now);
+    await expect(requireCreatorStillMember(deps(), { ...fresh, updatedAt: iso(w.clock.now + 1) })).resolves.toBeUndefined();
+  });
+
   it("a new task made after the rejoin runs", async () => {
     const { w, deps, task } = await rejoined();
     const fresh = task("task-new", SAM, w.clock.now);

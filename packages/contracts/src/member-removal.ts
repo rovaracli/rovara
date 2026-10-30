@@ -21,6 +21,7 @@ export const MEMBER_ALREADY_REMOVED_MESSAGE = "That person was already removed."
 export const REMOVAL_CHANGE_STALE_MESSAGE = "Company members changed. Reload and review the removal again.";
 export const REMOVAL_FORBIDDEN_MESSAGE = "Your company access changed. Reload and check your access.";
 export const REMOVAL_TOO_MANY_GRANTS_MESSAGE = "Too many project grants to remove in one go.";
+export const REMOVAL_CLEANUP_UNFINISHED_MESSAGE = "The person was removed, but their project access was not all cleared. Try the removal again.";
 export const REMOVAL_REQUEST_REUSED_MESSAGE = "Use a new request id for a different removal.";
 
 /** One project grant of the leaver as S0 read it: the exact thing the access step deletes (while its `grantId` is still the one recorded). */

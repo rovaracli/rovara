@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   LAST_OWNER_MESSAGE, MEMBER_ALREADY_REMOVED_MESSAGE, MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_GRANTS_MAX, MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX, REMOVAL_CHANGE_STALE_MESSAGE, REMOVAL_FORBIDDEN_MESSAGE,
-  REMOVAL_REQUEST_REUSED_MESSAGE, REMOVAL_TOO_MANY_GRANTS_MESSAGE, SUCCESSOR_INVALID_MESSAGE, agentXError, memberGithubKey, memberGrantsPk, memberRemovalRecordKey,
+  REMOVAL_CLEANUP_UNFINISHED_MESSAGE, REMOVAL_REQUEST_REUSED_MESSAGE, REMOVAL_TOO_MANY_GRANTS_MESSAGE, SUCCESSOR_INVALID_MESSAGE, agentXError, githubMemberKey, memberGithubKey, memberGrantsPk, memberRemovalRecordKey,
   MEMBER_GRANT_SK_PREFIX, orgEmailKey, orgMemberKey, orgPk, orgSettingsKey, type AuditActor, type MemberRemovalRecord, type MemberRemovalState, type OrgId, type OrgRole, type RemovedGrant,
 } from "@agentx/contracts";
 import { auditMemberLeft, auditMemberRemoved, auditOccurrence } from "../../audit/events.js";
@@ -122,6 +122,15 @@ export async function startMemberRemoval(deps: StartRemovalDeps, input: StartRem
     const previous = await get(deps, memberRemovalRecordKey(orgId, removalId));
     if (previous === undefined) return undefined;
     if (previous["requestDigest"] !== requestDigest) throw coded("CONFIG_INVALID", REMOVAL_REQUEST_REUSED_MESSAGE);
+    // With no movers wired nothing else will finish a removal that stopped in its cleanup: the repeat does.
+    if (!deps.hasMovers && previous["state"] === "STARTED") {
+      const record = previous as unknown as MemberRemovalRecord;
+      await finishInPlace(deps, {
+        orgId, removalId, leaverId: record.leaverId, role: record.role as OrgRole, successorId: record.successorId, by: record.by, removedAt: record.removedAt,
+        grants: record.grants, memberLimitUsd: record.memberLimitUsd, leftover: record.leftoverEmailPointers,
+      });
+      return { ...replayOf(previous), state: "DONE" };
+    }
     return replayOf(previous);
   };
   const replayed = await settledBefore();
@@ -161,7 +170,9 @@ export async function startMemberRemoval(deps: StartRemovalDeps, input: StartRem
 
     const allPointers = await emailPointersOf(deps, input.emails, developerId);
     const githubItem = await get(deps, memberGithubKey(orgId, developerId));
-    const githubUserId = githubItem?.["orgId"] === orgId && githubItem["developerId"] === developerId && typeof githubItem["githubUserId"] === "string" ? githubItem["githubUserId"] : undefined;
+    const githubUserId = typeof githubItem?.["githubUserId"] === "string" ? githubItem["githubUserId"] : undefined;
+    const githubReverse = githubUserId === undefined ? undefined : await get(deps, githubMemberKey(orgId, githubUserId));
+    const github = githubItem === undefined ? undefined : { githubUserId, reverse: githubReverse?.["developerId"] === developerId };
     const grantItems = await queryAll(deps, memberGrantsPk(orgId, developerId), MEMBER_GRANT_SK_PREFIX, MEMBER_REMOVAL_GRANTS_MAX);
     if (grantItems.length > MEMBER_REMOVAL_GRANTS_MAX) throw coded("RUNTIME_UNAVAILABLE", REMOVAL_TOO_MANY_GRANTS_MESSAGE);
     const grants: RemovedGrant[] = grantItems.map((grant) => ({
@@ -184,11 +195,11 @@ export async function startMemberRemoval(deps: StartRemovalDeps, input: StartRem
     });
     const planned = planMemberRemoval({
       tableName: deps.tableName, orgId, removalId, removedAt, leaver: { developerId, role }, caller, ...(successorId === undefined ? {} : { successor: { developerId: successorId } }),
-      otherOwner, emailPointers: allPointers, ban: input.ban, ...(githubUserId === undefined ? {} : { github: { githubUserId } }),
+      otherOwner, emailPointers: allPointers, ban: input.ban, ...(github === undefined ? {} : { github }),
       record: {
         orgId, removalId, leaverId: developerId, role, ...(successorId === undefined ? {} : { successorId }), by, removedAt, state: "STARTED", requestDigest,
         grants, ...(typeof limit === "number" ? { memberLimitUsd: limit } : {}),
-        leftoverEmailPointers: allPointers.slice(MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_EMAIL_CAP + MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX), githubUnlinked: githubUserId !== undefined,
+        leftoverEmailPointers: allPointers.slice(MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_EMAIL_CAP + MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX), githubUnlinked: github !== undefined,
       } satisfies MemberRemovalRecord,
       marker: deps.hasMovers ? { entityType: "MEMBER_REMOVAL", orgId, developerId, by, removalId, removedAt, ...(successorId === undefined ? {} : { successorId }) } : undefined,
       company: await approvalCompanyChange({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => new Date(removedAt) }, orgId, role === "owner" || role === "admin"),
@@ -198,7 +209,7 @@ export async function startMemberRemoval(deps: StartRemovalDeps, input: StartRem
     if (refusal === undefined) {
       if (event !== undefined) await flushAuditEvents(auditOf(deps), [event]);
       const started: StartedRemoval = { removalId, state: "STARTED", removedAt, role, ...(successorId === undefined ? {} : { successorId }), replay: false };
-      if (!deps.hasMovers) await finishInPlace(deps, { orgId, removalId, leaverId: developerId, role, successorId, by, removedAt, grants, memberLimitUsd: typeof limit === "number" ? limit : undefined, leftover: allPointers.slice(MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_EMAIL_CAP + MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX), githubUnlinked: githubUserId !== undefined });
+      if (!deps.hasMovers) await finishInPlace(deps, { orgId, removalId, leaverId: developerId, role, successorId, by, removedAt, grants, memberLimitUsd: typeof limit === "number" ? limit : undefined, leftover: allPointers.slice(MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_EMAIL_CAP + MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX), });
       return started;
     }
     switch (refusal) {
@@ -234,8 +245,11 @@ async function run(deps: StartRemovalDeps, plan: RemovalPlan): Promise<ReturnTyp
   }
 }
 
-/** An install with no movers: the access step and the finish run here, once. A failure is logged and leaves the record `STARTED`; the person is cut off either way. */
-async function finishInPlace(deps: StartRemovalDeps, input: { orgId: OrgId; removalId: string; leaverId: string; role: OrgRole; successorId: string | undefined; by: string; removedAt: string; grants: RemovedGrant[]; memberLimitUsd: number | undefined; leftover: string[]; githubUnlinked: boolean }): Promise<void> {
+/**
+ * An install with no movers: the access step and the finish run here. The person is cut off by S0 either way, but a failure here leaves their recorded grants in place and no
+ * marker to retry from, so it fails the request (RUNTIME_UNAVAILABLE) and the record stays `STARTED`; a repeat of the same request id runs these steps again (`settledBefore`).
+ */
+async function finishInPlace(deps: StartRemovalDeps, input: { orgId: OrgId; removalId: string; leaverId: string; role: OrgRole; successorId: string | undefined; by: string; removedAt: string; grants: RemovedGrant[]; memberLimitUsd: number | undefined; leftover: string[] }): Promise<void> {
   try {
     const access = await runAccessStep(deps, { orgId: input.orgId, leaverId: input.leaverId, removedAt: input.removedAt, grants: input.grants, memberLimitUsd: input.memberLimitUsd, leftoverEmailPointers: input.leftover });
     await finishRemoval(deps, {
@@ -244,6 +258,6 @@ async function finishInPlace(deps: StartRemovalDeps, input: { orgId: OrgId; remo
     });
   } catch (error) {
     (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("member_removal.in_place_failed", { orgId: input.orgId, error: errorName(error) ?? "unknown" });
+    throw coded("RUNTIME_UNAVAILABLE", REMOVAL_CLEANUP_UNFINISHED_MESSAGE);
   }
 }
-

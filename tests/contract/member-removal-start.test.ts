@@ -100,6 +100,25 @@ describe("removeMember: S0", () => {
     expect(w.db.get(githubMemberKey(w.orgId, "4711"))).toBeUndefined();
   });
 
+  it("removes a person whose GitHub link item names no account, or whose account item is missing, or belongs to someone else", async () => {
+    const nameless = await world();
+    nameless.db.set({ ...memberGithubKey(nameless.orgId, "sam"), entityType: "MEMBER_GITHUB", orgId: nameless.orgId, developerId: "sam", linkedAt: "x" });
+    await nameless.store.removeMember({ orgId: nameless.orgId, developerId: "sam", emails: [], ban: false, by: { kind: "member", id: "owner" }, callerRole: "owner" });
+    expect(nameless.db.get(memberGithubKey(nameless.orgId, "sam"))).toBeUndefined();
+
+    const noReverse = await world();
+    noReverse.db.set({ ...memberGithubKey(noReverse.orgId, "sam"), entityType: "MEMBER_GITHUB", orgId: noReverse.orgId, githubUserId: "4711", developerId: "sam", linkedAt: "x" });
+    await noReverse.store.removeMember({ orgId: noReverse.orgId, developerId: "sam", emails: [], ban: false, by: { kind: "member", id: "owner" }, callerRole: "owner" });
+    expect(noReverse.db.get(memberGithubKey(noReverse.orgId, "sam"))).toBeUndefined();
+
+    const theirs = await world();
+    theirs.db.set({ ...memberGithubKey(theirs.orgId, "sam"), entityType: "MEMBER_GITHUB", orgId: theirs.orgId, githubUserId: "4711", developerId: "sam", linkedAt: "x" });
+    theirs.db.set({ ...githubMemberKey(theirs.orgId, "4711"), entityType: "GITHUB_MEMBER", orgId: theirs.orgId, githubUserId: "4711", developerId: "someone-else", linkedAt: "x" });
+    await theirs.store.removeMember({ orgId: theirs.orgId, developerId: "sam", emails: [], ban: false, by: { kind: "member", id: "owner" }, callerRole: "owner" });
+    expect(theirs.db.get(memberGithubKey(theirs.orgId, "sam"))).toBeUndefined();
+    expect(theirs.db.get(githubMemberKey(theirs.orgId, "4711"))).toMatchObject({ developerId: "someone-else" });
+  });
+
   it("is CHANGE_STALE, and removes nothing, when a GitHub link appears between the read and the transaction", async () => {
     const w = await world();
     const realSend = w.db.send;
@@ -246,6 +265,22 @@ describe("removeMember: S0", () => {
     w.db.set(grant(w.orgId, "sam", "payments"));
     const result = await w.store.removeMember({ orgId: w.orgId, developerId: "sam", emails: [], ban: false, by: { kind: "member", id: "owner" }, callerRole: "owner", requestId: REQUEST });
     expect(w.db.find((item) => item.pk === memberRemovalQueueKey(result.removedAt, w.orgId, "sam").pk)).toEqual([]);
+    expect(w.db.get(projectMemberKey(w.orgId, "sam", "payments"))).toBeUndefined();
+    expect(w.db.get(memberRemovalRecordKey(w.orgId, REQUEST))).toMatchObject({ state: "DONE" });
+  });
+});
+
+describe("an install with no movers", () => {
+  it("fails the request when the cleanup stops, leaves the person cut off, and finishes the cleanup when the same request is repeated", async () => {
+    const w = await world({ hook: false });
+    w.db.set(grant(w.orgId, "sam", "payments"));
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("#grantId"), error: { name: "InternalServerError" } });
+    const input = { orgId: w.orgId, developerId: "sam", emails: [], ban: false, by: { kind: "member" as const, id: "owner" }, callerRole: "owner" as const, requestId: REQUEST };
+    await expect(w.store.removeMember(input)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.db.get(orgMemberKey(w.orgId, "sam"))).toBeUndefined();
+    expect(w.db.get(projectMemberKey(w.orgId, "sam", "payments"))).toBeDefined();
+    expect(w.db.get(memberRemovalRecordKey(w.orgId, REQUEST))).toMatchObject({ state: "STARTED" });
+    await expect(w.store.removeMember(input)).resolves.toMatchObject({ removalId: REQUEST, state: "DONE", replay: true });
     expect(w.db.get(projectMemberKey(w.orgId, "sam", "payments"))).toBeUndefined();
     expect(w.db.get(memberRemovalRecordKey(w.orgId, REQUEST))).toMatchObject({ state: "DONE" });
   });

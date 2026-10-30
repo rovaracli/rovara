@@ -26,8 +26,11 @@ export interface RemovalPlanInput {
   /** The `ORG_EMAIL#` partition keys that name the leaver. The first `MEMBER_REMOVAL_EMAIL_CAP` are deleted here; the rest are handed back. */
   emailPointers: string[];
   ban: boolean;
-  /** The GitHub account the leaver linked, when the read found one. With none, the plan checks that none appeared since. */
-  github?: { githubUserId: string } | undefined;
+  /**
+   * The leaver's GitHub link, when the read found its item. `githubUserId` is absent for an item that does not name one (the forward item is then deleted alone), and `reverse` says
+   * the account's own item (`GITHUB_MEMBER#`) was found and names the leaver. With no link at all, the plan checks that none appeared since.
+   */
+  github?: { githubUserId?: string | undefined; reverse: boolean } | undefined;
   /** The removal record's fields (the plan adds the key and the entity type). */
   record: Item;
   /** The marker's fields besides its key; absent on an install with no movers. */
@@ -137,11 +140,19 @@ export function planMemberRemoval(input: RemovalPlanInput): RemovalPlan {
   if (input.github === undefined) {
     layout.githubAbsent = add({ ConditionCheck: { TableName: tableName, Key: memberGithubKey(orgId, leaver.developerId), ConditionExpression: "attribute_not_exists(pk)" } });
   } else {
-    const values = { ":leaver": leaver.developerId, ":org": orgId };
-    layout.github.push(
-      add({ Delete: { TableName: tableName, Key: memberGithubKey(orgId, leaver.developerId), ConditionExpression: "developerId = :leaver AND orgId = :org", ExpressionAttributeValues: values } }),
-      add({ Delete: { TableName: tableName, Key: githubMemberKey(orgId, input.github.githubUserId), ConditionExpression: "developerId = :leaver AND orgId = :org", ExpressionAttributeValues: values } }),
-    );
+    // Each delete also passes when the item is already gone, and holds only while it is still what the read saw: a link changed in between is CHANGE_STALE, but an item
+    // that is incomplete (no account id, no reverse item) can never make a removal fail for ever.
+    const { githubUserId } = input.github;
+    layout.github.push(add({ Delete: {
+      TableName: tableName, Key: memberGithubKey(orgId, leaver.developerId),
+      ConditionExpression: githubUserId === undefined ? "attribute_not_exists(pk) OR attribute_not_exists(githubUserId)" : "attribute_not_exists(pk) OR githubUserId = :github",
+      ...(githubUserId === undefined ? {} : { ExpressionAttributeValues: { ":github": githubUserId } }),
+    } }));
+    if (input.github.reverse && githubUserId !== undefined) {
+      layout.github.push(add({ Delete: {
+        TableName: tableName, Key: githubMemberKey(orgId, githubUserId), ConditionExpression: "attribute_not_exists(pk) OR developerId = :leaver", ExpressionAttributeValues: { ":leaver": leaver.developerId },
+      } }));
+    }
   }
   for (const item of input.audit) layout.audit.push(add(item));
   return { items, layout, leftoverEmailPointers: input.emailPointers.slice(MEMBER_REMOVAL_EMAIL_CAP) };

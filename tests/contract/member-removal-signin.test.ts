@@ -74,6 +74,15 @@ describe("the sign-in step", () => {
     expect(w.markers()).toEqual([]);
   });
 
+  it("does not claim the sessions were ended when no sign-in function is wired", async () => {
+    const w = await removalWorld();
+    await w.join(SAM, "Sam", "member");
+    delete (w.deps as { endDeveloperSessions?: unknown }).endDeveloperSessions;
+    const removed = await w.remove(SAM);
+    expect(w.record(removed.removalId)).toMatchObject({ state: "DONE", counts: expect.objectContaining({ signInEnded: false }) as unknown });
+    expect(w.logs.map((entry) => entry.event)).toContain("member_removal.sign_in_not_wired");
+  });
+
   it("a repeat with the same removal time changes nothing and finishes the removal once", async () => {
     const w = await removalWorld();
     await w.join(SAM, "Sam", "member");
