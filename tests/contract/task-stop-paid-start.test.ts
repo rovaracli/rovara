@@ -1827,3 +1827,34 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore + 1);
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })?.status).not.toBe("APPROVED");
 });
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) it(`owner-cap ${resource} ${operation} refuses original request terms changed at native approval commit`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 40 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const ask = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(ask.status).toBe(202); const requestId = String(ask.body.spendRequestId);
+  const entityKey = { pk: orgScoped(TEST_ORG, `${resource === "agent" ? "AGENT" : "CHAIN"}#${id}`), sk: "META" }, before = f.t.db.get(entityKey), totalBefore = f.t.ownerTotal(BEN);
+  const requestKey = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" }, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === entityKey.pk && item.Update.Key.sk === entityKey.sk)) {
+      raced = true; const request = f.t.db.get(requestKey)!;
+      f.t.db.set({ ...request, ownerFinancialTerms: { ...(request.ownerFinancialTerms as Record<string, unknown>), totalUsd: 81 } });
+    }
+    return send(command);
+  };
+  await expect(f.t.decide(DEB, requestId)).rejects.toBeDefined();
+  expect(raced).toBe(true); expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore);
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })?.status).not.toBe("APPROVED");
+});
