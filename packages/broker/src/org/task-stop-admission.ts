@@ -19,6 +19,8 @@ const CaptureIdentity = z.object({
   pathLimitMicrousd: z.unknown(), approvedRunLimitMicrousd: z.unknown().optional(),
   committedMaxPerRunMicrousd: z.unknown().optional(), requestedMicrousd: z.unknown().optional(), chainMicrousd: z.unknown().optional(), testingMicrousd: z.unknown().optional(),
 }).strict();
+const EvalCaptureIdentity = CaptureIdentity.omit({ agentId: true }).extend({ agentScope: z.literal("none_eval") }).strict();
+export type TaskStopEvalCaptureRequest = z.infer<typeof EvalCaptureIdentity>;
 export type TaskStopCaptureRequest = z.infer<typeof CaptureIdentity>;
 export interface TaskStopCaptureDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -42,6 +44,24 @@ export interface CapturedTaskStop {
   calculationInput: TaskStopAdmissionInput;
   sourceRevisions: { company: number; ceiling: number; projectCatalog: number; project: number; agent: number };
 }
+export type CapturedTaskStopEval = Omit<CapturedTaskStop, "agentId" | "sourceRevisions"> & {
+  agentScope: "none_eval";
+  sourceRevisions: Omit<CapturedTaskStop["sourceRevisions"], "agent"> & { agent: null };
+};
+export type TaskStopEvalCaptureDependencies = Omit<TaskStopCaptureDependencies, "requireScopeAccess"> & {
+  requireScopeAccess(input: TaskStopEvalCaptureRequest): Promise<void>;
+};
+type SnapshotDependencies = Omit<TaskStopCaptureDependencies, "requireScopeAccess"> & { requireScopeAccess(input: unknown): Promise<void> };
+const agentCaptureDeps = (deps: TaskStopCaptureDependencies): SnapshotDependencies => ({ ...deps, requireScopeAccess: input => deps.requireScopeAccess(CaptureIdentity.parse(input)) });
+const requireAgentSnapshot = (snapshot: CapturedTaskStop | CapturedTaskStopEval | { kind: "disabled" }): CapturedTaskStop | { kind: "disabled" } => {
+  if (snapshot.kind === "captured" && !("agentId" in snapshot)) throw invalid();
+  return snapshot;
+};
+export async function captureTaskStopEvalAdmission(deps: TaskStopEvalCaptureDependencies, value: unknown): Promise<CapturedTaskStopEval | { kind: "disabled" }> {
+  const snapshot = await captureTaskStopSnapshot({ ...deps, requireScopeAccess: input => deps.requireScopeAccess(EvalCaptureIdentity.parse(input)) }, value, false, undefined, true);
+  if (snapshot.kind === "captured" && !("agentScope" in snapshot)) throw invalid();
+  return snapshot;
+}
 const missing = () => agentXError("TASK_STOP_CONFIG_MISSING", "Work can't start: a required spending setting is missing. Ask an admin to review Spending.");
 const invalid = () => agentXError("TASK_STOP_CONFIG_INVALID", "Work can't start: a spending setting couldn't be read or is invalid. Ask an admin to review Spending.");
 const forbidden = () => agentXError("FORBIDDEN", "Your company access changed. Reload and check your access before starting work.");
@@ -50,34 +70,36 @@ const positiveRevision = (value: unknown): value is number => typeof value === "
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies, value: unknown): Promise<CapturedTaskStop | { kind: "disabled" }> {
-  return captureTaskStopSnapshot(deps, value, false);
+  return requireAgentSnapshot(await captureTaskStopSnapshot(agentCaptureDeps(deps), value, false));
 }
 
 /** Read-only cutover review. The preview wrapper is deliberately not an
  * admission envelope, changes no enrollment and grants no paid-work authority. */
 export async function previewTaskStopCutover(deps: TaskStopCaptureDependencies, value: unknown): Promise<{ kind: "preview"; enrolled: false; snapshot: CapturedTaskStop }> {
-  const snapshot = await captureTaskStopSnapshot(deps, value, true);
+  const snapshot = requireAgentSnapshot(await captureTaskStopSnapshot(agentCaptureDeps(deps), value, true));
   if (snapshot.kind !== "captured") throw missing();
   return { kind: "preview", enrolled: false, snapshot };
 }
 
 /** Internal transaction context. Never serialize these native source checks. */
 export async function captureTaskStopCutoverReview(deps: TaskStopCaptureDependencies, value: unknown): Promise<{ kind: "preview"; enrolled: false; snapshot: CapturedTaskStop; sourceChecks: TransactItem[] }> {
-  const sourceChecks: TransactItem[] = [], snapshot = await captureTaskStopSnapshot(deps, value, true, sourceChecks);
+  const sourceChecks: TransactItem[] = [], snapshot = requireAgentSnapshot(await captureTaskStopSnapshot(agentCaptureDeps(deps), value, true, sourceChecks));
   if (snapshot.kind !== "captured") throw missing();
   return { kind: "preview", enrolled: false, snapshot, sourceChecks };
 }
 
-async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value: unknown, cutoverPreview: boolean, nativeChecks?: TransactItem[]): Promise<CapturedTaskStop | { kind: "disabled" }> {
-  const parsedIdentity = CaptureIdentity.safeParse(value);
+async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknown, cutoverPreview: boolean, nativeChecks?: TransactItem[], evalScope = false): Promise<CapturedTaskStop | CapturedTaskStopEval | { kind: "disabled" }> {
+  const parsedIdentity = (evalScope ? EvalCaptureIdentity : CaptureIdentity).safeParse(value);
   if (!parsedIdentity.success) throw forbidden();
   const identity = parsedIdentity.data;
   await deps.requireScopeAccess(identity);
-  const { orgId, developerId, role, project, agentId } = identity;
-  const builtin = isBuiltinAgentId(agentId);
+  const { orgId, developerId, role, project } = identity;
+  const agentId = "agentId" in identity ? identity.agentId : undefined;
+  const builtin = agentId !== undefined && isBuiltinAgentId(agentId);
   const keys = [orgMemberKey(orgId, developerId), developerOrgKey(developerId), orgMetaKey(orgId),
     orgSettingsKey(orgId, "TASK_STOP_POLICY"), agentGuardrailsKey(orgId), orgProjectCatalogKey(orgId, project),
-    projectAiKey(orgId, project), builtin ? builtinSettingsKey(orgId, agentId) : agentKey(orgId, agentId, "META"),
+    projectAiKey(orgId, project),
+    ...(agentId === undefined ? [] : [builtin ? builtinSettingsKey(orgId, agentId) : agentKey(orgId, agentId, "META")]),
     { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap" },
     { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#upgrade" }];
   let response: z.infer<typeof responseSchema>;
@@ -101,11 +123,12 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   // Immutable, non-TTL seed receipts distinguish a never-enrolled legacy org
   // from a seeded org whose canonical policy disappeared. Read them in the
   // SAME snapshot; absence is never translated into configured inheritance.
-  const receipts = [8, 9].flatMap(index => {
+  const seedIndex = agentId === undefined ? 7 : 8;
+  const receipts = [seedIndex, seedIndex + 1].flatMap(index => {
     if (rows[index] === undefined) return [];
     const receipt = row(index);
     if (receipt.entityType !== "TASK_STOP_SEED" || receipt.version !== 1
-      || receipt.source !== (index === 8 ? "bootstrap" : "upgrade")
+      || receipt.source !== (index === seedIndex ? "bootstrap" : "upgrade")
       || !["created", "preserved"].includes(String(receipt.outcome))
       || !positiveRevision(receipt.policyRevision)) throw invalid();
     return [receipt];
@@ -125,7 +148,7 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   if (member.developerId !== developerId || member.role !== role || pointer.role !== role) throw forbidden();
   if (receipts.length === 0) throw missing();
   if (receipts.some(receipt => Number(receipt.policyRevision) > Number(company.revision))) throw invalid();
-  const ceiling = row(4), catalog = row(5), settings = row(6), agent = row(7);
+  const ceiling = row(4), catalog = row(5), settings = row(6), agent = agentId === undefined ? undefined : row(7);
   if (ceiling.entityType !== "AGENT_GUARDRAILS" || !positiveRevision(ceiling.revision)
     || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(ceiling, field))) throw invalid();
   const guardrails = AgentGuardrailsSchema.safeParse(ceiling.guardrails);
@@ -134,8 +157,8 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   if (ceilingMicrousd === undefined) throw invalid();
   if (catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== project || !positiveRevision(catalog.latestRevision)
     || settings.entityType !== "PROJECT_AI" || settings.project !== project || !positiveRevision(settings.revision)) throw invalid();
-  if (agent.entityType !== (builtin ? "BUILTIN_AGENT_SETTINGS" : "AGENT") || agent.agentId !== agentId
-    || !positiveRevision(agent.revision) || (!builtin && agent.status !== "active")) throw invalid();
+  if (agent !== undefined && (agent.entityType !== (builtin ? "BUILTIN_AGENT_SETTINGS" : "AGENT") || agent.agentId !== agentId
+    || !positiveRevision(agent.revision) || (!builtin && agent.status !== "active"))) throw invalid();
   const rawPolicy = company.policy;
   if (!object(rawPolicy)) throw invalid();
   // Version 1 is an explicitly configured numeric company default, not the
@@ -157,12 +180,12 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   const projectParsed = projectSchema.safeParse(projectPolicy);
   if (!projectParsed.success) throw invalid();
   const projectStop = projectParsed.data.schemaVersion === 1 ? { kind: "limited", stopMicrousd: projectParsed.data.stopMicrousd } : { kind: "inherit" };
-  let agentStop: unknown;
-  if (Object.hasOwn(agent, "maxPerRunUsd")) {
+  let agentStop: unknown = { kind: "inherit" };
+  if (agent !== undefined && Object.hasOwn(agent, "maxPerRunUsd")) {
     const stopMicrousd = usdToWholeMicrodollars(agent.maxPerRunUsd);
     if (stopMicrousd === undefined || (agent.stopKind !== undefined && agent.stopKind !== "limited")) throw invalid();
     agentStop = { kind: "limited", stopMicrousd };
-  } else {
+  } else if (agent !== undefined) {
     if (agent.stopKind !== "inherit") throw invalid();
     agentStop = { kind: "inherit" };
   }
@@ -178,15 +201,17 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   const calculation = calculateTaskStop(data.data);
   if (calculation.kind === "refused") throw agentXError(calculation.reason, "This approval is above the company ceiling. Ask an admin to raise the ceiling first; that change needs a second person.");
   if (calculation.kind !== "resolved" || !("approvalCapMicrousd" in calculation)) throw invalid();
-  const sourceRevisions = { company: company.revision, ceiling: ceiling.revision, projectCatalog: catalog.latestRevision, project: settings.revision, agent: agent.revision };
+  const sourceRevisions = { company: company.revision, ceiling: ceiling.revision, projectCatalog: catalog.latestRevision, project: settings.revision, agent: agent?.revision ?? null };
   const policyDigest = createHash("sha256").update(JSON.stringify([orgId, project, agentId, sourceRevisions, data.data])).digest("hex");
   if (nativeChecks !== undefined) {
     const presenceFields = ["orgId", "developerId", "role", "closingAt", "closedAt", "revision", "latestRevision", "policy", "enrollment", "guardrails", "taskStopPolicy", "stopKind", "stopMicrousd", "maxPerRunUsd", "status", "owner", "accountable", "shares", "pinnedVersion", "version", "source", "outcome", "policyRevision"];
     nativeChecks.push(...nativeSnapshotConditions(deps.tableName, keys, rows, presenceFields));
   }
-  return { kind: "captured", schemaVersion: 2, orgId, project, agentId, capturedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
+  const captured = { kind: "captured" as const, schemaVersion: 2 as const, orgId, project, capturedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
     policyDigest, effectiveStopMicrousd: calculation.effectiveStopMicrousd, approvalCapMicrousd: calculation.approvalCapMicrousd,
-    bindingScopes: calculation.bindingScopes, calculationInput: data.data, sourceRevisions };
+    bindingScopes: calculation.bindingScopes, calculationInput: data.data };
+  if (agentId === undefined) return { ...captured, agentScope: "none_eval", sourceRevisions: { ...sourceRevisions, agent: null } };
+  return { ...captured, agentId, sourceRevisions: { ...sourceRevisions, agent: Number(agent!.revision) } };
 }
 
 /** Reuses one already captured economic snapshot with a proposed approval. */

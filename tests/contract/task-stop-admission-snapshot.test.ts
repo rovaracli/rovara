@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { TransactGetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, orgScoped, projectAiKey } from "@agentx/contracts";
+import { captureTaskStopEvalAdmission } from "../../packages/broker/src/org/task-stop-admission.js";
 import * as company from "../../packages/broker/src/org/task-stop-company.js";
 
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", who = "a".repeat(64), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", project = "project";
@@ -159,7 +160,7 @@ for (const limited of [false, true]) it(`taskless eval capture uses explicit non
   if (limited) f.rows[6]!.taskStopPolicy = { schemaVersion: 1, stopMicrousd: 1234567 };
   const { agentId: omitted, ...scope } = f.input;
   expect(omitted).toBe(agentId);
-  const capture = await company.captureTaskStopAdmission(f.deps, { ...scope, agentScope: "none_eval" });
+  const capture = await captureTaskStopEvalAdmission(f.deps, { ...scope, agentScope: "none_eval" });
   expect(capture).toMatchObject({ kind: "captured", agentScope: "none_eval", effectiveStopMicrousd: limited ? 1234567 : 20000000, approvalCapMicrousd: 1000000 });
   expect(capture).not.toHaveProperty("agentId");
   expect(f.calls).toHaveLength(1);
