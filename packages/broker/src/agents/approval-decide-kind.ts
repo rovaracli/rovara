@@ -6,7 +6,7 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stageOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -15,7 +15,7 @@ import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 import { resolveRecipe } from "./changes.js";
-import { readTrackRecordsByKind } from "../playbook/track-record.js";
+import { TRACK_RECORD_DEADLINE_MS, readTrackRecordsByKind } from "../playbook/track-record.js";
 
 const NAME_MAX = 80;
 const OPEN_AGAIN = "Open the approval again from Rovara.";
@@ -121,6 +121,17 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
  * once under one deadline, and a record that cannot be read leaves the changes as they were. It decides nothing.
  */
 async function changesWithRecords(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<string[]> {
+  // Everything that is read for the records (the agent, the recipes, the outcomes) is under one deadline: at it, the page shows the changes without record lines.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<string[]>((resolve) => { timer = setTimeout(() => resolve(record.changes), deps.trackRecordDeadlineMs ?? TRACK_RECORD_DEADLINE_MS); });
+  try {
+    return await Promise.race([withRecords(deps, record), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withRecords(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<string[]> {
   try {
     const subject = record.subject;
     let project: string | undefined;
@@ -140,7 +151,7 @@ async function changesWithRecords(deps: ApprovalDependencies, record: Extract<An
       for (const step of own?.steps ?? []) steps.set(`${step.id}|${step.kind}`, step);
     }
     const stages = [...steps.values()];
-    const kindOf = record.changes.map((change) => { const id = stageOfLessSafeReason(change, stages); return id === undefined ? undefined : stages.find((entry) => entry.id === id)?.kind; });
+    const kindOf = record.changes.map((change) => stepOfLessSafeReason(change, stages)?.kind);
     const read = await readTrackRecordsByKind(deps, record.orgId, project, kindOf.filter((kind): kind is string => kind !== undefined));
     return record.changes.flatMap((change, index) => {
       const kind = kindOf[index];

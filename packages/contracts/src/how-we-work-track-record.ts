@@ -109,14 +109,19 @@ export const isWordedRecord = (record: { claim: string }): record is HowWeWorkTr
  * to an AI company has none, even when it quotes the step's name. The stage is found by its kind (never by its name alone): a step of the project's own that has the same name is not it.
  */
 export function stageOfLessSafeReason(reason: string, stages: ReadonlyArray<{ id: string; name: string; kind: string }>): string | undefined {
+  return stepOfLessSafeReason(reason, stages)?.id;
+}
+
+/** The same, as the step itself (its id and its kind): a step that reuses a stage's id with another kind is not that stage. */
+export function stepOfLessSafeReason<T extends { id: string; name: string; kind: string }>(reason: string, stages: ReadonlyArray<T>): T | undefined {
   const words = /\bthe (plan check|review step)\b/i.exec(reason)?.[1]?.toLowerCase();
   if (words === undefined || !CHECKING_CHANGE.test(reason)) return undefined;
   const kind = words === "plan check" ? "plan_critic" : "review";
   const named = [...reason.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   const ofKind = stages.filter((stage) => stage.kind === kind);
   // The first quoted name is the step the change is about (later ones name the step it is compared with).
-  if (named.length > 0) return ofKind.find((stage) => stage.name === named[0])?.id;
-  return ofKind[0]?.id;
+  if (named.length > 0) return ofKind.find((stage) => stage.name === named[0]);
+  return ofKind[0];
 }
 
 /** The ways a change can weaken who checks: what it does to the plan check or the review step. */

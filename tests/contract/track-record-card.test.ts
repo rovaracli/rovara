@@ -2,6 +2,7 @@
 // a read that fails (the field is left out: no record, never a zero), the risk claim that never reaches the shared card, and the mapping of a less-safe change to its stage.
 import { describe, expect, it } from "vitest";
 import {
+  stepOfLessSafeReason,
   HowWeWorkViewReaderSchema, HowWeWorkViewSchema, OUTCOME_READ_CAP, ROVARA_CODE_AGENT_ID, agentXError, stageOfLessSafeReason, trackRecordLines,
   type HowWeWorkTrackRecord, type HowWeWorkView, type OutcomeClaim, type OutcomeState,
 } from "../../packages/contracts/src/index.js";
@@ -97,6 +98,10 @@ describe("a less-safe change and its stage", () => {
     const withOwn = [{ id: "own_review", name: "Review", kind: "agent" }, { id: "own_check", name: "Checks", kind: "agent" }, ...stages];
     expect(stageOfLessSafeReason('Changes the instructions of the review step "Review"', withOwn)).toBe("review");
     expect(stageOfLessSafeReason('Removes the review step "Review"', [{ id: "own_review", name: "Review", kind: "agent" }])).toBeUndefined();
+    // A step that reuses a stage's id with another kind is not the stage: the step found is the one of the right kind.
+    const reused = [{ id: "review", name: "Review", kind: "agent" }, { id: "review", name: "Review", kind: "review" }];
+    expect(stepOfLessSafeReason('Changes the instructions of the review step "Review"', reused)).toEqual({ id: "review", name: "Review", kind: "review" });
+    expect(stepOfLessSafeReason('Changes the instructions of the review step "Review"', [reused[0]!])).toBeUndefined();
     expect(stageOfLessSafeReason('Removes the review step "Review"', [{ id: "own_review", name: "Review", kind: "agent" }, { id: "review", name: "Code review", kind: "review" }])).toBeUndefined();
   });
 });

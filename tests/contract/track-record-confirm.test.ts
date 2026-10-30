@@ -160,3 +160,21 @@ describe("the confirmation page shows the stage's record beside a less-safe chan
     expect(view.paragraphs.join("\n")).toContain('Changes the instructions of the review step "Review"');
   });
 });
+
+describe("the page does not wait on the records", () => {
+  it("renders the changes without record lines when the recipe read hangs, within the deadline", async () => {
+    const w = world();
+    const agentId = await layer(w);
+    await seed(w, "review_pass:CRITIC", "held", 12);
+    await setDraft(w, agentId, { review: { instructions: "Be strict about tests." } });
+    const waiting = await publish(w, MAX, agentId);
+    const id = approvalIdOf(w, waiting);
+    (w.deps as { trackRecordDeadlineMs?: number }).trackRecordDeadlineMs = 60;
+    (w.store as unknown as { pinnedBuiltinVersion: () => Promise<never> }).pinnedBuiltinVersion = () => new Promise<never>(() => undefined);
+    const started = Date.now();
+    const view = await viewOf(w, id);
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(records(view)).toEqual([]);
+    expect(view.paragraphs).toEqual(['Changes the instructions of the review step "Review"']);
+  });
+});
