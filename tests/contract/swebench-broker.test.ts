@@ -642,7 +642,7 @@ it("M47 single eval records the authenticated org, project and requesting develo
   expect(rows[0]).toMatchObject({ orgId: TEST_ORG, projectName: "payments", developerId: developerIdForSlackUser(member) });
 });
 
-it("M47 actual eval start captures the strict project stop without applying the approval ceiling as an ordinary cap", async () => {
+async function enrolledEvalBroker() {
   const h = await evalBroker(); await enable(h.handler, { maxCostUsd: 10 });
   const developerId = developerIdForSlackUser(member);
   h.db.set({ ...orgMemberKey(TEST_ORG, developerId), orgId: TEST_ORG, developerId, role: "member" });
@@ -655,8 +655,30 @@ it("M47 actual eval start captures the strict project stop without applying the 
   const catalog = orgProjectCatalogKey(TEST_ORG, "payments"), project = projectAiKey(TEST_ORG, "payments");
   h.db.set({ ...h.db.get(catalog), ...catalog, orgId: TEST_ORG, entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1 });
   h.db.set({ ...h.db.get(project), ...project, orgId: TEST_ORG, entityType: "PROJECT_AI", project: "payments", revision: 1, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1234567 } });
+  return { ...h, developerId };
+}
+
+it("M47 actual eval start captures the strict project stop without applying the approval ceiling as an ordinary cap", async () => {
+  const h = await enrolledEvalBroker();
   const reply = await start(h.handler); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ maxCostUsd: 1.234567,
     spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 1234567, approvalCapMicrousd: 1000000 } });
   expect([...h.launches.values()][0]?.run.maxCostUsd).toBe(1.234567);
+});
+
+for (const loss of ["member", "project"] as const) it(`M47 eval refuses ${loss} loss after acceptance before dispatch`, async () => {
+  const h = await enrolledEvalBroker(), send = h.db.send.bind(h.db); let changed = false;
+  h.db.send = async command => {
+    const result = await send(command);
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "SWEBENCH_RUN")) {
+      changed = true;
+      if (loss === "member") h.db.delete(orgMemberKey(TEST_ORG, h.developerId));
+      else h.db.delete(projectMemberKey(TEST_ORG, h.developerId, "payments"));
+    }
+    return result;
+  };
+  const reply = await start(h.handler);
+  expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ status: "FAILED" });
 });
