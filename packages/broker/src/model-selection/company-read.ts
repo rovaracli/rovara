@@ -1,3 +1,4 @@
+import {budgetActorChecks} from "../agents/budget-authority.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
 import {ModelSelectionPolicyResponseSchema,STAGE_IDS,agentXError,canonicalModelName,modelCompany,orgMemberKey,developerOrgKey,orgMetaKey,type OrgId,type ModelIdentifier} from "@agentx/contracts";
 import {bedrockClaudeModelIds,catalogModel} from "@agentx/model-runtime/catalog";
@@ -15,6 +16,8 @@ export async function requireCompanyModelPolicyAuthority(deps:ModelPolicyReader,
  const rows=await Promise.all(keys.map(async Key=>{try{return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}catch{throw unavailable();}}));
  const [member,pointer,org]=rows;
  if(rows.some((row,index)=>row===undefined||row.pk!==keys[index]!.pk||row.sk!==keys[index]!.sk)||member?.orgId!==caller.orgId||member.developerId!==caller.developerId||(member.role!=="owner"&&member.role!=="admin")||pointer?.orgId!==caller.orgId||pointer.role!==member.role||org?.orgId!==caller.orgId||org.closingAt!==undefined||org.closedAt!==undefined)throw forbidden();
+ // Callers that write must include these live authority conditions in the same transaction.
+ return budgetActorChecks(deps.tableName,caller.orgId,{developerId:caller.developerId,role:member.role});
 }
 export async function getCompanyModelSelectionPolicy(deps:Deps,caller:StageModelCaller) {
  await requireCompanyModelPolicyAuthority(deps,caller);
