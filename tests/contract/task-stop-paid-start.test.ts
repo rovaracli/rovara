@@ -3,7 +3,7 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
-import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
+import { spendRequestView, createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
@@ -1895,4 +1895,28 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   await expect(f.t.decide(DEB, requestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   expect(raced).toBe(true); expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore + (mutation === "counter_commit" ? 1 : 0));
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })?.status).not.toBe("APPROVED");
+});
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) it(`owner-cap ${resource} ${operation} keeps native approval proofs out of the public view`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 40 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const ask = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(ask.status).toBe(202); const requestId = String(ask.body.spendRequestId);
+  const record = f.t.requests().find(item => item.spendRequestId === requestId)!;
+  expect(record.ownerFinancialTerms).toBeDefined(); expect(record.approvalSource).toBeDefined();
+  const shown = spendRequestView({ now: Date.now, confirmOrigin: "https://example.test" }, record, { orgRole: "admin" });
+  expect(shown.reason).toBe(record.reason); expect(shown.amountUsd).toBe(record.amountUsd);
+  expect(shown).not.toHaveProperty("ownerFinancialTerms"); expect(shown).not.toHaveProperty("approvalSource"); expect(shown).not.toHaveProperty("approvalTerms");
 });
