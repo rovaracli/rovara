@@ -38,7 +38,7 @@ import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
-import { scoreChangesRequested, scoreEndedPullRequest } from "./outcome-hooks.js";
+import { changesRequestedCommits, observeCandidateCode, outcomeRoundOf, roundsOfCommits, scoreChangesRequested } from "./outcome-hooks.js";
 import type { OutcomeDependencies } from "./outcomes.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
@@ -692,25 +692,30 @@ async function trackOne(
   const fields = reviewsOf(reviews);
   if (markedReady) fields.draft = false;
 
-  // Track record (best effort, after the item is written, never changes the pass): a person's first request for changes, a feedback round a person started, and a pull request closed without merging
-  // move the samples of the candidate this pull request holds. A merge is scored where it is recorded (the webhook path), which also has the merge commit.
+  // Track record (best effort, after the item is written, never changes the pass): what this pass saw of the code the candidate published (its head; its checks on that head), a person's first
+  // request for changes (about the candidate whose head the review is on), and a round of fixes started from people's comments. A close is not scored here (it may be reopened), and a merge is scored
+  // where it is recorded (the webhook path), which also has the merge commit.
   const observeOutcomes = async (): Promise<void> => {
     if (deps.outcomes === undefined) return;
-    const when = new Date(now).toISOString();
-    const outcomeTask = { taskId: task.taskId, orgId: task.orgId, project: task.project, agent: task.agent };
-    if (fields.review === "changes_requested" && prior?.review !== "changes_requested") {
-      await scoreChangesRequested(deps.outcomes, outcomeTask, { candidateDigest: pullRequest.candidateDigest, reason: "changes_requested_by_person", now: when });
-    }
-    for (const decision of task.workflow.feedbackDecisions ?? []) {
-      if (decision.decision !== "APPROVE" || decision.actorRole !== "TASK_OWNER") continue;
-      for (const binding of decision.candidates) {
-        if (binding.repositoryId === pullRequest.repositoryId && binding.number === pullRequest.number) {
-          await scoreChangesRequested(deps.outcomes, outcomeTask, { candidateDigest: binding.candidateDigest, reason: "feedback_round_by_person", now: when });
-        }
+    try {
+      const when = new Date(now).toISOString();
+      const outcomeTask = { taskId: task.taskId, orgId: task.orgId, project: task.project, agent: task.agent };
+      const currentRound = outcomeRoundOf(pullRequest.candidateDigest);
+      await observeCandidateCode(deps.outcomes, outcomeTask, {
+        candidateDigest: pullRequest.candidateDigest, head: pullRequest.headSha, ci: ci.ci, ciIsOnHead: pullRequest.headSha !== undefined && status.headSha === pullRequest.headSha, now: when,
+      });
+      if (fields.review === "changes_requested" && prior?.review !== "changes_requested") {
+        const rounds = await roundsOfCommits(deps.outcomes, outcomeTask, await changesRequestedCommits(status, permission), currentRound);
+        await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "changes_requested_by_person", now: when });
       }
-    }
-    if (status.state === "closed") {
-      await scoreEndedPullRequest(deps.outcomes, { ...outcomeTask, workflow: task.workflow }, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, status, now: when });
+      // A round of fixes made from people's comments (a person decided it, or Rovara's autonomy did on their comments) means a person asked for changes to the code they commented on.
+      for (const decision of task.workflow.feedbackDecisions ?? []) {
+        if (decision.decision !== "APPROVE") continue;
+        const rounds = decision.candidates.filter((binding) => binding.repositoryId === pullRequest.repositoryId && binding.number === pullRequest.number).map((binding) => outcomeRoundOf(binding.candidateDigest));
+        if (rounds.length > 0) await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "feedback_round_by_person", now: when });
+      }
+    } catch (error) {
+      deps.log?.("outcomes.observe_failed", { taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
     }
   };
 

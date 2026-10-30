@@ -5,7 +5,8 @@ import type { WorkflowSnapshot } from "../../packages/contracts/src/index.js";
 import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
 import type { OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";
 import {
-  outcomeRoundOf, recordPlanOutcome, recordPublicationOutcomes, scoreChangesRequested, scoreEndedPullRequest, settleTaskOutcomes, type OutcomeTask,
+  observeCandidateCode, outcomeRoundOf, recordPlanOutcome, recordPublicationOutcomes, scoreChangesRequested, scoreMergedCandidate, settleSuperseded, settleTaskOutcomes,
+  type EndedPullRequestReader, type OutcomeTask,
 } from "../../packages/broker/src/rovara-code/outcome-hooks.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -104,13 +105,19 @@ describe("publication", () => {
     expect(byClaim(w.db, "review_pass:CRITIC").map((item) => item.round).sort()).toEqual([outcomeRoundOf(CANDIDATE), outcomeRoundOf(SECOND_CANDIDATE)].sort());
   });
 
-  it.each(["not_found", "read_failed"] as const)("a proof that could not be read (%s) is a no_outcome sample, not a silent zero", async (why) => {
+  it("a proof that could not be READ is a no_outcome sample, not a silent zero, and a repeat makes no second one", async () => {
     const w = world();
-    await recordPublicationOutcomes(w.deps, task, { workflow: published({ reviews: [], risk: undefined }), proof: { unavailable: why }, now: T0 });
-    await recordPublicationOutcomes(w.deps, task, { workflow: published({ reviews: [], risk: undefined }), proof: { unavailable: why }, now: T2 });
+    await recordPublicationOutcomes(w.deps, task, { workflow: published({ reviews: [], risk: undefined }), proof: { unavailable: "read_failed" }, now: T0 });
+    await recordPublicationOutcomes(w.deps, task, { workflow: published({ reviews: [], risk: undefined }), proof: { unavailable: "read_failed" }, now: T2 });
     expect(byClaim(w.db, "proves_change")).toHaveLength(1);
     expect(byClaim(w.db, "proves_change")[0]).toMatchObject({ state: "no_outcome", reason: "proof_unavailable" });
     expect(copies(w.db)).toHaveLength(1);
+  });
+
+  it("a proof that was never found is not a claim: no sample for it", async () => {
+    const w = world();
+    await recordPublicationOutcomes(w.deps, task, { workflow: published({ reviews: [], risk: undefined }), proof: { unavailable: "not_found" }, now: T0 });
+    expect(samples(w.db)).toEqual([]);
   });
 
   it("a write failure is logged and counted and never reaches the caller", async () => {
@@ -153,9 +160,12 @@ describe("the plan check's claim", () => {
 });
 
 describe("a person asks for changes", () => {
+  const asked = (w: ReturnType<typeof world>, rounds = [outcomeRoundOf(CANDIDATE)], reason: "changes_requested_by_person" | "feedback_round_by_person" = "changes_requested_by_person", now = T1) =>
+    scoreChangesRequested(w.deps, task, { rounds, reason, now });
+
   it("moves the review and risk samples of that candidate to not_held, and leaves the proof alone", async () => {
     const w = await seeded();
-    await scoreChangesRequested(w.deps, task, { candidateDigest: CANDIDATE, reason: "changes_requested_by_person", now: T1 });
+    await asked(w);
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("not_held");
     expect(stateOf(w.db, "review_pass:SECURITY")).toBe("not_held");
     expect(stateOf(w.db, "risk_low")).toBe("not_held");
@@ -165,8 +175,8 @@ describe("a person asks for changes", () => {
 
   it("first sight wins: a later merge with an approval does not undo it", async () => {
     const w = await seeded();
-    await scoreChangesRequested(w.deps, task, { candidateDigest: CANDIDATE, reason: "changes_requested_by_person", now: T1 });
-    await scoreEndedPullRequest(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, { repositoryId: "web", number: 7, status: status({ reviews: [person("APPROVED")] }), mergeCommit: MERGE_COMMIT, now: T2 });
+    await asked(w);
+    await merge(w, { reviews: [person("APPROVED")] });
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("not_held");
     expect(stateOf(w.db, "risk_low")).toBe("not_held");
     expect(copies(w.db).filter((item) => item.claim === "review_pass:CRITIC")).toHaveLength(1);
@@ -175,26 +185,37 @@ describe("a person asks for changes", () => {
 
   it("a stale whole-workflow write cannot lose the way to the samples: their pointer is not part of the workflow", async () => {
     const w = await seeded();
-    // Another writer replaces the task's workflow as a whole, from a snapshot read before the samples were made.
     w.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK_ID, workflow: { revision: 1, stale: true } });
-    await scoreChangesRequested(w.deps, task, { candidateDigest: CANDIDATE, reason: "changes_requested_by_person", now: T1 });
+    await asked(w);
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("not_held");
   });
 
   it("another candidate's samples are not touched", async () => {
     const w = await seeded();
-    await scoreChangesRequested(w.deps, task, { candidateDigest: SECOND_CANDIDATE, reason: "feedback_round_by_person", now: T1 });
+    await asked(w, [outcomeRoundOf(SECOND_CANDIDATE)], "feedback_round_by_person");
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("pending");
   });
 });
 
-describe("a pull request ends", () => {
-  const merge = (w: ReturnType<typeof world>, overrides: Partial<PullRequestStatus> = {}, prs = [{ number: 7, state: "MERGED" }], extra: { mergedAt?: string } = {}) =>
-    scoreEndedPullRequest(w.deps, { ...task, workflow: workflowOf(prs) }, { repositoryId: "web", number: 7, status: status(overrides), mergeCommit: MERGE_COMMIT, ...extra, now: T2 });
+/** GitHub's answer for each merged pull request of the candidate, by number (the same one for any not listed). */
+function readerOf(statuses: Record<number, PullRequestStatus> = {}, fallback: PullRequestStatus = status(), writers: readonly string[] = ["user1", "user2", "user3"]) {
+  const calls: number[] = [];
+  const read: EndedPullRequestReader = async (_repositoryId, number) => {
+    calls.push(number);
+    return { status: statuses[number] ?? fallback, mergeCommit: MERGE_COMMIT, mergedAt: "2026-10-30T10:30:00Z", permission: async (login) => (writers.includes(login) ? "write" : "none") };
+  };
+  return { read, calls };
+}
+async function merge(w: ReturnType<typeof world>, overrides: Partial<PullRequestStatus> = {}, prs = [{ number: 7, state: "MERGED" }], options: { reader?: ReturnType<typeof readerOf> } = {}) {
+  const reader = options.reader ?? readerOf({}, status(overrides));
+  const result = await scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf(prs) }, { candidateDigest: CANDIDATE, read: reader.read, now: T2 });
+  return { result, reader };
+}
 
-  it("a reviewed merge holds the reviews and the risk, scores the proof by CI, and keeps the merge commit and time", async () => {
+describe("a pull request merges", () => {
+  it("a reviewed merge holds the reviews and the risk, scores the proof by fresh CI, and keeps the merge commit and time", async () => {
     const w = await seeded();
-    await merge(w, { reviews: [person("APPROVED")] }, undefined, { mergedAt: "2026-10-30T10:30:00Z" });
+    expect((await merge(w, { reviews: [person("APPROVED")] })).result).toBe("scored");
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("held");
     expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ reason: "merged_no_changes_requested", pr: { repositoryId: "web", number: 7, mergeCommit: MERGE_COMMIT, mergedAt: "2026-10-30T10:30:00.000Z" } });
     expect(byClaim(w.db, "review_pass:CRITIC")[0]).not.toHaveProperty("unreviewedMerge");
@@ -202,20 +223,31 @@ describe("a pull request ends", () => {
     expect(byClaim(w.db, "proves_change")[0]).toMatchObject({ state: "held", reason: "ci_passing" });
   });
 
-  it("a merge nobody reviewed holds the reviews but marks them, and a bot's review is not a person's", async () => {
-    const w = await seeded();
-    await merge(w, { reviews: [person("APPROVED", "9", "Bot")] });
-    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_without_person_review", unreviewedMerge: true });
-    expect(byClaim(w.db, "review_pass:SECURITY")[0]).toMatchObject({ unreviewedMerge: true });
-    expect(byClaim(w.db, "risk_low")[0]).toMatchObject({ state: "held" });
-    expect(byClaim(w.db, "risk_low")[0]).not.toHaveProperty("unreviewedMerge");
+  it("a merge nobody reviewed holds the reviews but marks them; a bot's review, and an outsider's approval, are not a person's", async () => {
+    for (const reviews of [[person("APPROVED", "9", "Bot")], [person("APPROVED", "8")], []]) {
+      const w = await seeded();
+      await merge(w, { reviews });
+      expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_without_person_review", unreviewedMerge: true });
+      expect(byClaim(w.db, "review_pass:SECURITY")[0]).toMatchObject({ unreviewedMerge: true });
+      expect(byClaim(w.db, "risk_low")[0]).toMatchObject({ state: "held" });
+      expect(byClaim(w.db, "risk_low")[0]).not.toHaveProperty("unreviewedMerge");
+    }
   });
 
-  it("changes requested by a person at the merge are not_held even when nothing saw them before", async () => {
+  it("changes requested by a person with write access at the merge are not_held; an outsider's request changes nothing", async () => {
+    const written = await seeded();
+    await merge(written, { reviews: [person("CHANGES_REQUESTED")] });
+    expect(stateOf(written.db, "review_pass:CRITIC")).toBe("not_held");
+    expect(byClaim(written.db, "review_pass:CRITIC")[0]).toMatchObject({ reason: "changes_requested_by_person" });
+    const outsider = await seeded();
+    await merge(outsider, { reviews: [person("CHANGES_REQUESTED", "8"), person("APPROVED", "1")] });
+    expect(byClaim(outsider.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_no_changes_requested" });
+  });
+
+  it("only reviews on the candidate's own head count for it: an old review on an earlier head affects nothing", async () => {
     const w = await seeded();
-    await merge(w, { reviews: [person("CHANGES_REQUESTED")] });
-    expect(stateOf(w.db, "review_pass:CRITIC")).toBe("not_held");
-    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ reason: "changes_requested_by_person" });
+    await merge(w, { reviews: [{ ...person("CHANGES_REQUESTED"), commitId: "9".repeat(40) }, { ...person("APPROVED", "2"), commitId: "8".repeat(40) }] });
+    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_without_person_review", unreviewedMerge: true });
   });
 
   it("fresh CI decides the proof: failing, pending, none and an unreadable check list each have their own result", async () => {
@@ -232,64 +264,167 @@ describe("a pull request ends", () => {
     }
   });
 
-  it("a pull request closed without merging puts every open sample in its own bucket", async () => {
-    const w = await seeded();
-    await scoreEndedPullRequest(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "CLOSED" }]) }, { repositoryId: "web", number: 7, status: status({ state: "closed" }), now: T2 });
-    expect(samples(w.db).map((item) => item.state)).toEqual(["closed_unmerged", "closed_unmerged", "closed_unmerged", "closed_unmerged"]);
-    expect(samples(w.db).every((item) => item.reason === "closed_unmerged")).toBe(true);
-  });
-
-  it("a pull request still open scores nothing", async () => {
-    const w = await seeded();
-    await scoreEndedPullRequest(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN" }]) }, { repositoryId: "web", number: 7, status: status({ state: "open" }), now: T2 });
-    expect(samples(w.db).every((item) => item.state === "pending")).toBe(true);
-  });
-
-  it("a candidate with two pull requests is scored once both are over", async () => {
-    const w = await seeded();
+  it("a candidate with two pull requests waits until both are over, and is aggregated: any failing CI or request for changes is not held", async () => {
+    const failing = [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }];
     const both = (second: string) => [{ number: 7, state: "MERGED" }, { number: 8, state: second, repositoryId: "api" }];
-    await merge(w, { reviews: [person("APPROVED")] }, both("OPEN"));
+    const waiting = await seeded();
+    expect((await merge(waiting, {}, both("OPEN"))).result).toBe("nothing");
+    expect(samples(waiting.db).every((item) => item.state === "pending")).toBe(true);
+
+    const clean = await seeded();
+    await merge(clean, {}, both("MERGED"), { reader: readerOf({}, status({ reviews: [person("APPROVED")] })) });
+    expect(stateOf(clean.db, "proves_change")).toBe("held");
+    expect(stateOf(clean.db, "review_pass:CRITIC")).toBe("held");
+
+    const oneFailing = await seeded();
+    await merge(oneFailing, {}, both("MERGED"), { reader: readerOf({ 8: status({ number: 8, checks: failing } as never) }, status({ reviews: [person("APPROVED")] })) });
+    expect(byClaim(oneFailing.db, "proves_change")[0]).toMatchObject({ state: "not_held", reason: "ci_failing", pr: { repositoryId: "api", number: 8, mergeCommit: MERGE_COMMIT } });
+    expect(stateOf(oneFailing.db, "review_pass:CRITIC")).toBe("held");
+
+    const oneAsked = await seeded();
+    await merge(oneAsked, {}, both("MERGED"), { reader: readerOf({ 8: status({ number: 8, reviews: [person("CHANGES_REQUESTED", "2")] }) }, status({ reviews: [person("APPROVED")] })) });
+    expect(stateOf(oneAsked.db, "review_pass:CRITIC")).toBe("not_held");
+    expect(stateOf(oneAsked.db, "risk_low")).toBe("not_held");
+
+    const closedOne = await seeded();
+    await merge(closedOne, { reviews: [person("APPROVED")] }, both("CLOSED"));
+    expect(stateOf(closedOne.db, "review_pass:CRITIC")).toBe("held");
+  });
+
+  it("a pull request that only closed is not scored here: it may be reopened", async () => {
+    const w = await seeded();
+    expect((await merge(w, { state: "closed" }, [{ number: 7, state: "CLOSED" }])).result).toBe("nothing");
     expect(samples(w.db).every((item) => item.state === "pending")).toBe(true);
-    await merge(w, { reviews: [person("APPROVED")] }, both("CLOSED"));
+  });
+
+  it("a closed pull request that is reopened and merged scores as merged", async () => {
+    const w = await seeded();
+    await merge(w, { state: "closed" }, [{ number: 7, state: "CLOSED" }]);
+    await merge(w, { reviews: [person("APPROVED")] });
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("held");
   });
 
-  it("scoring again, by a retry or a second event, changes nothing and writes no second copy", async () => {
+  it("nothing is read from GitHub once no sample of the candidate is open, and a repeat changes nothing", async () => {
     const w = await seeded();
-    await merge(w, { reviews: [person("APPROVED")] });
+    const first = await merge(w, { reviews: [person("APPROVED")] });
+    expect(first.reader.calls).toEqual([7]);
     const before = JSON.stringify(samples(w.db).map((item) => [item.claim, item.state, item.scoredAt]).sort());
-    await merge(w, { reviews: [person("APPROVED")], checks: [] });
-    await scoreEndedPullRequest(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "CLOSED" }]) }, { repositoryId: "web", number: 7, status: status({ state: "closed" }), now: "2026-10-31T00:00:00.000Z" });
+    const again = await merge(w, { reviews: [person("CHANGES_REQUESTED")], checks: [] });
+    expect(again.result).toBe("nothing");
+    expect(again.reader.calls).toEqual([]);
     expect(JSON.stringify(samples(w.db).map((item) => [item.claim, item.state, item.scoredAt]).sort())).toBe(before);
     expect(copies(w.db)).toHaveLength(4);
   });
 
-  it("a scoring failure never reaches the caller", async () => {
+  it("a read or write failure never reaches the caller, and says it failed", async () => {
     const w = await seeded();
     const failing = world({ failing: true });
-    await expect(scoreEndedPullRequest(failing.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, { repositoryId: "web", number: 7, status: status(), now: T2 })).resolves.toBeUndefined();
+    const noRead = async () => { throw new Error("secret github text"); };
+    expect(await scoreMergedCandidate(failing.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, { candidateDigest: CANDIDATE, read: noRead, now: T2 })).toBe("failed");
     expect(failing.metrics).toContain("OutcomeWriteFailed");
+    expect(await scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, { candidateDigest: CANDIDATE, read: noRead, now: T2 })).toBe("failed");
+    expect(w.logs.join()).not.toContain("secret");
     expect(samples(w.db).every((item) => item.state === "pending")).toBe(true);
   });
 });
 
+describe("a fix replaces a candidate", () => {
+  const second = () => published({ candidate: { digest: SECOND_CANDIDATE }, reviews: [review("CRITIC", "PASS", SECOND_CANDIDATE)], risk: { level: "low", reasons: [], candidateDigest: SECOND_CANDIDATE } });
+  const observe = (w: ReturnType<typeof world>, ci: "failing" | "passing" | "pending" = "failing", digest = CANDIDATE) =>
+    observeCandidateCode(w.deps, task, { candidateDigest: digest, head: "a".repeat(40), ci, ciIsOnHead: true, now: T1 });
+
+  it("A fails CI, Rovara fixes it, B passes: A's proof is not held and B's is", async () => {
+    const w = await seeded();
+    await observe(w);
+    expect(byClaim(w.db, "proves_change")[0]).toMatchObject({ state: "not_held", reason: "ci_failing", scoredAt: T1 });
+    await settleSuperseded(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T1 });
+    await recordPublicationOutcomes(w.deps, task, { workflow: second(), proof: PROVES_B(), now: T1 });
+    await merge2(w, [{ number: 7, state: "MERGED", candidateDigest: SECOND_CANDIDATE }], SECOND_CANDIDATE, status({ reviews: [{ ...person("APPROVED"), commitId: "a".repeat(40) }] }));
+    expect(stateOf(w.db, "proves_change")).toBe("not_held");
+    expect(stateOf(w.db, "proves_change", outcomeRoundOf(SECOND_CANDIDATE))).toBe("held");
+    expect(stateOf(w.db, "review_pass:CRITIC")).toBe("no_outcome");
+    expect(byClaim(w.db, "review_pass:CRITIC").find((item) => item.round === outcomeRoundOf(CANDIDATE))).toMatchObject({ reason: "superseded" });
+    expect(stateOf(w.db, "review_pass:CRITIC", outcomeRoundOf(SECOND_CANDIDATE))).toBe("held");
+  });
+
+  it("checks seen passing on A's head hold its proof when it is replaced; never seen is no outcome", async () => {
+    const passing = await seeded();
+    await observe(passing, "passing");
+    await settleSuperseded(passing.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T2 });
+    expect(byClaim(passing.db, "proves_change")[0]).toMatchObject({ state: "held", reason: "ci_passing" });
+    const unseen = await seeded();
+    await settleSuperseded(unseen.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T2 });
+    expect(byClaim(unseen.db, "proves_change")[0]).toMatchObject({ state: "no_outcome", reason: "superseded" });
+    expect(stateOf(unseen.db, "risk_low")).toBe("no_outcome");
+  });
+
+  it("a round of fixes made from a person's comments on A makes A's reviews and risk not held, even when Rovara's autonomy decided it", async () => {
+    const w = await seeded();
+    const workflow = { ...workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]), feedbackDecisions: [{ decision: "APPROVE", actorRole: "ROVARA_AUTONOMY", candidates: [{ repositoryId: "web", number: 7, candidateDigest: CANDIDATE }] }] } as unknown as WorkflowSnapshot;
+    await settleSuperseded(w.deps, { ...task, workflow }, { candidateDigest: CANDIDATE, now: T2 });
+    expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "not_held", reason: "feedback_round_by_person" });
+    expect(byClaim(w.db, "risk_low")[0]).toMatchObject({ state: "not_held" });
+  });
+
+  function PROVES_B() { return { verdicts: ["proves_change" as const], candidateDigest: SECOND_CANDIDATE }; }
+  async function merge2(w: ReturnType<typeof world>, prs: Array<{ number: number; state: string; candidateDigest?: string }>, digest: string, fresh: PullRequestStatus) {
+    return scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf(prs) }, { candidateDigest: digest, read: readerOf({}, fresh).read, now: T2 });
+  }
+});
+
 describe("the task ends", () => {
-  it("open samples become no_outcome, a merged pull request's candidate is left to its merge, and a closed one is closed unmerged", async () => {
+  const withReader = (reader: EndedPullRequestReader | undefined, prs: Array<{ number: number; state: string; candidateDigest?: string }>) => ({ ...task, workflow: workflowOf(prs), reader });
+
+  it("open samples become no_outcome, and nothing stays pending: a candidate no pull request holds any more was superseded", async () => {
     const w = await seeded();
     await recordPublicationOutcomes(w.deps, task, {
       workflow: published({ candidate: { digest: SECOND_CANDIDATE }, reviews: [review("CRITIC", "PASS", SECOND_CANDIDATE)], risk: undefined }), proof: { verdicts: [], candidateDigest: SECOND_CANDIDATE }, now: T1,
     });
-    await settleTaskOutcomes(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "MERGED" }]) }, T2);
-    expect(stateOf(w.db, "review_pass:CRITIC")).toBe("pending");
-    expect(stateOf(w.db, "review_pass:CRITIC", outcomeRoundOf(SECOND_CANDIDATE))).toBe("no_outcome");
-    expect(byClaim(w.db, "review_pass:CRITIC").find((item) => item.round === outcomeRoundOf(SECOND_CANDIDATE))).toMatchObject({ reason: "task_closed" });
+    const open = [{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }];
+    await settleTaskOutcomes(w.deps, withReader(undefined, open), T2);
+    expect(samples(w.db).filter((item) => item.state === "pending")).toEqual([]);
+    expect(byClaim(w.db, "review_pass:CRITIC").find((item) => item.round === outcomeRoundOf(CANDIDATE))).toMatchObject({ state: "no_outcome", reason: "superseded" });
+    expect(byClaim(w.db, "review_pass:CRITIC").find((item) => item.round === outcomeRoundOf(SECOND_CANDIDATE))).toMatchObject({ state: "no_outcome", reason: "task_closed" });
+  });
 
-    const closed = await seeded();
-    await settleTaskOutcomes(closed.deps, { ...task, workflow: workflowOf([{ number: 7, state: "CLOSED" }]) }, T2);
-    expect(stateOf(closed.db, "risk_low")).toBe("closed_unmerged");
-    const none = await seeded();
-    await settleTaskOutcomes(none.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN" }]) }, T2);
-    expect(stateOf(none.db, "risk_low")).toBe("no_outcome");
+  it("a candidate with a merged pull request that is still pending is scored from a fresh read; if it cannot be read it is github_unavailable", async () => {
+    const read = await seeded();
+    const reader = readerOf({}, status({ reviews: [person("APPROVED")] })).read;
+    await settleTaskOutcomes(read.deps, withReader(reader, [{ number: 7, state: "MERGED" }]), T2, reader);
+    expect(stateOf(read.db, "review_pass:CRITIC")).toBe("held");
+    expect(stateOf(read.db, "proves_change")).toBe("held");
+
+    const broken = await seeded();
+    const failing: EndedPullRequestReader = async () => { throw new Error("secret github text"); };
+    await settleTaskOutcomes(broken.deps, withReader(failing, [{ number: 7, state: "MERGED" }]), T2, failing);
+    expect(samples(broken.db).filter((item) => item.state === "pending")).toEqual([]);
+    expect(samples(broken.db).every((item) => item.reason === "github_unavailable" && item.state === "no_outcome")).toBe(true);
+
+    const noReader = await seeded();
+    await settleTaskOutcomes(noReader.deps, withReader(undefined, [{ number: 7, state: "MERGED" }]), T2);
+    expect(samples(noReader.db).every((item) => item.reason === "github_unavailable")).toBe(true);
+  });
+
+  it("a closed pull request is scored closed_unmerged only if it is still closed now; reopened and merged scores as merged, reopened and open has no outcome", async () => {
+    const closed = [{ number: 7, state: "CLOSED" }];
+    const still = await seeded();
+    const stillClosed = readerOf({}, status({ state: "closed" })).read;
+    await settleTaskOutcomes(still.deps, withReader(stillClosed, closed), T2, stillClosed);
+    expect(samples(still.db).every((item) => item.state === "closed_unmerged" && item.reason === "closed_unmerged")).toBe(true);
+
+    const merged = await seeded();
+    const reopenedAndMerged = readerOf({}, status({ reviews: [person("APPROVED")] })).read;
+    await settleTaskOutcomes(merged.deps, withReader(reopenedAndMerged, closed), T2, reopenedAndMerged);
+    expect(stateOf(merged.db, "review_pass:CRITIC")).toBe("held");
+
+    const open = await seeded();
+    const reopened = readerOf({}, status({ state: "open" })).read;
+    await settleTaskOutcomes(open.deps, withReader(reopened, closed), T2, reopened);
+    expect(samples(open.db).every((item) => item.state === "no_outcome" && item.reason === "task_closed")).toBe(true);
+
+    const unread = await seeded();
+    await settleTaskOutcomes(unread.deps, withReader(undefined, closed), T2);
+    expect(samples(unread.db).every((item) => item.state === "closed_unmerged")).toBe(true);
   });
 
   it("a settle never fails the close", async () => {

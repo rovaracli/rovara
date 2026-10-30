@@ -6,7 +6,6 @@ import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
-import { WORKFLOW_OUTCOME_KEYS_MAX, WorkflowOutcomeSampleKeySchema } from "./outcomes.js";
 import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -827,8 +826,6 @@ export const WorkflowSnapshotShapeSchema = z.object({
   critique: WorkflowCritiqueSchema.optional(),
   /** Rovara Code v2 (1.1.0 only): the risk level of the pull request's code. */
   risk: RiskAssessmentSchema.optional(),
-  /** Track record: the key of each pending outcome sample this task made (claim and round), so scoring finds it; the newest `WORKFLOW_OUTCOME_KEYS_MAX`. Written by the broker only. */
-  outcomeSampleKeys: z.array(WorkflowOutcomeSampleKeySchema).max(WORKFLOW_OUTCOME_KEYS_MAX).optional(),
   /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
   fixRounds: WorkflowFixRoundsSchema.optional(),
   fixSource: FixSourceSchema.optional(),

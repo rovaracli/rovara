@@ -74,7 +74,8 @@ describe("publication records the claims about its candidate", () => {
     expect(await start()).toBe("STARTED");
     const round = flow.candidate.digest.slice(0, 16);
     expect(outcomeSamples(harness).map((item) => `${String(item.claim)}:${String(item.state)}:${String(item.round)}`).sort()).toEqual(
-      expect.arrayContaining([`review_pass:CRITIC:pending:${round}`, `review_pass:SECURITY:pending:${round}`, `proves_change:no_outcome:${round}`]));
+      expect.arrayContaining([`review_pass:CRITIC:pending:${round}`, `review_pass:SECURITY:pending:${round}`]));
+    expect(outcomeSamples(harness).filter((item) => item.claim === "proves_change")).toEqual([]);
     expect(harness.db.get(`DEVTASK#${flow.taskId}`, `OUTCOME_KEYS#${round}`)).toMatchObject({ round, taskId: flow.taskId });
     const count = outcomeSamples(harness).length;
     await start().catch(() => undefined);

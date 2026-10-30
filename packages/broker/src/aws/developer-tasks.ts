@@ -343,7 +343,7 @@ import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { proofTableView } from "../rovara-code/proof-view.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadTestProofLines, readTestProofForCandidate } from "../developer/test-proof-lines.js";
-import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleTaskOutcomes } from "../rovara-code/outcome-hooks.js";
+import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded, settleTaskOutcomes, type EndedPullRequestReader } from "../rovara-code/outcome-hooks.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -2882,10 +2882,14 @@ async function recordPlanDecisionOutcome(
   await recordPlanOutcome(outcomeDeps(deps), task, { critique: workflow.critique, revision: workflow.revision, decision: decision.decision, at: decision.at });
 }
 
-/** Track record: the claims about a candidate the pull request is published with. Best effort: it never throws, and a proof that cannot be read is recorded as such. */
-async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, now: string): Promise<void> {
+/**
+ * Track record: the claims about a candidate the pull request is published with. When it replaces an earlier candidate on the pull request (`replaces`), what is still open about that one is settled
+ * first, by what was seen of it. Best effort: it never throws, and a proof that cannot be read is recorded as such.
+ */
+async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, now: string, replaces?: string): Promise<void> {
   try {
     if (workflow.definitionVersion !== "1.1.0") return;
+    if (replaces !== undefined && replaces !== workflow.candidate?.digest) await settleSuperseded(outcomeDeps(deps), { ...task, workflow }, { candidateDigest: replaces, now });
     const proof = await readTestProofForCandidate(deps.actions, task, workflow.candidate?.digest);
     await recordPublicationOutcomes(outcomeDeps(deps), task, { workflow, proof, now });
   } catch (error) {
@@ -6649,7 +6653,7 @@ async function startTaskWorkflowPullRequestUpdate(
     }
     throw error;
   }
-  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt);
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt, pullRequest.candidateDigest);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -8080,6 +8084,8 @@ export type ReleaseDeps = {
   tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> };
   /** The model proxy: what a finished run's keys spent, for the estimates (Task 34). Without it no cost is written. */
   modelAccess?: ModelAccess;
+  /** Track record: a fresh GitHub read of one of the task's pull requests, for settling a merged candidate's samples when the task ends. Without it such samples are `github_unavailable`. */
+  outcomeReader?: (task: DeveloperTaskRecord) => EndedPullRequestReader | undefined;
 };
 
 /**
@@ -8133,7 +8139,7 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
   await recordFinishedRunCost(deps, task);
   // Track record: samples still open when the task ends have no outcome to be scored against. Best effort.
-  await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
+  await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString(), deps.outcomeReader?.(task));
   // Plan 6 Task 7: a version 2 task's duration, if the pull request's write didn't get there first.
   await noteFinishedTaskDuration({ documentClient: deps.documentClient, tableName: deps.tableName }, task);
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).

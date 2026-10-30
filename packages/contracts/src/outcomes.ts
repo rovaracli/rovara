@@ -17,7 +17,7 @@ export const OUTCOME_REASONS = [
   "plan_approved", "plan_skipped", "plan_changes_requested", "plan_rejected",
   "merged_no_changes_requested", "merged_without_person_review", "changes_requested_by_person", "feedback_round_by_person",
   "ci_passing", "ci_failing", "ci_none", "ci_pending", "proof_unavailable",
-  "closed_unmerged", "task_closed",
+  "closed_unmerged", "task_closed", "superseded", "github_unavailable",
 ] as const;
 export const OutcomeReasonSchema = z.enum(OUTCOME_REASONS);
 export type OutcomeReason = z.infer<typeof OutcomeReasonSchema>;
@@ -102,8 +102,3 @@ export interface OutcomeRate {
   capped: boolean;
   enough: boolean;
 }
-
-/** Where a task keeps the key of each pending sample it made, so scoring finds a sample by its full key (the key starts with `createdAt`). */
-export const WORKFLOW_OUTCOME_KEYS_MAX = 64;
-export const WorkflowOutcomeSampleKeySchema = z.object({ claim: OutcomeClaimSchema, round: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), key: OutcomeSampleKeySchema }).strict();
-export type WorkflowOutcomeSampleKey = z.infer<typeof WorkflowOutcomeSampleKeySchema>;

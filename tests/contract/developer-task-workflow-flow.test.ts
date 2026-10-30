@@ -16,6 +16,7 @@ import { developerTaskIdentity } from "../../packages/broker/src/developer/task-
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
+import { outcomeDepsOf, recordPublicationOutcomes } from "../../packages/broker/src/rovara-code/outcome-hooks.js";
 import { captureWorkflowFeedbackNote, decideTaskWorkflow, getTaskDocumentView, inertTaskTitle, promptTagId, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, taskPageUrl, threadNotesPromptSection, workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { GATED_TASK_TURN_REFUSAL, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
@@ -4887,7 +4888,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
   const github = () => {
     // `branch`, when set, is the branch's head while GitHub's pull request still shows `head`: GitHub moves a pull
     // request's head a moment after a push to its branch.
-    const state = { head: "d".repeat(40), tree: "b".repeat(40), pr: "open" as "open" | "closed" | "merged", parent: undefined as string | undefined, branch: undefined as string | undefined };
+    const state = { head: "d".repeat(40), tree: "b".repeat(40), pr: "open" as "open" | "closed" | "merged", parent: undefined as string | undefined, branch: undefined as string | undefined, statusFails: false };
     const branch = { name: "x" };
     const details = (number: number) => ({ number, url: PR_URL, state: state.pr, headBranch: branch.name, baseBranch: "main", headCommit: state.head, title: "t", body: "" });
     const gateway = {
@@ -4898,6 +4899,13 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       getCommitParents: vi.fn(async (_url: string, commit: string) => [(commit === state.head || commit === state.branch) && state.parent !== undefined ? state.parent : "e".repeat(40)]),
       getBranchHead: vi.fn(async () => state.branch ?? state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
+      // The status read the track record scores a merge from (only a version 2 task reads it).
+      getPullRequestStatus: vi.fn(async (_url: string, number: number) => {
+        if (state.statusFails) throw new Error("GitHub is down");
+        return { number, state: state.pr, draft: false, headSha: state.head, baseBranch: "main", mergeableState: "clean" as const, checks: [{ name: "test", status: "completed" as const, conclusion: "success" as const, required: false, url: "" }],
+          requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] };
+      }),
+      getRepositoryPermission: vi.fn(async () => "write" as const),
     };
     return { state, gateway, branch };
   };
@@ -5317,6 +5325,50 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       await failOutboxOperation(harness.db as never, "state", outbox as never, `RUNTIME_UNAVAILABLE: worker dispatch failed after 5 attempts: RUNTIME_UNAVAILABLE: ${workflowContracts.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`);
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", pullRequestUpdateFailure: { numbers: [42], cause: "WORKER_OUTDATED" } });
     }
+  });
+
+  /** A version 2 task whose first pull request's candidate has pending track record samples. */
+  const withSamples = async () => {
+    const t = await fixPassed();
+    const record = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; project: string };
+    t.harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0" } });
+    const review = (role: string) => ({ operationId: randomUUID(), candidateDigest: t.first.digest, role, provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() });
+    await recordPublicationOutcomes(outcomeDepsOf({ documentClient: t.harness.db, tableName: "state" }), { taskId: t.taskId, orgId: TEST_ORG, project: record.project }, {
+      workflow: { candidate: { digest: t.first.digest }, reviews: [review("CRITIC"), review("SECURITY")] } as unknown as WorkflowSnapshot, proof: { verdicts: ["proves_change"], candidateDigest: t.first.digest }, now: new Date().toISOString(),
+    });
+    const samples = () => t.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE");
+    expect(samples().every((item) => item.state === "pending")).toBe(true);
+    return { ...t, samples };
+  };
+
+  it("a fix that replaces the candidate settles the old candidate's open samples and records the new one's", async () => {
+    const t = await withSamples();
+    await t.pass();
+    const pending = t.samples().filter((item) => item.state === "pending");
+    const old = t.samples().filter((item) => item.round === t.first.digest.slice(0, 16));
+    expect(old.length).toBeGreaterThan(0);
+    expect(old.every((item) => item.state === "no_outcome" && item.reason === "superseded")).toBe(true);
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every((item) => item.round === t.fix.digest.slice(0, 16))).toBe(true);
+  });
+
+  it("a merged webhook scores the candidate's track record samples from a fresh read of GitHub", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    await pullRequestEvent(t.harness, "closed");
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().map((item) => `${String(item.claim)}:${String(item.state)}:${String(item.reason)}`).sort()).toEqual([
+      "proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
+  it("a GitHub read that fails neither stops the event nor leaves samples pending: the release still ran and settled them", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().filter((item) => item.state === "pending")).toEqual([]);
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
   });
 
   it("drops a pending update after the PR was merged", async () => {

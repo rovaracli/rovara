@@ -1,8 +1,8 @@
 // Track record (v1.2 slice 1), the store: keys, idempotent samples, scoring held to `pending`, the scored copy, the rate read by score time, pagination and the cap.
 import { describe, expect, it } from "vitest";
 import {
-  OUTCOME_READ_CAP, OUTCOME_SCORED_KEPT_DAYS, OutcomeSampleSchema, WORKFLOW_OUTCOME_KEYS_MAX, WorkflowSnapshotSchema, outcomeSampleKey, outcomeScoredKey,
-  withOutcomeSampleKeys, createWorkflowSnapshot, type OutcomeClaim, type OutcomeSample, type OutcomeStage,
+  OUTCOME_READ_CAP, OUTCOME_SCORED_KEPT_DAYS, OutcomeSampleSchema, outcomeSampleKey, outcomeScoredKey,
+  type OutcomeClaim, type OutcomeSample, type OutcomeStage,
 } from "../../packages/contracts/src/index.js";
 import { readOutcomeRate, recordOutcomeSample, scoreOutcomeSample, type OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -247,27 +247,5 @@ describe("the rate", () => {
   it("throws on a read failure: the card shows no record, never a zero", async () => {
     const { deps } = world({ sendFails: true });
     await expect(rateOf(deps)).rejects.toThrow();
-  });
-});
-
-describe("the keys of pending samples on the workflow", () => {
-  const workflow = () => createWorkflowSnapshot({ taskId: TASK, ownerId: "a".repeat(64), now: day(10), path: "QUICK" });
-  const entry = (round: string, claim: OutcomeClaim = "review_pass:CRITIC") => ({ claim, round, key: outcomeSampleKey(TEST_ORG, "payments", stageOf(claim), day(1), TASK, claim, round) });
-
-  it("adds keys without moving the revision, replaces a claim and round already listed, and keeps the newest 64", () => {
-    const first = withOutcomeSampleKeys(workflow(), [entry("a"), entry("a", "proves_change")]);
-    expect(first.revision).toBe(1);
-    expect(first.outcomeSampleKeys).toHaveLength(2);
-    const second = withOutcomeSampleKeys(first, [entry("a"), entry("b")]);
-    expect(second.outcomeSampleKeys?.map((item) => `${item.claim}:${item.round}`)).toEqual(["proves_change:a", "review_pass:CRITIC:a", "review_pass:CRITIC:b"]);
-    let many = second;
-    for (let index = 0; index < WORKFLOW_OUTCOME_KEYS_MAX + 10; index += 1) many = withOutcomeSampleKeys(many, [entry(`r${String(index)}`)]);
-    expect(many.outcomeSampleKeys).toHaveLength(WORKFLOW_OUTCOME_KEYS_MAX);
-    expect(many.outcomeSampleKeys?.at(-1)?.round).toBe(`r${String(WORKFLOW_OUTCOME_KEYS_MAX + 9)}`);
-  });
-
-  it("refuses a workflow whose key list holds anything but a claim, a round and a key", () => {
-    expect(WorkflowSnapshotSchema.safeParse({ ...workflow(), outcomeSampleKeys: [{ claim: "made_up", round: "a", key: { pk: "x", sk: "y" } }] }).success).toBe(false);
-    expect(WorkflowSnapshotSchema.safeParse({ ...workflow(), outcomeSampleKeys: [{ ...entry("a"), extra: 1 }] }).success).toBe(false);
   });
 });

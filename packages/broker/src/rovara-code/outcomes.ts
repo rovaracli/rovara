@@ -8,7 +8,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws
 import {
   INDEX_EXPIRY_ATTRIBUTE, OUTCOME_ENOUGH_SAMPLES, OUTCOME_PENDING_KEPT_DAYS, OUTCOME_READ_CAP, OUTCOME_READ_PAGE, OUTCOME_SCORED_KEPT_DAYS, OUTCOME_WINDOW_DAYS,
   OutcomeSampleSchema, OutcomeScoreSchema, outcomeSampleKey, outcomeScoredKey,
-  type OrgId, type OutcomeClaim, type OutcomeRate, type OutcomeSample, type OutcomeSampleKey, type OutcomeScore, type OutcomeStage, type WorkflowOutcomeSampleKey,
+  type OrgId, type OutcomeClaim, type OutcomeRate, type OutcomeSample, type OutcomeSampleKey, type OutcomeScore, type OutcomeStage,
 } from "@agentx/contracts";
 import { NOT_EXISTS, errorName } from "../agents/table-writes.js";
 
@@ -121,11 +121,6 @@ export async function scoreOutcomeSample(deps: OutcomeDependencies, key: Outcome
     failed(deps, "score", error);
     return false;
   }
-}
-
-/** Where one claim's samples are, for a hook that has the workflow's list of pending sample keys: the keys of a round (all of them when `round` is not given). */
-export function pendingKeysOf(entries: readonly WorkflowOutcomeSampleKey[] | undefined, filter: { claim?: OutcomeClaim; round?: string } = {}): WorkflowOutcomeSampleKey[] {
-  return (entries ?? []).filter((entry) => (filter.claim === undefined || entry.claim === filter.claim) && (filter.round === undefined || entry.round === filter.round));
 }
 
 /**

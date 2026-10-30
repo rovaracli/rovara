@@ -6,13 +6,17 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import { z } from "zod";
 import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgMetaKey, orgProjectCatalogPk, orgScoped } from "@agentx/contracts";
 import type { TransactItem } from "../audit/outbox.js";
+import type { EstimatePath } from "../spend/estimate.js";
 
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 type Row = Record<string, unknown>;
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Track record data could not be cleared. Retry company cleanup.");
 const stale = () => agentXError("CHANGE_STALE", "Company cleanup authority changed. Retry company cleanup.");
 /** The paths a run cost is kept for. The stages outcomes are kept under are the contract's own list, so the two cannot drift apart. */
-const PATHS = ["QUICK", "FULL", "TASK", "AGENT"] as const;
+const PATHS = ["QUICK", "FULL", "TASK", "AGENT"] as const satisfies readonly EstimatePath[];
+/** Compile-time: a path added to `EstimatePath` and missing above stops the build, so its run costs can never be left out of the erasure. */
+const ALL_PATHS_ERASED: Exclude<EstimatePath, (typeof PATHS)[number]> extends never ? true : never = true;
+void ALL_PATHS_ERASED;
 const PAGE = 25;
 const MAX_PAGES = 1000;
 
