@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { orgMetaKey, orgSettingsKey, agentGuardrailsKey } from "@agentx/contracts";
+import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -54,4 +55,28 @@ it("a bootstrap transaction failure leaves no org or membership without its poli
   expect(f.db.get(orgMetaKey(orgId).pk, "META")).toBeUndefined();
   expect(f.db.get(seedKey.pk, seedKey.sk)).toBeUndefined();
   expect(f.db.get(policyKey.pk, policyKey.sk)?.revision).toBe(2);
+});
+
+for (const existing of [false, true]) it(`upgrading an existing company records one audited outcome without overwriting policy: existing=${existing}`, async () => {
+  const f = fixture();
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open", name: "Existing company" });
+  if (existing) f.db.set({ ...policyKey, orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 7,
+    policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1234567 } }, enrollment: { state: "disabled", version: 1 } });
+  const original = f.db.get(policyKey.pk, policyKey.sk);
+  const fn: unknown = Reflect.get(taskStopBootstrap, "bootstrapTaskStopPolicy"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("existing-company upgrade adapter missing");
+  const invoke = fn as (deps: unknown, orgId: string) => Promise<unknown>;
+  const deps = { documentClient: f.db, tableName: "state", now: () => now };
+  expect(await invoke(deps, orgId)).toMatchObject({ outcome: existing ? "preserved" : "created" });
+  const saved = f.db.get(policyKey.pk, policyKey.sk);
+  if (existing) expect(saved).toEqual(original);
+  else expect(saved).toMatchObject({ policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { state: "disabled" }, seedProvenance: { source: "upgrade", reviewRequired: true } });
+  const upgradeKey = { pk: seedKey.pk, sk: "V1#upgrade" }, receipt = f.db.get(upgradeKey.pk, upgradeKey.sk);
+  expect(receipt).toMatchObject({ source: "upgrade", outcome: existing ? "preserved" : "created", version: 1 });
+  const count = f.db.transactions().length;
+  expect(await invoke(deps, orgId)).toMatchObject({ outcome: existing ? "preserved" : "created" });
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toEqual(saved); expect(f.db.get(upgradeKey.pk, upgradeKey.sk)).toEqual(receipt);
+  expect(f.db.transactions()).toHaveLength(count);
+  const txn = f.db.transactions().find(items => items.some(item => putItem(item)?.sk === "V1#upgrade"));
+  expect(txn?.some(item => typeof putItem(item)?.event === "object")).toBe(true);
 });
