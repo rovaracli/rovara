@@ -12,6 +12,7 @@ import {
 import { E2E_REPLAY_REFUSALS } from "../../packages/contracts/src/index.js";
 import { E2E_OWNER_SENTENCES } from "../../packages/broker/src/e2e/owner-sentences.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { readSplitSource } from "../support/split-source.js";
 import { ApplicationDispatchRefusal } from "../../packages/broker/src/e2e/application-dispatch-check.js";
 
 const NOW = Date.parse("2026-10-27T03:00:00.000Z");
@@ -103,7 +104,7 @@ describe("the hold as a condition inside a start's own transaction", () => {
   });
   it("is the item every start transaction carries: the four system starts of a CHECKS operation (checks, baseline, grounding, replay) and the setup run's admission", () => {
     // The checks start is exercised end to end (contract test); the others share its shape, and a start without the item would let a round begin on the old machine.
-    expect(readFileSync("packages/broker/src/aws/developer-tasks.ts", "utf8").split("requalifyHoldFence(deps.tableName").length - 1).toBe(4);
+    expect(readSplitSource("packages/broker/src/aws/developer-tasks.ts").split("requalifyHoldFence(deps.tableName").length - 1).toBe(4);
     const broker = readFileSync("packages/broker/src/aws/broker.ts", "utf8");
     expect(broker).toContain("requalifyHoldFence(dependencies.tableName, Date.now())] };");
     // Both setup transactions (the registration and the admin retry) report a refused fence as the fixed reason.

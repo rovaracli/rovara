@@ -21,6 +21,7 @@ import type { createDeveloperTaskBroker} from "../support/developer-task-broker.
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { OIDC_ISSUER, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { readSplitSource } from "../support/split-source.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 
@@ -820,7 +821,7 @@ describe("a removed creator's work stops (ruling R60)", () => {
 describe("every task launch checks that the creator is still a member (ruling R60)", () => {
   // developer-tasks.ts is where tasks are launched, so a call site added later must meet the same rule: the check comes before the
   // acceptTask or pull request call, or the call goes through withCurrentThreadNotes (which checks first).
-  const source = readFileSync(join(import.meta.dirname, "../../packages/broker/src/aws/developer-tasks.ts"), "utf8");
+  const source = readSplitSource(join(import.meta.dirname, "../../packages/broker/src/aws/developer-tasks.ts"));
   const functions = source.split(/^(?=(?:export )?(?:async )?function )/m);
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
   // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
