@@ -1,3 +1,4 @@
+import {modelApplyRefusalOf} from "../model-selection/process-refusal.js";
 // Plan 3 Task 21: deciding an approval of any kind and the sweep. One state machine: a decision claims the record with ONE conditional transaction; what comes
 // after the claim (applying a change, running a write, telling the subject's handler) is repeatable and found again by the sweep through the OPEN_APPROVALS
 // index. `approvals.ts` re-exports it.
@@ -14,7 +15,7 @@ import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type A
 // ---- deciding
 
 /** What driving a record's work came to. `unfinished` leaves it `EXECUTING` for the sweep. */
-export type Execution = { outcome: "done"; result?: WriteApprovalRecord["result"] } | { outcome: "failed"; failure: string } | { outcome: "unfinished" };
+export type Execution = { outcome: "done"; result?: WriteApprovalRecord["result"] } | { outcome: "failed"; failure: string; modelRefusal?:NonNullable<AnyApprovalRecord["modelRefusal"]> } | { outcome: "unfinished" };
 
 /** Runs an approved write: the re-checks, then the connector call. Task 21's write-gate registers it when it loads. */
 export interface WriteApprovalDriver {
@@ -53,6 +54,8 @@ async function execute(deps: ApprovalDependencies, executor: Executor, record: A
   try {
     return await executor(deps, record);
   } catch (error) {
+    const modelRefusal=modelApplyRefusalOf(error);
+    if(modelRefusal!==undefined)return {outcome:"failed",failure:`${modelRefusal.stage===undefined?"":modelRefusal.stage+": "}${modelRefusal.reason}: Review How we work.`,modelRefusal};
     if (error instanceof AgentXError && error.code !== "RUNTIME_UNAVAILABLE") return { outcome: "failed", failure: shownText(stripCode(error), 400) };
     log(deps, "approval.execution_interrupted", { orgId: record.orgId, approvalId: record.approvalId, kind: record.kind, error: errorNameOf(error) });
     return { outcome: "unfinished" };
@@ -143,12 +146,12 @@ async function leaseHandler(deps: ApprovalDependencies, record: AnyApprovalRecor
 }
 
 /** Ends an EXECUTING record (conditional on the claim it was driven under), recording the outcome and what is owed after it. */
-async function finish(deps: ApprovalDependencies, record: AnyApprovalRecord, stamp: string, outcome: { status: "APPROVED_DONE" | "APPROVED_FAILED"; failure?: string; result?: WriteApprovalRecord["result"] }): Promise<AnyApprovalRecord | undefined> {
+async function finish(deps: ApprovalDependencies, record: AnyApprovalRecord, stamp: string, outcome: { status: "APPROVED_DONE" | "APPROVED_FAILED"; failure?: string; modelRefusal?:NonNullable<AnyApprovalRecord["modelRefusal"]>; result?: WriteApprovalRecord["result"] }): Promise<AnyApprovalRecord | undefined> {
   const now = deps.now();
   const handler = hasHandlerPhase(record);
   const dueAt = iso(now + RETRY_MS);
   const fields = {
-    status: outcome.status, failure: outcome.failure, result: outcome.result,
+    status: outcome.status, failure: outcome.failure, result: outcome.result,...(outcome.modelRefusal===undefined?{}:{modelRefusal:outcome.modelRefusal}),
     handlerDone: !handler, ...(handler ? { handlerClaimedAt: iso(now), handlerDueAt: dueAt } : {}),
   };
   const events = record.kind === "write"
@@ -168,17 +171,17 @@ async function finish(deps: ApprovalDependencies, record: AnyApprovalRecord, sta
 }
 
 /** Drives an EXECUTING record (claimed under `record.executingAt`) to its end. */
-async function drive(deps: ApprovalDependencies, record: AnyApprovalRecord, executor: Executor): Promise<{ status: ApprovalStatus }> {
+async function drive(deps: ApprovalDependencies, record: AnyApprovalRecord, executor: Executor): Promise<{ status: ApprovalStatus;refusal?:NonNullable<AnyApprovalRecord["modelRefusal"]> }> {
   const stamp = record.executingAt!;
   const result = await execute(deps, executor, record);
   let ended: AnyApprovalRecord | undefined;
   if (result.outcome === "done") ended = await finish(deps, record, stamp, { status: "APPROVED_DONE", ...(result.result === undefined ? {} : { result: result.result }) });
-  else if (result.outcome === "failed") ended = await finish(deps, record, stamp, { status: "APPROVED_FAILED", failure: result.failure });
+  else if (result.outcome === "failed") ended = await finish(deps, record, stamp, { status: "APPROVED_FAILED", failure: result.failure,...(result.modelRefusal===undefined?{}:{modelRefusal:result.modelRefusal}) });
   else if ((record.attempts ?? 1) >= MAX_APPROVAL_ATTEMPTS) ended = await finish(deps, record, stamp, { status: "APPROVED_FAILED", failure: unconfirmedMessage(record) });
   else return { status: "EXECUTING" };
   if (ended === undefined) return { status: (await getAnyApproval(deps, record.orgId, record.approvalId))?.status ?? "EXECUTING" };
   if (hasHandlerPhase(ended)) await tellHandler(deps, ended);
-  return { status: ended.status };
+  return { status: ended.status,...(ended.modelRefusal===undefined?{}:{refusal:ended.modelRefusal}) };
 }
 
 /**
@@ -186,10 +189,10 @@ async function drive(deps: ApprovalDependencies, record: AnyApprovalRecord, exec
  * must satisfy the record's approvers now (`FORBIDDEN`), and it must still be PENDING (`APPROVAL_CLOSED`). The claim is one conditional transaction,
  * so of two decisions at once exactly one wins.
  */
-export async function runApprovalDecision(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, rawBody: unknown, executor?: Executor, attempt = 0): Promise<{ status: ApprovalStatus }> {
+export async function runApprovalDecision(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, rawBody: unknown, executor?: Executor, attempt = 0): Promise<{ status: ApprovalStatus;refusal?:NonNullable<AnyApprovalRecord["modelRefusal"]> }> {
   const body = parseDecideBody(rawBody);
   if (record.status !== "PENDING" && record.decisionRequestId === body.requestId && record.decidedBy !== undefined && await sameMember(deps, record.orgId, record.decidedBy, caller.developerId)) {
-    return { status: record.status };
+    return { status: record.status,...(record.modelRefusal===undefined?{}:{refusal:record.modelRefusal}) };
   }
   // The task is read BEFORE the check, and the claim is conditional on its owner being the one read here: a take-over that commits after this read fails the claim, so a
   // decision judged under the old owner never lands under the new one (12a review M-4). The check reads the task again, and is the one that decides.
@@ -271,7 +274,7 @@ async function claim(deps: ApprovalDependencies, items: TransactItem[], fenceAt:
 }
 
 /** Decides an approval of any kind as `caller` (a write goes through the write driver, a step through the rule or the id check and then its subject's handler, a change through its handler). */
-export async function decideApproval(deps: ApprovalDependencies, caller: ApprovalCaller, approvalId: string, body: unknown): Promise<{ status: ApprovalStatus }> {
+export async function decideApproval(deps: ApprovalDependencies, caller: ApprovalCaller, approvalId: string, body: unknown): Promise<{ status: ApprovalStatus;refusal?:NonNullable<AnyApprovalRecord["modelRefusal"]> }> {
   const id = ApprovalIdSchema.safeParse(approvalId);
   const record = id.success ? await getAnyApproval(deps, caller.orgId, id.data) : undefined;
   if (record === undefined) throw agentXError("NOT_FOUND", "approval not found");

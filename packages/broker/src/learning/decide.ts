@@ -7,7 +7,7 @@
 // The request id is derived from the suggestion (suggestion id, the revision the person saw, the stage and the exact text), so a retry is the same request: it finds the same pending rule, the same
 // draft and the same approval. The rule is written `pending` before the draft, so a crash leaves a state that settlement (settle.ts) can resolve.
 //
-// Checked again at Accept, live: the accepter's standing (and, for a contributor, that they wrote one of the corrections: L3), every source author's standing, and PR-only membership (a source
+// Checked again at Accept, live: the accepter's standing and How we work edit rights (L3: being an author grants nothing), every source author's standing, and PR-only membership (a source
 // that is a PR comment while PR capture is off does not count). A suggestion with fewer than 2 sources from 2 tasks left is withdrawn and refused.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -22,9 +22,10 @@ import type { AgentDraft, AgentRecord, AgentVersion } from "../agents/store.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { inertRuleText } from "../playbook/inert-rule-text.js";
 import { appendRuleToOverlay, removeRuleFromOverlay } from "./overlay.js";
-import { existingLayer, postProjectProcess } from "../playbook/process-layer.js";
+import { postProjectProcess } from "../playbook/process-layer.js";
 import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rolledBackEvent } from "./audit.js";
 import { dismissedSetKey, groupCorrections, prCaptureOff } from "./grouping.js";
+import { requireSuggestionsOn } from "./suggestions-switch.js";
 import { ensureMetricCurrent, metricMonth, metricUpdateItem } from "./metric.js";
 import {
   acceptNote, commitApplied, commitAwaiting, commitNotApplied, findVersionByNote, learningOf, parseSuggestionItem, readMembers, readRule, removeNote, ruleSk, ruleTransition, settleProject,
@@ -44,7 +45,8 @@ const CHANGED = "This suggestion changed. Refresh the page and try again.";
 const BUSY_LAYER = "How we work has unpublished changes. Publish or discard them first.";
 const SOURCES_GONE = "This suggestion no longer has enough sources.";
 const MAINTAINERS_ONLY = "Only a project maintainer can decide on suggested rules.";
-const SET_UP_FIRST = "A maintainer needs to set up How we work for this project first.";
+// What a hand publish says to a person without edit rights (playbook/routes.ts); Accept is a publish, so it says the same.
+const PUBLISH_FORBIDDEN = "only a project maintainer can change how the project works";
 const DRAFT_CHANGED = "Someone else changed this agent's draft. Reload it and make your change again.";
 
 const failure = (code: Parameters<typeof agentXError>[0], message: string) => agentXError(code, message);
@@ -171,7 +173,7 @@ function uniqueChecks(...lists: StandingCheck[][]): StandingCheck[] {
 
 interface Authority { scope: LearningScope; scopeChecks: StandingCheck[]; accepterChecks: StandingCheck[]; maintainer: boolean; standing: "member" | "outsider" }
 
-async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, options: { authorMayAct: boolean }): Promise<Authority & { project: string }> {
+async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, refusal: string): Promise<Authority & { project: string }> {
   const found = await deps.projectFor(caller, rawProject);
   const project = found.name;
   const checked = await learningScopeChecked(deps, caller.orgId, project);
@@ -179,7 +181,7 @@ async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawP
   // Read now, not from the sign-in: a person demoted since they signed in is not a member.
   const standing = await readStandingChecked(deps, caller.orgId, caller.developerId, project);
   const maintainer = projectAllows(found.role, "edit_settings");
-  if (standing.standing !== "member" || (!maintainer && !options.authorMayAct)) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
+  if (!canAcceptSuggestion({ standing: standing.standing, maintainer })) throw failure("FORBIDDEN", refusal);
   return { project, scope: checked.scope, scopeChecks: checked.checks, accepterChecks: standing.checks, maintainer, standing: standing.standing };
 }
 
@@ -191,9 +193,11 @@ async function authorize(deps: LearningDecideDeps, caller: DeveloperCaller, rawP
 export async function acceptSuggestion(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, suggestionId: string, rawBody: unknown): Promise<AcceptAnswer> {
   const body = strictBody(LearningAcceptBodySchema, rawBody);
   const learning = learningOf(deps);
-  const auth = await authorize(deps, caller, rawProject, { authorMayAct: true });
+  const auth = await authorize(deps, caller, rawProject, PUBLISH_FORBIDDEN);
   const { scope, project } = auth;
+  // Settlement is never gated by the master switch; deciding is. Settle first, so a waiting rule that ended while the switch was off is still settled.
   await settleProject(deps, scope);
+  await requireSuggestionsOn(deps, caller.orgId);
 
   const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
   if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
@@ -213,9 +217,8 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
     if (suggestion.status !== "open" || suggestion.revision !== body.expectedRevision) throw stale();
   }
 
-  // The members, read live. L3: a contributor may accept only a rule their own corrections produced.
+  // The members, read live. Authority was settled above (edit rights and standing); being one of the authors adds nothing.
   const members = await readMembers(learning, scope, suggestion.correctionIds);
-  if (!canAcceptSuggestion({ standing: auth.standing, maintainer: auth.maintainer, developerId: caller.developerId }, members.map((member) => member.c.author))) throw failure("FORBIDDEN", MAINTAINERS_ONLY);
 
   // The source authors, read now (design 5.1), with the records they were read from: those conditions go into the transaction that follows. A retry re-reads them too, and is refused when
   // fewer than 2 sources from 2 tasks are left (it withdraws nothing: the rule it resumes is settled on its own).
@@ -225,15 +228,8 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
     throw failure("LEARNING_SOURCES_GONE", SOURCES_GONE);
   }
 
-  // The layer: a maintainer sets it up if the project has none yet; an author who is not a maintainer cannot.
-  const store = deps.approvals.store;
-  let agentId: string;
-  if (auth.maintainer) agentId = (await postProjectProcess(deps, caller, project)).agentId;
-  else {
-    const present = await existingLayer(deps, store, caller.orgId, project);
-    if (present === undefined) throw failure("FORBIDDEN", `${SET_UP_FIRST} ${howWeWorkLink(deps, project)}`);
-    agentId = present.agentId;
-  }
+  // The layer: the accepter has edit rights, so they set it up if the project has none yet.
+  const agentId = (await postProjectProcess(deps, caller, project)).agentId;
   const layer = await readLayer(deps, caller.orgId, agentId);
   const built = appendRuleToOverlay(layer.publishedOverlay, suggestion.stage, text);
   layerState(layer, built);
@@ -270,9 +266,6 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
   if (rule?.status === "pending") await commitAwaiting(deps, scope, rule, approvalIdFor(caller.orgId, caller.developerId, requestId), caller.developerId);
   return { outcome: "awaiting_approval", confirmUrl: result.confirmUrl, changes: result.changes ?? [] };
 }
-
-/** The page where a project's How we work is set up. */
-const howWeWorkLink = (deps: LearningDecideDeps, project: string): string => `${deps.approvals.confirmOrigin}/app/projects/${encodeURIComponent(project)}?tab=how-we-work`;
 
 type Members = Awaited<ReturnType<typeof readMembers>>;
 
@@ -359,9 +352,10 @@ async function startAccepting(deps: LearningDecideDeps, caller: DeveloperCaller,
 export async function dismissSuggestion(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, suggestionId: string, rawBody: unknown): Promise<{ suggestion: { id: string; status: "dismissed" } }> {
   const body = strictBody(LearningDismissBodySchema, rawBody);
   const learning = learningOf(deps);
-  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  const auth = await authorize(deps, caller, rawProject, MAINTAINERS_ONLY);
   const { scope } = auth;
   await settleProject(deps, scope);
+  await requireSuggestionsOn(deps, caller.orgId);
   const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
   if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
   if (suggestion.status === "accepting" || suggestion.status === "awaiting_approval") throw failure("LEARNING_LAYER_BUSY", "This suggestion is being accepted. Try again once it is decided.");
@@ -398,7 +392,8 @@ export async function dismissSuggestion(deps: LearningDecideDeps, caller: Develo
 /** `POST …/learning/dismissed/{id}/reopen`: a maintainer takes the pattern off the dismissed list, so the same corrections can form a suggestion again. */
 export async function reopenDismissed(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, dismissedId: string): Promise<{ reopened: true }> {
   const learning = learningOf(deps);
-  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  const auth = await authorize(deps, caller, rawProject, MAINTAINERS_ONLY);
+  await requireSuggestionsOn(deps, caller.orgId);
   if (!/^[a-f0-9]{32}$/.test(dismissedId)) throw failure("NOT_FOUND", "That is not on the dismissed list.");
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
@@ -423,7 +418,7 @@ export async function reopenDismissed(deps: LearningDecideDeps, caller: Develope
 export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, ruleId: string, rawBody: unknown): Promise<RemoveAnswer> {
   strictBody(LearningRuleRemoveBodySchema, rawBody);
   const learning = learningOf(deps);
-  const auth = await authorize(deps, caller, rawProject, { authorMayAct: false });
+  const auth = await authorize(deps, caller, rawProject, MAINTAINERS_ONLY);
   const { scope } = auth;
   await settleProject(deps, scope);
   let rule: LearningRule | undefined = await readRule(learning, scope, ruleId);

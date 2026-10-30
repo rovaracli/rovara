@@ -24,6 +24,8 @@ import { describe, expect, it } from "vitest";
 import { guardedRoots, problemsOf, programOf, rowsOf, scanProgram, sourceFiles, type Hit, type Root, type Row } from "../support/task-owner-scan.js";
 
 const ROWS: readonly Row[] = [
+  // C53: fallback authorization checks the effective owner's membership and fences the immutable creator identity; both run through effectiveTaskOwner/ownerFenceOf.
+  ["model-selection/authorize-fallback.ts", "prepareTaskModelAuthorization", "authority", ".developerId*2"],
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey*2"],
   // Plan 4: a cancel's idempotency key (read by a chain to find that its cancel of a step's task was taken, and built by the task cancel) is made from the task's principal (`ownerKey`) and its workspace; it never changes
   ["chains/runner.ts", "endedByOwnTimeoutCancel", "principal", ".ownerKey*2"],

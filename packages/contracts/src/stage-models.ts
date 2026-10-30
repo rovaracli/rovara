@@ -42,8 +42,8 @@ export const StageModelCandidateSchema = z.object({
 }).strict();
 export const EffectiveStageModelSchema = z.object({
   model: ModelIdentifierSchema, sourceId: SourceId, thinkingLevel: ThinkingLevelSchema.nullable(),
-  decidedBy: z.enum(["rovara", "company", "project"]), locked: z.boolean(),
-  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "APPROVED_SAME_MODEL"]),
+  decidedBy: z.enum(["rovara", "company", "project", "person"]), locked: z.boolean(),
+  reason: z.enum(["COMPANY_LOCK", "PROJECT_CHOICE", "COMPANY_DEFAULT", "BUILTIN_DEFAULT", "PROJECT_SELECTION", "PROJECT_DEFAULT", "PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL"]),
 }).strict();
 const StageRowBase = z.object({
   stage: StageIdSchema, projectChoice: StageModelChoiceSchema.nullable(), companyDefault: StageModelChoiceSchema.nullable(),

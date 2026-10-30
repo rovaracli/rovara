@@ -3,7 +3,7 @@
 // Who reads: anyone who can see the project (`projectFor`: another company's project and one the caller cannot see answer the same `PROJECT_NOT_FOUND`). What they get depends on who they
 // are, read live (standing.ts), never from the sign-in:
 //   - The top-level `canDecide` is true only for a project member with the maintainer role (an org owner or admin counts): it is what the screen uses to show Dismiss and Remove. Each
-//     suggestion's own `canDecide` is whether this caller may ACCEPT it: a live maintainer, or an author of one of its sources who still has standing. Both come from `canAcceptSuggestion`
+//     suggestion's own `canDecide` is whether this caller may ACCEPT it: a live member with How we work edit rights (the same as the top-level one: being an author grants nothing). Both come from `canAcceptSuggestion`
 //     (standing.ts), the rule Accept itself uses; the deciding routes check again.
 //   - Correction text (each source's `label` and the suggestion's `proposedText`) goes only to a project MEMBER (the same test capture uses). A viewer, or a person who reaches the project
 //     only through its Slack channel, sees that suggestions exist, their stage and how many sources, but no one's words.
@@ -23,7 +23,8 @@ import { takeRateAt } from "../developer/page-comments.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { readMembers } from "./settle.js";
 import { canAcceptSuggestion, companyIsOpen, learningScopeChecked, readStanding, type StandingDeps } from "./standing.js";
-import { getLearningItem, readLearningPartition, type LearningDeps, type LearningScope } from "./store.js";
+import { effectiveSuggestions } from "./suggestions-switch.js";
+import { getLearningItem, readLearningPartition, readLearningState, type LearningDeps, type LearningScope } from "./store.js";
 
 /** The whole read gives up after this long. */
 export const LEARNING_VIEW_MILLIS = 4_000;
@@ -116,9 +117,11 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const standing = await readStanding(deps, caller.orgId, caller.developerId, project);
   const member = standing === "member";
   const maintainer = projectAllows(found.role, "edit_settings");
-  const canDecide = canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, []);
+  const canDecide = canAcceptSuggestion({ standing, maintainer });
 
-  const [settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
+  // The company's master switch: while it is off the open suggestions are hidden (not withdrawn) and the screen is told Rovara is collecting.
+  const [switched, settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
+    effectiveSuggestions(deps, caller.orgId),
     settingsView(deps, learning, scope),
     readList(learning, scope, "SUGGESTION#", LEARNING_VIEW_SUGGESTIONS_SCANNED_MAX),
     readList(learning, scope, "DISMISSED#", LEARNING_VIEW_DISMISSED_SCANNED_MAX),
@@ -127,12 +130,13 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const truncated: Array<"suggestions" | "dismissed" | "rules"> = [];
 
   // Suggestions that are not terminal. A terminal one is never listed (its text is gone), and one that does not read as a suggestion is left out.
-  const open = suggestionItems.items.flatMap((item) => {
+  const switchedOff = switched.suggestions === "off";
+  const open = (switchedOff ? [] : suggestionItems.items).flatMap((item) => {
     const parsed = LearningSuggestionSchema.safeParse(item);
     return parsed.success && !isTerminalSuggestionStatus(parsed.data.status) ? [parsed.data] : [];
   }).sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? 1 : -1));
   const shown = open.slice(0, LEARNING_OPEN_SUGGESTIONS_MAX);
-  if (open.length > shown.length || suggestionItems.more) truncated.push("suggestions");
+  if (open.length > shown.length || (!switchedOff && suggestionItems.more)) truncated.push("suggestions");
   const wanted = shown.flatMap((suggestion) => suggestion.correctionIds);
   const members = new Map((wanted.length === 0 ? [] : await readMembers(learning, scope, wanted)).map((entry) => [entry.c.id, entry.c] as const));
   // The proposed text is the newest source's words: it is not shown when any source's author was erased (an erase that stopped half way has not reached the suggestion yet).
@@ -144,7 +148,7 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
     allFromOnePerson: suggestion.allFromOnePerson, lessSafe: suggestion.lessSafe, lessSafeWords: suggestion.kinds, overlaps: suggestion.overlaps,
     sources: sourceViews(suggestion, members, member), revision: suggestion.revision,
     // Per suggestion, with the rule Accept authorises by (standing.ts): the screen cannot offer what the API will refuse.
-    canDecide: canAcceptSuggestion({ standing, maintainer, developerId: caller.developerId }, suggestion.correctionIds.flatMap((id) => { const author = members.get(id)?.author; return author === undefined ? [] : [author]; })),
+    canDecide: canAcceptSuggestion({ standing, maintainer }),
   }));
 
   // The dismissed patterns: the id of the pattern (what Reopen takes), the stage and kind of the suggestion it came from, and when. No text from either.
@@ -179,7 +183,8 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   }));
 
   // PR-comment capture counts what it skipped (B8); until it exists there is nothing to report.
-  const answer = { settings, suggestions, dismissed, rules, skippedUnlinked: 0, canDecide, ...(truncated.length === 0 ? {} : { truncated }) };
+  const suggestionsState = switchedOff ? { state: "collecting" as const, corrections: (await readLearningState(learning, scope))?.liveCorrections ?? 0 } : { state: "on" as const };
+  const answer = { settings, suggestions, dismissed, rules, skippedUnlinked: 0, canDecide, suggestionsState, ...(truncated.length === 0 ? {} : { truncated }) };
   // Nothing leaves that is not the contract's shape: a record that came out wrong is one plain error, not a half answer.
   const checkedAnswer = LearningViewAnswerSchema.safeParse(answer);
   if (!checkedAnswer.success) throw agentXError("RUNTIME_UNAVAILABLE", "Learning could not be shown. Try again.");

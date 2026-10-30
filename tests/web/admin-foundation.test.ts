@@ -41,6 +41,15 @@ it("waits for fresh identity before requesting people", async () => {
  expect(await screen.findByText("Checking administration access")).toBeTruthy();expect(f.request.mock.calls.some(([r]) => r.path.includes("/members"))).toBe(false);resolve({ status: 403, body: { error: { code: "FORBIDDEN", message: "untrusted upstream detail" } } });expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(screen.queryByText("untrusted upstream detail")).toBeNull();f.close();
 });
 it("treats an unknown identity role as unavailable", async () => { const f = mount({ respond: async () => ({ status: 200, body: { developer: { id: "a".repeat(64), name: "Priya", orgRole: "future-role" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(screen.queryByText("Maya")).toBeNull();f.close(); });
+it("purges every admin cache area, including lane B project caches, when access is lost", async () => {
+ const f = mount();await screen.findByText("Maya");
+ const projects = ["admin", "projects", "org_aaaaaaaaaaaaaaaaaaaa", "a".repeat(64)], detail = ["admin", "project-detail", "org_aaaaaaaaaaaaaaaaaaaa", "a".repeat(64), "project_1"];
+ f.query.setQueryData(projects, { projects: [{ name: "Secret roadmap" }] });f.query.setQueryData(detail, { name: "Secret roadmap" });
+ f.me.developer.orgRole = "member";await f.query.invalidateQueries({ queryKey: ["admin", "identity"] });
+ expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();
+ expect(f.query.getQueryData(projects)).toBeUndefined();expect(f.query.getQueryData(detail)).toBeUndefined();expect(f.query.getQueriesData({ queryKey: ["admin", "members"] })).toEqual([]);
+ f.close();
+});
 it("clears visible people and the directory cache when the role is revoked", async () => {
  const f = mount();await screen.findByText("Maya");f.me.developer.orgRole = "member";await f.query.invalidateQueries({ queryKey: ["admin", "identity"] });await waitFor(() => expect(screen.queryByText("Maya")).toBeNull());expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(f.query.getQueriesData({ queryKey: ["admin", "members"] })).toEqual([]);f.close();
 });

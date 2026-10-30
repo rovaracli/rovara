@@ -4,6 +4,7 @@ import { parseSlackThreadSubject } from "../../packages/contracts/src/slack.js";
 import { createSignedServiceFetch } from "../../packages/slack-service/src/signing-fetch.js";
 import { createThreadApi } from "../../packages/slack-service/src/thread-api.js";
 import { brokerFetch } from "../support/broker-fetch.js";
+import { modelSelectionSlackWorld, SELECTION_MODELS } from "../support/model-selection-slack-world.js";
 import {
   SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, finishOperation, lazyEnsureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall,
   type Handler,
@@ -97,17 +98,13 @@ describe("the Slack service's thread client", () => {
   });
 
   it("lists and selects the bound project's coding model through signed service routes", async () => {
-    const { handler } = createBroker();
-    await registerSlackProject(handler, { models: {
-      default: { provider: "amazon-bedrock", modelId: "balanced", label: "Balanced" },
-      approved: [
-        { provider: "amazon-bedrock", modelId: "balanced", label: "Balanced" },
-        { provider: "amazon-bedrock", modelId: "fast", label: "Fast" },
-      ],
-    } });
+    const { handler } = await modelSelectionSlackWorld(pratik);
+    const balanced = { ...SELECTION_MODELS[0]!, label: "Balanced" };
+    const fast = { ...SELECTION_MODELS[1]!, label: "Fast" };
+    await registerSlackProject(handler, { models: { default: balanced, approved: [balanced, fast] } });
     const api = threadApi(handler);
     await expect(api.listProjectModels!()).resolves.toMatchObject({ source: "default", current: { label: "Balanced" } });
-    await expect(api.selectProjectModel!({ provider: "amazon-bedrock", modelId: "fast" })).resolves.toMatchObject({ source: "selection", current: { label: "Fast" } });
+    await expect(api.selectProjectModel!(SELECTION_MODELS[1]!)).resolves.toMatchObject({ source: "selection", current: { label: "Fast" } });
   });
 
   // Issue 167: the turn that gave up for good cancels its task through the existing cancel route.

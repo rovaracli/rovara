@@ -170,13 +170,15 @@ describe("the event catalog", () => {
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
       "agent.rolled_back", "builtin.adopted", "chain.published", "chain.rolled_back", "trigger.enabled",
       "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "model_source.saved",
-      "model_source.removed", "model_source.order_changed", "audit.read",
+      "model_source.removed", "model_source.order_changed", "model_policy.changed", "model_policy.lock_set", "model_policy.lock_removed", "model.fallback_used", "audit.read",
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
+      // the company's master suggestions switch
+      "rule.suggestions_set",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -221,12 +223,13 @@ describe("the event catalog", () => {
     "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
+    "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source"], sample: { setting: "on", previous: "off", source: "company" } },
   } as const;
 
   // I10: the learning events hold no text.
   it("I10: no rule.* or project.learning_changed fact can hold text, and a text-like fact is refused", () => {
     const learning = AUDIT_ACTIONS.filter((action) => action.startsWith("rule.") || action === "project.learning_changed");
-    expect(learning).toHaveLength(8);
+    expect(learning).toHaveLength(9);
     const textLike = /text|note|body|wording|comment|message|content|title|label/i;
     for (const action of learning) {
       for (const key of AUDIT_FACT_KEYS[action]) expect(key, `${action}.${key}`).not.toMatch(textLike);

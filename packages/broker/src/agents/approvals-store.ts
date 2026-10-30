@@ -1,6 +1,8 @@
+import {ModelApplyRefusalSchema} from "../model-selection/process-refusal.js";
 // Plan 3 Task 7 and Task 21: the approvals' records and everything that writes or reads them one at a time: the three record kinds and their schemas, the
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
+import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -17,8 +19,9 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import type { ChainStore } from "../chains/store.js";
 import type { TriggerHookReader, TriggerHooks, TriggerLookup, TriggerScheduler } from "../triggers/ports.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
+import type { RoutingDependencies } from "../model-sources/routing.js";
+import type { ChatGptConnections } from "../chatgpt/connections.js";
 import type { ServableModels } from "./guardrails.js";
-import type { StageEvidenceDependencies } from "../model-selection/evidence.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
 import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
@@ -28,6 +31,10 @@ import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
+  modelRouting?: RoutingDependencies;
+  /** Existing sign-in table, used only for global revocation ConditionChecks. */
+  modelSignInTableName?: string;
+  stageChatgpt?: Pick<ChatGptConnections,"settings"|"view">;
   /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
   chains?: ChainStore;
   /**
@@ -51,9 +58,6 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   resolveSkill?: ResolveOptions["resolveSkill"];
   /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
   servableModels?: ServableModels;
-  /** V3: where a process layer's model choices are checked at publish, confirm and rollback (lane C's resolver reads the same sources); without them, Rovara's own AI alone. */
-  modelRouting?: StageEvidenceDependencies["routing"];
-  chatgpt?: StageEvidenceDependencies["chatgpt"];
   /** What a project's connectors need (Task 13): the org's connections, the project revision write and the live connector status. Without it those routes answer 404 and a widening cannot be applied. */
   projectConnectors?: ProjectConnectorDependencies;
   /** Task 14b: a read-only reader of a repository's default branch for an org, for the comment-triggered workflow scan. Without it, nothing can be reviewed or opted out. */
@@ -98,15 +102,16 @@ const APPROVAL_STATUSES = ["PENDING", "EXECUTING", "APPROVED", "APPROVED_DONE", 
 /** What a change record applies when it is confirmed. Each is bound to the exact version, revision or digest that was shown. */
 export type AgentChangeSubject =
   /** Publish `agentId`'s draft: only while the draft is still `draftRevision` with `digest`, and the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
+  | { kind: "agent_publish"; agentId: AgentId; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string;tupleDigest?:string} }
   /** Make `version` (whose recipe has `digest`) current, while the current version is still `expectedCurrentVersion`. */
-  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number }
+  | { kind: "agent_rollback"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; modelContext?: {companyRevision:number;sourcesRevision:number;registeredAt:string;tupleDigest?:string} }
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
   | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number }
+  | {kind:"model_selection_policy";body:ModelSelectionPolicyPut;sourcesRevision:number;guardrailsRevision:number}
   /**
    * Start the run `runRequestId` asked for on `version` of the agent (an older version than the one that runs now, `expectedCurrentVersion`; for a built-in the
    * org's pin), which is less safe than it: only while the version that runs now and the recipe of `version` (`digest`) are still what was shown. Approving it
@@ -200,6 +205,7 @@ export interface ApprovalRun { project: string; owner: { developerId: string; na
 
 /** Fields every record that is decided carries once it is. */
 interface DecidedFields {
+  modelRefusal?: z.infer<typeof ModelApplyRefusalSchema>;
   decidedBy?: string;
   decidedAt?: string;
   /** The decision, kept so a retry after a crash finishes the same one. */
@@ -376,13 +382,14 @@ const ApproverSpecSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rule"), rule: z.string(), candidates: z.array(z.string()) }).strict(),
 ]);
 const ChangeSubjectSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("agent_publish"), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal("agent_rollback"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
+  z.object({ kind: z.literal("agent_publish"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
   z.object({
     kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
+  z.object({kind:z.literal("model_selection_policy"),body:ModelSelectionPolicyPutSchema,sourcesRevision:z.number().int().min(0),guardrailsRevision:z.number().int().min(0)}).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
@@ -418,6 +425,7 @@ const DecidedShape = {
   executingAt: z.string().optional(),
   attempts: z.number().int().min(0).optional(),
   failure: z.string().optional(),
+  modelRefusal: ModelApplyRefusalSchema.optional(),
   handlerDone: z.boolean().optional(),
   handlerClaimedAt: z.string().optional(),
   handlerDueAt: z.string().optional(),

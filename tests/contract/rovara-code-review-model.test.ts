@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { DEFAULT_AGENT_GUARDRAILS, canonicalModelName, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, canonicalModelName, builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { WorkflowReviewFindingSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -16,6 +16,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
@@ -108,7 +109,15 @@ type Meta = Record<string, unknown> & { workspaceId: string; workflow: WorkflowS
 /** A version 2 task, driven through planning, the plan check and the plan's approval until its build has finished: the review step is the next dispatch. */
 async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>; workspaceId: string; operations: () => Array<Record<string, unknown>> }) => void; models?: { default: ModelIdentifier; approved: ModelIdentifier[] }; guardrails?: Record<string, unknown>; reviewStepSettings?: Record<string, unknown> } = {}) {
   const access = fakeModelAccess();
-  const h = await createSingleAnswerPlanBroker({ register: options.models === undefined, brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const h = await createSingleAnswerPlanBroker({ audit: capturingAuditDeps(), register: options.models === undefined, brokerExtra: { agents: { ...(options.reviewStepSettings === undefined ? {} : { builtins: {
+    currentVersion: (id: string) => currentBuiltinVersion(id as Parameters<typeof currentBuiltinVersion>[0]),
+    defaultPin: (id: string) => builtinDefaultPin(id as Parameters<typeof builtinDefaultPin>[0]),
+    name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    recipe: (id: string, version: number) => {
+      const recipe = builtinRecipe(id as Parameters<typeof builtinRecipe>[0], version);
+      return id !== "rovara-code" ? recipe : { ...recipe, steps: recipe.steps.map(step => step.kind === "review" ? { ...step, settings: { ...step.settings, ...options.reviewStepSettings } } : step) } as ResolvedRecipe;
+    },
+  } }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   if (options.models !== undefined) await registerSlackProject(h.handler, { models: options.models });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
@@ -122,13 +131,6 @@ async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<
   const workspaceId = record().workspaceId;
   // Set after the task starts: a start with this rule needs the build step to name a model, and the rule is about the review dispatch.
   if (options.guardrails !== undefined) h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, ...options.guardrails } });
-  if (options.reviewStepSettings !== undefined) {
-    const item = h.db.find((entry) => entry.pk === `DEVTASK#${taskId}` && entry.sk === "RECIPE")[0] as unknown as { recipe: ResolvedRecipe; digest: string };
-    const recipe = { ...item.recipe, steps: item.recipe.steps.map((step) => (step.kind === "review" ? { ...step, settings: { ...step.settings, ...options.reviewStepSettings } } : step)) } as ResolvedRecipe;
-    const digest = recipeDigest(recipe);
-    h.db.set({ ...item, recipe, digest });
-    h.db.set({ ...record(), agent: { ...(record().agent as object), digest } });
-  }
   const operations = () => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
   const byMode = (mode: string) => operations().filter((item) => item.workflowMode === mode).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const invocationOf = (operationId: unknown) => h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation as { payload: { model?: { provider: string; modelId: string } } } | undefined;
@@ -149,11 +151,12 @@ async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<
   const reports = (operationId: unknown, provider: string, version: string) => ["CRITIC", "SECURITY"].map((role) => ({
     operationId: String(operationId), candidateDigest: candidate.digest, role, provider, version, status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() }));
   /** The owner's Retry reviews on the blocked review step. */
+  const retryReviewsReply = () => h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, candidateDigest: candidate.digest, instructions: "Retry" });
   const retryReviews = async () => {
-    const retried = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, candidateDigest: candidate.digest, instructions: "Retry" });
+    const retried = await retryReviewsReply();
     expect(retried.status, JSON.stringify(retried.body).slice(0, 300)).toBe(200);
   };
-  return { h, taskId, workspaceId, record, operations, byMode, invocationOf, candidate, reports, retryReviews };
+  return { h, taskId, workspaceId, record, operations, byMode, invocationOf, candidate, reports, retryReviews, retryReviewsReply };
 }
 /** A review operation that ended with these reports (as the worker records a reviewer whose model call was refused: UNKNOWN, on an operation that SUCCEEDED). */
 async function finishReviewWith(t: Awaited<ReturnType<typeof builtTask>>, review: Record<string, unknown>, extra: Record<string, unknown>) {
@@ -201,19 +204,17 @@ describe("dispatching the review step of a version 2 task with no model set for 
     expect(t.record()).not.toHaveProperty("reviewSameModel");
   });
 
-  it("leaves the reviews on the model the company set for the step, even when it is the build's", async () => {
+  it("refuses an explicit review on the build model without a bound same-model approval", async () => {
     const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] }, reviewStepSettings: { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } } });
-    const review = t.byMode("REVIEW")[0]!;
-    expect(review, JSON.stringify(t.record().workflow.blockReason)).toBeDefined();
-    expect(t.invocationOf(review.id)!.payload.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
-    expect(review.reviewSameModel).toBeUndefined();
+    expect(t.byMode("REVIEW")).toEqual([]);
+    expect(t.record().workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: "The task's pinned stage model is unavailable. Check How we work." });
   });
 
   it("when cross-company review is required and no other company is allowed, refuses as the dispatch always did (no recommendation changes it)", async () => {
     const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] }, guardrails: { requireCrossCompanyReview: true } });
     expect(t.byMode("REVIEW")).toEqual([]);
     expect(t.record().workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
-    expect(String(t.record().workflow.blockReason)).toMatch(/different AI company/);
+    expect(t.record().workflow.blockReason).toBe("The task's pinned stage model is unavailable. Check How we work.");
   });
 });
 
@@ -313,7 +314,7 @@ describe("a review model that the account could not call", () => {
     expect(canonicalModelName(t.byMode("REVIEW")[1]!.model as ModelIdentifier)).not.toBe(canonicalModelName(first.model as ModelIdentifier));
   });
 
-  it("keeps the reviews on the build's model, with the note, once every other model has failed and nothing is left to choose", async () => {
+  it("uses the verified build model once, then refuses after every allowed model is task-denied", async () => {
     const t = await builtTask({ models: { default: CLAUDE_DEFAULT, approved: [CLAUDE_DEFAULT, OTHER_CLAUDE] } });
     // First the other model is refused: the build's own model is the only one left (and says so).
     await finishReviewWith(t, t.byMode("REVIEW")[0]!, REFUSED);
@@ -321,12 +322,14 @@ describe("a review model that the account could not call", () => {
     const second = t.byMode("REVIEW")[1]!;
     expect(second.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
     expect(second.reviewSameModel).toBe(true);
-    // Then that is refused too: nothing can be chosen, the step runs on the project's default, which is the build's model, and the note still says so.
+    // C53 forbids retrying a task-denied model, including the reference model.
     await finishReviewWith(t, second, REFUSED);
-    await t.retryReviews();
-    const third = t.byMode("REVIEW")[2]!;
-    expect(t.invocationOf(third.id)!.payload.model).toMatchObject({ modelId: CLAUDE_DEFAULT.modelId });
-    expect(third.reviewSameModel).toBe(true);
+    const before = t.operations().length;
+    const reply = await t.retryReviewsReply();
+    expect(reply.status).toBe(403);
+    expect(reply.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED" } });
+    expect(t.operations()).toHaveLength(before);
+    expect(t.byMode("REVIEW")).toHaveLength(2);
   });
 
   it("takes the build from the latest build that succeeded, not from a later one that failed", async () => {
@@ -412,7 +415,7 @@ describe("the model-failure sentence stays on the operation's result", () => {
 });
 
 describe("a refused reviewer on an operation that succeeded counts toward the limit", () => {
-  it("reaches the six-try limit, takes the build's model with the note on the last try, and stops choosing after it", async () => {
+  it("uses the build on the sixth default attempt and never reuses it after this task refuses it", async () => {
     // The build's model and six others: one refusal each leaves a model to choose until the sixth try.
     const others = bedrockClaudeModelIds().map((modelId): ModelIdentifier => ({ provider: "amazon-bedrock", modelId }))
       .filter((model) => canonicalModelName(model) !== canonicalModelName(CLAUDE_DEFAULT));
@@ -436,8 +439,10 @@ describe("a refused reviewer on an operation that succeeded counts toward the li
     // The sixth is the last: the build's own model, with the note, although another model had not been tried.
     expect(canonicalModelName(tried[5]!.model)).toBe(canonicalModelName(CLAUDE_DEFAULT));
     expect(tried[5]!.same).toBe(true);
-    // After the limit nothing is chosen any more: the step runs as the project set it (the build's model), still with the note.
-    expect(canonicalModelName(tried[6]!.model)).toBe(canonicalModelName(CLAUDE_DEFAULT));
-    expect(tried[6]!.same).toBe(true);
+    // C53 retains verified default compatibility while forbidding every task-denied model.
+    // A seventh review can use an untried verified model, but cannot repeat the refused build model.
+    expect(new Set(tried.map(entry => canonicalModelName(entry.model))).size).toBe(7);
+    expect(canonicalModelName(tried[6]!.model)).not.toBe(canonicalModelName(CLAUDE_DEFAULT));
+    expect(tried[6]!.same).toBe(false);
   });
 });

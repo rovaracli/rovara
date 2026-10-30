@@ -1,3 +1,4 @@
+import {prepareTaskModelPolicyPin,parseTaskModelPolicyPin,taskModelPolicyAdmissionChecks,type TaskModelPolicyPin} from "../model-selection/task-pin.js";
 // Plan 3 Task 15: starting a run from a frozen recipe. The developer task start (`startTask`, aws/developer-tasks.ts) holds the project checks, the
 // budget floor, the workspace charge and the one transaction that creates a task; this file holds what is particular to an agent's run:
 //   `prepareRun`        resolves the agent (access, roster, guardrails: nothing is charged or written), checks the payer and the result contract,
@@ -237,6 +238,7 @@ async function requireMayStart(deps: AgentRunStarter, input: { orgId: OrgId; pro
 // ---- preparing a run: nothing is charged or written
 
 export interface PreparedRun {
+  modelPolicyPin?:TaskModelPolicyPin;
   recipe: ResolvedRecipe;
   digest: string;
   ref: TaskAgentRef;
@@ -259,6 +261,8 @@ export interface PreparedRun {
 }
 
 export interface PrepareRunInput {
+  /** Exact project definition revision already checked by task admission. */
+  projectRevision?: number;
   orgId: OrgId;
   project: string;
   /** Absent for a start that names no agent: Rovara Code at the org's pin. */
@@ -335,8 +339,13 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   const limits = await runLimits(deps, input.orgId, ref, input.runLimitUsd);
   // Only an agent-step run checks a pull request out (a coding run is asked the text as written), so a coding run reads nothing from GitHub.
   const checkout = runner === "agent_steps" ? await pullRequestHeads(deps, input.orgId, input.input, input.repositories) : [];
+  const processVersion=runner==="coding"&&ref.process===true&&typeof ref.version==="number"?await deps.store.getVersion(input.orgId,ref.agentId,ref.version):undefined;
+  if(runner==="coding"&&ref.process===true&&processVersion===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task process version could not be verified.");
+  const approvalProof=processVersion?.modelApproval;
+  const modelPolicyPin=runner==="coding"?await prepareTaskModelPolicyPin(deps,{orgId:input.orgId,project:input.project,agentId:ref.agentId,recipe,digest,...(input.projectRevision===undefined?{}:{projectRevision:input.projectRevision}),...(processVersion===undefined?{}:{projectOverlay:processVersion.overlay}),...(approvalProof===undefined?{}:{approvalProof})}):undefined;
   return {
     recipe, digest, ref,
+    ...(modelPolicyPin===undefined?{}:{modelPolicyPin}),
     origin,
     runner,
     ...(program === undefined ? {} : { program }),
@@ -433,15 +442,17 @@ export function runStartItems(table: TableInput, input: {
   sessionId?: string;
 }): TransactItem[] {
   const { prepared } = input;
+  const modelPolicyPin=prepared.runner==="coding"?parseTaskModelPolicyPin(prepared.modelPolicyPin,{orgId:input.orgId,project:input.project,agentId:prepared.ref.agentId,recipe:prepared.recipe,digest:prepared.digest}):undefined;
   const nowSeconds = Math.floor(table.now() / 1000);
   const expires = nowSeconds + RUN_RECORD_MEMORY_DAYS * 86_400;
   const items: TransactItem[] = [
-    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest }),
+    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) }),
     putNew(table, agentTasksKey(input.orgId, prepared.ref.agentId, input.createdAt, input.taskId), "AGENT_TASK", {
       orgId: input.orgId, agentId: prepared.ref.agentId, taskId: input.taskId, project: input.project, version: prepared.ref.version, origin: prepared.origin, createdAt: input.createdAt,
       [INDEX_EXPIRY_ATTRIBUTE]: expires,
     }),
   ];
+  if(modelPolicyPin!==undefined) items.push(...taskModelPolicyAdmissionChecks(table.tableName,modelPolicyPin));
   if (prepared.runner === "agent_steps") {
     const state: AgentRunState = {
       orgId: input.orgId, revision: 1, state: "RUNNING", cursor: 0, input: prepared.input,
@@ -484,14 +495,15 @@ export function runStartItems(table: TableInput, input: {
 // ---- reading a run back
 
 /** The frozen recipe of a task, or undefined for a task from before agents. The item is a named exception to org-scoped keys: another org's refuses. */
-export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string } | undefined> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown } };
+export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string; modelPolicyPin?:TaskModelPolicyPin } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown; modelPolicyPin?:unknown } };
   const item = response.Item;
   if (item === undefined) return undefined;
   if (item.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this task");
   const recipe = ResolvedRecipeSchema.safeParse(item.recipe);
   if (!recipe.success || typeof item.digest !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
-  return { recipe: recipe.data, digest: item.digest };
+  const modelPolicyPin=item.modelPolicyPin===undefined?undefined:parseTaskModelPolicyPin(item.modelPolicyPin,{orgId,recipe:recipe.data,digest:item.digest});
+  return { recipe: recipe.data, digest: item.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) };
 }
 
 /** The request item of a run, if one is there and has not expired. */

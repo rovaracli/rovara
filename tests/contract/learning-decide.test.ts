@@ -2,8 +2,8 @@
 // real audit capture, with the learning partition in the same table. Publishing goes through `publishDraft`, as the How-we-work route does; these tests check what the published
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgLearningSettingsKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -24,6 +24,8 @@ import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { captureCorrection } from "../../packages/broker/src/learning/store.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 const SCOPE = { orgId: ORG_A, project: "web", projectCreatedAt: "2026-10-02T00:00:00.000Z" };
 const RETRY_A = "Use the shared retry helper for network calls, with exponential backoff.";
@@ -450,14 +452,26 @@ describe("the re-check at Accept", () => {
   });
 });
 
-describe("L3: the person whose corrections produced the rule may accept it", () => {
-  it("lets a contributor who wrote one of the corrections accept; the version is theirs", async () => {
+describe("L3: being the author never grants the right to accept; How we work edit rights do", () => {
+  it("refuses a contributor who wrote one of the corrections, and writes nothing", async () => {
     const w = world();
     const layer = await processLayer(w);
     const id = await suggest(w);
-    expect(await acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id))).toEqual({ outcome: "published", version: 2 });
-    expect((await w.store.getVersion(ORG_A, layer, 2))!.publishedBy).toBe(ARJUN);
-    expect(eventsOf(w, "rule.accepted").at(-1)).toMatchObject({ actor: { id: ARJUN } });
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id)));
+    expect(refusal!.code).toBe("FORBIDDEN");
+    expect(refusal!.message).toContain("only a project maintainer can change how the project works");
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+    expect(ruleItems(w)).toEqual([]);
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+  });
+
+  it("lets a maintainer who wrote one of the corrections accept their own suggestion; the version is theirs", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toEqual({ outcome: "published", version: 2 });
+    expect((await w.store.getVersion(ORG_A, layer, 2))!.publishedBy).toBe(MAX);
+    expect(eventsOf(w, "rule.accepted").at(-1)).toMatchObject({ actor: { id: MAX } });
   });
 
   it("refuses a contributor who wrote none of them, and a viewer", async () => {
@@ -898,16 +912,24 @@ describe("I3: a Remove that was declined or expired gives the draft back", () =>
   });
 });
 
-describe("L3: a contributor author cannot accept before the project has How we work", () => {
-  it("refuses with the fixed words and a link to the page, and writes nothing", async () => {
+describe("a project with no How we work layer yet", () => {
+  it("refuses a contributor author with the same words as a publish (no set-up message, no link), and writes nothing", async () => {
     const w = world();
     const id = await suggest(w);
     const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id)));
-    expect(refusal).toMatchObject({ code: "FORBIDDEN" });
-    expect(refusal!.message).toContain("A maintainer needs to set up How we work for this project first");
-    expect(refusal!.message).toContain("https://cell.example.com/app/projects/web?tab=how-we-work");
+    expect(refusal!.code).toBe("FORBIDDEN");
+    expect(refusal!.message).toContain("only a project maintainer can change how the project works");
+    expect(refusal!.message).not.toContain("set up How we work");
+    expect(refusal!.message).not.toContain("how-we-work");
     expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
     expect(ruleItems(w)).toEqual([]);
+  });
+
+  it("lets a maintainer set the layer up as they accept", async () => {
+    const w = world();
+    const id = await suggest(w);
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    expect(answer).toMatchObject({ outcome: "published" });
   });
 });
 
@@ -1023,11 +1045,38 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     await agree(w, MAX, id, true);
   });
 
-  it("an author who still has standing: true, and Accept goes through", async () => {
+  it("a contributor who wrote a source: false, and Accept refuses (being the author grants nothing)", async () => {
     const w = world();
     await processLayer(w);
     const id = await suggest(w);
-    await agree(w, ARJUN, id, true);
+    await agree(w, ARJUN, id, false);
+  });
+
+  it("a maintainer who wrote a source: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await agree(w, MAX, id, true);
+  });
+
+  it("an org admin (edit rights through the company role): view and Accept agree", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    const seen = (await viewLearning(decideDeps(w), callerOf(w, OLA), "web")).suggestions[0]!.canDecide;
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, OLA), "web", id, acceptBody(w, id)));
+    // An org admin holds How we work edit rights through the company role: the screen offers Accept and Accept succeeds.
+    expect(seen).toBe(true);
+    expect(refusal).toBeUndefined();
+  });
+
+  it("view and Accept agree for every role", async () => {
+    for (const [who, expected] of [[MAX, true], [PRIYA, false], [ARJUN, false], [MIA, false]] as const) {
+      const w = world();
+      await processLayer(w);
+      const id = await suggest(w);
+      await agree(w, who, id, expected);
+    }
   });
 
   it("an author who has lost standing (now a viewer): false, and Accept refuses", async () => {
@@ -1054,15 +1103,14 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     await agree(w, "f".repeat(64), id, false);
   });
 
-  it("is decided suggestion by suggestion: an author sees true only on the suggestion they wrote", async () => {
+  it("a contributor sees false on every suggestion, including the one they wrote", async () => {
     const w = world();
     await processLayer(w);
-    const mine = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
     await suggest(w, { stage: "plan", sources: [{ author: MAX, task: "t3", text: "Name database migrations with the date prefix and a short description." }, { author: OLA, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
     const view = await viewLearning(decideDeps(w), callerOf(w, PRIYA), "web");
     expect(view.suggestions).toHaveLength(2);
-    expect(view.suggestions.find((one) => one.id === mine)!.canDecide).toBe(true);
-    expect(view.suggestions.find((one) => one.id !== mine)!.canDecide).toBe(false);
+    expect(view.suggestions.every((one) => one.canDecide === false)).toBe(true);
     expect(view.canDecide).toBe(false);
   });
 
@@ -1130,3 +1178,73 @@ describe("erase emits rule.withdrawn with the cause `erased`, through the wiring
 });
 const MARK_A_TEXT = "Use the shared retry helper for network calls, with exponential backoff, ZEBRAMARK.";
 const MARK_B_TEXT = "Use the shared retry helper for network calls, with exponential backoff and jitter, QUOKKAMARK.";
+
+describe("the company's master suggestions switch: deciding is gated, settlement and rules are not", () => {
+  const setSwitch = (w: MergeWorld, suggestions: "on" | "off", revision: number) => w.db.set({
+    ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision, suggestions, changedBy: MAX, changedAt: new Date(w.clock.now).toISOString(),
+  });
+
+  it("Accept, Dismiss and Reopen answer 409 LEARNING_SUGGESTIONS_OFF while off and change nothing; the suggestion is there unchanged when the switch is on again", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    const second = await suggest(w, { sources: [{ author: PRIYA, task: "t3", text: "Name database migrations with a date prefix and a short description." }, { author: ARJUN, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
+    await dismissSuggestion(decideDeps(w), callerOf(w, MAX), "web", second, { expectedRevision: 0, dismissKind: "wrong" });
+    const [dismissed] = w.db.find((entry) => String(entry.sk).startsWith("DISMISSED#"));
+    const dismissedId = String(dismissed!.sk).slice("DISMISSED#".length);
+    const before = JSON.stringify([...w.db.items.entries()]);
+    setSwitch(w, "off", 1);
+    const afterSwitch = JSON.stringify([...w.db.items.entries()]);
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(await failure(dismissSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, { expectedRevision: 0, dismissKind: "wrong" }))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(await failure(reopenDismissed(decideDeps(w), callerOf(w, MAX), "web", dismissedId))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(JSON.stringify([...w.db.items.entries()])).toBe(afterSwitch);
+    expect(before).not.toBe(afterSwitch);
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open", revision: 0 });
+    setSwitch(w, "on", 2);
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toMatchObject({ outcome: "published" });
+  });
+
+  it("with no company record the install default decides: off refuses, on allows", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toMatchObject({ outcome: "published" });
+  });
+
+  it("an awaiting_approval suggestion still settles while off (settlement is never gated), and the accepted rule can still be removed", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    expect(answer.outcome).toBe("awaiting_approval");
+    setSwitch(w, "off", 1);
+    await decide(w, OLA, approvalIdOf(w, answer));
+    expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active", processVersion: 2 });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepted" });
+    expect(eventsOf(w, "rule.accepted").map((event) => event.facts?.outcome)).toEqual(["awaiting_approval", "published"]);
+    // Rules, remove and the view's rules list keep working with the switch off.
+    const viewDeps = decideDeps(w);
+    expect((await viewLearning({ documentClient: w.db, tableName: "state", now: () => w.clock.now, projectFor: (who, rawName) => viewDeps.projectFor(who, rawName) }, callerOf(w, MAX), "web")).rules).toHaveLength(1);
+    expect(await removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() })).toSatisfy((answer: { outcome: string }) => ["published", "awaiting_approval"].includes(answer.outcome));
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a declined approval while off also settles: the suggestion goes back to open (still hidden) and the rule is not applied", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    setSwitch(w, "off", 1);
+    await decide(w, OLA, approvalIdOf(w, answer), "DECLINE");
+    expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "not_applied" });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+  });
+});

@@ -1,10 +1,11 @@
 // v1.2 learning loop: `GET /v1/app/projects/{p}/learning` (design 6.2). Anyone who can see the project reads it; what is in it depends on who asks (live standing, never the sign-in), terminal
 // suggestions carry no correction text, expired items are absent, the reads are bounded and the whole answer has a time limit.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_GUARDRAILS, LearningViewAnswerReaderSchema, LearningViewAnswerSchema, agentGuardrailsKey, agentXError, projectLearningKey,
 } from "../../packages/contracts/src/index.js";
+import { orgLearningSettingsKey } from "../../packages/contracts/src/index.js";
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
 import { dismissSuggestion } from "../../packages/broker/src/learning/decide.js";
 import { viewLearning } from "../../packages/broker/src/learning/view.js";
@@ -18,6 +19,8 @@ import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent
 import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
 import { orgMemberKey, orgMetaKey } from "../../packages/contracts/src/index.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 const SCOPE = { orgId: ORG_A, project: "web", projectCreatedAt: "2026-10-02T00:00:00.000Z" };
 const RETRY_A = "Use the shared retry helper for network calls, with exponential backoff.";
@@ -69,7 +72,8 @@ describe("GET learning: the answer", () => {
     const answer = await view(w, MAX);
     expect(LearningViewAnswerSchema.safeParse(answer).success).toBe(true);
     expect(LearningViewAnswerReaderSchema.safeParse({ ...answer, somethingNew: 1 }).success).toBe(true);
-    expect(Object.keys(answer).sort()).toEqual(["canDecide", "dismissed", "rules", "settings", "skippedUnlinked", "suggestions"]);
+    expect(Object.keys(answer).sort()).toEqual(["canDecide", "dismissed", "rules", "settings", "skippedUnlinked", "suggestions", "suggestionsState"]);
+    expect(answer.suggestionsState).toEqual({ state: "on" });
     expect(answer.settings).toEqual({ prComments: "off", locked: false });
     expect(answer.canDecide).toBe(true);
     expect(answer.skippedUnlinked).toBe(0);
@@ -396,5 +400,43 @@ describe("GET learning: another company, through the real project lookup", () =>
     const missing = await call("/v1/app/projects/no-such-project/learning");
     expect(other).toMatchObject({ code: "PROJECT_NOT_FOUND" });
     expect(other).toEqual(missing);
+  });
+});
+
+describe("GET learning: the company's master suggestions switch", () => {
+  const setSwitch = (w: MergeWorld, suggestions: "on" | "off", revision = 1) => w.db.set({
+    ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision, suggestions, changedBy: MAX, changedAt: new Date(w.clock.now).toISOString(),
+  });
+
+  it("while off, lists no open suggestion and says collecting with the project's live corrections; rules and the dismissed list still show; the answer is the contract's shape", async () => {
+    const w = world();
+    const id = await suggest(w);
+    put(w, "RULE#r1", { entityType: "LEARNING_RULE", id: "r1", suggestionId: "s9", stage: "build", text: "Use the helper.", processAgentId: "agt_1", requestId: "q1", status: "active", processVersion: 2 });
+    expect((await view(w, MAX)).suggestions).toHaveLength(1);
+    setSwitch(w, "off");
+    const answer = await view(w, MAX);
+    expect(answer.suggestions).toEqual([]);
+    expect(answer.suggestionsState).toEqual({ state: "collecting", corrections: 2 });
+    expect(answer.rules).toHaveLength(1);
+    expect(LearningViewAnswerSchema.safeParse(answer).success).toBe(true);
+    expect(LearningViewAnswerReaderSchema.safeParse(answer).success).toBe(true);
+    // Hidden, not withdrawn: the stored suggestion is untouched and comes back with the switch.
+    expect(w.db.get(projectLearningKey(ORG_A, "web", `SUGGESTION#${id}`))).toMatchObject({ status: "open" });
+    setSwitch(w, "on", 2);
+    const back = await view(w, MAX);
+    expect(back.suggestions.map((card) => card.id)).toEqual([id]);
+    expect(back.suggestionsState).toEqual({ state: "on" });
+  });
+
+  it("follows the install default when the company never chose, and reads a project with no corrections as zero", async () => {
+    const w = world();
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
+    expect((await view(w, MAX)).suggestionsState).toEqual({ state: "collecting", corrections: 0 });
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
+    expect((await view(w, MAX)).suggestionsState).toEqual({ state: "on" });
+  });
+
+  it("an older server's answer (no suggestionsState) still reads: the field is optional", () => {
+    expect(LearningViewAnswerSchema.safeParse({ settings: { prComments: "off", locked: false }, suggestions: [], dismissed: [], rules: [], skippedUnlinked: 0, canDecide: true }).success).toBe(true);
   });
 });

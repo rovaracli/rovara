@@ -24,6 +24,7 @@ import { visibility } from "./retention.js";
 import {
   buildDocumentFrequency, compareSignatures, type DocumentFrequency, type Signature,
 } from "./similarity.js";
+import { suggestionsOff } from "./suggestions-switch.js";
 import { proposedRuleText } from "./text.js";
 import {
   getLearningItem, putDismissed, readLearningPartition, readLearningState, sourceSk, suggestionSk, terminalSuggestionItems, closeSuggestion, type LearningDeps, type LearningScope,
@@ -56,6 +57,8 @@ export const stageFamily = (stage: string): string => STAGE_FAMILIES.find((famil
 export interface GroupingOptions {
   /** Whether PR-comment capture is off for the project. Default: `prCaptureOff`, which reads the project setting; B8 plugs in the company lock here. */
   prCaptureOff?: (deps: LearningDeps, scope: LearningScope) => Promise<boolean>;
+  /** Whether the company's master "suggestions" switch is off. Default: `suggestionsOff` (suggestions-switch.ts), which reads the company's record, else the install default. Checked first. */
+  suggestionsOff?: (deps: LearningDeps, scope: LearningScope) => Promise<boolean>;
   /** Ids for new suggestions (tests). */
   newId?: () => string;
 }
@@ -468,6 +471,8 @@ async function openStep(deps: LearningDeps, scope: LearningScope, context: Conte
 export async function groupCorrections(deps: LearningDeps, rawScope: LearningScope, options: GroupingOptions = {}): Promise<GroupingResult> {
   const scope = normalized(rawScope);
   const result: GroupingResult = { judged: 0, opened: [], joined: [], withdrawn: [], capped: false };
+  // The master switch comes first: while it is off nothing is judged, opened, joined or withdrawn, and the corrections wait ungrouped for the day it is turned on.
+  if (await (options.suggestionsOff ?? suggestionsOff)(deps, scope)) return result;
   const off = await (options.prCaptureOff ?? prCaptureOff)(deps, scope);
   if (off) result.withdrawn.push(...await withdrawPrDependentSuggestions(deps, scope));
 

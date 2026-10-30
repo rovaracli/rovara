@@ -73,6 +73,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-invites" && method === "POST" && current.name === "admin") { await adminDirectory.seedInvites();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-lose-create-ack" && method === "POST" && current.name === "admin") { adminLoseCreateAck = true;json(200,{ok:true});return; }
+ if (url.pathname === "/__mock/b35-service-status" && method === "POST" && current.name === "admin") { adminDirectory.seedServiceStatus();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/b34-slack-links" && method === "POST" && current.name === "admin") { adminDirectory.seedSlackLinks();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-evidence" && method === "GET" && current.name === "admin") { json(200, adminDirectory.evidence());return; }
  if (url.pathname === "/__mock/admin-source-drift" && method === "POST" && current.name === "admin") { adminDirectory.changeSourceOrder();json(200,{ok:true});return; }
@@ -115,6 +116,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }
   const result = await adminDirectory.request(deps, webCaller, method, url.pathname.replace("/v1/web/", "/v1/app/"), body);json(200,result);return;
  }
+ if (current.name === "admin" && method === "GET" && url.pathname === "/v1/web/org/service-status") { const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"), undefined, headers);json(200, result);return; }
  // B33: the real browser-only website route adapter over the persisted directory.
  if(current.name==="admin" && /^\/v1\/web\/projects\/[^/]+\/allowed-websites(?:\/.*)?$/.test(url.pathname)) {
   let body:unknown;if(method!=="GET"){let raw="";for await(const chunk of request){raw+=String(chunk);if(raw.length>16384)throw new Error("Mock body limit.");}body=JSON.parse(raw) as unknown;}

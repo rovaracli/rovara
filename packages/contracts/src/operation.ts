@@ -1,3 +1,4 @@
+import {ModelFallbacksSchema} from "./stage-model-shared.js";
 import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { StepIdSchema } from "./agent-recipe.js";
@@ -214,6 +215,8 @@ export const OperationSchema = z
     orgId: OrgIdSchema.optional(),
     conversationId: z.string().uuid().optional(),
     kind: OperationKindSchema,
+    /** Visible fallback provenance for an ordinary project coding turn. */
+    modelFallbacks: ModelFallbacksSchema.optional(),
     /** Explicit owner authorization to delete unpublished state during a close operation. */
     discardUnpublished: z.boolean().optional(),
     /** Server-selected task mode; absent on legacy operations and non-task operations. */

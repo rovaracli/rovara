@@ -97,12 +97,14 @@ export const LearningSourceRefSchema = z.object({
   bodyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict();
 export type LearningSourceRef = z.infer<typeof LearningSourceRefSchema>;
+/** The same ref as a STORED item has it: a newer writer's extra field (v2 citations) is dropped, not refused. Request bodies keep `LearningSourceRefSchema`. */
+export const LearningStoredSourceRefSchema = LearningSourceRefSchema.strip();
 
 export const LearningCorrectionSchema = z.object({
   id: IdSchema,
   stage: LearningStageSchema,
   source: LearningCorrectionSourceSchema,
-  sourceRef: LearningSourceRefSchema,
+  sourceRef: LearningStoredSourceRefSchema,
   taskId: IdSchema,
   /** Removed when the correction's rule is accepted, and by person erase. */
   text: z.string().max(LEARNING_TEXT_MAX).optional(),
@@ -218,6 +220,23 @@ export const LearningWalkSchema = z.object({
 });
 export type LearningWalk = z.infer<typeof LearningWalkSchema>;
 
+// ---- the company's master "suggestions" switch (v1.2 switch contract)
+
+export const LEARNING_SUGGESTION_SWITCH = ["on", "off"] as const;
+export const LearningSuggestionSwitchSchema = z.enum(LEARNING_SUGGESTION_SWITCH);
+export type LearningSuggestionSwitch = z.infer<typeof LearningSuggestionSwitchSchema>;
+/** Where the effective value came from: the company's own record, or the install-wide default (deployment config) while the company never chose. */
+export const LEARNING_SUGGESTION_SWITCH_SOURCES = ["company", "install_default"] as const;
+
+/** The company's record (`ORG#<org>` / `LEARNING_SETTINGS`). Read as a plain object, so a newer writer's extra field is dropped, not refused. */
+export const LearningCompanySettingsSchema = z.object({
+  revision: z.number().int().min(1),
+  suggestions: LearningSuggestionSwitchSchema,
+  changedBy: z.string().min(1).max(100),
+  changedAt: z.string().datetime(),
+});
+export type LearningCompanySettings = z.infer<typeof LearningCompanySettingsSchema>;
+
 // ---- API (design §6.2): request bodies are strict; answers have a forward reader
 
 const RequestIdSchema = z.string().uuid();
@@ -233,6 +252,8 @@ export const LearningDismissBodySchema = z.object({ expectedRevision: RevisionSc
 export const LearningReopenBodySchema = z.object({}).strict();
 export const LearningRuleRemoveBodySchema = z.object({ requestId: RequestIdSchema }).strict();
 export const LearningSettingsBodySchema = z.object({ expectedRevision: RevisionSchema, prComments: z.enum(LEARNING_PR_COMMENT_SETTINGS) }).strict();
+/** `PUT /v1/app/org/learning-settings`: owner or admin of the company, a live browser session. `expectedRevision` is 0 while the company has no record. */
+export const LearningCompanySettingsBodySchema = z.object({ expectedRevision: RevisionSchema, suggestions: LearningSuggestionSwitchSchema }).strict();
 export const LearningProposalDecisionBodySchema = z.object({ decision: z.enum(["approve", "decline"]) }).strict();
 
 /**
@@ -277,7 +298,7 @@ export const LearningSuggestionViewSchema = z.object({
   revision: RevisionSchema,
   /** How many sources the suggestion still has (every caller gets it, including those who see no source detail). */
   sourceCount: z.number().int().min(0).max(LEARNING_SUGGESTION_SOURCES_MAX).optional(),
-  /** Whether THIS caller may accept this suggestion (a live maintainer, or an author of one of its sources who still has standing). Computed with the rule Accept itself uses. */
+  /** Whether THIS caller may accept this suggestion: a live member with How we work edit rights (being an author grants nothing). Computed with the rule Accept itself uses. */
   canDecide: z.boolean().optional(),
 }).strict();
 export const LearningRuleViewSchema = z.object({
@@ -289,6 +310,22 @@ export const LearningRuleViewSchema = z.object({
 }).strict();
 export const LearningDismissedViewSchema = z.object({ id: IdSchema, stage: LearningStageSchema, dismissedAt: IsoInstantSchema, dismissKind: LearningDismissKindSchema.optional() }).strict();
 
+/** What the screens show about the master switch: `collecting` carries the project's live corrections. An absent field (an older server) means `on`. */
+export const LearningSuggestionsStateSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("on") }).strict(),
+  z.object({ state: z.literal("collecting"), corrections: CountSchema }).strict(),
+]);
+export type LearningSuggestionsState = z.infer<typeof LearningSuggestionsStateSchema>;
+
+/** `GET` and `PUT /v1/app/org/learning-settings`. `revision` is 0 while `source` is `install_default`. */
+export const LearningCompanySettingsAnswerSchema = z.object({
+  suggestions: LearningSuggestionSwitchSchema,
+  source: z.enum(LEARNING_SUGGESTION_SWITCH_SOURCES),
+  revision: RevisionSchema,
+  canChange: z.boolean(),
+}).strict();
+export type LearningCompanySettingsAnswer = z.infer<typeof LearningCompanySettingsAnswerSchema>;
+
 /** `GET /v1/app/projects/{p}/learning`. */
 export const LearningViewAnswerSchema = z.object({
   settings: LearningSettingsViewSchema,
@@ -297,6 +334,8 @@ export const LearningViewAnswerSchema = z.object({
   rules: z.array(LearningRuleViewSchema).max(500),
   skippedUnlinked: CountSchema,
   canDecide: z.boolean(),
+  /** The company's master switch for this project's view (optional: an absent field means `on`). While `collecting`, `suggestions` above is empty. */
+  suggestionsState: LearningSuggestionsStateSchema.optional(),
   /** Present only when a list was cut at its limit (the read is bounded): which lists. */
   truncated: z.array(z.enum(["suggestions", "dismissed", "rules"])).max(3).optional(),
 }).strict();
@@ -330,4 +369,5 @@ export const LearningDismissAnswerReaderSchema = forwardReader(LearningDismissAn
 export const LearningReopenAnswerReaderSchema = forwardReader(LearningReopenAnswerSchema);
 export const LearningRuleRemoveAnswerReaderSchema = forwardReader(LearningRuleRemoveAnswerSchema);
 export const LearningSettingsAnswerReaderSchema = forwardReader(LearningSettingsAnswerSchema);
+export const LearningCompanySettingsAnswerReaderSchema = forwardReader(LearningCompanySettingsAnswerSchema);
 export const LearningProposalDecisionAnswerReaderSchema = forwardReader(LearningProposalDecisionAnswerSchema);

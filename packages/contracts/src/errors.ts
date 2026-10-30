@@ -30,6 +30,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "CONFIRMATION_DECLINED",
   "CONFIRMATION_EXPIRED",
   "CHANGE_STALE",
+  "POLICY_STALE",
+  "DRAFT_STALE",
   "ALREADY_IN_ORG",
   "INVITE_INVALID",
   // Lane A: fixed terminal outcomes for reviewed invite revocation.
@@ -52,6 +54,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "AGENT_NOT_ON_PROJECT",
   "AGENT_TOOL_NOT_GRANTED",
   "MODEL_NOT_ALLOWED",
+  "WORKFLOW_MODE_UNMAPPED",
   "PROJECT_BUDGET_EXCEEDED",
   "AGENT_BUDGET_EXCEEDED",
   "AGENT_BUDGET_REQUIRED",
@@ -87,6 +90,9 @@ export const AgentXErrorCodeSchema = z.enum([
   "LEARNING_LAYER_BUSY",
   "LEARNING_RULES_FULL",
   "LEARNING_SOURCES_GONE",
+  // The company's master suggestions switch: a stale revision of the switch, and a suggestion decision while it is off.
+  "LEARNING_SETTINGS_CHANGED",
+  "LEARNING_SUGGESTIONS_OFF",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";

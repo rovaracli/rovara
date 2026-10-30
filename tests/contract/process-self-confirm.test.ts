@@ -181,6 +181,7 @@ describe("the person who asked cannot confirm their own process change", () => {
   it("knows the requester through a merge: a duplicate account that was merged into the confirming member is the same person", async () => {
     const w = world();
     const DUPLICATE = "9".repeat(64);
+    w.db.set({pk:`DEVELOPER#${DUPLICATE}`,sk:"META",revoked:false,mergedInto:MAX,provider:"oidc",displayName:"Duplicate",firstSignInAt:"2026-10-01T00:00:00Z",lastSignInAt:"2026-10-01T00:00:00Z"});
     (w.deps as { resolveDeveloper?: (orgId: string, id: string) => Promise<string> }).resolveDeveloper = async (_orgId, id) => (id === DUPLICATE ? MAX : id);
     const layer = await processLayer(w);
     await setDraft(w, layer, { review: { instructions: "Be strict about tests." } });

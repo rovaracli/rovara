@@ -749,6 +749,11 @@ describe("I4: the builders", () => {
     ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
     ["auditSubjectErased", (occurrence) => builders.auditSubjectErased({ ...base, occurrence, details, subject: "dev_2" })],
     ["auditShredScheduled", (occurrence) => builders.auditShredScheduled({ ...base, occurrence, details, shredAfterDays: 30 })],
+    // C53: model policy and visible task fallback events obey the same occurrence and privacy contract.
+    ["auditModelPolicyChanged", (occurrence) => builders.auditModelPolicyChanged({ ...base, occurrence, details, revision: 3, policyDigest: "a".repeat(64), previousDigest: "b".repeat(64) })],
+    ["auditModelPolicyLockSet", (occurrence) => builders.auditModelPolicyLockSet({ ...base, occurrence, details, revision: 3, policyDigest: "a".repeat(64), stage: "build" })],
+    ["auditModelPolicyLockRemoved", (occurrence) => builders.auditModelPolicyLockRemoved({ ...base, occurrence, details, revision: 4, policyDigest: "a".repeat(64), stage: "build" })],
+    ["auditModelFallbackUsed", (occurrence) => builders.auditModelFallbackUsed({ ...base, occurrence, details, projectName: "Secret Project", stage: "build", used: { provider: "anthropic", modelId: "private-model" }, wanted: { provider: "openai", modelId: "other-private-model" }, reasonCode: "DEFAULT_MODEL_UNAVAILABLE", companyRevision: 3 })],
     // "How we work" playbook (H1)
     ["auditProjectModelsChanged", (occurrence) => builders.auditProjectModelsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, approvedCount: 2, defaultChanged: true })],
     ["auditProjectChecksChanged", (occurrence) => builders.auditProjectChecksChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, requiredCount: 2, optionalCount: 1 })],
@@ -768,6 +773,7 @@ describe("I4: the builders", () => {
     ["auditRuleRolledBack", (occurrence) => builders.auditRuleRolledBack({ ...base, occurrence, details, projectName: "Secret Project", ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 })],
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
+    ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {

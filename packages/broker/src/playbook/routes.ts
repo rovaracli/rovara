@@ -10,7 +10,8 @@ import {
   type ProjectRole,
 } from "@agentx/contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
-import type { AuditRuntime } from "../audit/outbox.js";
+import { assertStoredVersionModelsResolvable, pointerModelGuards } from "../agents/changes.js";
+import type { AuditRuntime, TransactItem } from "../audit/outbox.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { computeHowWeWork, type HowWeWorkDependencies } from "./effective.js";
@@ -19,7 +20,6 @@ import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-st
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
 import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
 import { requireProcessLayer } from "./project-process.js";
-import { requireVersionStageChoices } from "./process-stage-models.js";
 
 // Loading this module registers what confirming a switch back to the built-in does (the agent routes register the rest of the approvals).
 registerPlaybookApprovals();
@@ -70,17 +70,20 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
   }
   const { expectedRevision, defaultProcess } = parsed.data;
   let ifLayer: { agentId: AgentId; version: number } | undefined;
+  let guards: readonly TransactItem[] | undefined;
   if (defaultProcess.kind === "project_process") {
     const version = await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
-    // V3: the layer's current version becomes what the project runs, so its model choices must resolve (as for a publish). Without the approvals (agents not set up) nothing is checked.
-    if (deps.approvals !== undefined) await requireVersionStageChoices(deps.approvals, caller.orgId, defaultProcess.agentId, version, caller.developerId);
+    // The layer's current version becomes what the project runs, so lane C's model check runs on it as for a publish (a refusal is a ProcessModelRefusal). Without the approvals (agents not set up) nothing is checked.
+    // The write then commits only while the layer is still at that version and the policy, sources and authority the check read still hold (C53: PLAYBOOK_STALE otherwise).
+    ifLayer = { agentId: defaultProcess.agentId, version };
+    if (deps.approvals !== undefined) guards = pointerModelGuards(deps.approvals, caller.orgId, await assertStoredVersionModelsResolvable(deps.approvals, caller, defaultProcess.agentId, version));
   } else {
     // A switch back to the built-in that drops something stricter waits for a second person (follow-up M2).
     const decision = await holdBuiltinSwitch(deps, caller, found.name, expectedRevision);
     if (decision.held !== undefined) return decision.held;
     ifLayer = decision.ifLayer;
   }
-  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(ifLayer === undefined ? {} : { ifLayer }) });
+  const playbook = await writeProjectPlaybook(deps, { orgId: caller.orgId, project: found.name, developerId: caller.developerId, expectedRevision, defaultProcess, ...(ifLayer === undefined ? {} : { ifLayer }), ...(guards === undefined ? {} : { guards }) });
   return new StatusReply(200, { playbook } satisfies ProjectPlaybookResponse);
 }
 
