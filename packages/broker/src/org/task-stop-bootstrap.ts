@@ -1,6 +1,10 @@
+import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 // These items join the native organization creation transaction. No post-create
 // ensure, runtime numeric default, independent ceiling, or enrollment side effect.
-import { AuditEventInputSchema, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgSettingsKey, type OrgId } from "@agentx/contracts";
+import { AuditEventInputSchema, AgentGuardrailsSchema, OrgIdSchema, agentXError, orgMetaKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgSettingsKey, type OrgId } from "@agentx/contracts";
 import { auditTaskStopPolicySeeded } from "../audit/events.js";
 import { auditPendingItem, type TransactItem } from "../audit/outbox.js";
 
@@ -25,4 +29,41 @@ export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: n
     // Persist even when delivery runtime isn't wired yet: no audit-free money seed.
     put({ ...auditPendingItem(event, nowMs) }),
   ];
+}
+
+/** Explicit offline upgrade prerequisite; never invoked by a paid start and never
+ * enables enforcement. Resource inheritance inventory is a separate prerequisite. */
+export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }, orgId: OrgId): Promise<{ outcome: "created" | "preserved" }> {
+  OrgIdSchema.parse(orgId);
+  const keys = [orgMetaKey(orgId), orgSettingsKey(orgId, "TASK_STOP_POLICY"), agentGuardrailsKey(orgId), { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#upgrade" }];
+  const result = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })).length(4) }).parse(await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) })));
+  const rows = result.Responses.map(response => response.Item);
+  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["status", "revision", "policy", "guardrails", "enrollment"]);
+  const [org, policy, ceiling, receipt] = rows;
+  if (org?.orgId !== orgId || org.status !== "open") throw agentXError("CONFIG_INVALID", "The company must be open before spending upgrade.");
+  if (receipt !== undefined) {
+    const saved = z.object({ orgId: z.literal(orgId), entityType: z.literal("TASK_STOP_SEED"), source: z.literal("upgrade"), version: z.literal(1), outcome: z.enum(["created", "preserved"]) }).parse(receipt);
+    return { outcome: saved.outcome };
+  }
+  if (policy !== undefined) {
+    const numeric = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+    z.object({ orgId: z.literal(orgId), entityType: z.literal("ORG_TASK_STOP_POLICY"), revision: z.number().int().positive(),
+      policy: z.union([z.object({ schemaVersion: z.literal(1), defaultStopMicrousd: numeric }).strict(), z.object({ schemaVersion: z.literal(2), defaultPolicy: z.union([z.object({ kind: z.literal("rovara_estimate") }).strict(), z.object({ kind: z.literal("limited"), stopMicrousd: numeric }).strict()]) }).strict()]) }).parse(policy);
+  }
+  const guardrails = ceiling === undefined ? DEFAULT_AGENT_GUARDRAILS : AgentGuardrailsSchema.parse(ceiling.guardrails);
+  if (ceiling !== undefined && (ceiling.orgId !== orgId || ceiling.entityType !== "AGENT_GUARDRAILS" || !Number.isSafeInteger(ceiling.revision) || Number(ceiling.revision) < 1)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
+  const ceilingMicrousd = guardrails.maxPerRunCeilingUsd * 1_000_000;
+  if (!Number.isSafeInteger(ceilingMicrousd)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
+  const at = new Date(deps.now()).toISOString(), occurrence = `task-stop-upgrade-v1#${orgId}`, outcome = policy === undefined ? "created" : "preserved", revision = policy === undefined ? 1 : Number(policy.revision);
+  const baseEvent = auditTaskStopPolicySeeded({ orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence, source: "upgrade", mode: "rovara_estimate", revision, ceilingMicrousd });
+  const event = AuditEventInputSchema.parse({ ...baseEvent, facts: { ...baseEvent.facts, mode: outcome === "created" ? "rovara_estimate" : "preserved", outcome } });
+  const put = (Item: Record<string, unknown>): TransactItem => ({ Put: { TableName: deps.tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } });
+  const items: TransactItem[] = [guards[0]!];
+  if (policy === undefined) items.push(put({ ...keys[1], orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "disabled" }, seedProvenance: { occurrence, source: "upgrade", reviewRequired: true, seededAt: at }, updatedBy: "system", updatedAt: at }));
+  else items.push(guards[1]!);
+  if (ceiling === undefined) items.push(put({ ...keys[2], orgId, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: structuredClone(guardrails), updatedBy: "system", updatedAt: at }));
+  else items.push(guards[2]!);
+  items.push(put({ ...keys[3], orgId, entityType: "TASK_STOP_SEED", version: 1, occurrenceId: occurrence, source: "upgrade", outcome, sourceDigest: createHash("sha256").update(JSON.stringify(rows.slice(0, 3))).digest("hex"), completedAt: at, policyRevision: revision, auditOccurrence: event.eventId }), put({ ...auditPendingItem(event, deps.now()) }));
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+  return { outcome };
 }

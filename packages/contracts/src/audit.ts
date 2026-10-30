@@ -241,7 +241,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "spend_request.resume_dropped": ["kind", "cause"],
   "budget.changed": ["scopeKind", "field", "fromCents", "toCents"],
   "spend_policy.changed": ["field", "from", "to"],
-  "spending.policy_seeded": ["mode", "source", "revision", "ceilingMicrousd"],
+  "spending.policy_seeded": ["mode", "source", "revision", "ceilingMicrousd", "outcome"],
   "pull_request.opened": ["number"],
   "pull_request.merged": ["number"],
   "pull_request.merge_requested": ["number", "method"],
