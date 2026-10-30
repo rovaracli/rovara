@@ -427,7 +427,7 @@ describe("layers, cycles, archived bases and problems", () => {
     expect(await code(store.updateBase({ orgId: ORG_A, agentId: c.agentId, expectedRevision: 1, by: ALICE }))).toEqual(expected);
     // The archived agent itself still resolves; the check is on bases.
     expect(instructionsOf(await resolveAgent(store, ORG_A, b.agentId, "current"))).toEqual(["B"]);
-    await store.unarchive(ORG_A, b.agentId, ALICE);
+    await store.unarchive(ORG_A, b.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(instructionsOf(await resolveAgent(store, ORG_A, c.agentId, "current"))).toEqual(["B", "C"]);
   });
 
@@ -480,7 +480,7 @@ describe("archive, budget, owner, accountable and events", () => {
     const c = await store.create({ orgId: ORG_A, name: "C", owner: project, accountable: { developerId: ALICE }, extends: b.agentId, overlay: layer("C"), createdBy: ALICE });
     await store.archive(ORG_A, c.agentId, ALICE);
     await store.archive(ORG_A, c.agentId, ALICE); // already archived: no write, no event
-    await store.unarchive(ORG_A, c.agentId, BOB);
+    await store.unarchive(ORG_A, c.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });

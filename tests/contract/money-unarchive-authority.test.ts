@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, ownerBudgetKey } from "@agentx/contracts";
 import { ADA, BEN, DEB, TRIAGE, setup } from "../support/spend-world.js";
+import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 async function fixture(kind: "agent" | "chain", active = false) {
@@ -22,7 +23,8 @@ async function fixture(kind: "agent" | "chain", active = false) {
   const key = kind === "agent" ? agentKey(TEST_ORG, id, "META") : chainKey(TEST_ORG, id, "META");
   const state = () => ({ resource: t.db.get(key), events: t.db.find(row => row.pk === key.pk && typeof row.sk === "string" && row.sk.startsWith("EVENT#")),
     receipts: t.db.find(row => row.entityType === "AGENT_REQUEST"), total: t.db.get(ownerBudgetKey(TEST_ORG, BEN.developerId)) });
-  return { t, key, path, state };
+  const store = kind === "agent" ? t.deps().store : new ChainStore({ documentClient: t.db, tableName: "state", now: Date.now, agents: t.deps().store });
+  return { t, id, store, key, path, state };
 }
 for (const kind of ["agent", "chain"] as const) {
   for (const active of [false, true]) {
@@ -69,3 +71,21 @@ it("agent unarchive pins the per-run figure even if a concurrent edit shares its
   expect((await f.t.api(DEB, "POST", f.path + "/unarchive", {})).status).toBe(409);
   expect(raced).toBe(true); expect(f.t.db.get(f.key)?.status).toBe("archived");
 });
+
+for (const kind of ["agent", "chain"] as const) {
+  it(`${kind} rejects missing or mismatched actor identity before reading its monetary source`, async () => {
+    const f = await fixture(kind), send = f.t.db.send.bind(f.t.db);
+    let sourceReads = 0;
+    f.t.db.send = async command => {
+      if (command.constructor.name === "GetCommand") sourceReads++;
+      return send(command);
+    };
+    await expect(f.store.unarchive(TEST_ORG, f.id, DEB.developerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(f.store.unarchive(TEST_ORG, f.id, DEB.developerId, undefined, { actor: { developerId: ADA.developerId, role: "owner" } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(sourceReads).toBe(0);
+  });
+  it(`${kind} preserves explicit SYSTEM plus cause unarchive compatibility`, async () => {
+    const f = await fixture(kind);
+    expect(await f.store.unarchive(TEST_ORG, f.id, "system", undefined, { cause: { kind: "member_removed", developerId: DEB.developerId } })).toMatchObject({ status: "active" });
+  });
+}

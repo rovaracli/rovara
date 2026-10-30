@@ -4,7 +4,7 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
-import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
+import { unarchiveActorChecks, budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -689,24 +689,34 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
 
   private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
+    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : [];
     const agent = await this.require(orgId, agentId);
-    if (agent.status === status) return agent;
+    const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`}`;
+    if (agent.status === status) {
+      if (status === "active") {
+        const actorStart = 1;
+        await this.commit(...withOverride([
+          this.update(agentKey(orgId, agentId, "META"), { set: { status }, when: sourceGuard }),
+          ...actorChecks,
+        ], failed => [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : budgetConflict(), options, { tableName: this.input.tableName, orgId, by }), request, agent);
+      }
+      return agent;
+    }
     const updatedAt = this.iso();
     const changed: AgentRecord = { ...agent, status, updatedAt };
-    // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
-    const [items, refuse] = withOverride([
-      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
+    const ownItems = [
+      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: sourceGuard }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by });
+    ];
+    const actorStart = ownItems.length;
+    const [items, refuse] = withOverride([...ownItems, ...actorChecks], failed =>
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed),
+    options, { tableName: this.input.tableName, orgId, by });
     const checks = options.checks;
-    // The caller's checks come last, so their indexes start after the write's own items.
-    await this.commit(
-      [...items, ...(checks?.items ?? [])],
-      (failed) => (checks !== undefined && [...failed].some((index) => index >= items.length) ? checks.refused() : refuse(failed)),
-      request, changed,
-    );
+    await this.commit([...items, ...(checks?.items ?? [])], failed =>
+      checks !== undefined && [...failed].some(index => index >= items.length) ? checks.refused() : refuse(failed), request, changed);
     return changed;
   }
 

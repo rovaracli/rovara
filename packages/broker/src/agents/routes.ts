@@ -585,8 +585,8 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   // Unarchiving puts the agent's budget back in its owner's total; an archived agent's budget counted for no one.
   const current = await deps.store.get(caller.orgId, agentId);
   const unarchived = current === undefined || current.status !== "archived"
-    ? await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark)
-    : await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { status: "active" }), { op: "unarchive" }, mark, (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, options));
+    ? await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, { actor: { developerId: caller.developerId, role: caller.orgRole }, ...(current === undefined ? {} : { manageSnapshot: current }) })
+    : await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { status: "active" }), { op: "unarchive" }, mark, (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: current }));
   if (unarchived instanceof StatusReply) return unarchived;
   return { agent: customView(unarchived, access) };
 }

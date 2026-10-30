@@ -542,7 +542,7 @@ describe("publish checks the agents again, inside the transaction", () => {
       const input = await ctx.publishInput(chain.chainId);
       ctx.hooks.push(async () => { await ctx.agents.archive(ORG_A, agent.agentId, ALICE); });
       expect(await code(ctx.chains.publish(input)), String(version)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT", message: expect.stringContaining("changed while it was being published") as string });
-      await ctx.agents.unarchive(ORG_A, agent.agentId, ALICE);
+      await ctx.agents.unarchive(ORG_A, agent.agentId, ALICE, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     }
   });
 
@@ -678,7 +678,7 @@ describe("every write leaves one event", () => {
       ["budget_changed", 1, () => ctx.chains.setBudget(ORG_A, chain.chainId, 10, fixtureActor(ctx.db, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(ctx.db, ORG_A, ALICE) })],
       ["owner_changed", 1, () => ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) })],
       ["archived", 1, () => ctx.chains.archive(ORG_A, chain.chainId, ALICE)],
-      ["unarchived", 1, () => ctx.chains.unarchive(ORG_A, chain.chainId, ALICE)],
+      ["unarchived", 1, () => ctx.chains.unarchive(ORG_A, chain.chainId, ALICE, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) })],
       ["shared", 1, () => setChainShares(ctx.deps, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: CAROL }, level: "use" }], by: ALICE })],
     ];
     // "rolled_back" runs after the step that makes version 2 (a draft and a publish, two events), so it is checked on its own below.
@@ -714,7 +714,7 @@ describe("every write leaves one event", () => {
   it("archive and unarchive that change nothing write nothing", async () => {
     const ctx = setup();
     const chain = await ctx.create("Investigate");
-    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE);
+    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(ctx.events(ORG_A, chain.chainId)).toHaveLength(1);
     await ctx.chains.archive(ORG_A, chain.chainId, ALICE);
     await ctx.chains.archive(ORG_A, chain.chainId, ALICE);
@@ -780,7 +780,7 @@ describe("the owner's monthly total", () => {
     await ctx.chains.setBudget(ORG_A, chain.chainId, 10, fixtureActor(ctx.db, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     await ctx.chains.archive(ORG_A, chain.chainId, ALICE);
     expect(ctx.total(ALICE)).toBe(0);
-    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE);
+    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(ctx.total(ALICE)).toBe(10);
   });
 
@@ -931,7 +931,7 @@ describe("merged with Plan 3: one owner total with a version, an effective cap a
     expect(version(ctx)).toBe(2);
     await ctx.chains.archive(ORG_A, chain.chainId, ALICE);
     expect(version(ctx)).toBe(3);
-    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE);
+    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(version(ctx)).toBe(4);
     await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { actor: fixtureActor(ctx.db, ORG_A, ALICE) });
     expect(version(ctx, ALICE)).toBe(5);
