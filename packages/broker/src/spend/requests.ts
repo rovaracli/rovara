@@ -2,7 +2,7 @@ import { OwnerFinancialTermsSchema, ownerFinancialChecks } from "./owner-approva
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
-import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
+import { approveCapturedTaskStop, captureTaskStopAdmission, previewTaskStopCutover, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { savedTaskStopBounds, checkedTaskStopSnapshot, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
@@ -2088,6 +2088,34 @@ function expirySource(record: SpendRequestRecord) {
     values[value] = source[field]; return `${name} = ${value}`;
   }).join(" AND ");
   return { termsDigest: createHash("sha256").update(canonicalJson({ version: 1, terms })).digest("hex"), condition, names, values };
+}
+
+/** Read-only classification, never a maintenance receipt or an enrollment gate.
+ * The bounded writer must bind the reviewed source/policy again at expiry. */
+export async function reviewTaskStopCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, record: SpendRequestRecord): Promise<{ kind: "retain" | "expire" | "not_applicable"; reason?: "spending_rules_changed"; policyDigest?: string }> {
+  if (actor.orgId !== record.orgId || (actor.orgRole !== "owner" && actor.orgRole !== "admin") || await orgRoleOf(deps, actor.orgId, actor.developerId) !== actor.orgRole) throw budgetActorRefused();
+  if (record.kind === "owner_cap" || record.kind === "month" || record.status !== "PENDING") return { kind: "not_applicable" };
+  const terms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
+  if (!terms.success || !taskApprovalRecordMatches(terms.data, record)) return { kind: "expire", reason: "spending_rules_changed" };
+  const task = await readTask(deps, record.orgId, record.taskId);
+  if (task === undefined) throw notFound();
+  const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop), agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
+  const preview = await previewTaskStopCutover({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+    await requireNativeProjectWorkRole(deps, task, actor);
+    await requireAgentAccess(deps, actor, agentId, task.agent?.version === "draft" ? "edit" : "use");
+  } }, { orgId: record.orgId, developerId: actor.developerId, role: actor.orgRole, project: task.project, agentId, ...savedTaskStopBounds(previous),
+    ...(record.kind === "max_per_run" || task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
+    pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null });
+  const snapshot = preview.snapshot, policyDigest = taskApprovalPolicyDigest(snapshot);
+  if (!taskApprovalSourceMatches(terms.data, task) || terms.data.policyDigest !== policyDigest) return { kind: "expire", reason: "spending_rules_changed", policyDigest };
+  const proposed = usdToWholeMicrodollars(newLimitFor(record, record.amountUsd));
+  try {
+    const approved = approveCapturedTaskStop(snapshot, proposed ?? null, "run_limit", "approval_allowance");
+    return approved.effectiveStopMicrousd === proposed ? { kind: "retain", policyDigest } : { kind: "expire", reason: "spending_rules_changed", policyDigest };
+  } catch (error) {
+    if (error instanceof AgentXError && error.code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return { kind: "expire", reason: "spending_rules_changed", policyDigest };
+    throw error;
+  }
 }
 
 /** Explicit maintenance phase for old asks without complete terms. This does

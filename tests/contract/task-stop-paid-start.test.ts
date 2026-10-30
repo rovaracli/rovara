@@ -2026,3 +2026,19 @@ for (const limit of [0.5, 5]) it(`unenrolled cutover review classifies complete 
   expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record)).toMatchObject({ kind: limit === 5 ? "expire" : "retain", ...(limit === 5 ? { reason: "spending_rules_changed" } : {}) });
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
 });
+
+for (const failure of ["actor", "seed", "project"] as const) it(`unenrolled cutover review halts on ${failure} authority/config loss`, async () => {
+  const limit = 0.5;
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: limit, newLimitUsd: limit, reason: "Pending reviewed approval", requestedBy: { kind: "member", developerId: MAYA.developerId } });
+  expect(record.approvalTerms).toBeDefined(); f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  if (failure === "actor") { const key = orgMemberKey(TEST_ORG, ADA.developerId); f.t.db.set({ ...f.t.db.get(key)!, role: "member" }); }
+  if (failure === "seed") f.t.db.delete({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap" });
+  if (failure === "project") f.t.db.delete(f.project);
+  const before = f.t.meta(taskId), policy = f.t.db.get(f.policy);
+  const fn: unknown = Reflect.get(spendRequests, "reviewTaskStopCutoverApproval"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("cutover review missing");
+  const invoke = fn as (deps: unknown, actor: unknown, request: unknown) => Promise<unknown>;
+  await expect(invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record)).rejects.toBeDefined();
+  expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
+});
