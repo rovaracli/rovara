@@ -245,3 +245,24 @@ for (const mode of ["rovara_estimate", "limited"] as const) it(`reads typed comp
   expect(result.body).not.toHaveProperty("defaultStopMicrousd");
   expect(JSON.stringify(result.body)).not.toContain("private-occurrence"); expect(f.db.transactions()).toHaveLength(0);
 });
+
+for (const [name, extra] of [
+  ["unknown mode", { policy: { schemaVersion: 2, defaultPolicy: { kind: "future" } } }],
+  ["numeric estimate", { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate", stopMicrousd: 10 } } }],
+  ["duplicate default", { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" }, defaultStopMicrousd: 10 } }],
+  ["fractional micros", { policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0.1 } } }],
+  ["unknown provenance", { seedProvenance: { source: "future", reviewRequired: true, seededAt: "2026-10-27T18:00:00.000Z" } }],
+  ["bad review state", { seedProvenance: { source: "upgrade", reviewRequired: "yes", seededAt: "2026-10-27T18:00:00.000Z" } }],
+] as const) it(`refuses typed company ${name} without a numeric fallback`, async () => {
+  const f = fixture(); f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, ...extra });
+  expect((await f.call()).status).toBe(503); expect(f.db.transactions()).toHaveLength(0);
+});
+it("typed company digest distinguishes estimate and numeric policies while read time is irrelevant", async () => {
+  const f = fixture(); f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  const estimate = await f.call(); expect(estimate.status).toBe(200);
+  f.deps.now = () => Date.parse("2026-10-27T19:00:00Z"); expect((await f.call()).body?.policyDigest).toBe(estimate.body?.policyDigest);
+  f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
+  const numeric = await f.call(); expect(numeric.status).toBe(200); expect(numeric.body?.policyDigest).not.toBe(estimate.body?.policyDigest);
+  expect(Web.TaskStopCompanyReadSchema.safeParse({ ...numeric.body, defaultStopMicrousd: 0 }).success).toBe(false);
+  expect(numeric.body).toMatchObject({ defaultPolicy: { kind: "limited", stopMicrousd: 0 } });
+});
