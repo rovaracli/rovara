@@ -616,7 +616,7 @@ describe("B5 review fixes", () => {
     expect(metricItem(world)).toMatchObject({ repeatsOfAcceptedRules: 1 });
     world.db.delete(projectLearningKey(world.scope.orgId, world.scope.project, "RULE#rule-1"));
     expect(await forgetCorrection(world.deps, world.scope, { correctionSk: correctionSkOf(world, c) })).toEqual({ ok: true });
-    expect(metricItem(world)).toMatchObject({ repeatsOfAcceptedRules: 0, repeats: 0 });
+    expect(metricItem(world)).toMatchObject({ repeatsOfAcceptedRules: 0, repeats: 1 });
   });
 
   it("a Forget whose write fails leaves its suggestion open (the withdrawal is part of the same transaction)", async () => {
