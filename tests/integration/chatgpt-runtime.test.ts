@@ -172,3 +172,11 @@ it("shares fallback authorization across simultaneous requests", async () => {
   expect(h.onFallback).toHaveBeenCalledTimes(1);
   expect(h.defaultCalls).toHaveBeenCalledTimes(2);
 });
+
+it("re-authorizes a later fallback attempt after the first authorization rejects",async()=>{
+ const authorize=vi.fn<()=>Promise<void>>().mockRejectedValueOnce(Error("temporarily refused")).mockResolvedValue(undefined);
+ const h=await planWithFallback([limited],{authorizeFallback:authorize});
+ expect(await h.ask()).toMatchObject({stopReason:"error"});expect(h.defaultCalls).not.toHaveBeenCalled();
+ expect(await h.ask()).toMatchObject({provider:"anthropic",stopReason:"stop"});
+ expect(authorize).toHaveBeenCalledTimes(2);expect(h.onFallback).toHaveBeenCalledTimes(1);
+});

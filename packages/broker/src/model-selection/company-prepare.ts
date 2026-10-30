@@ -21,10 +21,10 @@ export async function prepareCompanyModelPolicy(deps:ModelPolicyReader&StageEvid
   const configured=group.map(stage=>body.stepOverrides[stage]).filter(row=>row!==undefined);
   if(configured.some(row=>canonicalJson(row)!==canonicalJson(configured[0])))throw agentXError("CONFIG_INVALID","Shared model stages must use the same company override.");
  }
- const companyModel=(stage:StageId)=>STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))?.map(member=>body.stepOverrides[member]).find(row=>row!==undefined)?.model;
+ const companyChoice=(stage:StageId)=>STAGE_EDIT_GROUPS.find(group=>group.some(member=>member===stage))?.map(member=>body.stepOverrides[member]).find(row=>row!==undefined);
  for(const stage of ["plan_check","code_review","security_review"] as const){
-  const checking=companyModel(stage),reference=companyModel(STAGE_REFERENCE[stage]);
-  if(checking!==undefined&&reference!==undefined&&canonicalModelName(checking)===canonicalModelName(reference))throw new CompanySameModelPolicyRefusal();
+  const checking=companyChoice(stage),reference=companyChoice(STAGE_REFERENCE[stage])?.model;
+  if(reference!==undefined&&[checking?.model,checking?.fallbackModel].some(model=>model!==undefined&&canonicalModelName(model)===canonicalModelName(reference)))throw new CompanySameModelPolicyRefusal();
  }
  const current=await readModelSelectionPolicy(deps,caller.orgId);
  if(current.revision!==body.expectedRevision)throw agentXError("POLICY_STALE","The company model policy changed. Reload and review again.");

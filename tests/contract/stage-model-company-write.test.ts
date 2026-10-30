@@ -30,7 +30,7 @@ it("replays the same request without a second policy mutation or audit and rejec
 it("refuses commit-time role withdrawal atomically with no policy or audit",async()=>{
  const f=fixture(),send=f.db.send.bind(f.db);let raced=false;
  f.db.send=async command=>{if(!raced&&command.constructor.name==="TransactWriteCommand"){raced=true;f.db.set({...orgMemberKey(orgId,developerId),orgId,developerId,role:"member"});}return send(command);};
- await expect(writeSaferCompanyModelPolicy(f.deps,{orgId,developerId,signedInId:developerId},body)).rejects.toThrow();
+ await expect(writeSaferCompanyModelPolicy(f.deps,{orgId,developerId,signedInId:developerId},body)).rejects.toMatchObject({code:"POLICY_STALE",statusCode:409});
  expect(f.db.get(key)).toBeUndefined();expect(f.capture.recorded()).toEqual([]);
 });
 it("does not expose a less-safe bypass on the internal safer writer",async()=>{

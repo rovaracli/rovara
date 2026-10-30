@@ -368,7 +368,10 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
         })();
         fallbackAuthorizations.set(fallback, authorization);
       }
-      await authorization;
+      try { await authorization; } catch (error) {
+        if (fallbackAuthorizations.get(fallback) === authorization) fallbackAuthorizations.delete(fallback);
+        throw error;
+      }
     }
     const rest = { ...options };
     delete rest.apiKey;

@@ -1,13 +1,13 @@
 import {readTurnActorChecks} from "../model-selection/turn-authority.js";
 import {authorizeTurnModelFallback} from "../model-selection/turn-fallback.js";
-import {prepareTurnModelPolicy} from "../model-selection/turn-policy.js";
+import {turnStagesForMode,prepareTurnModelPolicy} from "../model-selection/turn-policy.js";
 import {ProcessModelRefusal,processModelRefusalBody} from "../model-selection/process-refusal.js";
 import {ModelIdentifierSchema} from "@agentx/contracts";
 import {writeProjectModelSelection} from "../model-selection/selection-write.js";
 import {survivorOf} from "../org/project-members.js";
 import {resolveAndAuthorizeTaskFallback} from "../model-selection/fallback-request.js";
 import {reviewFailures,criticFailures} from "../model-selection/task-failures.js";
-import {taskStageReferences,scopedTaskOperations,taskStageReferenceOperation} from "../model-selection/task-references.js";
+import {taskStageReferenceChecks,taskStageReferences,scopedTaskOperations,taskStageReferenceOperation} from "../model-selection/task-references.js";
 import {prepareTurnModelFallback,prepareTaskModelFallback,joinTaskModelFallback} from "../model-selection/fallback-record.js";
 import type {StageModelResult} from "../model-selection/resolver.js";
 import {loadPinnedTaskStage} from "../model-selection/task-live.js";
@@ -6407,6 +6407,7 @@ async function taskOperationParts(
   const planOwner = governed||task?.payer!==undefined?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
   const planSelection = dependencies.chatgpt === undefined || input.workflowMode === "CHECKS" || input.agentRun !== undefined ? undefined
     : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
+  const turnMapping=!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"?turnStagesForMode(input.workflowMode??"IMPLEMENT"):undefined;
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
   let applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
   const turnActor=chatGptOwner(task?.developerId,input.requester.requestedBy,developerIdForSlackUser);
@@ -6416,17 +6417,19 @@ async function taskOperationParts(
     if(turnActor===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
     const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
     const actorDeveloperId=await followMerges(signInStore,turnActor);
-    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId,signedInId:turnActor});
+    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId});
     const payerDeveloperId=planOwner===undefined?undefined:await followMerges(signInStore,planOwner);
-    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
-    turnPolicy.checks.push(...actorChecks);
+    const referenceScope={orgId,workspaceId:workspace.id,conversationId:input.conversationId,taskId:task?.taskId??workspace.id};
+    const turnOperations=turnMapping?.stages.some(stage=>stage==="code_review"||stage==="security_review"||stage==="plan_check")?await queryAllItems(dependencies,`WORKSPACE#${workspace.id}`,"OPERATION#"):[];
+    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,workflowMode:input.workflowMode??"IMPLEMENT",priorModels:taskStageReferences(turnOperations,referenceScope),...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
+    turnPolicy.checks.push(...actorChecks,...taskStageReferenceChecks(dependencies.tableName,turnOperations,referenceScope,turnPolicy.binding.stage));
   }
   if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"&&turnPolicy===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
   if(turnPolicy!==undefined) {
-    applied={...applied,model:turnPolicy.model,ranModel:turnPolicy.model,stepName:"build",dropChatgpt:turnPolicy.decision.sourceId!=="personal-chatgpt",modelDecision:turnPolicy.decision,modelCompanyRevision:turnPolicy.binding.companyRevision,modelPolicy:turnPolicy.binding};
+    applied={...applied,model:turnPolicy.model,ranModel:turnPolicy.model,stepName:turnPolicy.stepName,dropChatgpt:turnPolicy.decision.sourceId!=="personal-chatgpt",modelDecision:turnPolicy.decision,modelCompanyRevision:turnPolicy.binding.companyRevision,modelPolicy:turnPolicy.binding};
   }
   // Governed stages resolve the pinned precedence themselves; an ungoverned coding choice cannot silently become the default.
-  if(resolvedModel.selectionUnavailable===true&&applied?.modelDecision===undefined&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
+  if(resolvedModel.selectionUnavailable===true&&(applied?.modelDecision===undefined||applied.modelDecision.reason==="PROJECT_SELECTION")&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
   let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined ? undefined : planSelection;
@@ -18323,10 +18326,10 @@ async function putProjectModel(
   });
 }
 
-async function resolveProjectModel(
-  dependencies: AwsBrokerDependencies,
+export async function resolveProjectModel(
+  dependencies: {documentClient:{send(command:unknown):Promise<unknown>};tableName:string},
   orgId: OrgId,
-  project: RegisteredProjectRecord,
+  project: Pick<RegisteredProjectRecord,"definition">,
 ): Promise<{ model?: ModelSelection; selectionUnavailable?: true }> {
   const policy = project.definition.models;
   const selection=(await dependencies.documentClient.send(new GetCommand({TableName:dependencies.tableName,Key:projectModelSelectionKey(orgId,project.definition.name),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;

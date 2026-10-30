@@ -143,3 +143,34 @@ it("refuses an approved but unverified Slack selection without an audit event",a
  expect(db.find(item=>item.entityType==="PROJECT_MODEL_SELECTION")).toHaveLength(0);
  expect(cap.recordedBy("project.model_selection_changed")).toHaveLength(before);
 });
+
+it("without a company lock refuses a stale explicit selection after a later revision",async()=>{
+ const {TEST_ORG}=await import("../support/orgs.js"),h=await modelSelectionSlackWorld();
+ h.db.delete({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"});
+ await registerSlackProject(h.handler,{models});
+ const {projectSelectionKey}=await import("@agentx/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
+ await registerSlackProject(h.handler,{revision:2,models:{default:models.default,approved:[models.default]}});
+ const workspace=await ensureWorkspace(h.handler,otherThread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
+ const conversation=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
+ const result=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});
+ expect(result).toMatchObject({status:403,body:{error:{code:"MODEL_NOT_ALLOWED"}}});
+});
+it("without a company lock carries approved thinkingLevel low into the worker",async()=>{
+ const {TEST_ORG}=await import("../support/orgs.js"),h=await modelSelectionSlackWorld();
+ h.db.delete({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"});
+ const leveled={default:models.default,approved:[models.approved[0]!,{...models.approved[1]!,thinkingLevel:"low" as const}]};
+ await registerSlackProject(h.handler,{models:leveled});
+ const {projectSelectionKey}=await import("@agentx/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
+ const workspace=await ensureWorkspace(h.handler,otherThread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
+ const conversation=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
+ const result=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});expect(result.status).toBe(202);
+ const id=(result.body.operation as {id:string}).id,queued=h.db.find(row=>row.entityType==="OUTBOX"&&row.operationId===id)[0]!;
+ expect((queued.invocation as {payload:Record<string,unknown>}).payload.model).toEqual({provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId,thinkingLevel:"low"});
+});
+it("without a company lock the legacy project resolver omits a project model",async()=>{
+ const {TEST_ORG}=await import("../support/orgs.js"),h=await modelSelectionSlackWorld();
+ h.db.delete({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"});
+ const {resolveProjectModel}=await import("../../packages/broker/src/aws/broker.js");
+ const definition=ProjectDefinitionSchema.parse({name:"payments",revision:1,repositories:[{name:"demo",url:"https://github.com/example/demo",path:"repo/demo",defaultBranch:"main",credentialRef:"github-app"}],setup:[],readiness:[],orchestratorInstructions:"Delegate."});
+ expect(await resolveProjectModel({documentClient:h.db,tableName:"state"},TEST_ORG,{definition})).not.toHaveProperty("model");
+});

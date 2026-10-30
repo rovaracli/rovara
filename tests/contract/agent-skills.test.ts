@@ -12,7 +12,7 @@ import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
-import { agentKey, skillKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentKey, skillKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AGENT_STEP_INSTRUCTIONS_MAX_BYTES, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
 import { MAX_RESOLVED_SKILLS, ResolvedRecipeSchema } from "../../packages/contracts/src/agent-recipe-node.js";
@@ -756,6 +756,8 @@ describe("GET /v1/internal/agent-skills", () => {
   /** A running developer task whose operation holds a capability that grants agent-skills, and a snapshot item seeded the way Task 15 will write it. */
   async function runningTask() {
     const h = await createDeveloperTaskBroker({ orgResolver });
+    // C53 ordinary turns require a current non-viewer native project grant.
+    h.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", role: "developer", ownerKey: MAYA.developerId, projectName: "payments", projectRole: "contributor", grantId: "skills-fixture" });
     const skills = new SkillStore({ documentClient: h.db, tableName: "state", now: Date.now });
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
     expect(started.status, JSON.stringify(started.body)).toBe(200);
@@ -767,6 +769,7 @@ describe("GET /v1/internal/agent-skills", () => {
     await h.finish(workspaceId, active(), "SUCCEEDED");
     const operationId = active();
     const outbox = h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!;
+    expect(outbox, "authorized skills fixture must enqueue its task").toBeDefined();
     const invocation = outbox.invocation as { callbackCapability: string; fence: number };
     const grant = issueCapability({ callbackSigningKey: "c".repeat(64) }, workspaceId, operationId, invocation.fence, { agentSkills: true });
     const ask = (header: string | null = grant) => callBroker(h.handler, { method: "GET", path: "/v1/internal/agent-skills", ...(header === null ? {} : { headers: { "x-agentx-callback-capability": header } }) });

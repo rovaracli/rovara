@@ -151,5 +151,22 @@ for(const changed of [false,true])it(`${changed?"refuses changed":"tolerates unc
  w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:ORG_A,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:lock,thinkingLevel:null,locked:true}}});
  const action=publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision});
  if(changed)await expect(action).rejects.toMatchObject({code:"STAGE_LOCKED",stage:"build"});
- else { const result=await action;expect(typeof result.applied).toBe("boolean"); }
+ else { const result=await action;expect(result).toMatchObject({applied:true,value:{version:2}});expect((await w.store.get(ORG_A,agent.agentId))?.currentVersion).toBe(2); }
+});
+
+it("returns a structured resolver refusal when an approved process cannot apply",async()=>{
+ const {decideApproval}=await import("../../packages/broker/src/agents/approvals.js");
+ const w=fixture(),model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
+ const agent=await w.store.create({orgId:ORG_A,name:"web apply refusal",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{model},build:{model},review:{model}}},purpose:"process",createdBy:MAX});
+ const waiting=await publishDraft(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{requestId:randomUUID(),expectedRevision:agent.draftRevision});if(waiting.applied)throw Error("expected approval");
+ Object.assign(w.deps,{modelRouting:{sources:{read:async()=>({sources:[],order:[],credentials:[],removing:[],revision:0})}}});
+ const request={requestId:randomUUID(),decision:"APPROVE" as const};
+ const result=await decideApproval(w.deps,{...w.caller(OLA),orgRole:"admin"},w.approvalIdOf(waiting.confirmUrl),request);
+ expect(result).toMatchObject({status:"APPROVED_FAILED",refusal:{reason:"MODEL_NOT_VERIFIED",fixHref:"/app/admin/models/sources"}});
+ const {getAnyApproval,expireApprovals}=await import("../../packages/broker/src/agents/approvals.js");
+ const approval=await getAnyApproval(w.deps,ORG_A,w.approvalIdOf(waiting.confirmUrl));
+ expect(approval).toMatchObject({status:"APPROVED_FAILED",failure:"understand: MODEL_NOT_VERIFIED: Review How we work."});
+ w.clock.now+=60*60*1000;expect((await expireApprovals(w.deps,w.clock.now)).redriven).toBe(0);
+ expect(await decideApproval(w.deps,{...w.caller(OLA),orgRole:"admin"},w.approvalIdOf(waiting.confirmUrl),request)).toEqual(result);
+ expect(await w.store.getVersion(ORG_A,agent.agentId,1)).toBeUndefined();
 });

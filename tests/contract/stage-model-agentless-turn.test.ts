@@ -50,9 +50,9 @@ it("pins an available company Build lock on an agentless turn instead of the pro
 });
 
 it("records an agentless default fallback visibly with the operation and digest audit in one admission",async()=>{
- const {projectSelectionKey}=await import("@agentx/contracts");
- const {handler,db,audit}=await createTurnHarness();await registerSlackProject(handler);
- db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"openai",modelId:"gpt-6.1-sol"}});
+ const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
+ const primary={provider:"openai",modelId:"gpt-6.1-sol",label:"Primary"};
+ const {handler,db,audit}=await createTurnHarness();await registerSlackProject(handler,{models:{default:primary,approved:[primary,...bedrockClaudeModelIds("us").map((modelId,index)=>({provider:"amazon-bedrock",modelId,label:`Fallback ${index}`}))]}});
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000003`,user="U0123456789";
  const workspace=await ensureWorkspace(handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(db,workspaceId);
  const conversation=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
@@ -62,17 +62,18 @@ it("records an agentless default fallback visibly with the operation and digest 
  expect(audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(1);
 });
 
-async function runtimeTurnFixture(locked=false){
+async function runtimeTurnFixture(locked=false,merged=false){
  const {developerIdForSlackUser}=await import("../../packages/broker/src/aws/admin-actions.js");
  const {seedMembership}=await import("../support/developer-task-broker.js");
  const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
  const developer={issuer:"https://cell.example/v1/auth",env:"staging",signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>({ok:true as const,memberOf:[]})};
- const {handler,db,audit}=createAuditedSlackBroker({developer});await registerSlackProject(handler);
+ const {handler,db,audit}=createAuditedSlackBroker({developer});const model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!,label:"Primary"};await registerSlackProject(handler,{models:{default:model,approved:bedrockClaudeModelIds("us").map((modelId,index)=>({provider:"amazon-bedrock",modelId,label:`Model ${index}`}))}});
  const {projectSelectionKey}=await import("@agentx/contracts");
  db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!}});
  if(locked)db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!},thinkingLevel:null,locked:true}}});
- const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000004`,user="U0123456789",actor=developerIdForSlackUser(user);
+ const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000004`,user="U0123456789",rawActor=developerIdForSlackUser(user),actor=merged?"e".repeat(64):rawActor;
  seedMembership(db,actor,{orgId:TEST_ORG,role:"owner"});
+ if(merged)db.set({pk:`DEVELOPER#${rawActor}`,sk:"META",developerId:rawActor,provider:"slack",revoked:false,mergedInto:actor});
  db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",revoked:false});
  const workspace=await ensureWorkspace(handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(db,workspaceId);
  const conversation=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
@@ -196,4 +197,12 @@ it("uses live company admin authority for an agentless fallback",async()=>{
  seedMembership(f.db,f.actor,{orgId:TEST_ORG,role:"admin"});
  expect((await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body})).status).toBe(200);
  expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(1);
+});
+
+it("uses the canonical merged identity at admission and runtime fallback",async()=>{
+ const h=await runtimeTurnFixture(false,true);
+ expect(h.db.get(`WORKSPACE#${h.workspaceId}`,`OPERATION#${h.operationId}`)?.modelTurnPin).toMatchObject({actorDeveloperId:h.actor});
+ const result=await call(h.handler,{method:"POST",path:h.path,headers:{"x-agentx-callback-capability":h.invocation.callbackCapability},body:h.body});
+ expect(result.status,JSON.stringify(result.body)).toBe(200);
+ expect(h.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(1);
 });

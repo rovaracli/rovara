@@ -1,5 +1,5 @@
 // G3: one choice function. Callers supply server-read policy and source evidence, never browser attestations.
-import { canonicalModelName, modelCompany, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
+import { StageModelChoiceSchema, canonicalModelName, modelCompany, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
 
 export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@agentx/contracts";
@@ -31,8 +31,8 @@ export interface StageModelInput {
   companyDefault?: StageModelChoice | undefined;
   /** Provenance of a model inherited below partial company metadata. Server-only. */
   companyDefaultOrigin?: "recipe" | undefined;
-  projectSelection?: ModelIdentifier | undefined;
-  projectDefault?: ModelIdentifier | undefined;
+  projectSelection?: ModelSelection | undefined;
+  projectDefault?: ModelSelection | undefined;
   builtinDefault?: ModelIdentifier | undefined;
   defaultFallbacks?: readonly ModelIdentifier[] | undefined;
   /** Verified server-selected default preference (for example the payer's personal plan). */
@@ -64,6 +64,8 @@ export function stageCandidateVerified(input: StageModelInput, candidate: Verifi
   if (candidate.sourceId === "rovara") return evidence.kind === "rovara_catalog";
   return /^src_[a-z0-9]{20}$/u.test(candidate.sourceId) && (evidence.kind === "tested_bedrock_role" || evidence.kind === "stored_key");
 }
+
+const projectDefaultChoice=(model:ModelSelection)=>StageModelChoiceSchema.safeParse({model:{provider:model.provider,modelId:model.modelId},...(model.thinkingLevel===undefined?{}:{thinkingLevel:model.thinkingLevel})});
 
 export function resolveStageModel(input: StageModelInput): StageModelResult {
   const locked = input.companyLock !== undefined;
@@ -98,9 +100,9 @@ export function resolveStageModel(input: StageModelInput): StageModelResult {
   if (input.companyLock !== undefined) { choice = input.companyLock; reason = "COMPANY_LOCK"; explicit = true; }
   else if (input.projectChoice?.model !== undefined) { choice = input.projectChoice; reason = "PROJECT_CHOICE"; explicit = true; }
   else if (input.companyDefault?.model !== undefined) { choice = input.companyDefault; reason = input.companyDefaultOrigin === "recipe" ? "RECIPE_DEFAULT" : "COMPANY_DEFAULT"; explicit = true; }
-  else if (!checking(input.stage) && input.projectSelection !== undefined) { choice = { model: input.projectSelection }; reason = "PROJECT_SELECTION"; }
+  else if (!checking(input.stage) && input.projectSelection !== undefined) { const parsed=projectDefaultChoice(input.projectSelection);if(!parsed.success)return refusal("MODEL_NOT_VERIFIED");choice=parsed.data; reason = "PROJECT_SELECTION"; }
   else if (!checking(input.stage) && input.defaultPreferred !== undefined) { choice = { model: input.defaultPreferred }; reason = "PERSONAL_PLAN_DEFAULT"; }
-  else if (!checking(input.stage) && input.projectDefault !== undefined) { choice = { model: input.projectDefault }; reason = "PROJECT_DEFAULT"; }
+  else if (!checking(input.stage) && input.projectDefault !== undefined) { const parsed=projectDefaultChoice(input.projectDefault);if(!parsed.success)return refusal("MODEL_NOT_VERIFIED");choice=parsed.data; reason = "PROJECT_DEFAULT"; }
   else if (!checking(input.stage) && input.builtinDefault !== undefined) choice = { model: input.builtinDefault };
 
   // Model precedence and field inheritance are separate: metadata-only settings still apply.

@@ -16,7 +16,7 @@ import {decideSecondPersonApproval} from "../org/second-person-approval.js";
 import {modelSelectionRevisionChecks,modelSelectionPolicyKey,readModelSelectionPolicy} from "./policy-store.js";
 type Dependencies=Parameters<typeof prepareCompanyModelPolicy>[0]&Pick<ApprovalDependencies,"signInStore"|"modelSignInTableName">&{audit?:AuditRuntime};
 type Caller={orgId:OrgId;developerId:string;signedInId:string};
-const stale=()=>agentXError("CHANGE_STALE","The company model policy or your access changed. Reload and review again.");
+const stale=()=>agentXError("POLICY_STALE","The company model policy or your access changed. Reload and review again.");
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","Company model changes require the audit ledger.");
 const digest=(value:unknown)=>createHash("sha256").update(canonicalJson(value)).digest("hex");
 export const writeSaferCompanyModelPolicy=(deps:Dependencies,caller:Caller,value:unknown)=>writePolicy(deps,caller,value);

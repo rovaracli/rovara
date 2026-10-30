@@ -1,3 +1,4 @@
+import {ModelApplyRefusalSchema} from "../model-selection/process-refusal.js";
 // Plan 3 Task 7 and Task 21: the approvals' records and everything that writes or reads them one at a time: the three record kinds and their schemas, the
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
@@ -204,6 +205,7 @@ export interface ApprovalRun { project: string; owner: { developerId: string; na
 
 /** Fields every record that is decided carries once it is. */
 interface DecidedFields {
+  modelRefusal?: z.infer<typeof ModelApplyRefusalSchema>;
   decidedBy?: string;
   decidedAt?: string;
   /** The decision, kept so a retry after a crash finishes the same one. */
@@ -423,6 +425,7 @@ const DecidedShape = {
   executingAt: z.string().optional(),
   attempts: z.number().int().min(0).optional(),
   failure: z.string().optional(),
+  modelRefusal: ModelApplyRefusalSchema.optional(),
   handlerDone: z.boolean().optional(),
   handlerClaimedAt: z.string().optional(),
   handlerDueAt: z.string().optional(),
