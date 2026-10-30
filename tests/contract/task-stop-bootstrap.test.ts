@@ -300,3 +300,14 @@ it("an existing company's registered built-in with no settings upgrades to expli
   const count = f.db.transactions().length;
   expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "preserved" }); expect(f.db.transactions()).toHaveLength(count);
 });
+
+it("absent built-in inheritance cannot overwrite concurrently created administrator settings", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), winner = { ...key, entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 1, maxPerRunUsd: 0.5, updatedBy: who }, send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true; f.db.set(winner); } return send(command); };
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, kind: "agent" as const, agentId: ROVARA_CODE_AGENT_ID };
+  await expect(taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).rejects.toThrow();
+  expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(winner);
+  expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "updated" });
+  expect(f.db.get(key.pk, key.sk)).toMatchObject({ ...winner, stopKind: "limited", revision: 1 });
+});
