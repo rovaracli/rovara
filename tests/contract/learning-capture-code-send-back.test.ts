@@ -9,10 +9,11 @@ import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../.
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
-import { LEARNING_PROJECT_WIDE, LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
+import { LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { PROJECT, PROJECT_CREATED_AT, learningItems, seedPerson, seedProject, type GrantKind } from "../support/learning-page.js";
@@ -179,12 +180,12 @@ describe("code send-back capture: the stage", () => {
     expect(corrections(t.harness)).toMatchObject([{ stage: "code" }]);
   });
 
-  it("a task with no program gives a project-wide correction", async () => {
+  it("a task with no program (the built-in recipe) gives the default build step, never a project-wide stage", async () => {
     const t = await blockedTask();
     expect(workflowOf(t.harness, t.taskId).program).toBeUndefined();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     await t.send(MAYA_CALLER, NOTE);
-    expect(corrections(t.harness)).toMatchObject([{ stage: LEARNING_PROJECT_WIDE, source: "send_back" }]);
+    expect(corrections(t.harness)).toMatchObject([{ stage: "build", source: "send_back" }]);
   });
 
   it("the plan send-back is unchanged: its stage is still plan, and a given stage is kept", async () => {
@@ -200,7 +201,7 @@ describe("code send-back capture: the stage", () => {
 });
 
 describe("code send-back capture: an outsider decider (the same as B4's plan send-back)", () => {
-  const OUTSIDERS: Array<[string, GrantKind]> = [["a person with no grant", "none"]];
+  const OUTSIDERS: Array<[string, GrantKind]> = [["a project viewer", "viewer"], ["a person with no grant (a commenter)", "none"]];
   for (const [label, grant] of OUTSIDERS) {
     it(`an owner who took the task over as ${label} is stored as outsider (stored for a maintainer to see, never grouped)`, async () => {
       const t = await blockedTask({ program: true });
@@ -210,6 +211,8 @@ describe("code send-back capture: an outsider decider (the same as B4's plan sen
       expect(corrections(t.harness)).toMatchObject([{ source: "send_back", stage: "code", standing: "outsider", author: OMAR.developerId }]);
       expect(corrections(t.harness).filter((c) => c.standing === "member")).toEqual([]);
       expect(items(t.harness, "SUGGESTION#")).toEqual([]);
+      // Never grouped: no suggestion above, and the correction is not part of any group.
+      expect(corrections(t.harness)[0]!.suggestionId).toBeUndefined();
     });
   }
 
@@ -250,6 +253,28 @@ describe("code send-back capture: an outsider decider (the same as B4's plan sen
     t.takeOver(OMAR_CALLER);
     await t.send(OMAR_CALLER, NOTE);
     expect(corrections(t.harness)).toMatchObject([{ standing: "outsider", author: OMAR.developerId }]);
+  });
+});
+
+describe("code send-back capture: a suggestion", () => {
+  it("rule.suggested is emitted when a member's code send-back and an earlier member correction of another task open a suggestion, with ids and counts only", async () => {
+    const first = await blockedTask({ program: true });
+    const ledger = capturingAuditDeps({ db: first.harness.db, now: () => Date.now() });
+    seedPerson(first.harness.db, MAYA_CALLER, "contributor");
+    const text = "Always run the linter before committing changes to the repository.";
+    await captureCorrection(learningDeps(first.harness), scope, {
+      id: "earlier-correction", stage: "code", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
+      text, signature: [...signatureOf(text, learningSalt(scope))], author: "5".repeat(64), standing: "member", limit: "automatic",
+    });
+    const deps = { ...routeDeps(first.harness), learningAudit: ledger.audit };
+    await sendTaskWorkflowBackToCoding(deps, MAYA_CALLER, first.taskId, { requestId: randomUUID(), expectedRevision: workflowOf(first.harness, first.taskId).revision, instructions: "Run the linter before you commit any changes to the repository." });
+    const [suggestion] = items(first.harness, "SUGGESTION#");
+    expect(suggestion).toBeDefined();
+    expect(ledger.recordedBy("rule.suggested")).toEqual([expect.objectContaining({
+      actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: PROJECT },
+      facts: expect.objectContaining({ suggestionId: suggestion!.id, stage: "code", sourceCount: 2, sourceKinds: "send_back" }) as unknown,
+    })]);
+    expect(JSON.stringify(ledger.recorded())).not.toContain("linter");
   });
 });
 

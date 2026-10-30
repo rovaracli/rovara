@@ -19,7 +19,7 @@
 //
 // Capture never fails the send-back: `captureSendBackQuietly` catches everything and logs fixed words (never the text).
 import { createHash } from "node:crypto";
-import { LearningStageSchema, LEARNING_PROJECT_WIDE, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { COMMENT_STAGE, commentSourceKey } from "./capture-comment.js";
@@ -49,14 +49,18 @@ export interface SendBackOutcome {
   created: string[];
 }
 
+/** The id of the default build step (Rovara Code's recipe, `agent-templates.ts`). A task with no program runs this step's rules when it codes. */
+export const DEFAULT_BUILD_STEP_ID = "build";
+
 /**
  * The stage of a correction from a CODE send-back: the id of the coding step the work was sent back to, taken from the returned workflow's program (the engine put it there when the work went
- * back). A workflow with no program (an older recipe) or a step id the learning loop would not accept gives `LEARNING_PROJECT_WIDE`.
+ * back). A workflow with no program (the built-in recipe, whose coding run reads the `build` step's rules) or a step the learning loop would not accept gives `build`, never a project-wide
+ * stage: a lesson from sending code back must not quietly become a rule for plans and reviewers.
  */
 export function codeSendBackStage(returned: Pick<WorkflowSnapshot, "program" | "programStepId">): LearningStage {
   const step = returned.program?.steps.find((candidate) => candidate.id === returned.programStepId);
   const stage = step?.kind === "build" ? LearningStageSchema.safeParse(step.id) : undefined;
-  return stage?.success === true ? stage.data : LEARNING_PROJECT_WIDE;
+  return stage?.success === true ? stage.data : DEFAULT_BUILD_STEP_ID;
 }
 
 /** The source key of a send-back: one correction per (task, decision request). */
