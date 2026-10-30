@@ -1942,7 +1942,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
   }
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
-  if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+  if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
   }
   // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
@@ -2056,15 +2056,17 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && websiteProposalDecision !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteProposalDecision[1]!, { operation: websiteProposalDecision[3] as "approve" | "cancel" | "reject", proposalId: websiteProposalDecision[2]!, body: jsonBody(request) });
   const websiteRequestStatus = /^\/v1\/app\/projects\/([^/]+)\/allowed-websites\/requests\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && websiteRequestStatus !== null) return projectAllowedDomainsHttp({ ...deps, ...deps.projectAllowedDomains, signInTableName: deps.developer.signInTableName }, caller, websiteRequestStatus[1]!, { operation: "request-status", requestId: websiteRequestStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
-  const slackProposal = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/proposals(?:\/([^/]+)(?:\/(approve))?)?$/.exec(url.pathname);
+  const slackProposal = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/proposals(?:\/([^/]+)(?:\/(approve|cancel|reject))?)?$/.exec(url.pathname);
   if (slackProposal !== null) {
     let project: string;try { project = decodeURIComponent(slackProposal[1]!); } catch { throw agentXError("NOT_FOUND", "route not found"); }
     const slackDeps = { ...deps, signInTableName: deps.developer.signInTableName };
     if (request.method === "POST" && slackProposal[2] === undefined) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "propose", body: jsonBody(request) });
-    if (request.method === "POST" && slackProposal[3] === "approve") return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "approve", proposalId: slackProposal[2]!, body: jsonBody(request) });
+    if (request.method === "POST" && ["approve", "cancel", "reject"].includes(slackProposal[3] ?? "")) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: slackProposal[3] as "approve" | "cancel" | "reject", proposalId: slackProposal[2]!, body: jsonBody(request) });
     if (request.method === "GET" && slackProposal[2] !== undefined && slackProposal[3] === undefined) return projectSlackBrowserHttp(slackDeps, caller, project, { operation: "proposal", expectedOrgId: url.searchParams.get("expectedOrgId"), ...(slackProposal[2] === "current" ? {} : { proposalId: slackProposal[2] }) });
     throw agentXError("NOT_FOUND", "route not found");
   }
+  const slackDecisionStatus = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/decisions\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && slackDecisionStatus !== null) return projectSlackBrowserHttp({ ...deps, signInTableName: deps.developer.signInTableName }, caller, decodeURIComponent(slackDecisionStatus[1]!), { operation: "decision-status", requestId: slackDecisionStatus[2]!, expectedOrgId: url.searchParams.get("expectedOrgId") });
   const reviewedSlack = /^\/v1\/app\/projects\/([^/]+)\/slack-channel\/(links|review|unbind|requests\/([^/]+))$/.exec(url.pathname);
   if (reviewedSlack !== null) {
     let project: string;try { project = decodeURIComponent(reviewedSlack[1]!); } catch { throw agentXError("NOT_FOUND", "route not found"); }

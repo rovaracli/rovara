@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { OrgIdSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalReaderSchema, ProjectSlackInventoryReaderSchema, ProjectSlackTargetReaderSchema, ProjectSlackReceiptReaderSchema, type ReviewedSlackUnbindBody } from "@agentx/contracts/web";
+import { OrgIdSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionReaderSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalReaderSchema, ProjectSlackInventoryReaderSchema, ProjectSlackTargetReaderSchema, ProjectSlackReceiptReaderSchema, type ReviewedSlackUnbindBody } from "@agentx/contracts/web";
 import type { AppHost, ApiRequest, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 const message = "Slack request could not be confirmed. Check its status before resending.";
@@ -51,6 +51,16 @@ export function createProjectSlackApi(host: AppHost, orgId: string, project: str
    const input = checked(ReviewedSlackApproveBodySchema, { expectedOrgId: orgId, requestId: body.requestId });
    const value = await call({ method: "POST", path: `${root}/proposals/${body.proposalId}/approve`, body: input }, ProjectSlackReceiptReaderSchema);
    if (value.receipt.requestId !== input.requestId || value.receipt.operation !== "bind" || value.receipt.outcome.binding.teamId !== body.teamId || value.receipt.outcome.binding.channelId !== body.channelId) throw invalid();return value;
+  },
+  async decide(body: { requestId: string; proposalId: string; decision: "cancel" | "reject" }) {
+   checked(z.string().uuid(), body.proposalId);checked(z.enum(["cancel", "reject"]), body.decision);
+   const input = checked(ReviewedSlackDecisionBodySchema, { expectedOrgId: orgId, requestId: body.requestId });
+   const value = await call({ method: "POST", path: `${root}/proposals/${body.proposalId}/${body.decision}`, body: input }, ProjectSlackDecisionReaderSchema);
+   if (value.decision.requestId !== body.requestId || value.decision.proposalId !== body.proposalId || value.decision.state !== (body.decision === "cancel" ? "cancelled" : "rejected")) throw invalid();return value;
+  },
+  async decisionStatus(requestId: string) {
+   checked(z.string().uuid(), requestId);const value = await call({ method: "GET", path: `${root}/decisions/${requestId}?${query}` }, ProjectSlackDecisionReaderSchema);
+   if (value.decision.requestId !== requestId) throw invalid();return value;
   },
   async unbind(body: Omit<ReviewedSlackUnbindBody, "expectedOrgId">) {
    const input = checked(ReviewedSlackUnbindBodySchema, { ...body, expectedOrgId: orgId }), value = await call({ method: "POST", path: `${root}/unbind`, body: input }, ProjectSlackReceiptReaderSchema);

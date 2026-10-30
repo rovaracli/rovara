@@ -37,3 +37,11 @@ it("B34 approval resend also expires at its proposal deadline", async () => {
  const item = { operation: "approve" as const, reviewedAt: new Date(at).toISOString(), proposalExpiresAt: new Date(at + 60000).toISOString(), body: { expectedOrgId: scope.orgId, requestId: request().body.requestId, proposalId: request(2).body.requestId, teamId: "T0123456789", channelId: "C0123456789" } };
  historyApi.retainSlackBindRequest(f.host.storage, scope, item);expect(slackRequestCanResend(item, at + 59999)).toBe(true);expect(slackRequestCanResend(item, at + 60000)).toBe(false);
 });
+
+it("B35 decision recovery shares the ten-attempt bound and cannot enter the bind or unlink subset", async () => {
+ const api = await import("../../packages/ui/src/screens/admin/projects/project-slack-history.js"), f = fakeHost();
+ for (let n = 1; n <= 10; n++) retainSlackRequest(f.host.storage, scope, request(n));
+ const saved = { operation: "cancel" as const, reviewedAt: new Date(at).toISOString(), proposalExpiresAt: new Date(at + 60000).toISOString(), body: { expectedOrgId: scope.orgId, requestId: request(11).body.requestId, proposalId: request(12).body.requestId, teamId: "T0123456789", channelId: "C0123456789" } };
+ api.retainSlackDecisionRequest(f.host.storage, scope, saved);expect(api.readSlackDecisionRequests(f.host.storage, scope).requests).toEqual([saved]);expect(api.readSlackBindRequests(f.host.storage, scope).requests).toHaveLength(0);expect(readSlackRequests(f.host.storage, scope).requests).toHaveLength(9);expect(f.storage.size).toBe(1);
+ expect(slackRequestCanResend(saved, at + 60000)).toBe(false);expect(() => api.retainSlackDecisionRequest(f.host.storage, scope, { ...saved, operation: "reject" })).toThrow();
+});

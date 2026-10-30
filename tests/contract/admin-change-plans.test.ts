@@ -255,3 +255,9 @@ it("B34 a previously stored bind plan cannot apply through the current handler",
  const storedApply = () => deps.handlers.bindChannel(identity, SLACK_TEAM, "C0LEDGER01", "payments");
  await expect(storedApply()).rejects.toMatchObject({ code: "FORBIDDEN", message: "FORBIDDEN: Use the browser Slack approval flow to link a channel." });expect(db.find(() => true)).toEqual(before);
 });
+
+it("B35 change-plan unbind is attributed to the admin change plan, not staff support", async () => {
+ const audit = capturingAuditDeps(), { deps, identity } = await harness({ audit });
+ const plan = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });await plan.apply(identity);
+ expect(audit.recordedBy("slack_channel.unbound")).toMatchObject([{ actor: { kind: "member", id: identity.ownerKey }, facts: { source: "admin_change_plan" } }]);
+});

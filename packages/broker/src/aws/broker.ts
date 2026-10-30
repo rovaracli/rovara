@@ -1696,7 +1696,7 @@ function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHa
   return {
     requireAdministrator: (identity, project) => requireAdministrator(dependencies, identity, project),
     bindChannel: async () => { throw agentXError("FORBIDDEN", "Use the browser Slack approval flow to link a channel."); },
-    unbindChannel: async (identity, teamId, channelId) => deleteSlackBinding(dependencies, identity, teamId, channelId),
+    unbindChannel: async (identity, teamId, channelId) => deleteSlackBinding(dependencies, identity, teamId, channelId, "admin_change_plan"),
     checkRevision: async (identity, definitionValue, runtimeBindingValue, options) => {
       if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
       let definition: ProjectDefinition;
@@ -4695,6 +4695,7 @@ async function deleteSlackBinding(
   identity: AuthenticatedIdentity,
   teamIdValue: string,
   channelIdValue: string,
+  source?: "admin_change_plan",
 ): Promise<{ deleted: true; binding: SlackChannelBinding }> {
   const teamId = SlackTeamIdSchema.parse(decodeURIComponent(teamIdValue));
   const channelId = SlackChannelIdSchema.parse(decodeURIComponent(channelIdValue));
@@ -4704,7 +4705,8 @@ async function deleteSlackBinding(
   await requireAdministrator(dependencies, identity, binding.projectName);
   const occurredAt = new Date().toISOString();
   const event = auditSlackChannelUnbound({ orgId,
-    actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt,
+    actor: source === "admin_change_plan" ? { kind: "member", id: identity.ownerKey } : { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, occurredAt,
+    ...(source === undefined ? {} : { source }),
     occurrence: auditOccurrence(randomUUID(), binding.projectName, teamId, channelId),
     projectName: binding.projectName, teamId, channelId,
   });
