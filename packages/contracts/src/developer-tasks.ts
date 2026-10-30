@@ -9,6 +9,7 @@ import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
 import { EvidenceViewSchema } from "./evidence.js";
+import { PlanOneScreenSchema } from "./plan-one-screen.js";
 import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 
@@ -159,6 +160,8 @@ export const DeveloperTaskViewSchema = z.object({
   proofTable: ProofTableViewSchema.optional(),
   /** Proof and evidence P1 (version 2 only, full reads only, like `proofTable`): the evidence of the code now on the task, with every artifact as a link behind sign-in. Absent until the broker has built one for the current candidate. */
   evidence: EvidenceViewSchema.optional(),
+  /** Decisions D5 (version 2 only): the coding plan under review on one screen (about 1,500 characters), derived from the plan document with no model call. Absent when there is no readable plan. */
+  planOneScreen: PlanOneScreenSchema.optional(),
   /**
    * Playbook P2 (version 2 only, like `verificationReport`): which model reviewed the code now on the task, and, when it was the build's own, the note that says so. These are the lines the pull request's Reviews section has
    * (Trust fix A2's `reviewModelLines`), passed on word for word; absent before any review of the current code. Plain text that every reader escapes for its own markup.
