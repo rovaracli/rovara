@@ -1,3 +1,4 @@
+import * as spendRequests from "../../packages/broker/src/spend/requests.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -1948,4 +1949,29 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
     ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
   expect(raced).toBe(true); expect(ask.status).toBe(409);
   expect(f.t.requests().some(item => item.agentId === id || item.chainId === id)).toBe(false);
+});
+
+it("legacy spending-request cutover expires bounded pages with terminal receipts and never enrolls", async () => {
+  expect(spendRequests).toHaveProperty("expireLegacySpendingRequests");
+  const expire = (spendRequests as unknown as { expireLegacySpendingRequests: (deps: ReturnType<Awaited<ReturnType<typeof fixture>>["t"]["deps"]>, input: { orgId: typeof TEST_ORG; limit: number; cursor?: Record<string, unknown> }) => Promise<{ examined: number; expired: number; complete: boolean; cursor?: Record<string, unknown> }> }).expireLegacySpendingRequests;
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const ids: string[] = [];
+  for (const kind of ["run_limit", "max_per_run", "planning", "owner_cap"] as const) {
+    const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind, taskId, agentId: ROVARA_CODE_AGENT_ID,
+      scope: { kind: "task", taskId }, amountUsd: 1, newLimitUsd: 5, reason: "Legacy stop ask", requestedBy: { kind: "member", developerId: MAYA.developerId },
+      ...(kind === "owner_cap" ? { change: { op: "set_budget" as const, budget: { monthlyUsd: 5 } } } : {}) });
+    ids.push(record.spendRequestId);
+  }
+  const before = f.t.meta(taskId), policy = f.t.db.get(f.policy), operations = f.t.taskOps(before.workspaceId).map(item => item.id);
+  const first = await expire(f.t.deps(), { orgId: TEST_ORG, limit: 2 });
+  expect(first).toMatchObject({ examined: 2, expired: 2, complete: false }); expect(first.cursor).toBeDefined();
+  const second = await expire(f.t.deps(), { orgId: TEST_ORG, limit: 2, cursor: first.cursor! });
+  expect(second).toMatchObject({ examined: 2, expired: 2, complete: true });
+  for (const id of ids) {
+    const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${id}`), sk: "META" };
+    expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+    expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
+  }
+  expect(await expire(f.t.deps(), { orgId: TEST_ORG, limit: 2 })).toMatchObject({ examined: 0, expired: 0, complete: true });
+  expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.taskOps(before.workspaceId).map(item => item.id)).toEqual(operations);
 });
