@@ -44,8 +44,8 @@ const FREQUENCY_MIN_SAMPLE = 30;
 /** Older members of a suggestion are found by reading the corrections of the partition; the cap on that read. */
 const RESOLVE_MAX_ITEMS = 2000;
 
-/** Stage families (design 4.2): a correction groups with others of its own family. Any other stage is a family of its own. */
-const STAGE_FAMILIES: ReadonlyArray<readonly string[]> = [["plan", "plan_critic"], ["review", "code_review", "security_review"]];
+/** Stage families (design 4.2): a correction groups with others of its own family. Only real step kinds are listed (`code_review` and `security_review` are stage ids, not step kinds). Any other stage is a family of its own. */
+const STAGE_FAMILIES: ReadonlyArray<readonly string[]> = [["plan", "plan_critic"], ["review"]];
 export const stageFamily = (stage: string): string => STAGE_FAMILIES.find((family) => family.includes(stage))?.[0] ?? stage;
 
 export interface GroupingOptions {
@@ -312,6 +312,8 @@ function freeCorrections(context: Context): Corr[] {
   return context.corrections.filter((entry) => {
     if (!countsInGrouping(context, entry) || entry.c.groupedAt === undefined || entry.c.text === undefined) return false;
     if (entry.c.repeatOf !== undefined && activeRules.has(entry.c.repeatOf)) return false;
+    // A repeat of an accepted rule never starts another suggestion for it, even one judged before the rule was published (it was waiting in a live suggestion then): it only feeds the metric.
+    if (matchingRule(context, entry.c) !== undefined) return false;
     const holder = entry.c.suggestionId === undefined ? undefined : context.suggestions.get(entry.c.suggestionId);
     return holder === undefined || (!isLive(holder) && holder.status !== "accepted");
   });
