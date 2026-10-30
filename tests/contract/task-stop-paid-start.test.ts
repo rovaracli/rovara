@@ -2111,3 +2111,26 @@ it("bounded task cutover retains below-cap task asks and never clamps monthly ow
   expect(f.t.requests().find(item => item.spendRequestId === ownerAsk.body.spendRequestId)?.status).toBe("PENDING");
   expect(f.t.ownerTotal(BEN)).toBe(80); expect(f.t.meta(taskId)).toEqual(before);
 });
+
+for (const drift of ["none", "total_before", "source_before", "policy_before", "counter_commit"] as const) it(`owner financial cutover preserves monthly semantics and original terms: ${drift}`, async () => {
+  const f = await fixture(); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN); const agentId = await f.t.budgeted(40);
+  const ask = await f.t.api(ADA, "PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: BEN.developerId } }); expect(ask.status).toBe(202);
+  const id = String(ask.body.spendRequestId), requestKey = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${id}`), sk: "META" };
+  if (drift === "total_before" || drift === "counter_commit") await f.t.budgeted(1, BEN);
+  if (drift === "source_before") expect((await f.t.setBudget(MAYA, agentId, { monthlyUsd: 39 })).status).toBe(200);
+  if (drift === "policy_before") f.t.db.set({ ...orgSettingsKey(TEST_ORG, "SPEND_POLICY"), orgId: TEST_ORG, ...defaultSpendPolicy(), revision: 1, ownerAgentBudgetCapUsd: 99 });
+  const before = f.t.agentItem(agentId), total = f.t.ownerTotal(BEN), send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (drift === "counter_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === requestKey.pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
+      raced = true; const key = ownerBudgetKey(TEST_ORG, BEN.developerId), row = f.t.db.get(key)!; f.t.db.set({ ...row, totalUsd: total + 1, version: Number(row.version) + 1 });
+    }
+    return send(command);
+  };
+  const fn: unknown = Reflect.get(spendRequests, "expireOwnerCapCutoverApproval"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("owner cutover missing");
+  const invoke = fn as (deps: unknown, actor: unknown, id: string) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, id)).toMatchObject({ kind: drift === "none" ? "retain" : drift === "counter_commit" ? "retry" : "expired" });
+  expect(f.t.db.get(requestKey)?.status).toBe(drift === "none" || drift === "counter_commit" ? "PENDING" : "EXPIRED");
+  expect(f.t.agentItem(agentId)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(total + (raced ? 1 : 0));
+  if (drift === "counter_commit") expect(raced).toBe(true);
+});
