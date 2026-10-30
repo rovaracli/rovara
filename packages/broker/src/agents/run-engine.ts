@@ -576,11 +576,12 @@ async function askForApproval(deps: AgentRunEngineDependencies, loaded: Loaded, 
  * task no longer lets it go on. Safe to call at any time and from any process: a run that is waiting, paused, busy or over is left as it is.
  * `PAUSED_BUDGET` runs again from the step that was cut off once the task's `budgetPause` has been cleared (Task 32's approval of the raise).
  */
-export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string): Promise<AdvanceResult> {
+export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string, expectedPausedRevision?: number): Promise<AdvanceResult> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     let loaded = await load(deps, taskId);
     if (loaded === undefined) return "no_run";
     const { task, run } = loaded;
+    if (expectedPausedRevision !== undefined && (run.revision !== expectedPausedRevision || run.state !== "PAUSED_BUDGET")) return "busy";
     if (ENDED.has(run.state)) {
       await finishEnd(deps, loaded);
       return "ended";

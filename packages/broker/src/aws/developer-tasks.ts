@@ -1,5 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
 import { projectAiKey } from "@agentx/contracts";
-import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem } from "../org/task-stop-window.js";
+import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem, readTaskStopTransition, taskStopTransitionItem, type TaskStopTransition } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -2789,6 +2790,7 @@ export interface SpendResumeInput {
   spendRequestId: string;
   resetRunWindow: boolean;
   firstDispatch: boolean;
+  expectedPausedAgentRevision?: number;
   /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
   resume?: "implement";
   runLimitUsd?: number;
@@ -2821,7 +2823,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-    await advanceAgentRun(deps.agentEngine, task.taskId);
+    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision);
     return;
   }
   const requestId = resumeRequestId(input.spendRequestId, "resume");
@@ -2852,6 +2854,22 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   if (task === undefined || task.orgId !== deps.orgId || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
   await creatorGuard(deps, task);
+  const identity = { orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId,
+    intentHash: hashJson({ taskId, actorId: caller.developerId, action: "continue-as-task", request }), project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID };
+  const recover = async (receipt: TaskStopTransition): Promise<{ task: DeveloperTaskView }> => {
+    const access = await authorizeTaskAction(deps, caller, taskId, "work"), current = access.task;
+    if (deps.agentRuns === undefined || current.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, current.agent.agentId, current.agent.version === "draft" ? "edit" : "use");
+    if (current.origin !== "app" || !isDeepStrictEqual(current.payer, receipt.payer) || current.project !== receipt.place.project) throw agentXError("CHANGE_STALE", "The task's payer changed. Review the task before continuing.");
+    if (current.closedAt === undefined && (receipt.workflowRevision === null || current.workflow?.revision === receipt.workflowRevision)) {
+      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false,
+        ...(receipt.agentRunRevision === null ? {} : { expectedPausedAgentRevision: receipt.agentRunRevision }) });
+    }
+    const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    return { task: await taskView(deps, fresh ?? current, { events: 0, details: false }) };
+  };
+  const committed = await readTaskStopTransition(deps, identity);
+  if (committed !== undefined) return recover(committed);
   if (task.origin === "app" && task.budgetPause === undefined && task.startedBy !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   if (task.origin !== "test_run" || task.budgetPause?.scope.kind !== "test" || task.agent === undefined) {
     throw agentXError("CONFIG_INVALID", "only a test run that reached its cap can continue as a normal task");
@@ -2879,9 +2897,13 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, draft: task.agent.version === "draft", process: task.agent.process === true,
         developerId: caller.developerId, role: caller.orgRole, ...(task.agent.draftRevision === undefined ? {} : { expectedDraftRevision: task.agent.draftRevision }) }, authorize,
       async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
+    const runSource = await get<{ revision: number; state: string }>(deps, taskAgentRunKey(taskId));
+    if (runSource !== undefined && (!Number.isSafeInteger(runSource.revision) || runSource.revision < 1 || runSource.state !== "PAUSED_BUDGET")) throw agentXError("CHANGE_STALE", "The test run's paused step changed. Review it and continue again.");
+    const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, payer, place,
+      agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
     const item = windowAndPauseUpdate(deps, task, undefined, captured)[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
-    const source = ["origin", "budgetPause", "startedBy", "place"] as const;
+    const source = ["origin", "budgetPause", "startedBy", "place", "workflow"] as const;
     // Transition aliases must not collide with the window source aliases.
     const seen = new Aliases();
     const sourceConditions = source.map(field => {
@@ -2898,13 +2920,21 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       } }, ...checks, { ConditionCheck: { TableName: deps.tableName, Key: projectAiKey(deps.orgId, task.project),
         ConditionExpression: "#type = :type AND #org = :org AND #project = :project AND #pays = :pays",
         ExpressionAttributeNames: { "#type": "entityType", "#org": "orgId", "#project": "project", "#pays": "projectPays" },
-        ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": deps.orgId, ":project": task.project, ":pays": projectPays } } }]);
+        ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": deps.orgId, ":project": task.project, ":pays": projectPays } } },
+        { ConditionCheck: { TableName: deps.tableName, Key: taskAgentRunKey(taskId),
+          ...(runSource === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#revision = :revision AND #state = :state",
+            ExpressionAttributeNames: { "#revision": "revision", "#state": "state" }, ExpressionAttributeValues: { ":revision": runSource.revision, ":state": "PAUSED_BUDGET" } }) } }, receipt]);
     } catch (error) {
+      const accepted = await readTaskStopTransition(deps, identity);
+      if (accepted !== undefined) return recover(accepted);
       const failures = failedIndexes(error);
       if (failures !== undefined && [...failures].some(index => index > 0)) throw budgetActorRefused();
       if (failures?.has(0)) throw agentXError("CHANGE_STALE", "The task's payer or spending window changed. Review it and continue again.");
       throw error;
     }
+    const accepted = await readTaskStopTransition(deps, identity);
+    if (accepted === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending transition receipt is missing.");
+    return recover(accepted);
   } else try {
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: taskKey(taskId),

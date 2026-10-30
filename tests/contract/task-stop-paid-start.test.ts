@@ -469,3 +469,19 @@ it("Continue-as-task retry repairs a committed payer transition whose acknowledg
   const resumed = f.t.taskOps(f.task.workspaceId).map(op => op.id); expect(resumed).toHaveLength(operations.length + 1);
   expect((await f.transition()).status).toBe(200); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(resumed);
 });
+
+for (const corruption of ["version", "calculation"] as const) it(`Continue-as-task refuses a corrupt ${corruption} receipt before redriving work`, async () => {
+  const f = await pausedTestTransition(); expect((await f.transition()).status).toBe(200);
+  const key = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` }, row = f.t.db.get(key)!;
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.db.set({ ...row, ...(corruption === "version" ? { version: 999 } : { spendingStop: { ...f.t.meta(f.task.taskId).spendingStop!, effectiveStopMicrousd: 1 } }) });
+  const reply = await f.transition(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
+it("an old Continue-as-task receipt cannot redrive a later paused agent revision", async () => {
+  const f = await pausedTestTransition(); expect((await f.transition()).status).toBe(200);
+  await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  await f.t.set(f.task.taskId, "REMOVE budgetPause");
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  expect((await f.transition()).status).toBe(200); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
