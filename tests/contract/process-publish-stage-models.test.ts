@@ -275,6 +275,48 @@ describe("pointing the playbook at a process layer checks the layer's model choi
     expect(await failure(putAt(w, { kind: "project_process", agentId: layer }))).toBeUndefined();
   });
 
+  /** A layer whose version 2 holds a confirmed same-model exception (the reviewer on Build's own model), with the project set back to the built-in. */
+  async function exceptionLayerOnBuiltin(w: MergeWorld): Promise<AgentId> {
+    const layer = await layerWith(w);
+    await setDraft(w, layer, { build: { model: MODEL_B }, review: { model: MODEL_B } });
+    const waiting = await publish(w, layer);
+    expect(waiting.applied).toBe(false);
+    await decide(w, OLA, approvalIdOf(w, waiting));
+    const stored = (await w.store.getVersion(ORG_A, layer, 2))!;
+    expect(stored.modelApproval?.exceptions.length, "the version carries its approval").toBeGreaterThan(0);
+    const current = await playbook(w);
+    await writeProjectPlaybook(writer(w), { orgId: ORG_A, project: "web", developerId: MAX, expectedRevision: current.revision, defaultProcess: { kind: "builtin" } });
+    return layer;
+  }
+
+  it("points again at a version approved for the same model (its stored approval carries the exception)", async () => {
+    const w = world();
+    const layer = await exceptionLayerOnBuiltin(w);
+    expect(await failure(putAt(w, { kind: "project_process", agentId: layer }))).toBeUndefined();
+    expect((await playbook(w)).defaultProcess).toEqual({ kind: "project_process", agentId: layer });
+  });
+
+  it("refuses that version after the company policy changed: the approval was for the old company revision", async () => {
+    const w = world();
+    const layer = await exceptionLayerOnBuiltin(w);
+    lock(w, {});
+    w.db.set({ pk: `ORG#${ORG_A}#SETTINGS`, sk: "MODEL_SELECTION_POLICY", orgId: ORG_A, entityType: "MODEL_SELECTION_POLICY", version: 1, revision: 2, rankingVersion: "g3-v1", stepOverrides: {} });
+    const before = await playbook(w);
+    expect(refusalOf(await failure(putAt(w, { kind: "project_process", agentId: layer })))).toEqual({ code: "DIFFERENT_FROM_UNSATISFIABLE", stage: "code_review", fixHref: "/app/admin/how-we-work", status: 409 });
+    expect(await playbook(w)).toEqual(before);
+  });
+
+  it("refuses a version with the same exception but no stored approval", async () => {
+    const w = world();
+    const layer = await exceptionLayerOnBuiltin(w);
+    // Only version 2 holds an approval, so the stored item that carries one is that version's.
+    for (const [key, item] of w.db.items) if (item["modelApproval"] !== undefined) w.db.items.set(key, Object.fromEntries(Object.entries(item).filter(([name]) => name !== "modelApproval")));
+    expect((await w.store.getVersion(ORG_A, layer, 2))!.modelApproval).toBeUndefined();
+    const before = await playbook(w);
+    expect(refusalOf(await failure(putAt(w, { kind: "project_process", agentId: layer })))).toMatchObject({ code: "DIFFERENT_FROM_UNSATISFIABLE", status: 409 });
+    expect(await playbook(w)).toEqual(before);
+  });
+
   it("does not stop a switch to the built-in, whatever the layer holds", async () => {
     const w = world();
     const layer = await chosenLayerOnBuiltin(w);

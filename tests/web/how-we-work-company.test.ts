@@ -279,12 +279,15 @@ describe("Save", () => {
   await save();
   expect((await screen.findByRole("alert")).textContent).toBe("You don't have permission to change the company defaults.");
  });
- it("says a same-model company choice is refused (403 MODEL_NOT_ALLOWED), not that the person lacks permission", async () => {
-  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 403, body: { error: { code: "MODEL_NOT_ALLOWED", reason: "DIFFERENT_FROM_UNSATISFIABLE", fixHref: "/app/admin/how-we-work", message: "Company reviewer models must differ from the stage they check." } } } : undefined });
-  fireEvent.change(effort("Build"), { target: { value: "high" } });
-  await save();
-  expect((await screen.findByRole("alert")).textContent).toBe("A checking stage can't use the same model as the stage it checks. Set a same-model exception for one project in its How we work.");
- });
+ for (const message of ["Company reviewer models must differ from the stage they check. Set same-model exceptions per project in How we work.", "A chosen company model is unavailable. Review model sources."]) {
+  it(`shows the server's own words for a 403 MODEL_NOT_ALLOWED, not the permission sentence: ${message.slice(0, 30)}`, async () => {
+   // The body is what the broker sends: no `reason` field.
+   await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 403, body: { error: { code: "MODEL_NOT_ALLOWED", message } } } : undefined });
+   fireEvent.change(effort("Build"), { target: { value: "high" } });
+   await save();
+   expect((await screen.findByRole("alert")).textContent).toBe(message);
+  });
+ }
  it("clears a choice back to Rovara's default by leaving it out of the overrides", async () => {
   const f = await open();
   fireEvent.change(effort("Plan check"), { target: { value: "inherit" } });
