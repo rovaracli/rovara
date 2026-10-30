@@ -2,7 +2,7 @@
 // pin what grouping does with it. Preconditions on chains are asserted from B2's own comparison so a change in the thresholds shows up here as a clear failure.
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  dismissedSetKey, forgetCorrection, groupCorrections, prCaptureOff, recordDismissal, withdrawPrDependentSuggestions,
+  dismissedSetKey, forgetCorrection, groupCorrections, prCaptureOff, recordDismissal, stageFamily, withdrawPrDependentSuggestions,
 } from "../../packages/broker/src/learning/grouping.js";
 import { metricMonth, readMetric } from "../../packages/broker/src/learning/metric.js";
 import { compareSignatures, signatureOf } from "../../packages/broker/src/learning/similarity.js";
@@ -185,7 +185,7 @@ describe("W5: window and stage family", () => {
     expect(openOnes(near)).toHaveLength(1);
   });
 
-  it("does not group across stages, but Plan with Plan check and Code review with Security review are one family", async () => {
+  it("does not group across stages, but Plan with Plan check is one family and Review is its own", async () => {
     const world = makeWorld();
     await add(world, LINT_A, { stage: "build" });
     await add(world, LINT_B, { stage: "plan" });
@@ -201,17 +201,29 @@ describe("W5: window and stage family", () => {
 
     counter = 0;
     const review = makeWorld();
-    await add(review, MIG_A, { stage: "code_review" });
-    await add(review, MIG_B, { stage: "security_review" });
+    await add(review, MIG_A, { stage: "review" });
+    await add(review, MIG_B, { stage: "review" });
     await group(review);
     expect(openOnes(review)).toHaveLength(1);
 
     counter = 0;
     const cross = makeWorld();
     await add(cross, MIG_A, { stage: "plan" });
-    await add(cross, MIG_B, { stage: "code_review" });
+    await add(cross, MIG_B, { stage: "review" });
     await group(cross);
     expect(suggestions(cross)).toEqual([]);
+  });
+
+  it("uses only real step kinds for families: code_review and security_review are stage ids, so they are not grouped with review or with each other", async () => {
+    expect(stageFamily("plan_critic")).toBe("plan");
+    expect(stageFamily("review")).toBe("review");
+    expect(stageFamily("code_review")).toBe("code_review");
+    expect(stageFamily("security_review")).toBe("security_review");
+    const world = makeWorld();
+    await add(world, MIG_A, { stage: "code_review" });
+    await add(world, MIG_B, { stage: "security_review" });
+    await group(world);
+    expect(suggestions(world)).toEqual([]);
   });
 });
 
@@ -326,6 +338,38 @@ describe("W6: a match with an accepted rule sets repeatOf = rule", () => {
     const c = await add(world, ZOD_A);
     await group(world);
     expect(correction(world, c)?.repeatOf).not.toBe("rule-1");
+  });
+
+  it("a repeat of an accepted rule never reopens a suggestion for it, even one judged before the rule was accepted; it only feeds the repeat counts", async () => {
+    const world = makeWorld();
+    await add(world, ZOD_A);
+    await add(world, ZOD_B);
+    await group(world);
+    const suggestion = LearningSuggestionSchema.parse(openOnes(world)[0]);
+    // The rule waits for a second person, so the suggestion is live (not open) while teammates give the same correction again.
+    world.db.set({ ...suggestions(world)[0]!, status: "awaiting_approval" });
+    const c = await add(world, "Check every request body against the zod schema before you use it.");
+    const d = await add(world, "Validate request bodies against the zod schema before handlers use them.");
+    await group(world);
+    expect(openOnes(world)).toEqual([]);
+    expect(suggestions(world)).toHaveLength(1);
+    // The rule is published.
+    expect(await closeSuggestion(world.deps, world.scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "accepted", decidedBy: "dev1", ruleId: "rule-1" })).toMatchObject({ ok: true });
+    seedItem(world.db, world.scope.orgId, world.scope.project, "RULE#rule-1", {
+      entityType: "LEARNING_RULE", id: "rule-1", suggestionId: suggestion.id, stage: "build", text: "Validate request bodies with the zod schema.", processAgentId: "agent-1", requestId: "req-1",
+      status: "active", processVersion: 3, projectCreatedAt: PROJECT_CREATED,
+    });
+    const before = await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false });
+    await add(world, ZOD_A);
+    const result = await group(world);
+    expect(result.opened).toEqual([]);
+    expect(openOnes(world)).toEqual([]);
+    expect(suggestions(world)).toHaveLength(1);
+    expect(correction(world, c)).toBeDefined();
+    expect(correction(world, d)).toBeDefined();
+    const after = await readMetric(world.deps, world.scope, monthOf(world), { prCaptureOff: false });
+    expect(after.repeatsOfAcceptedRules).toBe(before.repeatsOfAcceptedRules + 1);
+    expect(after.suggestions).toBe(before.suggestions);
   });
 });
 

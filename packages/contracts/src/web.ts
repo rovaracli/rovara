@@ -36,7 +36,7 @@ export { SessionAnchorRefSchema } from "./agent-sessions.js";
 export { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, SessionDiffReaderSchema, type SessionDiff } from "./session-views.js";
 
 export { HomeCardSchema, type HomeCard, HomeCardReaderSchema, HomeResponseSchema, type HomeResponse, HomeResponseReaderSchema, HomeButtonSchema, HomeCardIdSchema, HomeDismissResponseSchema, HomeDismissResponseReaderSchema, HOME_NOT_DISMISSIBLE } from "./home.js";
-export { LiveFilterSchema, LiveTileSchema, LiveTileReaderSchema, LiveResponseSchema, LiveResponseReaderSchema, SessionWhereViewSchema, ProjectOverviewProjectSchema, ProjectOverviewYouSchema, ProjectOverviewAgentSchema, ProjectOverviewBudgetSchema } from "./session-views.js";
+export { LiveFilterSchema, LiveTileSchema, LiveTileReaderSchema, LiveResponseSchema, LiveResponseReaderSchema, SessionWhereViewSchema, ProjectOverviewProjectSchema, ProjectOverviewYouSchema, ProjectOverviewAgentSchema, ProjectOverviewBudgetSchema, ProjectOverviewLearningSchema, type ProjectOverviewLearning } from "./session-views.js";
 export { LIVE_FILTERS, LIVE_VIEWING_MAX, SESSION_STATUS_WORDS } from "./agent-sessions.js";
 
 export * from "./agent-web-views.js";

@@ -146,6 +146,34 @@ describe("learning sweep", () => {
     expect(stored()).toBe(2000);
   });
 
+  it("keeps the live counter right when a capture at the cap lands in the middle of the sweep of a project (no double subtraction)", async () => {
+    for (const raceAfter of [1, 50, 99]) {
+      const world = makeWorld();
+      seedProject(world.db, TEST_ORG, "web");
+      for (let n = 0; n < 2000; n += 1) seedCorrection(world.db, TEST_ORG, "web", n, n < 100 ? { expiresAtSeconds: epochSeconds(NOW_MS) - 1 } : {});
+      seedItem(world.db, TEST_ORG, "web", "STATE", { projectCreatedAt: PROJECT_CREATED, revision: 1, openSuggestions: 0, liveCorrections: 2000, pendingRules: 0 });
+      const stored = () => world.db.find((item) => item.pk === projectLearningKey(TEST_ORG, "web", "STATE").pk && String(item.sk).startsWith("CORRECTION#")).length;
+      const input: CaptureInput = { id: "racer", stage: "build", source: "comment", sourceKey: "racer-source", sourceRef: { taskId: "t" }, taskId: "t", text: "Use the helper.", signature: ["h"], author: "dev1", standing: "member", limit: "remember", actor: "dev1" };
+      // After the Nth expired correction is gone, a capture arrives. It sees whatever the counter says at that moment.
+      let removed = 0, captured: unknown;
+      const racing = {
+        send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          const before = stored();
+          const answer = await world.db.send(command as never);
+          if (stored() < before) {
+            removed += before - stored();
+            if (removed === raceAfter && captured === undefined) captured = await captureCorrection(world.deps, world.scope, input);
+          }
+          return answer;
+        },
+      };
+      await expireLearningItems(racing, "state", TEST_ORG, new Date(world.clock.ms), () => undefined);
+      expect(captured, `race after ${String(raceAfter)}`).toMatchObject({ ok: true, created: true });
+      expect(stored(), `race after ${String(raceAfter)}`).toBe(1901);
+      expect(world.db.get(projectLearningKey(TEST_ORG, "web", "STATE")), `race after ${String(raceAfter)}`).toMatchObject({ liveCorrections: 1901 });
+    }
+  });
+
   it("reads each project a page at a time and checks the time budget between pages", async () => {
     const world = makeWorld();
     seedProject(world.db, TEST_ORG, "web");

@@ -186,6 +186,14 @@ export const AUDIT_ACTIONS = [
   "process.rolled_back",
   "playbook.default_process_changed",
   "company.change_applied_to_project",
+  // v1.2 learning loop: suggested rules and their decisions. Ids, counts, flags and fixed words only; never a correction's or a rule's text.
+  "rule.suggested",
+  "rule.accepted",
+  "rule.not_applied",
+  "rule.dismissed",
+  "rule.rolled_back",
+  "rule.correction_remembered",
+  "project.learning_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -323,6 +331,15 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
+  // v1.2 learning loop. `stage` is a stage id, `sourceKinds` a comma-joined list of fixed words (`comment`, `send_back`, `pr_comment`), `outcome` is `published` or `awaiting_approval`,
+  // `approvalOutcome` is `declined`, `expired` or `failed`, `dismissKind` is a fixed word, `standing` is `member` or `outsider` and `op` is `remember` or `forget`.
+  "rule.suggested": ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"],
+  "rule.accepted": ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"],
+  "rule.not_applied": ["suggestionId", "ruleId", "approvalOutcome"],
+  "rule.dismissed": ["suggestionId", "stage", "dismissKind"],
+  "rule.rolled_back": ["ruleId", "processAgentId", "processVersion"],
+  "rule.correction_remembered": ["correctionId", "stage", "standing", "op"],
+  "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

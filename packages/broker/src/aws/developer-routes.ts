@@ -190,6 +190,7 @@ import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
+import { clearOrgLearning, clearProjectLearning } from "../learning/cleanup.js";
 import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
@@ -294,7 +295,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void>; clearLearning?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -1092,6 +1093,18 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
 }
 
 /**
+ * v1.2 learning loop: an archived project's learning data (people's words) is deleted with it. Best effort, bounded, and run after the archive has applied: a failure logs the error's name only
+ * and never undoes or fails the archive. What a stopped clear leaves is ignored by every read of a project created again, and removed by the TTL or the learning sweep.
+ */
+async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, project: string): Promise<void> {
+  try {
+    await clearProjectLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
  * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
  * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
  * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
@@ -1117,6 +1130,7 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
       logDeveloperEvent({ event: "developer.project_archived_hook_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
     }
   }
+  if (!replayed && change === "archive") await clearArchivedProjectLearning(deps, caller.orgId, name);
   return { project: await getAppProject(deps, caller, name), warnings };
 }
 
@@ -2102,7 +2116,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
     if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
     if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
-    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps), clearLearning: (orgId, project) => clearArchivedProjectLearning(deps, orgId, project) }, caller, name, jsonBody(request));
   }
   // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
   const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
@@ -2519,6 +2533,8 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, deadline: deps.now() + CLOSE_STOP_BUDGET_MS }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
     });
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
+    // v1.2 learning loop: the company's learning data is deleted by a bounded walk over its projects; a walk that does not finish is resumed later (`resumeLearningWalks`).
+    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); });
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
@@ -2530,6 +2546,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       // The org's company AI sources leave the model proxy with it, vendor keys included (Task 24b).
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
       clearSessions,
+      clearLearning,
       stopWork,
       emails,
       by: { kind: "member", id: caller.developerId },

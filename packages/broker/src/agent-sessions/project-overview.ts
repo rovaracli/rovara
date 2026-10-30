@@ -4,12 +4,13 @@
 // filter for this project, so each session in it passed the reader's own access check. Reads are bounded: one page of tiles, the roster capped, and four single-item reads.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMonthStatsKey, scopeKey, spendCounterKey,
+  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMetaKey, projectMonthStatsKey, scopeKey, spendCounterKey,
   type BudgetScope, type ProjectOverview, type ProjectRole,
 } from "@agentx/contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { listRoster } from "../agents/roster.js";
+import { learningOverviewBlock } from "../learning/overview-block.js";
 import { effectiveLimits } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { batchGetItems, liveSessions } from "./live.js";
@@ -65,6 +66,18 @@ async function budgetOf(deps: ProjectOverviewDependencies, orgId: ProjectOvervie
 }
 type ProjectOverviewKeyOrg = SessionReadCaller["orgId"];
 
+/** v1.2 learning loop: the maintainer's block. A learning problem leaves the block out and never fails the page; the error's name only is logged. */
+async function learningOf(deps: ProjectOverviewDependencies, orgId: ProjectOverviewKeyOrg, project: string): Promise<ProjectOverview["learning"]> {
+  try {
+    const createdAt = (await getItem(deps, projectMetaKey(orgId, project)))?.["createdAt"];
+    if (typeof createdAt !== "string") return undefined;
+    return await learningOverviewBlock({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, project, projectCreatedAt: createdAt });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "project_overview.learning_unavailable", orgId, error: error instanceof Error ? error.name : "unknown" }));
+    return undefined;
+  }
+}
+
 /**
  * `GET /v1/app/projects/{name}/overview`. The caller's project role is read now (`projectMembers`, as the spend and roster routes read it); with none, or with the project missing, the
  * answer is `PROJECT_NOT_FOUND`. An archived project refuses new work and settings changes, so its flags say so.
@@ -103,6 +116,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
 
   const open = page.status !== "archived";
   const canViewSpend = projectAllows(role, "view_spend");
+  const learning = projectAllows(role, "edit_settings") ? await learningOf(deps, orgId, name) : undefined;
   const answer = {
     orgId,
     project: {
@@ -118,6 +132,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
     you: { role, canStartWork: open && projectAllows(role, "start_tasks"), canEditSettings: open && projectAllows(role, "edit_settings"), canViewSpend },
     agents,
     ...(canViewSpend ? { budget: await budgetOf(deps, orgId, name) } : {}),
+    ...(learning === undefined ? {} : { learning }),
     running: wall.tiles,
   };
   const checked = ProjectOverviewSchema.safeParse(answer);
