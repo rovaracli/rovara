@@ -374,7 +374,9 @@ describe("Forget", () => {
     const before = fixture.db.get({ pk: `ORG#${TEST_ORG}#PROJECT_LEARNING#${PROJECT}`, sk: suggestionSk("s1") })!;
     await forget(fixture, PRIYA, commentId);
     const after = fixture.db.get({ pk: `ORG#${TEST_ORG}#PROJECT_LEARNING#${PROJECT}`, sk: suggestionSk("s1") })!;
-    expect(after).toMatchObject({ status: "open", correctionIds: ids.slice(1) });
+    // The fixture's clock is frozen, so the three corrections share a time and grouping orders them by id (a hash of a random comment id): compare as a set.
+    expect(after).toMatchObject({ status: "open" });
+    expect([...(after.correctionIds as string[])].sort()).toEqual(ids.slice(1).sort());
     expect(after.revision).toBe((before.revision as number) + 1);
     expect((await readLearningState(learningDeps(fixture), scope))?.openSuggestions).toBe(1);
   });
