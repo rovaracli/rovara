@@ -2113,7 +2113,6 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     try {
       const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
       const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
-      if (pathLimitMicrousd === undefined || (run?.runLimitUsd !== undefined && requestedMicrousd === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task limit can't be represented exactly. Ask an admin to review Spending.");
       const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
         requireScopeAccess: async input => {
           const fresh = await deps.checkAccess(input.project);
@@ -2121,8 +2120,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
           if (deps.agentRuns !== undefined) await requireAgentAccess(deps.agentRuns, caller, input.agentId, prepared?.ref.version === "draft" ? "edit" : "use");
         },
       }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
-        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd,
-        ...(requestedMicrousd === undefined ? {} : { requestedMicrousd }),
+        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd: pathLimitMicrousd ?? null,
+        ...(requestedMicrousd !== undefined ? { requestedMicrousd } : run?.runLimitUsd === undefined ? {} : { requestedMicrousd: null }),
       });
       if (captured.kind === "captured") {
         spendingScopeChecks = await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project }, async () => {
