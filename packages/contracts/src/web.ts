@@ -49,8 +49,7 @@ export { ChainRunViewReaderSchema } from "./chain-session.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
-export { MemberRemovalPreviewSchema, MemberRemovalPreviewReaderSchema, MemberRemovalStartedSchema, MemberRemovalStartedReaderSchema, MemberRemovalStatusSchema, MemberRemovalStatusReaderSchema } from "./developer-web.js";
-export { MemberRemovalBodySchema } from "./member-removal.js";
+export { MemberRemovalBodySchema, MemberRemovalPreviewSchema, MemberRemovalPreviewReaderSchema, MemberRemovalStartedSchema, MemberRemovalStartedReaderSchema, MemberRemovalStatusSchema, MemberRemovalStatusReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 

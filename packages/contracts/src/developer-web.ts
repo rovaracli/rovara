@@ -80,6 +80,14 @@ export const MemberRemovalPreviewSchema = z.object({
 }).strict();
 export const MemberRemovalPreviewReaderSchema = forwardReader(MemberRemovalPreviewSchema);
 
+/** The body of `POST /v1/app/org/members/{id}/removal`: the request id is the receipt, `expectedRole` the role the screen showed, `successorId` who takes over (default: the person asking). */
+export const MemberRemovalBodySchema = z.object({
+  requestId: z.string().uuid(),
+  expectedRole: OrgRoleSchema,
+  successorId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
+export type MemberRemovalBody = z.infer<typeof MemberRemovalBodySchema>;
+
 /** `POST /v1/app/org/members/{id}/removal`. */
 export const MemberRemovalStartedSchema = z.object({ removalId: z.string().uuid(), state: z.enum(["STARTED", "DONE", "CANCELLED_REJOINED"]), message: z.string().max(500) }).strict();
 export const MemberRemovalStartedReaderSchema = forwardReader(MemberRemovalStartedSchema);

@@ -61,10 +61,3 @@ export interface MemberRemovalRecord {
 export function memberRemovalRecordKey(orgId: OrgId, removalId: string): OrgKey {
   return { pk: orgScoped(orgId, "MEMBER_REMOVAL"), sk: removalId };
 }
-
-export const MemberRemovalBodySchema = z.object({
-  requestId: z.string().uuid(),
-  expectedRole: z.enum(["owner", "admin", "member"]),
-  successorId: z.string().min(1).max(128).optional(),
-}).strict();
-export type MemberRemovalBody = z.infer<typeof MemberRemovalBodySchema>;
