@@ -113,3 +113,14 @@ for (const race of ["policy", "ceiling", "closed"] as const) it(`upgrade rolls b
   expect(f.db.get(policyKey.pk, policyKey.sk)).toEqual(race === "policy" ? expect.objectContaining({ revision: 9 }) : undefined);
   expect(f.db.get(guardKey.pk, guardKey.sk)).toEqual(race === "ceiling" ? expect.objectContaining({ revision: 9 }) : undefined);
 });
+
+for (const source of ["bootstrap", "upgrade"] as const) it(`new ${source} ceiling carries explicit seed review provenance`, async () => {
+  const f = fixture();
+  if (source === "bootstrap") await f.store.ensureOrg(orgId, "Company");
+  else {
+    f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open" });
+    await taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId);
+  }
+  const key = agentGuardrailsKey(orgId);
+  expect(f.db.get(key.pk, key.sk)).toMatchObject({ seedProvenance: { source, reviewRequired: true, seededAt: new Date(now).toISOString(), occurrence: `task-stop-${source}-v1#${orgId}` } });
+});
