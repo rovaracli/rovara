@@ -288,13 +288,15 @@ export const LearningViewAnswerSchema = z.object({
 
 export const LearningAcceptAnswerSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("published"), version: z.number().int().positive() }).strict(),
-  z.object({ outcome: z.literal("awaiting_approval"), confirmUrl: z.string().max(1000) }).strict(),
+  // `status` and `changes` are what a hand publish's 202 carries too (added: older readers ignore them).
+  z.object({ outcome: z.literal("awaiting_approval"), confirmUrl: z.string().max(1000), status: z.literal("NEEDS_CONFIRMATION").optional(), changes: z.array(z.string().max(1000)).max(100).optional() }).strict(),
 ]);
 export const LearningDismissAnswerSchema = z.object({ suggestion: LearningSuggestionViewSchema }).strict();
 export const LearningReopenAnswerSchema = z.object({ reopened: z.literal(true) }).strict();
 export const LearningRuleRemoveAnswerSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("published"), version: z.number().int().positive() }).strict(),
-  z.object({ outcome: z.literal("awaiting_approval"), confirmUrl: z.string().max(1000) }).strict(),
+  // `status` and `changes` are what a hand publish's 202 carries too (added: older readers ignore them).
+  z.object({ outcome: z.literal("awaiting_approval"), confirmUrl: z.string().max(1000), status: z.literal("NEEDS_CONFIRMATION").optional(), changes: z.array(z.string().max(1000)).max(100).optional() }).strict(),
   z.object({ outcome: z.literal("needs_editor"), stage: LearningStageSchema }).strict(),
 ]);
 export const LearningSettingsAnswerSchema = z.discriminatedUnion("applied", [

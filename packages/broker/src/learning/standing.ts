@@ -84,6 +84,14 @@ export async function readStandings(deps: StandingDeps, orgId: OrgId, project: s
   return new Map(entries);
 }
 
+/** `readStandings`, with the conditions that keep each member's standing true at the write (empty for anyone who is not a member). One entry per distinct person. */
+export async function readStandingsChecked(deps: StandingDeps, orgId: OrgId, project: string, developerIds: readonly string[]): Promise<Map<string, { standing: LearningStanding; checks: StandingCheck[] }>> {
+  const distinct = [...new Set(developerIds)];
+  if (distinct.length > 25) throw new Error("too many people to check at once");
+  const entries = await Promise.all(distinct.map(async (id) => [id, await readStandingChecked(deps, orgId, id, project)] as const));
+  return new Map(entries);
+}
+
 /**
  * The scope a capture is written in: the project META's `createdAt` as a canonical instant. Undefined when the project has no META (registered before Plan 2) or is archived: nothing
  * is learned there. Read it at every capture; a project created again under the same name has a new `createdAt` and so a clean partition.

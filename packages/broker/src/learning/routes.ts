@@ -6,6 +6,7 @@
 import { LearningForgetBodySchema, LearningReopenBodySchema, LearningRememberBodySchema, agentXError, type ProjectRole } from "@agentx/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { StatusReply } from "../aws/status-reply.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { forgetCorrectionById, rememberTaskComment, type ForgetAnswer, type RememberAnswer } from "./capture-comment.js";
 import { acceptSuggestion, dismissSuggestion, removeRule, reopenDismissed, type AcceptAnswer, type RemoveAnswer } from "./decide.js";
@@ -30,7 +31,15 @@ export interface LearningRouteDependencies {
   audit?: LearningDecideDeps["audit"];
 }
 
-export type LearningAnswer = RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | { suggestion: { id: string; status: "dismissed" } } | { reopened: true };
+export type LearningAnswer = RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | StatusReply | { suggestion: { id: string; status: "dismissed" } } | { reopened: true };
+
+/**
+ * A publish that waits for a person answers the way a hand publish does: `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }`. The `outcome` the screens read stays in the body, so a reader
+ * of either shape works.
+ */
+function answered(answer: AcceptAnswer | RemoveAnswer): AcceptAnswer | RemoveAnswer | StatusReply {
+  return answer.outcome === "awaiting_approval" ? new StatusReply(202, { status: "NEEDS_CONFIRMATION", ...answer }) : answer;
+}
 
 function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
   const parsed = schema.safeParse(raw);
@@ -62,7 +71,7 @@ export async function routeLearning(deps: LearningRouteDependencies, caller: Dev
     return { id: match[1]!, decide: deps.decide };
   };
   const accepting = deciding(ACCEPT_PATH.exec(rest));
-  if (accepting !== undefined) return acceptSuggestion(accepting.decide, caller, matched[1]!, accepting.id, body());
+  if (accepting !== undefined) return answered(await acceptSuggestion(accepting.decide, caller, matched[1]!, accepting.id, body()));
   const dismissing = deciding(DISMISS_PATH.exec(rest));
   if (dismissing !== undefined) return dismissSuggestion(dismissing.decide, caller, matched[1]!, dismissing.id, body());
   const reopening = deciding(REOPEN_PATH.exec(rest));
@@ -71,6 +80,6 @@ export async function routeLearning(deps: LearningRouteDependencies, caller: Dev
     return reopenDismissed(reopening.decide, caller, matched[1]!, reopening.id);
   }
   const removing = deciding(REMOVE_PATH.exec(rest));
-  if (removing !== undefined) return removeRule(removing.decide, caller, matched[1]!, removing.id, body());
+  if (removing !== undefined) return answered(await removeRule(removing.decide, caller, matched[1]!, removing.id, body()));
   return undefined;
 }

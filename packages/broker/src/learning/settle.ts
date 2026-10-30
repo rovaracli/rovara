@@ -13,7 +13,7 @@ import {
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { approvalIdFor, getAnyApproval } from "../agents/approvals-store.js";
 import type { LearningHomeSettler } from "./home-source.js";
-import { appendRuleToOverlay } from "./overlay.js";
+import { appendRuleToOverlay, removeRuleFromOverlay } from "./overlay.js";
 import type { ProjectPlaybookDependencies } from "../playbook/routes.js";
 import { acceptedEvent, flushLearningEvents, learningEvents, memberActor, notAppliedEvent, rolledBackEvent } from "./audit.js";
 import { ensureMetricCurrent, metricMonth, metricUpdateItem } from "./metric.js";
@@ -289,7 +289,24 @@ export async function settleRule(deps: LearningSettleDeps, scope: LearningScope,
   return "unchanged";
 }
 
-/** Remove waited for a person: when that approval ends, the rule is `removed` (applied) or stays `active` (declined, expired, failed). */
+/**
+ * Best effort, after a Remove that waited was declined, expired or failed: the draft the request wrote (the published overlay without the rule) is put back to the published overlay, so the
+ * layer is not busy for ever. Only when the draft is exactly that; anyone's other edit is left alone. Never throws.
+ */
+async function restoreRemovalDraftOf(deps: LearningSettleDeps, scope: LearningScope, rule: LearningRule): Promise<void> {
+  try {
+    const store = deps.approvals.store;
+    const agent = await store.get(scope.orgId, rule.processAgentId);
+    const draft = await store.getDraft(scope.orgId, rule.processAgentId);
+    if (agent === undefined || draft === undefined) return;
+    const base = agent.currentVersion === undefined ? {} : (await store.getVersion(scope.orgId, rule.processAgentId, agent.currentVersion))?.overlay ?? {};
+    const removal = removeRuleFromOverlay(base, rule.stage, rule.text);
+    if (removal.matches !== 1 || JSON.stringify(canonicalJson(draft.overlay)) !== JSON.stringify(canonicalJson(removal.overlay))) return;
+    await store.saveDraft({ orgId: scope.orgId, agentId: rule.processAgentId, overlay: base, expectedRevision: draft.revision, by: rule.requestedBy ?? "system" });
+  } catch { /* the draft stays; the next Accept or Remove sees it as unpublished changes */ }
+}
+
+/** Remove waited for a person: when that approval ends, the rule is `removed` (applied) or stays `active` (declined, expired, failed) and the draft is given back. */
 async function settleRemoval(deps: LearningSettleDeps, scope: LearningScope, rule: LearningRule): Promise<SettleOutcome> {
   const learning = learningOf(deps);
   const record = await getAnyApproval(deps.approvals, scope.orgId, rule.removalApprovalId as never);
@@ -311,28 +328,38 @@ async function settleRemoval(deps: LearningSettleDeps, scope: LearningScope, rul
       return "removed";
     }
     case "DECLINED": case "EXPIRED": case "APPROVED_FAILED":
+      // The draft first: if this stops here, the approval is still on the rule and the next settlement does it again.
+      await restoreRemovalDraftOf(deps, scope, rule);
       try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [clear] })); } catch (error) { if (!isCancellation(error)) throw error; }
       return "active";
     default: return "waiting";
   }
 }
 
-/** Settles the project's waiting rules (at most 5 per call): the rules the learning routes call before they decide anything. A failure to settle never fails the caller. */
+/** Every page of the RULE# partition is read (the waiting rules are found wherever they sit); at most this many waiting rules are settled per call. */
+const SETTLE_RULES_MAX = 25;
+const SETTLE_PAGES_MAX = 20;
+
+/** Settles the project's waiting rules (at most 25 per call, found on any page of its rules): the rules the learning routes call before they decide anything. A failure to settle never fails the caller. */
 export async function settleProject(deps: LearningSettleDeps, scope: LearningScope, log?: (entry: Record<string, unknown>) => void): Promise<number> {
   const learning = learningOf(deps);
   let settled = 0;
   try {
     if (await readLearningState(learning, scope) === undefined) return 0;
-    const page = await readLearningPartition(learning, scope, { prefix: "RULE#", maxItems: 100, maxPages: 1, pageSize: 100 });
-    let looked = 0;
-    for (const item of page.items) {
-      const rule = parseRule(item);
-      if (rule === undefined || looked >= 5) continue;
-      if (rule.status === "awaiting_approval" || rule.status === "pending" || (rule.status === "active" && rule.removalApprovalId !== undefined)) {
-        looked += 1;
-        const outcome = await settleRule(deps, scope, rule.id);
-        if (outcome === "active" || outcome === "not_applied" || outcome === "removed") settled += 1;
+    const waiting: string[] = [];
+    let cursor: string | undefined;
+    for (let pages = 0; pages < SETTLE_PAGES_MAX && waiting.length < SETTLE_RULES_MAX; pages += 1) {
+      const page = await readLearningPartition(learning, scope, { prefix: "RULE#", ...(cursor === undefined ? {} : { cursor }), maxItems: 100, maxPages: 1, pageSize: 100 });
+      for (const item of page.items) {
+        const rule = parseRule(item);
+        if (rule !== undefined && (rule.status === "awaiting_approval" || rule.status === "pending" || (rule.status === "active" && rule.removalApprovalId !== undefined))) waiting.push(rule.id);
       }
+      cursor = page.cursor;
+      if (cursor === undefined) break;
+    }
+    for (const id of waiting.slice(0, SETTLE_RULES_MAX)) {
+      const outcome = await settleRule(deps, scope, id);
+      if (outcome === "active" || outcome === "not_applied" || outcome === "removed") settled += 1;
     }
   } catch (error) {
     log?.({ event: "learning.settle_failed", error: error instanceof Error ? error.name : "unknown" });

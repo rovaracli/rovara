@@ -188,3 +188,34 @@ describe("the walk runner", () => {
     expect(indexItems(world)).toEqual([]);
   });
 });
+
+
+// ---- B6 review fix: the index read rotates, so entries behind a pile of failing ones are reached.
+describe("the index read rotates its starting point", () => {
+  const entry = (world: World, project: string) => world.db.set({
+    pk: WALK_INDEX_PK, sk: `${TEST_ORG}#clear#${project}`, entityType: "LEARNING_WALK_OPEN", orgId: TEST_ORG, kind: `clear#${project}`, project, before: iso(NOW_MS), since: iso(NOW_MS),
+  });
+
+  it("reaches entries behind more than 100 that keep failing, on the next tick", async () => {
+    const world = makeWorld();
+    for (let n = 0; n < 110; n += 1) entry(world, `bad-${String(n).padStart(3, "0")}`);
+    entry(world, "good-1");
+    entry(world, "good-2");
+    world.db.injectFault({
+      command: "QueryCommand", error: { name: "InternalServerError" }, times: 100_000,
+      match: (input) => typeof (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"] === "string" && String((input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).includes("bad-"),
+    });
+    const first = await resumeOpenLearningWalks(world.deps);
+    expect(first.failed).toBe(100);
+    expect(indexItems(world).some((item) => String(item.sk).includes("good-"))).toBe(true);
+    const second = await resumeOpenLearningWalks(world.deps);
+    expect(indexItems(world).some((item) => String(item.sk).includes("good-"))).toBe(false);
+    expect(second.done).toBe(2);
+  });
+
+  it("an idle tick is still one read", async () => {
+    const world = makeWorld();
+    await resumeOpenLearningWalks(world.deps);
+    expect(world.db.commandNames()).toEqual(["QueryCommand"]);
+  });
+});
