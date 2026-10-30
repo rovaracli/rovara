@@ -1133,6 +1133,10 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
   for (const field of ["status", "owner", "accountable", "monthlyBudgetUsd"] as const) {
     if (canonicalJson(original?.[field]) !== canonicalJson(input.before[field])) throw staleApproval();
   }
+  // Existing rows retain the complete original source, including per-run and
+  // revision fields. A missing built-in row has only virtual defaults, which
+  // are not persisted authority and remain represented as absence.
+  if (original !== undefined && canonicalJson(sourceFields(original)) !== canonicalJson(sourceFields(input.before as unknown as Record<string, unknown>))) throw staleApproval();
   const approvalSource: ApprovalSource = { version: 1, key, exists: original !== undefined, fields: sourceFields(original) };
   const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd, chainId === undefined ? "agent" : "agent and chain");
   const made = await createSpendRequest(deps, {
