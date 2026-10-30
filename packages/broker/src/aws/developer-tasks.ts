@@ -2861,6 +2861,12 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     if (deps.agentRuns === undefined || current.agent === undefined) throw budgetActorRefused();
     await requireAgentAccess(deps.agentRuns, caller, current.agent.agentId, current.agent.version === "draft" ? "edit" : "use");
     if (current.origin !== "app" || !isDeepStrictEqual(current.payer, receipt.payer) || current.project !== receipt.place.project) throw agentXError("CHANGE_STALE", "The task's payer changed. Review the task before continuing.");
+    try {
+      await deps.actions.transact([...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access)]);
+    } catch (error) {
+      if (failedIndexes(error) !== undefined) throw budgetActorRefused();
+      throw error;
+    }
     if (current.closedAt === undefined && (receipt.workflowRevision === null || current.workflow?.revision === receipt.workflowRevision)) {
       await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false,
         ...(receipt.agentRunRevision === null ? {} : { expectedPausedAgentRevision: receipt.agentRunRevision }) });
@@ -2903,6 +2909,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
     const baseline = deps.modelAccess === undefined ? undefined
       : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
+    const transitionAccess = await authorizeTaskAction(deps, caller, taskId, "work");
     const item = windowAndPauseUpdate(deps, task, baseline, captured)[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
     const source = ["origin", "budgetPause", "startedBy", "place", "workflow", "modelKeyIds"] as const;
@@ -2925,7 +2932,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
         ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": deps.orgId, ":project": task.project, ":pays": projectPays } } },
         { ConditionCheck: { TableName: deps.tableName, Key: taskAgentRunKey(taskId),
           ...(runSource === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#revision = :revision AND #state = :state",
-            ExpressionAttributeNames: { "#revision": "revision", "#state": "state" }, ExpressionAttributeValues: { ":revision": runSource.revision, ":state": "PAUSED_BUDGET" } }) } }, receipt]);
+            ExpressionAttributeNames: { "#revision": "revision", "#state": "state" }, ExpressionAttributeValues: { ":revision": runSource.revision, ":state": "PAUSED_BUDGET" } }) } }, accessFence(deps, transitionAccess), receipt]);
     } catch (error) {
       const accepted = await readTaskStopTransition(deps, identity);
       if (accepted !== undefined) return recover(accepted);
