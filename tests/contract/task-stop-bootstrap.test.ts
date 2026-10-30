@@ -289,3 +289,14 @@ for (const creation of ["ensureOrg", "createOrgWithOwner"] as const) for (const 
   if (creation === "createOrgWithOwner" && pin) expect(code).toMatchObject({ pinnedVersion: 2, updatedBy: who });
   else expect(code).not.toHaveProperty("pinnedVersion");
 });
+
+it("an existing company's registered built-in with no settings upgrades to explicit inheritance without pinning or money", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, kind: "agent" as const, agentId: ROVARA_CODE_AGENT_ID };
+  expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "updated" });
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), saved = f.db.get(key.pk, key.sk);
+  expect(saved).toMatchObject({ entityType: "BUILTIN_AGENT_SETTINGS", orgId, agentId: ROVARA_CODE_AGENT_ID, revision: 1, stopKind: "inherit", seedProvenance: { source: "upgrade", reviewRequired: true } });
+  expect(saved).not.toHaveProperty("maxPerRunUsd"); expect(saved).not.toHaveProperty("pinnedVersion");
+  const count = f.db.transactions().length;
+  expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "preserved" }); expect(f.db.transactions()).toHaveLength(count);
+});
