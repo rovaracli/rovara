@@ -4,15 +4,14 @@
 // ambiguous call, and a failure stops the close (`closingAt` stays, and the next close resumes). Their expiries (180 and 365 days) are the backstop.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, BUILTIN_AGENT_IDS, OrgIdSchema, agentXError, orgMetaKey, orgProjectCatalogPk, orgScoped } from "@agentx/contracts";
+import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgMetaKey, orgProjectCatalogPk, orgScoped } from "@agentx/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 type Row = Record<string, unknown>;
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Track record data could not be cleared. Retry company cleanup.");
 const stale = () => agentXError("CHANGE_STALE", "Company cleanup authority changed. Retry company cleanup.");
-/** The stages outcomes are kept for (the recipe step ids), and the paths a run cost is kept for. */
-const STAGES = ["plan_critic", "review", "check"] as const;
+/** The paths a run cost is kept for. The stages outcomes are kept under are the contract's own list, so the two cannot drift apart. */
 const PATHS = ["QUICK", "FULL", "TASK", "AGENT"] as const;
 const PAGE = 25;
 const MAX_PAGES = 1000;
@@ -94,7 +93,7 @@ export async function clearTrackRecordData(deps: Dependencies, value: unknown): 
     const projects = await names(orgProjectCatalogPk(orgId), "PROJECT#", (row) => row.name);
     const agents = [...new Set([...BUILTIN_AGENT_IDS, ...await names(orgScoped(orgId, "AGENT_DIRECTORY"), undefined, (row) => row.agentId)])];
     for (const project of projects) {
-      for (const stage of STAGES) {
+      for (const stage of OUTCOME_STAGES) {
         await clearPartition(orgScoped(orgId, `OUTCOME#${project}#${stage}`));
         await clearPartition(orgScoped(orgId, `OUTCOME_SCORED#${project}#${stage}`));
       }

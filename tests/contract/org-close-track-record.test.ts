@@ -14,7 +14,7 @@ async function fixture() {
     const put = (pk: string, sk: string, entityType: string) => { const row = { pk, sk, entityType, orgId: org }; db.set(row); rows.push({ pk, sk }); };
     for (const project of projects) {
       db.set({ ...orgProjectCatalogKey(org, project), entityType: "PROJECT_CATALOG", name: project, latestRevision: 1 });
-      for (const stage of ["plan_critic", "review", "check"]) {
+      for (const stage of ["plan_critic", "review", "check", "risk"]) {
         for (let n = 0; n < 3; n += 1) {
           put(`ORG#${org}#OUTCOME#${project}#${stage}`, `2026-0${n + 1}-01T00:00:00.000Z#task-${n}#claim#1`, "OUTCOME_SAMPLE");
           put(`ORG#${org}#OUTCOME_SCORED#${project}#${stage}`, `2026-0${n + 1}-02T00:00:00.000Z#task-${n}#claim#1`, "OUTCOME_SCORED");
