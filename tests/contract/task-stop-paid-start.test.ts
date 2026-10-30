@@ -30,6 +30,15 @@ it("a paid task commits the exact company stop into existing budgetUsd with its 
   const task = reply.body.task as { taskId: string }, stored = f.t.db.get(`DEVTASK#${task.taskId}`, "META");
   expect(stored).toMatchObject({ budgetUsd: 1.234567, spendingStop: { schemaVersion: 2, effectiveStopMicrousd: 1_234_567, approvalCapMicrousd: 1_000_000 } });
 });
+it("initial paid admission commits an immutable window receipt and task reference", async () => {
+  const f = await fixture(), reply = await f.start(); expect(reply.status).toBe(200);
+  const task = f.t.meta((reply.body.task as { taskId: string }).taskId);
+  expect(task.spendingAdmission).toMatchObject({ requestId: f.request.requestId, actorId: MAYA.developerId, intentHash: expect.any(String) });
+  const receipt = f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${f.request.requestId}` });
+  expect(receipt).toMatchObject({ entityType: "SPENDING_ADMISSION", outcome: "accepted", workId: task.taskId,
+    requestId: f.request.requestId, actorId: MAYA.developerId, intentHash: task.spendingAdmission?.intentHash,
+    spendingStop: task.spendingStop, budgetBaselineUsd: 0, operationId: expect.any(String) });
+});
 for (const failure of ["zero", "missing_project", "deleted_policy"] as const) it(`refuses enrolled paid start ${failure} before any workspace is created`, async () => {
   const f = await fixture(failure === "zero" ? 0 : 1_234_567);
   if (failure === "missing_project") f.t.db.delete(f.project);
