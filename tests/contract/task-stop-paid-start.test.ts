@@ -509,3 +509,33 @@ it("Continue-as-task leaves the testing payer and pause intact if historical key
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` })).toBeUndefined();
 });
+
+for (const loss of ["member", "pointer", "closing", "people"] as const) it(`Continue-as-task fences native ${loss} authority loss before payer/window commit`, async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":app"] === "app")) {
+      changed = true;
+      if (loss === "member") f.t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+      else if (loss === "pointer") f.t.db.delete(developerOrgKey(MAYA.developerId));
+      else if (loss === "closing") f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() });
+      else f.t.db.set({ pk: `DEVTASK#${f.task.taskId}`, sk: "PEOPLE", revision: 1, schemaVersion: 999 });
+    }
+    return send(command);
+  };
+  const reply = await f.transition(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` })).toBeUndefined();
+});
+it("Continue-as-task receipt recovery refuses a closing org before redriving the original paused step", async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let lost = false;
+  f.t.db.send = async command => {
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":app"] === "app")) {
+      lost = true; f.t.db.set({ ...f.t.db.get(orgMetaKey(TEST_ORG))!, closingAt: new Date().toISOString() }); throw new Error("test lost acknowledgement after org began closing");
+    }
+    return result;
+  };
+  const reply = await f.transition(); expect(lost).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect((await f.transition()).status).toBe(403); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
