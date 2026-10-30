@@ -25,7 +25,7 @@ test("the How we work cards say what each checking stage has earned", async ({ p
  await expect(page.getByRole("heading", { name: "Build", exact: true })).toBeVisible();
  const review = page.getByRole("region", { name: "Review" });
  await expect(review.getByText("No changes requested by a person on 9 of 10 merged PRs (last 30 days)")).toBeVisible();
- await expect(review.getByText("2 closed unmerged · 3 merged without a person's review · Reverts after merge aren't tracked yet")).toBeVisible();
+ await expect(review.getByText("2 PRs closed unmerged · 3 merged without a person's review · Reverts after merge aren't tracked yet")).toBeVisible();
  await expect(review.getByText("Not enough history yet (6 so far)")).toBeVisible();
  await expect(page.getByRole("region", { name: "Plan check" }).getByText("The person approved the plan 14 of 17 times (last 30 days)")).toBeVisible();
  await expect(page.getByRole("region", { name: "Checks" }).getByText("CI passed on 14 of 16 PRs where tests said they prove the change (last 30 days)")).toBeVisible();
@@ -55,11 +55,11 @@ test("a less-safe change in the review dialog shows the stage's lines beside it"
 
 test("the task page shows the owner's early score with its count", async ({ page, context, request, baseURL }) => {
  await signIn(page, context, request, baseURL, "workspace");
- await patch(page, "**/v1/web/sessions/ses_aaaaaaaaaaaaaaaaaaaa", body => { const task = (body.session as { body: { task: Record<string, unknown> } }).body.task;task.earlyRiskSignal = { held: 5, notHeld: 1, windowDays: 30, capped: false, enough: false }; });
+ await patch(page, "**/v1/web/sessions/ses_aaaaaaaaaaaaaaaaaaaa", body => { const task = (body.session as { body: { task: Record<string, unknown> } }).body.task;task.earlyRiskSignal = { held: 5, notHeld: 1, closedUnmerged: 0, noOutcome: 0, unreviewedMerges: 2, windowDays: 30, capped: false, enough: false }; });
  await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa");
  await page.getByRole("tab", { name: "Pull request" }).click();
  const signal = page.getByRole("region", { name: "Early signal, only you can see this" });
- await expect(signal.getByText("Early signal, few samples: PRs this project rated low risk were merged with no changes requested by a person 5 of 6 times (last 30 days). Reverts after merge aren't tracked yet.")).toBeVisible();
+ await expect(signal.getByText("Early signal, few samples: PRs this project rated low risk were merged with no changes requested by a person 5 of 6 times (last 30 days). 2 merged without a person's review · Reverts after merge aren't tracked yet.")).toBeVisible();
  await expect(signal.getByText("Only you can see this.")).toBeVisible();
  await evidenceShot(page, { path: shot("task-page-early-signal") });
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });

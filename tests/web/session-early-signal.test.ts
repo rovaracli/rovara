@@ -20,7 +20,7 @@ function setup(value: unknown) {
  return { ...ui, close() { ui.unmount();router.dispose(); } };
 }
 const withSignal = (signal?: Record<string, unknown>) => fixture({ body: { kind: "task", task: taskFixture({ pullRequests: [{ repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" }], ...(signal === undefined ? {} : { earlyRiskSignal: signal }) }) } });
-const SIGNAL = { held: 5, notHeld: 1, windowDays: 30, capped: false, enough: false };
+const SIGNAL = { held: 5, notHeld: 1, closedUnmerged: 0, noOutcome: 0, unreviewedMerges: 0, windowDays: 30, capped: false, enough: false };
 
 it("shows the early score to the owner, with the count of samples and the early, few samples label", async () => {
  const f = setup(withSignal(SIGNAL));

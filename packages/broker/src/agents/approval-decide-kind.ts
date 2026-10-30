@@ -15,7 +15,7 @@ import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 import { resolveRecipe } from "./changes.js";
-import { readStageTrackRecord } from "../playbook/track-record.js";
+import { readTrackRecordsByKind } from "../playbook/track-record.js";
 
 const NAME_MAX = 80;
 const OPEN_AGAIN = "Open the approval again from Rovara.";
@@ -116,10 +116,11 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
 }
 
 /**
- * v1.2 track record, read-only: for a less-safe change to a project's process, the record of the stage each change is about (the plan check, code and security review, tests), as facts under the
- * changes. A change about no stage with a record adds nothing, a stage's record is shown once, and a record that cannot be read leaves the page as it was. It decides nothing.
+ * v1.2 track record, read-only: the changes a person is asked to confirm, each followed by the record of the stage it is about (the plan check, or code and security review), as paragraphs right after
+ * the change. Only a change about who reviews or checks at a stage, or about removing or weakening it, has one. A stage is found by its id and kind (never by its name alone), each kind of stage is read
+ * once under one deadline, and a record that cannot be read leaves the changes as they were. It decides nothing.
  */
-async function trackRecordFacts(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<Array<{ label: string; value: string }>> {
+async function changesWithRecords(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<string[]> {
   try {
     const subject = record.subject;
     let project: string | undefined;
@@ -129,32 +130,25 @@ async function trackRecordFacts(deps: ApprovalDependencies, record: Extract<AnyA
       const live = isBuiltinAgentId(subject.agentId) ? undefined : await deps.store.get(record.orgId, subject.agentId);
       if (live?.owner.kind === "project") { project = live.owner.project; layerId = live.agentId; }
     }
-    if (project === undefined || record.changes.length === 0) return [];
-    // The steps the changes can name: Rovara Code's, and the project's process layer's own when it has one.
+    if (project === undefined || record.changes.length === 0) return record.changes;
+    // The steps the changes can name: Rovara Code's, and the project's process layer's own when it has one. Each is known by its id and kind.
     const steps = new Map<string, { id: string; name: string; kind: string }>();
     const builtin = deps.store.builtinRecipe(ROVARA_CODE_AGENT_ID, await deps.store.pinnedBuiltinVersion(record.orgId, ROVARA_CODE_AGENT_ID));
-    for (const step of builtin.steps) steps.set(`${step.id}|${step.name}`, step);
+    for (const step of builtin.steps) steps.set(`${step.id}|${step.kind}`, step);
     if (layerId !== undefined) {
       const own = await resolveRecipe(deps, record.orgId, layerId as never, "current").catch(() => undefined);
-      for (const step of own?.steps ?? []) steps.set(`${step.id}|${step.name}`, step);
+      for (const step of own?.steps ?? []) steps.set(`${step.id}|${step.kind}`, step);
     }
     const stages = [...steps.values()];
-    const wanted = new Set<string>();
-    for (const change of record.changes) { const id = stageOfLessSafeReason(change, stages); if (id !== undefined) wanted.add(id); }
-    const facts: Array<{ label: string; value: string }> = [];
-    const shown = new Set<string>();
-    for (const id of wanted) {
-      const stage = stages.find((entry) => entry.id === id);
-      for (const read of stage === undefined ? [] : await readStageTrackRecord(deps, record.orgId, project, stage.kind) ?? []) {
-        if (shown.has(read.claim)) continue;
-        shown.add(read.claim);
-        const lines = trackRecordLines(read);
-        facts.push(fact(`Record so far: ${lines.title}`, `${lines.rate}.${lines.limits === undefined ? "" : ` ${lines.limits}.`}`));
-      }
-    }
-    return facts;
+    const kindOf = record.changes.map((change) => { const id = stageOfLessSafeReason(change, stages); return id === undefined ? undefined : stages.find((entry) => entry.id === id)?.kind; });
+    const read = await readTrackRecordsByKind(deps, record.orgId, project, kindOf.filter((kind): kind is string => kind !== undefined));
+    return record.changes.flatMap((change, index) => {
+      const kind = kindOf[index];
+      const lines = (kind === undefined ? [] : read.get(kind) ?? []).map((entry) => trackRecordLines(entry));
+      return [change, ...lines.map((entry) => `Record so far, ${entry.title}: ${entry.rate}.${entry.limits === undefined ? "" : ` ${entry.limits}.`}`)];
+    });
   } catch {
-    return [];
+    return record.changes;
   }
 }
 
@@ -211,8 +205,8 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
-  facts.push(...await trackRecordFacts(deps, record), expires);
-  return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };
+  facts.push(expires);
+  return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };
 }
 
 async function callerOf(deps: ApprovalDependencies, target: DecideTarget, proof?: AuditProof): Promise<AgentCaller | undefined> {

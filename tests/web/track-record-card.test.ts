@@ -40,7 +40,7 @@ describe("the record on each card", () => {
   const group = within(card("Review")).getByRole("group", { name: "Track record" });
   expect(within(group).getByText("Code review")).toBeTruthy();
   expect(within(group).getByText("No changes requested by a person on 9 of 10 merged PRs (last 30 days)")).toBeTruthy();
-  expect(within(group).getByText(`2 closed unmerged · 3 merged without a person's review · ${REVERTS}`)).toBeTruthy();
+  expect(within(group).getByText(`2 PRs closed unmerged · 3 merged without a person's review · ${REVERTS}`)).toBeTruthy();
   expect(within(group).getByText("Security review")).toBeTruthy();
   expect(within(group).getByText("Not enough history yet (6 so far)")).toBeTruthy();
   expect(within(group).getByText(REVERTS)).toBeTruthy();
@@ -94,7 +94,7 @@ describe("a confirmation shows the stage's record beside each less-safe change",
   const dialog = await publish();
   const review = item(dialog, reasons[0]!);
   expect(within(review).getByText("No changes requested by a person on 9 of 10 merged PRs (last 30 days)")).toBeTruthy();
-  expect(within(review).getByText(`2 closed unmerged · 3 merged without a person's review · ${REVERTS}`)).toBeTruthy();
+  expect(within(review).getByText(`2 PRs closed unmerged · 3 merged without a person's review · ${REVERTS}`)).toBeTruthy();
   expect(within(review).getByText("Not enough history yet (6 so far)")).toBeTruthy();
   expect(within(item(dialog, reasons[2]!)).getByText("The person approved the plan 14 of 17 times (last 30 days)")).toBeTruthy();
   expect(within(item(dialog, reasons[1]!)).queryByRole("group", { name: "Track record" })).toBeNull();

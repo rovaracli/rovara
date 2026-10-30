@@ -28,3 +28,30 @@ export async function readStageTrackRecord(deps: TrackRecordDependencies, orgId:
   const found = reads.filter((record): record is HowWeWorkTrackRecord => record !== undefined);
   return found.length === 0 ? undefined : found;
 }
+
+/** How long a page waits for the records before it shows without them. */
+export const TRACK_RECORD_DEADLINE_MS = 1500;
+
+/**
+ * The records of every kind of stage in `kinds`, each kind read once and all together, under one deadline. A kind whose read failed is not in the answer; at the deadline the answer is empty, so the
+ * page renders without records instead of waiting on a slow read (a read still under way finishes on its own, its answer unused).
+ */
+export async function readTrackRecordsByKind(deps: TrackRecordDependencies, orgId: OrgId, project: string, kinds: Iterable<string>, deadlineMs: number = TRACK_RECORD_DEADLINE_MS): Promise<Map<string, HowWeWorkTrackRecord[]>> {
+  const found = new Map<string, HowWeWorkTrackRecord[]>();
+  const unique = [...new Set(kinds)].filter(hasTrackRecord);
+  if (unique.length === 0) return found;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), deadlineMs); });
+  const reads = Promise.all(unique.map(async (kind) => [kind, await readStageTrackRecord(deps, orgId, project, kind)] as const));
+  try {
+    const result = await Promise.race([reads, deadline]);
+    if (result === "late") {
+      console.log(JSON.stringify({ component: "broker", level: "warn", event: "track_record.read_late", kinds: unique }));
+      return found;
+    }
+    for (const [kind, records] of result) if (records !== undefined) found.set(kind, records);
+    return found;
+  } finally {
+    clearTimeout(timer);
+  }
+}

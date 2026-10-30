@@ -65,7 +65,9 @@ const viewOf = async (w: MergeWorld, approvalId: string) => {
   expect(inspected.status).toBe("open");
   return (inspected as unknown as { view: { facts: Array<{ label: string; value: string }>; paragraphs: string[] } }).view;
 };
-const records = (view: { facts: Array<{ label: string; value: string }> }) => view.facts.filter((fact) => fact.label.startsWith("Record so far"));
+const RECORD = "Record so far, ";
+/** The record paragraphs, each with the change it follows (the paragraph before it that is not a record). */
+const records = (view: { paragraphs: string[] }) => view.paragraphs.flatMap((text, index) => text.startsWith(RECORD) ? [{ change: view.paragraphs.slice(0, index).reverse().find((before) => !before.startsWith(RECORD))!, text: text.slice(RECORD.length) }] : []);
 
 describe("the confirmation page shows the stage's record beside a less-safe change", () => {
   it("for a publish that changes the review instructions: the code review's and the security review's lines, read-only", async () => {
@@ -79,10 +81,15 @@ describe("the confirmation page shows the stage's record beside a less-safe chan
     expect(waiting.applied).toBe(false);
     const view = await viewOf(w, approvalIdOf(w, waiting));
     expect(view.paragraphs.join("\n")).toContain('Changes the instructions of the review step "Review"');
+    const change = 'Changes the instructions of the review step "Review"';
     expect(records(view)).toEqual([
-      { label: "Record so far: Code review", value: "No changes requested by a person on 9 of 10 merged PRs (last 30 days). 2 closed unmerged · Reverts after merge aren't tracked yet." },
-      { label: "Record so far: Security review", value: "Not enough history yet (4 so far). Reverts after merge aren't tracked yet." },
+      { change, text: "Code review: No changes requested by a person on 9 of 10 merged PRs (last 30 days). 2 PRs closed unmerged · Reverts after merge aren't tracked yet." },
+      { change, text: "Security review: Not enough history yet (4 so far). Reverts after merge aren't tracked yet." },
     ]);
+    // Each record sits right after its change, and facts carry none.
+    expect(view.paragraphs.indexOf(change)).toBeGreaterThanOrEqual(0);
+    expect(view.paragraphs[view.paragraphs.indexOf(change) + 1]!.startsWith(RECORD)).toBe(true);
+    expect(view.facts.some((fact) => fact.label.startsWith("Record so far"))).toBe(false);
   });
 
   it("for a change to the plan check: the plan check's lines", async () => {
@@ -91,7 +98,7 @@ describe("the confirmation page shows the stage's record beside a less-safe chan
     await seed(w, "plan_ready", "held", 14); await seed(w, "plan_ready", "not_held", 3);
     await setDraft(w, agentId, { plan_critic: { instructions: "Check the plan against the tests." } });
     const waiting = await publish(w, MAX, agentId);
-    expect(records(await viewOf(w, approvalIdOf(w, waiting)))).toEqual([{ label: "Record so far: Plan check", value: "The person approved the plan 14 of 17 times (last 30 days)." }]);
+    expect(records(await viewOf(w, approvalIdOf(w, waiting)))).toEqual([{ change: 'Changes the instructions of the plan check "Plan check"', text: "Plan check: The person approved the plan 14 of 17 times (last 30 days)." }]);
   });
 
   it("for a switch back to the built-in that removes a stricter review: the review's lines of that project", async () => {
@@ -106,18 +113,21 @@ describe("the confirmation page shows the stage's record beside a less-safe chan
     const reply = await putProjectPlaybook(playbookDeps(w), callerOf(w, MAX), "web", { expectedRevision: (await readProjectPlaybook(playbookDeps(w), ORG_A, "web")).revision, defaultProcess: { kind: "builtin" } });
     expect(reply.statusCode).toBe(202);
     const view = await viewOf(w, w.approvalIdOf((reply.body as { confirmUrl: string }).confirmUrl));
-    expect(records(view).map((fact) => fact.label)).toEqual(["Record so far: Code review", "Record so far: Security review"]);
-    expect(records(view)[0]!.value).toContain("No changes requested by a person on 10 of 10 merged PRs (last 30 days)");
+    expect(records(view).map((entry) => entry.text.split(":")[0])).toEqual(["Code review", "Security review"]);
+    expect(records(view)[0]!.text).toContain("No changes requested by a person on 10 of 10 merged PRs (last 30 days)");
   });
 
-  it("shows nothing for a change about no stage with a record, and a stage's record only once however many of its changes there are", async () => {
+  it("shows nothing for a change about no stage with a record, or one that only raises a limit on the review step", async () => {
     const w = world();
     const agentId = await layer(w);
-    await setDraft(w, agentId, { build: { timeoutMinutes: 240 } });
+    await seed(w, "review_pass:CRITIC", "held", 12);
+    await setDraft(w, agentId, { build: { timeoutMinutes: 240 }, review: { timeoutMinutes: 240 } });
     const waiting = await publish(w, MAX, agentId);
     expect(waiting.applied).toBe(false);
     const view = await viewOf(w, approvalIdOf(w, waiting));
     expect(view.paragraphs.join("\n")).toMatch(/Raises the time the step "Build"/u);
+    // A time limit raised on the review step only quotes its name: the review's record is not shown beside it.
+    expect(view.paragraphs.join("\n")).toMatch(/Raises the time the step "Review"/u);
     expect(records(view)).toEqual([]);
   });
 

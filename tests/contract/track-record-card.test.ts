@@ -41,24 +41,25 @@ describe("the words of a track record", () => {
     expect(trackRecordLines(record({ held: 0, notHeld: 0, enough: false })).rate).toBe("Not enough history yet (0 so far)");
   });
 
-  it("adds the cap, \"(based on the latest 2000)\", when the read stopped at it", () => {
+  it("adds the cap when the read stopped at it; code and security review share one read, so theirs counts reviews", () => {
     expect(OUTCOME_READ_CAP).toBe(2000);
     expect(trackRecordLines(record({ capped: true, held: 1500, notHeld: 400 })).rate).toBe("The person approved the plan 1500 of 1900 times (last 30 days) (based on the latest 2000)");
+    expect(trackRecordLines(record({ claim: "review_pass:CRITIC", capped: true, held: 1500, notHeld: 400 })).rate).toBe("No changes requested by a person on 1500 of 1900 merged PRs (last 30 days) (based on the latest 2000 reviews)");
   });
 
   it("lists the limits: closed unmerged, merged without a person's review, then the reverts sentence, leaving out any count that is 0", () => {
     const limits = (over: Partial<HowWeWorkTrackRecord>) => trackRecordLines(record({ claim: "review_pass:CRITIC", ...over })).limits;
-    expect(limits({ closedUnmerged: 2, unreviewedMerges: 3 })).toBe(`2 closed unmerged · 3 merged without a person's review · ${REVERTS}`);
-    expect(limits({ closedUnmerged: 2 })).toBe(`2 closed unmerged · ${REVERTS}`);
+    expect(limits({ closedUnmerged: 2, unreviewedMerges: 3 })).toBe(`2 PRs closed unmerged · 3 merged without a person's review · ${REVERTS}`);
+    expect(limits({ closedUnmerged: 2 })).toBe(`2 PRs closed unmerged · ${REVERTS}`);
     expect(limits({ unreviewedMerges: 3 })).toBe(`3 merged without a person's review · ${REVERTS}`);
     expect(limits({})).toBe(REVERTS);
     expect(limits({ noOutcome: 4 })).toBe(`4 with no result to check · ${REVERTS}`);
   });
 
   it("puts the reverts sentence on the review lines only; the plan check has none, and the tests line says CI failures unrelated to the change count", () => {
-    expect(trackRecordLines(record({ closedUnmerged: 1 })).limits).toBe("1 closed unmerged");
+    expect(trackRecordLines(record({ closedUnmerged: 1 })).limits).toBe("1 PR closed unmerged");
     expect(trackRecordLines(record()).limits).toBeUndefined();
-    expect(trackRecordLines(record({ claim: "proves_change", closedUnmerged: 2 })).limits).toBe("2 closed unmerged · CI failures unrelated to the change also count");
+    expect(trackRecordLines(record({ claim: "proves_change", closedUnmerged: 2 })).limits).toBe("2 PRs closed unmerged · CI failures unrelated to the change also count");
     expect(trackRecordLines(record({ claim: "proves_change", closedUnmerged: 1 })).limits).not.toContain("Reverts");
   });
 });
@@ -68,20 +69,35 @@ describe("a less-safe change and its stage", () => {
     { id: "plan", name: "Plan", kind: "plan" }, { id: "plan_critic", name: "Plan check", kind: "plan_critic" }, { id: "build", name: "Build", kind: "build" },
     { id: "check", name: "Checks", kind: "check" }, { id: "review", name: "Review", kind: "review" }, { id: "pull_request", name: "Pull request", kind: "pull_request" },
   ];
-  it("maps a change that names a step, or says plan check or review step, to that stage", () => {
+  it("maps a change about who reviews or checks at a stage, or about removing or weakening it, to that stage", () => {
     expect(stageOfLessSafeReason('Changes the instructions of the plan check "Plan check"', stages)).toBe("plan_critic");
     expect(stageOfLessSafeReason('Removes the review step "Review"', stages)).toBe("review");
     expect(stageOfLessSafeReason('Gives the review step "Review" fewer reviewers', stages)).toBe("review");
     expect(stageOfLessSafeReason('Moves the review step "Review" to a weaker model', stages)).toBe("review");
-    expect(stageOfLessSafeReason('Raises the time the step "Checks" may run, from 60 to 90 minutes', stages)).toBe("check");
+    expect(stageOfLessSafeReason('Makes the plan check "Plan check" use the same model as the plan step "Plan"', stages)).toBe("plan_critic");
+    expect(stageOfLessSafeReason('Stops the review step "Review" needing a different AI company from the step it checks', stages)).toBe("review");
+    expect(stageOfLessSafeReason('Stops the review step "Review" sending findings back', stages)).toBe("review");
+    expect(stageOfLessSafeReason('Lowers how many times the review step "Review" sends findings back, from 3 to 1', stages)).toBe("review");
     expect(stageOfLessSafeReason("Removes the plan check", stages)).toBe("plan_critic");
   });
-  it("shows nothing for a change that is not about a stage with a record", () => {
-    expect(stageOfLessSafeReason('Lets the step "Build" send data to a new AI company (OpenAI)', stages)).toBeUndefined();
-    expect(stageOfLessSafeReason('Removes the time limit of the step "Pull request"', stages)).toBeUndefined();
+  it("shows nothing for a tool, spending, time or connector change that only quotes the step's name, or for a change about no stage with a record", () => {
+    expect(stageOfLessSafeReason('Raises the time the step "Review" may run, from 60 to 90 minutes', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Removes the time limit of the step "Plan check"', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Raises the spending limit of the step "Review", from $5 to $9', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Allows more tools in the step "Review"', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Removes the tool limit on the step "Review"', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Gives the step "Review" read access to the project\'s files', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Lets the step "Review" send data to a new AI company (OpenAI)', stages)).toBeUndefined();
+    expect(stageOfLessSafeReason('Raises the time the step "Checks" may run, from 60 to 90 minutes', stages)).toBeUndefined();
     expect(stageOfLessSafeReason("Raises the agent's autonomy from suggest to run", stages)).toBeUndefined();
     expect(stageOfLessSafeReason("Moves the company plan_check default to a weaker model", stages)).toBeUndefined();
     expect(stageOfLessSafeReason('Removes the approval step "Ship it"', stages)).toBeUndefined();
+  });
+  it("matches by the step's kind, so an agent step that has the same name never gets a stage's record", () => {
+    const withOwn = [{ id: "own_review", name: "Review", kind: "agent" }, { id: "own_check", name: "Checks", kind: "agent" }, ...stages];
+    expect(stageOfLessSafeReason('Changes the instructions of the review step "Review"', withOwn)).toBe("review");
+    expect(stageOfLessSafeReason('Removes the review step "Review"', [{ id: "own_review", name: "Review", kind: "agent" }])).toBeUndefined();
+    expect(stageOfLessSafeReason('Removes the review step "Review"', [{ id: "own_review", name: "Review", kind: "agent" }, { id: "review", name: "Code review", kind: "review" }])).toBeUndefined();
   });
 });
 
@@ -150,7 +166,9 @@ describe("How we work carries each stage's record", () => {
     expect(text).not.toContain("risk_low");
     expect(v.stages.some((entry) => entry.id === "risk")).toBe(false);
     expect(v.stages.flatMap((entry) => entry.trackRecord ?? []).every((entry) => entry.claim !== "risk_low")).toBe(true);
-    expect(HowWeWorkViewSchema.safeParse({ ...v, stages: v.stages.map((entry) => entry.id === "review" ? { ...entry, trackRecord: [record({ claim: "risk_low" as never })] } : entry) }).success).toBe(false);
+    // A risk record somebody sends anyway is dropped on reading, and the rest of the view still loads.
+    const sent = { ...v, stages: v.stages.map((entry) => entry.id === "review" ? { ...entry, trackRecord: [record({ claim: "risk_low" as never })] } : entry) };
+    expect(HowWeWorkViewSchema.parse(sent).stages.flatMap((entry) => entry.trackRecord ?? [])).toEqual(v.stages.flatMap((entry) => entry.id === "review" ? [] : entry.trackRecord ?? []));
   });
 
   it("leaves the field out when the read fails: no record rather than zero, and the rest of the view is unchanged", async () => {
@@ -192,5 +210,61 @@ describe("How we work carries each stage's record", () => {
   it("is still a view of the project whose reads are refused for others", async () => {
     const w = mergeWorld();
     await expect(getProjectHowWeWork({ ...deps(w), projectFor: async () => { throw agentXError("PROJECT_NOT_FOUND", "project not found"); } }, w.caller(MAX), "web")).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+});
+
+describe("reading a record a newer server may send", () => {
+  it("reads a different window and bigger counts without failing the view", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    const v = await view(w);
+    const sent = { ...v, stages: v.stages.map((entry) => entry.id === "plan_critic" ? { ...entry, trackRecord: [{ ...record({ held: 3000, notHeld: 10 }), windowDays: 60, extra: "from a newer server" }] } : entry) };
+    for (const schema of [HowWeWorkViewSchema, HowWeWorkViewReaderSchema]) {
+      const read = schema.parse(sent) as HowWeWorkView;
+      expect(stage(read, "plan_critic").trackRecord).toMatchObject([{ held: 3000, notHeld: 10, windowDays: 60 }]);
+      expect(trackRecordLines(stage(read, "plan_critic").trackRecord![0]!).rate).toBe("The person approved the plan 3000 of 3010 times (last 60 days)");
+    }
+  });
+
+  it("drops a malformed record and keeps the rest of the view, including the stage's other record", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    const v = await view(w);
+    const sent = { ...v, stages: v.stages.map((entry) => entry.id === "review"
+      ? { ...entry, trackRecord: [{ claim: "review_pass:CRITIC", held: "many" }, record({ claim: "review_pass:SECURITY", held: 12, notHeld: 1 }), { claim: "a_new_claim", held: 1, notHeld: 0, closedUnmerged: 0, noOutcome: 0, unreviewedMerges: 0, windowDays: 30, capped: false, enough: false }, 7, null] }
+      : entry.id === "plan_critic" ? { ...entry, trackRecord: "nonsense" } : entry) };
+    for (const schema of [HowWeWorkViewSchema, HowWeWorkViewReaderSchema]) {
+      const read = schema.safeParse(sent);
+      expect(read.success).toBe(true);
+      const stages = (read.data as HowWeWorkView).stages;
+      expect(stages.find((entry) => entry.id === "review")!.trackRecord?.map((entry) => entry.claim)).toEqual(["review_pass:SECURITY"]);
+      expect(stages.map((entry) => entry.id)).toEqual(v.stages.map((entry) => entry.id));
+    }
+  });
+});
+
+describe("how long the card waits for its records", () => {
+  it("reads each kind of stage once, all together: four reads for the plan check, both reviews and the tests", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    const queries: string[] = [];
+    const counting = { send: async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, string> } }) => {
+      if (command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues?.[":pk"] ?? "").includes("OUTCOME_SCORED")) queries.push(command.input.ExpressionAttributeValues![":pk"]!);
+      return w.db.send(command);
+    } };
+    await view(w, counting);
+    expect(queries.map((pk) => pk.split("#").slice(-2).join("#")).sort()).toEqual(["web#check", "web#plan_critic", "web#review", "web#review"]);
+  });
+
+  it("gives up on the records at the deadline and renders the rest of the view without them", async () => {
+    const w = mergeWorld();
+    await adoptVersion2(w);
+    const slow = { send: async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, string> } }) =>
+      command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues?.[":pk"] ?? "").includes("OUTCOME_SCORED") ? await new Promise<never>(() => undefined) : w.db.send(command) };
+    const started = Date.now();
+    const v = await getProjectHowWeWork({ ...deps(w, slow), trackRecordDeadlineMs: 60 }, w.caller(MAX), "web");
+    expect(Date.now() - started).toBeLessThan(1500);
+    for (const entry of v.stages) expect(entry).not.toHaveProperty("trackRecord");
+    expect(v.stages.map((entry) => entry.id)).toEqual(["plan", "plan_critic", "build", "check", "review", "pull_request"]);
   });
 });

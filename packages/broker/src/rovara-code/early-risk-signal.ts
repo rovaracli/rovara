@@ -19,7 +19,7 @@ export async function readEarlyRiskSignal(deps: EarlyRiskSignalDependencies, tas
   if (task.orgId === undefined || !publishedWithLowRisk(task.workflow)) return undefined;
   try {
     const rate = await readOutcomeRate({ ddb: deps.documentClient, tableName: deps.tableName }, { org: task.orgId, project: task.project, stage: "risk", claim: "risk_low", now: deps.now() });
-    return { held: rate.held, notHeld: rate.notHeld, windowDays: 30, capped: rate.capped, enough: rate.enough };
+    return { held: rate.held, notHeld: rate.notHeld, closedUnmerged: rate.closedUnmerged, noOutcome: rate.noOutcome, unreviewedMerges: rate.unreviewedMerges, windowDays: 30, capped: rate.capped, enough: rate.enough };
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", level: "warn", event: "track_record.early_signal_failed", error: errorName(error) ?? "unknown" }));
     return undefined;
