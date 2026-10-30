@@ -56,6 +56,11 @@ export async function suggestionsOff(deps: Pick<LearningDeps, "documentClient" |
   return (await effectiveSuggestions(deps, scope.orgId)).suggestions === "off";
 }
 
+/** Holds a write to "the switch has not been turned off since it was read": the commit that opens a suggestion carries it, so a run that read "on" opens nothing once someone turns it off. */
+export function suggestionsNotOffCheck(tableName: string, orgId: OrgId): { ConditionCheck: { TableName: string; Key: Record<string, string>; ConditionExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, string> } } {
+  return { ConditionCheck: { TableName: tableName, Key: { ...orgLearningSettingsKey(orgId) }, ConditionExpression: "attribute_not_exists(#suggestions) OR #suggestions <> :off", ExpressionAttributeNames: { "#suggestions": "suggestions" }, ExpressionAttributeValues: { ":off": "off" } } };
+}
+
 /** Refuses a suggestion decision while the switch is off. */
 export async function requireSuggestionsOn(deps: Pick<LearningDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<void> {
   if ((await effectiveSuggestions(deps, orgId)).suggestions === "off") {

@@ -232,8 +232,9 @@ export const LEARNING_SUGGESTION_SWITCH_SOURCES = ["company", "install_default"]
 export const LearningCompanySettingsSchema = z.object({
   revision: z.number().int().min(1),
   suggestions: LearningSuggestionSwitchSchema,
-  changedBy: z.string().min(1).max(100),
-  changedAt: z.string().datetime(),
+  // Optional on read: a record whose value and revision read is the company's choice even if these are missing, so it never blocks the next write.
+  changedBy: z.string().min(1).max(100).optional(),
+  changedAt: z.string().datetime().optional(),
 });
 export type LearningCompanySettings = z.infer<typeof LearningCompanySettingsSchema>;
 

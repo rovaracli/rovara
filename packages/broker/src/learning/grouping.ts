@@ -24,7 +24,7 @@ import { visibility } from "./retention.js";
 import {
   buildDocumentFrequency, compareSignatures, type DocumentFrequency, type Signature,
 } from "./similarity.js";
-import { suggestionsOff } from "./suggestions-switch.js";
+import { suggestionsNotOffCheck, suggestionsOff } from "./suggestions-switch.js";
 import { proposedRuleText } from "./text.js";
 import {
   getLearningItem, putDismissed, readLearningPartition, readLearningState, sourceSk, suggestionSk, terminalSuggestionItems, closeSuggestion, type LearningDeps, type LearningScope,
@@ -454,6 +454,8 @@ async function openStep(deps: LearningDeps, scope: LearningScope, context: Conte
       { Put: { TableName: deps.tableName, Item: { ...keyOf(scope, suggestionSk(id)), entityType: "LEARNING_SUGGESTION", orgId: scope.orgId, ...suggestion }, ConditionExpression: "attribute_not_exists(pk)" } },
       ...picked.map((entry) => linkMemberItem(deps, scope, entry, id)),
       metricUpdateItem(deps, scope, month, { suggestions: 1 }),
+      // The switch read at the start of the run may have been turned off since: then nothing opens.
+      suggestionsNotOffCheck(deps.tableName, scope.orgId),
       ...audited.items,
     ]);
     if (outcome === "ok") await flushLearningEvents(deps, audited.events);
