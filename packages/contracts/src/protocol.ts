@@ -1,9 +1,10 @@
+import {StageIdSchema} from "./stage-model-shared.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
 import { ProjectCommandSchema } from "./project.js";
 import { StoredProjectDefinitionSchema } from "./project-node.js";
-import { ModelSelectionSchema } from "./models.js";
+import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
 import { type ModelSelection } from "./models-node.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
@@ -205,6 +206,18 @@ export const ModelRouteSchema = z.object({
   catalog: z.string().min(1).max(256),
 }).strict();
 export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
+/** Broker-created task context, never a client choice or permission to fallback. */
+export const TaskModelPolicyBindingSchema=z.object({version:z.literal(1),stage:StageIdSchema,companyRevision:z.number().int().min(0),recipeDigest:z.string().regex(/^[a-f0-9]{64}$/u)}).strict();
+export type TaskModelPolicyBinding=z.infer<typeof TaskModelPolicyBindingSchema>;
+/** A worker must match the binding before using a server-authorized replacement. No credentials are carried. */
+export const TaskModelFallbackAuthorizationSchema=z.object({version:z.literal(1),binding:TaskModelPolicyBindingSchema,model:ModelSelectionSchema,modelRoute:ModelRouteSchema.optional(),sourcesRevision:z.number().int().min(0)}).strict();
+export type TaskModelFallbackAuthorization=z.infer<typeof TaskModelFallbackAuthorizationSchema>;
+export const TaskModelFallbackRequestSchema=z.object({version:z.literal(1),binding:TaskModelPolicyBindingSchema,reason:z.enum(["unavailable","limit","revoked","model","missing_key"]),failedModel:ModelIdentifierSchema,environmentFallback:ModelIdentifierSchema.optional()}).strict().superRefine((request,context)=>{
+ if(request.environmentFallback!==undefined&&request.reason!=="missing_key")context.addIssue({code:"custom",path:["environmentFallback"],message:"only a missing-key fallback names an environment candidate"});
+});
+export type TaskModelFallbackRequest=z.infer<typeof TaskModelFallbackRequestSchema>;
+
+
 
 const InvocationBaseSchema = z.object({
   protocolVersion: z.literal(AGENTX_PROTOCOL_VERSION),
@@ -344,8 +357,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         agentStep: AgentStepPayloadSchema.optional(),
         /** The model proxy alias to use in place of the install's default route. Sent only to a worker that lists "model.route"; never dropped. */
         modelRoute: ModelRouteSchema.optional(),
+        /** Governed tasks require broker authorization before any worker-side replacement; never dropped. */
+        modelPolicy:TaskModelPolicyBindingSchema.optional(),
       })
       .strict().superRefine((payload, context) => {
+        if(payload.modelPolicy!==undefined&&payload.model===undefined)context.addIssue({code:"custom",path:["model"],message:"a governed task requires an explicit server-resolved model"});
         if ((payload.workflowMode === "FEEDBACK_REVIEW") !== (payload.workflowFeedbackReview !== undefined)) {
           context.addIssue({ code: "custom", path: ["workflowFeedbackReview"], message: "feedback review mode requires its exact task workflow binding" });
         }
