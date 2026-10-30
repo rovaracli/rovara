@@ -2391,3 +2391,24 @@ it("setup draft paid start captures the company stop through its actual app rout
   expect(tasks).toHaveLength(1);
   expect(tasks[0]).toMatchObject({ purpose: "setup_draft", budgetUsd: 1.234567, spendingStop: { effectiveStopMicrousd: 1234567 } });
 });
+
+for (const setting of ["zero", "missing"] as const) it(`setup draft refuses ${setting} spending policy before paid preparation`, async () => {
+  const f = await fixture(setting === "zero" ? 0 : 1234567);
+  f.t.grantRole(MAYA, "maintainer");
+  if (setting === "missing") f.t.db.delete(f.policy);
+  const before = f.t.db.find(row => ["DEVELOPER_TASK", "WORKSPACE", "OPERATION", "OUTBOX"].includes(String(row.entityType)));
+  const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-draft", { requestId: randomUUID() });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(409);
+  expect(reply.body.error).toMatchObject({ code: setting === "zero" ? "TASK_STOP_ZERO" : "TASK_STOP_CONFIG_MISSING" });
+  expect(f.t.db.find(row => ["DEVELOPER_TASK", "WORKSPACE", "OPERATION", "OUTBOX"].includes(String(row.entityType)))).toEqual(before);
+});
+it("setup draft preparation carries the same accepted spending admission", async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer");
+  const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-draft", { requestId: randomUUID() });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+  const task = f.t.db.find(row => row.entityType === "DEVELOPER_TASK")[0]!;
+  const prepare = f.t.db.find(row => row.entityType === "OPERATION" && row.workspaceId === task.workspaceId && row.kind === "prepare");
+  expect(prepare).toHaveLength(1);
+  expect(prepare[0]).toMatchObject({ spendingTaskId: task.taskId, spendingAdmission: task.spendingAdmission });
+  expect(task.spendingAdmission).toBeDefined();
+});
