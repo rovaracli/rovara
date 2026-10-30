@@ -222,3 +222,27 @@ it("paid start fences a real use-grant loss in the agent's owning project", asyn
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
+async function sharedProjectAgent() {
+  const f = await otherProjectAgent();
+  expect((await f.t.api(ADA, "PUT", `/v1/app/agents/${f.agentId}/owner`, { owner: { kind: "member", developerId: DEB.developerId } })).status).toBe(200);
+  expect((await f.t.api(ADA, "PUT", `/v1/app/agents/${f.agentId}/shares`, { shares: [{ principal: { kind: "project", project: "platform" }, level: "use" }] })).status).toBe(200);
+  return f;
+}
+it("a legitimate project-shared agent can start with live visibility", async () => {
+  const f = await sharedProjectAgent(), reply = await f.startOther(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+});
+for (const loss of ["share_removed", "shared_project_viewer"] as const) it(`paid start fences real ${loss} authority loss`, async () => {
+  const f = await sharedProjectAgent(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true;
+      const saved = loss === "share_removed" ? await f.t.api(ADA, "PUT", `/v1/app/agents/${f.agentId}/shares`, { shares: [] })
+        : await f.t.api(ADA, "PUT", `/v1/app/projects/platform/members/${MAYA.developerId}`, { role: "viewer" });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    }
+    return send(command);
+  };
+  const reply = await f.startOther(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
