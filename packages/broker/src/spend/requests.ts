@@ -1399,7 +1399,15 @@ async function requireSameOwner(deps: SpendRequestDependencies, record: SpendReq
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
 async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[], decisionActor: BudgetActor): Promise<void> {
   const agentId = record.agentId as never;
-  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
+  const destinationIds = change?.op === "set_accountable" ? [change.accountable.developerId]
+    : change?.op === "set_owner" ? [...(change.owner.kind === "member" ? [change.owner.developerId] : []), ...(change.accountable === undefined ? [] : [change.accountable.developerId])] : [];
+  const destinationChecks: TransactItem[] = [];
+  for (const developerId of new Set(destinationIds)) {
+    const role = await orgRoleOf(deps, record.orgId, developerId);
+    if (role === undefined) throw staleApproval();
+    destinationChecks.push(...budgetActorChecks(deps.tableName, record.orgId, { developerId, role }).slice(0, 2));
+  }
+  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
     try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] })); }

@@ -41,6 +41,8 @@ export interface OverrideCap {
   actor: BudgetActor;
   spendRequestId: string;
   source?: ApprovalSource;
+  /** Current destination membership; never a replacement for the deciding actor. */
+  destinationChecks?: TransactItem[];
   items: TransactItem[];
   /** The error when one of `items` is refused (the request was decided meanwhile). */
   closed: () => Error;
@@ -53,9 +55,11 @@ export function withOverride(items: TransactItem[], refuse: (failed: Set<number>
   if (override.actor === undefined || override.actor.developerId !== scope.by) throw budgetActorRefused();
   const sourceIndex = override.source === undefined ? undefined : pinSourceWrite(items, override.source);
   const checks = budgetActorChecks(scope.tableName, scope.orgId, override.actor);
-  const actorStart = items.length, start = actorStart + checks.length;
-  return [[...items, ...checks, ...override.items], (failed) => (
-    [...failed].some(index => index >= actorStart && index < start) ? budgetActorRefused()
+  const destinationChecks = (override.destinationChecks ?? []).filter(item => !checks.some(actor => actor.ConditionCheck?.Key?.pk === item.ConditionCheck?.Key?.pk && actor.ConditionCheck?.Key?.sk === item.ConditionCheck?.Key?.sk));
+  const actorStart = items.length, destinationStart = actorStart + checks.length, start = destinationStart + destinationChecks.length;
+  return [[...items, ...checks, ...destinationChecks, ...override.items], (failed) => (
+    [...failed].some(index => index >= actorStart && index < destinationStart) ? budgetActorRefused()
+      : [...failed].some(index => index >= destinationStart && index < start) ? staleApproval()
       : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : sourceIndex !== undefined && failed.has(sourceIndex) ? staleApproval() : refuse(failed)
   )];
 }
