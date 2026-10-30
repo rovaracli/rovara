@@ -256,9 +256,10 @@ async function endForNoDecider(deps: LifecycleDeps, record: AnyApprovalRecord, f
 /**
  * `from` left an org that has no owner to hand anything to. Every PENDING approval that lists them is re-routed to the approvers who are left (their name and `APPROVER#` item go,
  * nothing else changes), or, when no one else is named to decide it, ended as expired with `APPROVER_LEFT_REASON` and the person it was for is told (a `home.changed` change notice,
- * ids only). It is never approved or declined for anyone. Conditional on the record still being PENDING and unmoved since it was read; repeatable.
+ * ids only). It is never approved or declined for anyone. Conditional on the record still being PENDING and unmoved since it was read; repeatable. With `before` (a person who rejoined),
+ * only approvals made before that instant are touched.
  */
-async function orphanApprovals(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+async function orphanApprovals(deps: LifecycleDeps, orgId: OrgId, from: string, before?: string): Promise<void> {
   for (const approvalId of await listedApprovalIds(deps, orgId, from)) {
     checkTime(deps);
     for (let tried = 0; tried < 3; tried += 1) {
@@ -268,6 +269,8 @@ async function orphanApprovals(deps: LifecycleDeps, orgId: OrgId, from: string):
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [indexDrop] }));
         break;
       }
+      // After a rejoin (`before` is the removal's time): an approval made since lists them as the member they are now, and stays as it is.
+      if (before !== undefined && record.createdAt >= before) break;
       const spec = record.approvers;
       let approvers: ApproverSpec = spec.kind === "ids" ? { kind: "ids", ids: swapped(spec.ids, from, undefined) } : { kind: "rule", rule: spec.rule, candidates: swapped(spec.candidates, from, undefined) };
       const settled = approvers.kind === "rule" ? await settleRuleApprovers(deps, orgId, record, approvers, from) : approvers.ids.length === 0 ? undefined : approvers;
@@ -322,4 +325,6 @@ registerMemberMover({
   merged: (deps, { orgId, survivorId, duplicateId }) => moveApprovals(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveApprovals(deps, orgId, developerId, successorId, "removed"),
   orphaned: (deps, { orgId, developerId }) => orphanApprovals(deps, orgId, developerId),
+  // A rejoin cancels the hand-offs; what listed the person before the removal is only dropped, so an id list cannot revive their vote.
+  dropped: (deps, { orgId, developerId, removedAt }) => orphanApprovals(deps, orgId, developerId, removedAt),
 });

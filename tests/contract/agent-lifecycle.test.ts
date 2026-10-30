@@ -1087,7 +1087,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
 
     expect(w.db.get(orgMemberKey(ORG_A, ERIN))).toBeUndefined();
     expect(w.calls).toEqual([expect.objectContaining({ orgId: ORG_A, developerId: ERIN, by: OLIVE, marker: expect.objectContaining({ pk: MEMBER_REMOVAL_QUEUE_PK }) as unknown, successorId: OLIVE })]);
-    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLIVE });
     expect(markersOf(w.db)).toEqual([]);
   });
 
@@ -1113,7 +1113,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
 
     broken = false;
     expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
-    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLIVE });
     expect(markersOf(w.db)).toEqual([]);
   });
 
@@ -1130,7 +1130,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     await orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
 
     const owners = async () => Promise.all(agents.map(async (agent) => ((await w.store.get(ORG_A, agent.agentId))!.owner as { developerId: string }).developerId));
-    const moved = (await owners()).filter((owner) => owner === OWEN).length;
+    const moved = (await owners()).filter((owner) => owner === OLIVE).length;
     expect(moved).toBeGreaterThan(0);
     expect(moved).toBeLessThan(6);
     expect(markersOf(w.db)).toHaveLength(1);
@@ -1142,7 +1142,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
 
     // The sweep has no such bound and finishes the rest.
     expect(await runMemberMergeDrain(w.deps, { budgetMs: 20_000 })).toMatchObject({ processed: 1, failed: 0 });
-    expect((await owners()).every((owner) => owner === OWEN)).toBe(true);
+    expect((await owners()).every((owner) => owner === OLIVE)).toBe(true);
     expect(markersOf(w.db)).toEqual([]);
   });
 
@@ -1153,19 +1153,17 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     expect(w.calls).toEqual([]);
   });
 
-  it("rejects a removal marker for a person who has joined again, and moves nothing", async () => {
+  it("a removal marker for a person who has joined again moves nothing (the hand-offs are cancelled) but is still finished", async () => {
     const w = await removalWorld({ hook: async () => { throw new Error("not yet"); } });
     const agent = await w.memberAgent(ERIN, "Erin's agent");
     await w.orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false });
     w.member(ORG_A, ERIN, "member", "2026-10-22T10:00:00.000Z");
 
-    expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 0, rejected: 1, failed: 0 });
+    expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
 
     expect(markersOf(w.db)).toEqual([]);
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ERIN });
-    expect(w.logs.filter((entry) => entry.event === "member_merge.rejected")).toEqual([{
-      event: "member_merge.rejected", fields: { orgId: ORG_A, developerId: ERIN, reason: "member_still_in_org" },
-    }]);
+    expect(w.logs.filter((entry) => entry.event === "member_removal.handoffs_cancelled")).toEqual([{ event: "member_removal.handoffs_cancelled", fields: { orgId: ORG_A, developerId: ERIN } }]);
   });
 });
 

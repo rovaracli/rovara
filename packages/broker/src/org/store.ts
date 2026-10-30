@@ -60,7 +60,6 @@ import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
 import { safeOrgName } from "../developer/person-name.js";
-import { finishRemoval } from "./member-removal/finish.js";
 import { startMemberRemoval, type StartedRemoval, type StartRemovalInput } from "./member-removal/start.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
@@ -536,10 +535,6 @@ export class OrgStore {
         // The person is removed whatever happens here: a hook that fails leaves its marker, and the sweep calls it again.
         try {
           await hook.onRemoved({ orgId: input.orgId, developerId: input.developerId, by, marker, removalId: started.removalId, removedAt: started.removedAt, ...(started.successorId === undefined ? {} : { successorId: started.successorId }) });
-          // The hook finished every step: the record ends and the marker goes (one transaction), as the sweep does for a removal it finishes.
-          await finishRemoval({ ...this.deps(), documentClient: this.input.documentClient, tableName: this.input.tableName, now: this.input.now }, {
-            orgId: input.orgId, removalId: started.removalId, leaverId: input.developerId, role: started.role, successorId: started.successorId, by, outcome: "done", counts: { countsComplete: false }, marker,
-          });
         } catch (error) {
           // Running out of the request's time is expected: the removal's marker leaves the rest to the sweep, so it is not an error.
           const level = errorName(error) === "LifecycleDeadline" ? "warn" : "error";

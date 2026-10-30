@@ -2,11 +2,10 @@
 // its member payer; work that started after the rejoin runs. The tombstone has no expiry, so it outlives any task. One function (`checkOwnerStillMember`) is behind every path;
 // the model key mint and the paused-resume drop use the same rule.
 import { describe, expect, it } from "vitest";
-import { chainRunKey, orgRemovedKey, taskKey } from "../../packages/contracts/src/index.js";
-import { requireCreatorStillMember, creatorRemovedMessage } from "../../packages/broker/src/developer/creator-member.js";
-import { requireOrgOpenFor } from "../../packages/broker/src/aws/broker.js";
+import { chainRunKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { requireCreatorStillMember, requireOrgOpenFor, creatorRemovedMessage } from "../../packages/broker/src/developer/creator-member.js";
 import { creatorGone } from "../../packages/broker/src/spend/requests.js";
-import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { HOUR, OWNER, SAM, T0, removalWorld } from "../support/member-removal-world.js";
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -55,11 +54,11 @@ describe("R60 after a rejoin", () => {
 
   it("a chain step's task made after the rejoin is refused when its run began before the removal", async () => {
     const { w, deps, task } = await rejoined();
-    w.db.set({ ...chainRunKey(w.orgId, "run_00000000000000000001" as never, "META"), entityType: "CHAIN_RUN", createdAt: iso(T0 - HOUR) });
+    w.db.set({ ...chainRunKey(w.orgId, "run_00000000000000000001", "META"), entityType: "CHAIN_RUN", createdAt: iso(T0 - HOUR) });
     const step = task("task-step", SAM, w.clock.now, { chain: { chainRunId: "run_00000000000000000001", stepId: "s1" } });
     await expect(requireCreatorStillMember(deps(), step)).rejects.toEqual(refused());
     // The same step of a run that began after the rejoin runs.
-    w.db.set({ ...chainRunKey(w.orgId, "run_00000000000000000002" as never, "META"), entityType: "CHAIN_RUN", createdAt: iso(w.clock.now) });
+    w.db.set({ ...chainRunKey(w.orgId, "run_00000000000000000002", "META"), entityType: "CHAIN_RUN", createdAt: iso(w.clock.now) });
     const fresh = task("task-step-2", SAM, w.clock.now, { chain: { chainRunId: "run_00000000000000000002", stepId: "s1" } });
     await expect(requireCreatorStillMember(deps(), fresh)).resolves.toBeUndefined();
   });

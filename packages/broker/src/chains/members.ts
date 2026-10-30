@@ -69,11 +69,12 @@ async function moveChains(
 export function onChainOwnersRemoved(deps: Deps, removal: { orgId: OrgId; developerId: string; successorId: string }): Promise<readonly string[]> {
   const { orgId, developerId, successorId } = removal;
   // Their shares are deleted and not handed to the owner, who already manages what they took over.
-  return moveChains(deps, orgId, developerId, successorId, (project) => otherMaintainer(deps, orgId, project, developerId, successorId), { kind: "member_removed", developerId })
-    .then(async (took) => {
-      await dropShares(deps, orgId, developerId, { kind: "member_removed", developerId });
-      return took;
-    });
+  return moveChains(deps, orgId, developerId, successorId, (project) => otherMaintainer(deps, orgId, project, developerId, successorId), { kind: "member_removed", developerId });
+}
+
+/** The shares of a removed member are dropped by the cut-off, which runs also after a rejoin (a share carries no time, so all of them go). */
+export function onChainSharesCutOff(deps: Deps, cut: { orgId: OrgId; developerId: string }): Promise<void> {
+  return dropShares(deps, cut.orgId, cut.developerId, { kind: "member_removed", developerId: cut.developerId });
 }
 
 /** Two accounts were found to be one person: the duplicate's chains, accountable ids and shares become the survivor's. */
@@ -112,6 +113,7 @@ export function registerChainMovers(): () => void {
     name: "chains",
     merged: (deps, merge) => onChainOwnersMerged(deps, merge),
     removed: (deps, removal) => onChainOwnersRemoved(deps, removal),
+    cutOff: (deps, cut) => onChainSharesCutOff(deps, cut),
   });
 }
 

@@ -11,7 +11,7 @@ describe("a removal that stops part-way", () => {
     w.grant(SAM, "payments", "g-1");
     w.grant(SAM, "web", "g-2", "maintainer");
     // The second grant's delete fails once: the request's run stops, the marker stays.
-    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("g-2") && JSON.stringify(input).includes("web"), error: { name: "InternalServerError" } });
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("#grantId") && JSON.stringify(input).includes("g-2"), error: { name: "InternalServerError" } });
     const removed = await w.remove(SAM);
     expect(w.grantOf(SAM, "payments")).toBeUndefined();
     expect(w.grantOf(SAM, "web")).toBeDefined();
@@ -115,7 +115,7 @@ describe("a removal that stops part-way", () => {
     const removed = await w.remove(SAM);
     // Make the marker look like the old one.
     const [marker] = w.markers();
-    const { removalId: _id, successorId: _successor, removedAt: _at, ...legacy } = marker!;
+    const legacy = Object.fromEntries(Object.entries(marker!).filter(([key]) => !["removalId", "successorId", "removedAt"].includes(key)));
     w.db.set(legacy);
     w.db.delete({ pk: `ORG#${w.orgId}#MEMBER_REMOVAL`, sk: removed.removalId });
     w.tick(HOUR);

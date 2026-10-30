@@ -48,7 +48,7 @@ export async function removalWorld(options: RemovalWorldOptions = {}) {
   const lambda = { failures: 0, calls: [] as Array<{ developerId: string; at: string }> };
   const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const deps: LifecycleDeps = {
-    store, projectMembers, documentClient: db, tableName: AUDIT_CAPTURE_TABLE, signInStore, now: () => clock.now, log: (event, fields) => logs.push({ event, fields }),
+    store, projectMembers, documentClient: db, tableName: AUDIT_CAPTURE_TABLE, signInStore, audit: audit.audit, now: () => clock.now, log: (event, fields) => logs.push({ event, fields }),
     endDeveloperSessions: async (request) => {
       lambda.calls.push({ developerId: request.developerId, at: request.at });
       if (lambda.failures > 0) { lambda.failures -= 1; return { ok: false, error: "unavailable" }; }

@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -34,6 +34,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
+import { memberGoneSince, taskWorkStart } from "../developer/creator-member.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { effectiveLimits, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
 import { cleanUsd, readTopUp } from "./top-ups.js";
@@ -1708,13 +1709,15 @@ async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string;
 const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
 const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
 
-/** Whether a task's creator is really gone from its org: no member record, and the removal's tombstone is there (the check R60's `requireCreatorStillMember` makes). */
-async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
+/**
+ * Whether a task's creator is really gone from its org: no member record and the removal's tombstone is there, or (a person who rejoined) a tombstone later than the work's start
+ * (the check R60's `requireCreatorStillMember` makes, from the one function behind it).
+ */
+export async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
   // The owner now (Plan 5 Task 12a): the person who took the task over, else its creator. A task whose owner can't be read is gone for no one here: nothing is dropped.
   const owner = tryEffectiveTaskOwner(task);
   if (owner === undefined) return false;
-  if (await getItem(deps, orgMemberKey(orgId, owner.developerId)) !== undefined) return false;
-  return await getItem(deps, orgRemovedKey(orgId, owner.developerId)) !== undefined;
+  return memberGoneSince(deps, orgId, owner.developerId, () => taskWorkStart(deps, orgId, task));
 }
 
 /** Drops a month resume that can never go on (fix round 2, minor 1), audited as the system's `spend_request.resume_dropped` in the same transaction. */
@@ -2131,7 +2134,7 @@ async function settleAfterLeave(deps: LifecycleDeps, orgId: OrgId, id: string, f
 }
 
 /** `from` left an org that has no owner to hand anything to: every open request that lists them is settled (see `settleAfterLeave`). */
-async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string, before?: string): Promise<void> {
   const open = await queryAll(deps, openSpendRequestsKey(orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk);
   for (const item of open) {
     const id = item["spendRequestId"];
@@ -2139,6 +2142,8 @@ async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): 
     checkTime(deps);
     const record = await getSpendRequest(deps, orgId, id);
     if (record === undefined || record.status !== "PENDING" || !record.approverIds.includes(from)) continue;
+    // A person who rejoined: a request made since the removal lists them as the member they are now.
+    if (before !== undefined && record.createdAt >= before) continue;
     await settleAfterLeave(deps, orgId, id, from);
   }
 }
@@ -2150,6 +2155,8 @@ registerMemberMover({
   merged: (deps, { orgId, survivorId, duplicateId }) => moveRequests(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveRequests(deps, orgId, developerId, successorId, "removed"),
   orphaned: (deps, { orgId, developerId }) => orphanRequests(deps, orgId, developerId),
+  // A rejoin cancels the hand-offs; the requests that listed the person before the removal only drop them.
+  dropped: (deps, { orgId, developerId, removedAt }) => orphanRequests(deps, orgId, developerId, removedAt),
 });
 
 // ---- the confirmation page's kind (PF21)

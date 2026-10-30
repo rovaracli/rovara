@@ -2426,13 +2426,13 @@ async function changeMemberRole(deps: DeveloperRouteDependencies, caller: Develo
 }
 
 /**
- * Ends a removed person's sign-in sessions through DeveloperIdentity. They are already refused (the membership is gone), so a failure
- * here is logged and never fails the removal.
+ * Ends a removed person's sign-in sessions through DeveloperIdentity, at the removal's own time. With movers wired the removal's sign-in step does this (retried by the marker),
+ * so this is only for an install with none. They are already refused (the membership is gone), so a failure here is logged and never fails the removal.
  */
-async function endSessionsAfterRemoval(deps: DeveloperRouteDependencies, developerId: string): Promise<void> {
+async function endSessionsAfterRemoval(deps: DeveloperRouteDependencies, developerId: string, at: string): Promise<void> {
   if (deps.developer.endDeveloperSessions === undefined) return;
   try {
-    const answer = await deps.developer.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at: new Date(deps.now()).toISOString() });
+    const answer = await deps.developer.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at });
     if (!answer.ok && answer.error !== "not_found") logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: answer.error });
   } catch (error) {
     logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: errorName(error) });
@@ -2461,8 +2461,8 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
   const store = signInStoreOf(deps);
   const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
-  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId }, callerRole: caller.orgRole });
-  await endSessionsAfterRemoval(deps, developerId);
+  const started = await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId }, callerRole: caller.orgRole });
+  if (deps.agents === undefined) await endSessionsAfterRemoval(deps, developerId, started.removedAt);
   const name = record?.displayName ?? "That person";
   logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
   return { removed: { developerId, name }, message: STOPS_AFTER_STEP(name) };
@@ -2526,9 +2526,11 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       by: { kind: "member", id: caller.developerId },
     });
   } else {
-    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false, by: { kind: "member", id: caller.developerId } });
+    const started = await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false, by: { kind: "member", id: caller.developerId } });
+    if (deps.agents === undefined) await endSessionsAfterRemoval(deps, caller.developerId, started.removedAt);
   }
-  await endSessionsAfterRemoval(deps, caller.developerId);
+  // A sole owner who closed the org: closing is not a removal with movers, so the sessions end here.
+  if (sole) await endSessionsAfterRemoval(deps, caller.developerId, new Date(deps.now()).toISOString());
   logDeveloperEvent({ event: "developer.org_left", orgId: caller.orgId, role: caller.orgRole, closed: String(sole) });
   return { left: true, orgClosed: sole, message: sole ? "You left and the organization is closed." : STOPS_AFTER_STEP(caller.name) };
 }

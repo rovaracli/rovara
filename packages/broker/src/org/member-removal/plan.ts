@@ -79,7 +79,11 @@ export function planMemberRemoval(input: RemovalPlanInput): RemovalPlan {
   // The tombstone ruling R60 reads. No expiry attribute, ever: a person who rejoins must not revive the tasks they started before this removal, and tasks have no hard lifetime.
   // A later removal moves `removedAt` forward; one that is not newer is refused (the member delete fails first in practice).
   const tombstone = add({ Put: {
-    TableName: tableName, Item: { ...orgRemovedKey(orgId, leaver.developerId), entityType: "ORG_REMOVED", orgId, developerId: leaver.developerId, removedAt: input.removedAt },
+    TableName: tableName, Item: {
+      ...orgRemovedKey(orgId, leaver.developerId), entityType: "ORG_REMOVED", orgId, developerId: leaver.developerId, removedAt: input.removedAt,
+      // Who replaced them, so a run of another person's removal can follow the chain when a successor has left too.
+      ...(typeof input.record["removalId"] === "string" ? { removalId: input.record["removalId"] } : {}), ...(typeof input.record["successorId"] === "string" ? { successorId: input.record["successorId"] } : {}),
+    },
     ConditionExpression: "attribute_not_exists(pk) OR removedAt < :removedAt", ExpressionAttributeValues: { ":removedAt": input.removedAt },
   } });
   const ban = input.ban ? add({ Put: { TableName: tableName, Item: { ...orgBanKey(orgId, leaver.developerId), entityType: "ORG_BAN", orgId, developerId: leaver.developerId, bannedAt: input.removedAt } } }) : undefined;
