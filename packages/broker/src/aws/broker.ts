@@ -18555,7 +18555,7 @@ async function routeStartEvalBatch(dependencies: AwsBrokerDependencies, identity
   const binding = await getSlackBinding(dependencies, requireOrgId(identity.orgId), body.teamId, body.channelId);
   if (!binding) throw agentXError("NOT_FOUND", "Slack channel binding not found; bind the channel to a project first");
   await requireAdministrator(dependencies, identity, binding.projectName);
-  return startBatch(swebenchDependencies(dependencies), swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), body);
+  return startBatch(swebenchDependencies(dependencies), { ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), orgId: requireOrgId(identity.orgId), developerId: identity.ownerKey }, body);
 }
 
 /** Spec 052 FR-009, FR-010: show, stop or read the results of a batch, for an administrator of its channel's project. */
