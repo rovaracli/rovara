@@ -923,3 +923,17 @@ for (const race of ["none", "approver", "executor"] as const) it(`a distinct app
   }
   expect(intercepted).toBe(true);
 });
+
+it("an approved agent window resumes when the original answered pause has no notification acknowledgement", async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  expect((await f.transition()).status).toBe(200); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const key = { pk: `DEVTASK#${f.task.taskId}`, sk: "AGENT_RUN" }, run = f.t.db.get(key)!, pause = { ...run.pause as Record<string, unknown> }; delete pause.notifiedAt;
+  f.t.db.set({ ...run, pause });
+  const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  expect((await f.t.decide(MAYA, request.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+  expect(f.t.db.get(key)).toMatchObject({ state: "RUNNING", spendingAdmission: { requestId: decisionId } });
+  expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(0);
+});
