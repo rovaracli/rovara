@@ -1105,3 +1105,29 @@ for (const source of ["valid", "dispatch_lost", "changed_operation", "changed_re
   if (source === "dispatch_lost") { expect(dispatchLost).toBe(true); expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(0); }
   if (source !== "valid" && source !== "dispatch_lost") expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(1);
 });
+
+for (const timing of ["before_decision", "at_commit"] as const) it(`held preparation approval retains the original asked dispatch terms ${timing}`, async () => {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app",
+    owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, runLimitUsd: 0 });
+  const old = f.t.requestOf(started.taskId)[0]!; await f.t.decide(MAYA, old.spendRequestId, "DENY");
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "enabled" }, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: started.taskId, kind: "run_limit", scope: { kind: "task", taskId: started.taskId }, amountUsd: 5, newLimitUsd: 5,
+    requestedBy: { kind: "system" }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "Review the held preparation under current spending rules." });
+
+  const mutate = () => {
+    const task = f.t.meta(started.taskId), pause = task.budgetPause as { scope: unknown; at: string; firstDispatch: { operationId: string } };
+    f.t.db.set({ ...task, budgetPause: { ...pause, firstDispatch: { ...pause.firstDispatch, readOnly: true } } });
+  };
+  let changed = timing === "before_decision"; if (changed) mutate();
+  const send = f.t.db.send.bind(f.t.db);
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) { changed = true; mutate(); }
+    return send(command);
+  };
+  await expect(f.t.decide(MAYA, record.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" }); expect(changed).toBe(true);
+  expect(f.t.meta(started.taskId).budgetUsd).toBe(0);
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" })).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
