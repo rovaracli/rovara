@@ -1599,15 +1599,18 @@ for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`regi
   expect(f.t.db.get(`DEVTASK#${task.taskId}`, "PEOPLE")).toMatchObject({ orphaned: false, people: [{ developerId: creator.developerId, role: "owner" }] });
   if (state === "revoked") f.t.db.set({ ...f.t.db.get(identityKey)!, revoked: true });
   const plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  let identityTable: string | undefined;
   f.t.db.send = async command => {
-    if (state === "revoked_at_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
-      raced = true; f.t.db.set({ ...f.t.db.get(identityKey)!, revoked: true });
+    if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      identityTable = command.input.TransactItems.find(item => item.ConditionCheck?.Key?.pk === identityKey.pk && item.ConditionCheck.Key.sk === identityKey.sk)?.ConditionCheck?.TableName;
+      if (state === "revoked_at_commit" && !raced) { raced = true; f.t.db.set({ ...f.t.db.get(identityKey)!, revoked: true }); }
     }
     return send(command);
   };
   const before = f.t.access.mintedKeys().length;
   const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  if (state !== "revoked") expect(identityTable).toBe("signin");
   if (state === "valid") expect(reply.status).toBe(200);
   else {
     expect(reply.status).not.toBe(200);

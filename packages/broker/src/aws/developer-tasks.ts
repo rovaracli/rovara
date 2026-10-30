@@ -370,12 +370,7 @@ export interface DeveloperTaskRouteDependencies {
   /** Spec 059: absent is the safe default; production factories intentionally leave graph starts disabled. */
   workflowDependenciesEnabled?: boolean;
   /** C: trusted exact-principal eligibility and bound-channel proof; never supplied by a request body. */
-  checkTaskPerson?: (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<{
-    subject: { developerId: string; slackUserId?: string };
-    identity: { developerId: string; slackUserId: string; name: string; method: "slack" | "oidc"; issuer: string; subject: string };
-    eligible: boolean;
-    channelMember: boolean;
-  }>;
+  checkTaskPerson?: (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
   listTaskPeople?: (task: DeveloperTaskRecord, admission: TaskPeopleDisplayAdmission) => Promise<readonly TaskPersonCheck[]>;
   createTaskPeopleDisplayAdmission?: () => TaskPeopleDisplayAdmission;
   actions: DeveloperTaskActions;

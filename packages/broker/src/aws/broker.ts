@@ -7133,8 +7133,27 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         const peopleDependencies = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
           developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies) },
         await ownerCallerOf(dependencies, task, "model-key-work-authority"), undefined, null);
-        const peopleFence = await systemTaskDispatchAccessFence(peopleDependencies, task);
+        const checkPerson = peopleDependencies.checkTaskPerson;
+        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId: string }>();
+        const peopleFence = await systemTaskDispatchAccessFence({ ...peopleDependencies, checkTaskPerson: async (...input) => {
+          if (checkPerson === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity proof is unavailable.");
+          const proof = await checkPerson(...input);
+          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && proof.identity.method === "oidc") {
+            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, slackUserId: proof.identity.slackUserId };
+            const previous = oidcProofs.get(identity.developerId);
+            if (previous !== undefined && canonicalJson(previous) !== canonicalJson(identity)) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity changed during qualification.");
+            oidcProofs.set(identity.developerId, identity);
+          }
+          return proof;
+        } }, task);
         keyAuthority.push(peopleFence ?? taskAccessFence(dependencies.tableName, task.taskId));
+        for (const identity of oidcProofs.values()) keyAuthority.push({ ConditionCheck: {
+          TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${identity.developerId}`, sk: "META" },
+          ConditionExpression: "#identityId = :identityId AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked",
+          ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked" },
+          ExpressionAttributeValues: { ":identityId": identity.developerId, ":identityProvider": "oidc", ":identityIssuer": identity.issuer,
+            ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
+        } });
       }
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
