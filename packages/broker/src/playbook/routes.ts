@@ -19,6 +19,7 @@ import { readProjectPlaybook, writeProjectPlaybook } from "./project-playbook-st
 import { registerPlaybookApprovals } from "./process-switch-approval.js";
 import { holdBuiltinSwitch, type SwitchAgentStore } from "./process-switch.js";
 import { requireProcessLayer } from "./project-process.js";
+import { requireVersionStageChoices } from "./process-stage-models.js";
 
 // Loading this module registers what confirming a switch back to the built-in does (the agent routes register the rest of the approvals).
 registerPlaybookApprovals();
@@ -69,8 +70,11 @@ export async function putProjectPlaybook(deps: ProjectPlaybookDependencies, call
   }
   const { expectedRevision, defaultProcess } = parsed.data;
   let ifLayer: { agentId: AgentId; version: number } | undefined;
-  if (defaultProcess.kind === "project_process") await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
-  else {
+  if (defaultProcess.kind === "project_process") {
+    const version = await requireProcessLayer(deps.store, caller.orgId, found.name, defaultProcess.agentId);
+    // V3: the layer's current version becomes what the project runs, so its model choices must resolve (as for a publish). Without the approvals (agents not set up) nothing is checked.
+    if (deps.approvals !== undefined) await requireVersionStageChoices(deps.approvals, caller.orgId, defaultProcess.agentId, version, caller.developerId);
+  } else {
     // A switch back to the built-in that drops something stricter waits for a second person (follow-up M2).
     const decision = await holdBuiltinSwitch(deps, caller, found.name, expectedRevision);
     if (decision.held !== undefined) return decision.held;

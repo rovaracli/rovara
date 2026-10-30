@@ -1,6 +1,9 @@
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
 import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
+import { getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
+import { getStageModels } from "../model-selection/read.js";
+import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 // Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
 import { getTaskStopProject } from "../org/task-stop-project.js";
 // Lane A G1: existing agent money limit, no initialization or management.
@@ -2136,6 +2139,26 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
   }
   // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
+    if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");
+    return getCompanyModelSelectionPolicy({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, routing: deps.agents?.modelRouting ?? {} }, caller);
+  }
+  // Lane C G3: the same server resolver powers the model rows and publish validation.
+  const stageModelsRoute = /^\/v1\/app\/projects\/([^/]+)\/stage-models$/.exec(url.pathname);
+  if (request.method === "GET" && stageModelsRoute !== null) {
+    const pairs = [...url.searchParams.entries()];
+    if (pairs.length > 1 || pairs.some(([key, value]) => key !== "draft" || !/^(0|[1-9][0-9]{0,9})$/u.test(value))) throw agentXError("CONFIG_INVALID", "The stage-model query is invalid.");
+    const draft = url.searchParams.get("draft");
+    return getStageModels({
+      now: deps.now,
+      projectFor: async (who, rawName) => {
+        if (who.orgId !== caller.orgId || who.developerId !== caller.developerId) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+        const found = await projectRoleForRoute(deps, caller, rawName);
+        return { name: found.name, canEdit: projectAllows(found.role, "edit_settings") };
+      },
+      snapshot: (who, name, revision) => loadStageModelSnapshot({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, routing: deps.agents?.modelRouting ?? {}, chatgpt: deps.chatgpt }, who, name, revision),
+    }, caller, stageModelsRoute[1]!, draft === null ? {} : { draft: Number(draft) });
+  }
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);

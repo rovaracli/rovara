@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {ModelFallbacksSchema} from "./stage-model-shared.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, AgentStepToolsSchema } from "./agent-run.js";
 import { StepIdSchema } from "./agent-recipe.js";
@@ -94,6 +95,8 @@ export const DeveloperTaskRunViewSchema = z.object({
 }).strict();
 
 export const DeveloperTaskViewSchema = z.object({
+  /** Actual audited fallback history; absent only on older servers. Current broker emits [] when none. */
+  modelFallbacks:ModelFallbacksSchema.optional(),
   taskId: z.string().uuid(),
   title: z.string(),
   project: z.string(),

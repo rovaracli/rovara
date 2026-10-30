@@ -1,19 +1,19 @@
 import { useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import type { z } from "zod";
 import { useAppHost } from "../../../host.js";
-import { createApiClient } from "../../../api/client.js";
+import { createApiClient, type Reader } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { useAdminContext } from "../AdminLayout.js";
 
+// `stable`: a window refocus or reconnect never re-reads (a page with unsaved edits or a pending save result must not be reset under the person).
 // Only the explicitly projected schema output enters the identity-scoped cache.
-export function useAdminRead<T>(area: string, path: string, schema: z.ZodType<T>) {
+export function useAdminRead<T>(area: string, path: string, schema: Reader<T>, options?: { stable?: boolean }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const { orgId, developerId, role } = useAdminContext();
  useEffect(() => () => { const key = ["admin", "lane-c", area, orgId, developerId, role];void query.cancelQueries({ queryKey: key, exact: true });query.removeQueries({ queryKey: key, exact: true }); }, [query, area, orgId, developerId, role]);
- return useQuery({ queryKey: ["admin", "lane-c", area, orgId, developerId, role], queryFn: () => api.get(path, schema), gcTime: 0 });
+ return useQuery({ queryKey: ["admin", "lane-c", area, orgId, developerId, role], queryFn: () => api.get(path, schema), gcTime: 0, ...(options?.stable === true ? { refetchOnWindowFocus: false, refetchOnReconnect: false } : {}) });
 }
 export function ReadSection<T>({ read, label, children }: { read: UseQueryResult<T>; label: string; children: (data: T) => ReactNode }) {
  const forbidden = read.error instanceof ApiError && ([401, 403, 404].includes(read.error.status) || read.error.code === "INVALID_RESPONSE");

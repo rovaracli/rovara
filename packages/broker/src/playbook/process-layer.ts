@@ -82,7 +82,7 @@ export async function postProjectProcess(deps: ProjectPlaybookDependencies, call
  * maintainer may have set the project back to the built-in since, and that choice stands (final review I1).
  */
 export async function pointPlaybookAtFirstVersion(
-  deps: ProjectPlaybookWriter, agent: Pick<AgentRecord, "orgId" | "agentId" | "purpose" | "owner">, version: number, developerId: string, repair?: { publishedAt: string },
+  deps: ProjectPlaybookWriter, agent: Pick<AgentRecord, "orgId" | "agentId" | "purpose" | "owner">, version: number, developerId: string, repair?: { publishedAt: string; /** Run just before a repair writes: it refuses (nothing is written) when the version must not become effective. */ before?: () => Promise<void> },
 ): Promise<ProjectPlaybook | undefined> {
   if (agent.purpose !== "process" || version !== 1 || agent.owner.kind !== "project") return undefined;
   const project = agent.owner.project;
@@ -91,6 +91,7 @@ export async function pointPlaybookAtFirstVersion(
     if (current.defaultProcess.kind === "project_process" && current.defaultProcess.agentId === agent.agentId) return current;
     // Read after the playbook: a write in between shows here as a later time, and the conditional write below refuses one after it.
     if (repair !== undefined && !writtenBefore(await readProjectPlaybookWrittenAt(deps, agent.orgId, project), repair.publishedAt)) return undefined;
+    await repair?.before?.();
     try {
       return await writeProjectPlaybook(deps, { orgId: agent.orgId, project, developerId, expectedRevision: current.revision, defaultProcess: { kind: "project_process", agentId: agent.agentId } });
     } catch (error) {

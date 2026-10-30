@@ -191,6 +191,10 @@ export * from "./reviewed-project-restore.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
+
+export * from "./stage-models.js";
 export * from "./app-allowed-websites.js";
 
+// V3: the fixed line a refused process publish carries.
+export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
