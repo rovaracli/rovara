@@ -3,7 +3,8 @@
 import { LearningRuleSchema, type ProjectOverviewLearning } from "@agentx/contracts";
 import { prCaptureOff } from "./grouping.js";
 import { metricMonth, readMetric } from "./metric.js";
-import { readLearningPartition, type LearningDeps, type LearningScope } from "./store.js";
+import { effectiveSuggestions } from "./suggestions-switch.js";
+import { readLearningPartition, readLearningState, type LearningDeps, type LearningScope } from "./store.js";
 
 /** The most of this month's corrections read to count the repeats after rules. */
 export const OVERVIEW_CORRECTIONS_MAX = 500;
@@ -33,6 +34,7 @@ export async function learningOverviewBlock(deps: LearningDeps, scope: LearningS
 async function buildBlock(deps: LearningDeps, scope: LearningScope): Promise<ProjectOverviewLearning> {
   const month = metricMonth(new Date(deps.now()).toISOString());
   const off = await prCaptureOff(deps, scope);
+  const switched = await effectiveSuggestions(deps, scope.orgId);
   const [thisMonth, lastMonth] = await Promise.all([
     readMetric(deps, scope, month, { prCaptureOff: off }),
     readMetric(deps, scope, previousMonth(month), { prCaptureOff: off }),
@@ -55,10 +57,13 @@ async function buildBlock(deps: LearningDeps, scope: LearningScope): Promise<Pro
       repeats.set(rule, (repeats.get(rule) ?? 0) + 1);
     }
   }
+  // The company's master switch (suggestions-switch.ts): while it is off the screen is told Rovara is collecting, with the project's live corrections. The counters above keep counting.
+  const suggestions = switched.suggestions === "off" ? { state: "collecting" as const, corrections: (await readLearningState(deps, scope))?.liveCorrections ?? 0 } : { state: "on" as const };
   return {
     thisMonth: { repeats: thisMonth.repeats, corrections: thisMonth.memberCorrections, enoughData: thisMonth.enoughData },
     ...(lastMonth.share === null ? {} : { lastMonthShare: lastMonth.share }),
     repeatsAfterRule: [...repeats].map(([ruleId, count]) => ({ ...rules.get(ruleId)!, repeats: count })).sort((a, b) => b.repeats - a.repeats || (a.ruleId < b.ruleId ? -1 : 1)).slice(0, RULES_LISTED_MAX),
     ...(capped ? { repeatsAfterRuleLabel: `${OVERVIEW_CORRECTIONS_MAX}+` } : {}),
+    suggestions,
   };
 }

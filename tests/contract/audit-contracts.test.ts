@@ -177,6 +177,8 @@ describe("the event catalog", () => {
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // v1.2 learning loop (B7)
       "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
+      // the company's master suggestions switch
+      "rule.suggestions_set",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -221,12 +223,13 @@ describe("the event catalog", () => {
     "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
+    "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source"], sample: { setting: "on", previous: "off", source: "company" } },
   } as const;
 
   // I10: the learning events hold no text.
   it("I10: no rule.* or project.learning_changed fact can hold text, and a text-like fact is refused", () => {
     const learning = AUDIT_ACTIONS.filter((action) => action.startsWith("rule.") || action === "project.learning_changed");
-    expect(learning).toHaveLength(8);
+    expect(learning).toHaveLength(9);
     const textLike = /text|note|body|wording|comment|message|content|title|label/i;
     for (const action of learning) {
       for (const key of AUDIT_FACT_KEYS[action]) expect(key, `${action}.${key}`).not.toMatch(textLike);

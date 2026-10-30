@@ -2,8 +2,8 @@
 // real audit capture, with the learning partition in the same table. Publishing goes through `publishDraft`, as the How-we-work route does; these tests check what the published
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgLearningSettingsKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -24,6 +24,8 @@ import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { captureCorrection } from "../../packages/broker/src/learning/store.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 const SCOPE = { orgId: ORG_A, project: "web", projectCreatedAt: "2026-10-02T00:00:00.000Z" };
 const RETRY_A = "Use the shared retry helper for network calls, with exponential backoff.";
@@ -1176,3 +1178,73 @@ describe("erase emits rule.withdrawn with the cause `erased`, through the wiring
 });
 const MARK_A_TEXT = "Use the shared retry helper for network calls, with exponential backoff, ZEBRAMARK.";
 const MARK_B_TEXT = "Use the shared retry helper for network calls, with exponential backoff and jitter, QUOKKAMARK.";
+
+describe("the company's master suggestions switch: deciding is gated, settlement and rules are not", () => {
+  const setSwitch = (w: MergeWorld, suggestions: "on" | "off", revision: number) => w.db.set({
+    ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision, suggestions, changedBy: MAX, changedAt: new Date(w.clock.now).toISOString(),
+  });
+
+  it("Accept, Dismiss and Reopen answer 409 LEARNING_SUGGESTIONS_OFF while off and change nothing; the suggestion is there unchanged when the switch is on again", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    const second = await suggest(w, { sources: [{ author: PRIYA, task: "t3", text: "Name database migrations with a date prefix and a short description." }, { author: ARJUN, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
+    await dismissSuggestion(decideDeps(w), callerOf(w, MAX), "web", second, { expectedRevision: 0, dismissKind: "wrong" });
+    const [dismissed] = w.db.find((entry) => String(entry.sk).startsWith("DISMISSED#"));
+    const dismissedId = String(dismissed!.sk).slice("DISMISSED#".length);
+    const before = JSON.stringify([...w.db.items.entries()]);
+    setSwitch(w, "off", 1);
+    const afterSwitch = JSON.stringify([...w.db.items.entries()]);
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(await failure(dismissSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, { expectedRevision: 0, dismissKind: "wrong" }))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(await failure(reopenDismissed(decideDeps(w), callerOf(w, MAX), "web", dismissedId))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    expect(JSON.stringify([...w.db.items.entries()])).toBe(afterSwitch);
+    expect(before).not.toBe(afterSwitch);
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open", revision: 0 });
+    setSwitch(w, "on", 2);
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toMatchObject({ outcome: "published" });
+  });
+
+  it("with no company record the install default decides: off refuses, on allows", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
+    expect(await failure(acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id)))).toMatchObject({ code: "LEARNING_SUGGESTIONS_OFF" });
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toMatchObject({ outcome: "published" });
+  });
+
+  it("an awaiting_approval suggestion still settles while off (settlement is never gated), and the accepted rule can still be removed", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    expect(answer.outcome).toBe("awaiting_approval");
+    setSwitch(w, "off", 1);
+    await decide(w, OLA, approvalIdOf(w, answer));
+    expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "active", processVersion: 2 });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "accepted" });
+    expect(eventsOf(w, "rule.accepted").map((event) => event.facts?.outcome)).toEqual(["awaiting_approval", "published"]);
+    // Rules, remove and the view's rules list keep working with the switch off.
+    const viewDeps = decideDeps(w);
+    expect((await viewLearning({ documentClient: w.db, tableName: "state", now: () => w.clock.now, projectFor: (who, rawName) => viewDeps.projectFor(who, rawName) }, callerOf(w, MAX), "web")).rules).toHaveLength(1);
+    expect(await removeRule(decideDeps(w), callerOf(w, MAX), "web", ruleId, { requestId: randomUUID() })).toSatisfy((answer: { outcome: string }) => ["published", "awaiting_approval"].includes(answer.outcome));
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a declined approval while off also settles: the suggestion goes back to open (still hidden) and the rule is not applied", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { stage: "review" });
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    const ruleId = suggestionOf(w, id).ruleId as string;
+    setSwitch(w, "off", 1);
+    await decide(w, OLA, approvalIdOf(w, answer), "DECLINE");
+    expect(await settleProject(decideDeps(w), SCOPE)).toBe(1);
+    expect(item(w, `RULE#${ruleId}`)).toMatchObject({ status: "not_applied" });
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+  });
+});

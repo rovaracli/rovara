@@ -9,7 +9,7 @@ import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
 import type { SessionId } from "./agent-sessions.js";
 import type { DeviceId, SessionBinding } from "./agent-sessions-node.js";
 import { OrgIdSchema, type OrgId } from "./org.js";
-import { orgScoped, type OrgKey } from "./org-node.js";
+import { orgPk, orgScoped, type OrgKey } from "./org-node.js";
 import type { ChainId, ChainRunId } from "./chains.js";
 import type { EventSource } from "./trigger-specs.js";
 import type { TriggerTarget } from "./triggers.js";
@@ -88,6 +88,11 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
  */
 export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
   return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
+}
+
+/** The company's own learning settings (the master "suggestions" switch): `ORG#<org>` / `LEARNING_SETTINGS`. Absent until the company first chooses. */
+export function orgLearningSettingsKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "LEARNING_SETTINGS" };
 }
 
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY";

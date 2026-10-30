@@ -23,7 +23,8 @@ import { takeRateAt } from "../developer/page-comments.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { readMembers } from "./settle.js";
 import { canAcceptSuggestion, companyIsOpen, learningScopeChecked, readStanding, type StandingDeps } from "./standing.js";
-import { getLearningItem, readLearningPartition, type LearningDeps, type LearningScope } from "./store.js";
+import { effectiveSuggestions } from "./suggestions-switch.js";
+import { getLearningItem, readLearningPartition, readLearningState, type LearningDeps, type LearningScope } from "./store.js";
 
 /** The whole read gives up after this long. */
 export const LEARNING_VIEW_MILLIS = 4_000;
@@ -118,7 +119,9 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const maintainer = projectAllows(found.role, "edit_settings");
   const canDecide = canAcceptSuggestion({ standing, maintainer });
 
-  const [settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
+  // The company's master switch: while it is off the open suggestions are hidden (not withdrawn) and the screen is told Rovara is collecting.
+  const [switched, settings, suggestionItems, dismissedItems, ruleItems] = await Promise.all([
+    effectiveSuggestions(deps, caller.orgId),
     settingsView(deps, learning, scope),
     readList(learning, scope, "SUGGESTION#", LEARNING_VIEW_SUGGESTIONS_SCANNED_MAX),
     readList(learning, scope, "DISMISSED#", LEARNING_VIEW_DISMISSED_SCANNED_MAX),
@@ -127,12 +130,13 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   const truncated: Array<"suggestions" | "dismissed" | "rules"> = [];
 
   // Suggestions that are not terminal. A terminal one is never listed (its text is gone), and one that does not read as a suggestion is left out.
-  const open = suggestionItems.items.flatMap((item) => {
+  const switchedOff = switched.suggestions === "off";
+  const open = (switchedOff ? [] : suggestionItems.items).flatMap((item) => {
     const parsed = LearningSuggestionSchema.safeParse(item);
     return parsed.success && !isTerminalSuggestionStatus(parsed.data.status) ? [parsed.data] : [];
   }).sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? 1 : -1));
   const shown = open.slice(0, LEARNING_OPEN_SUGGESTIONS_MAX);
-  if (open.length > shown.length || suggestionItems.more) truncated.push("suggestions");
+  if (open.length > shown.length || (!switchedOff && suggestionItems.more)) truncated.push("suggestions");
   const wanted = shown.flatMap((suggestion) => suggestion.correctionIds);
   const members = new Map((wanted.length === 0 ? [] : await readMembers(learning, scope, wanted)).map((entry) => [entry.c.id, entry.c] as const));
   // The proposed text is the newest source's words: it is not shown when any source's author was erased (an erase that stopped half way has not reached the suggestion yet).
@@ -179,7 +183,8 @@ async function build(deps: LearningViewDeps, caller: DeveloperCaller, rawProject
   }));
 
   // PR-comment capture counts what it skipped (B8); until it exists there is nothing to report.
-  const answer = { settings, suggestions, dismissed, rules, skippedUnlinked: 0, canDecide, ...(truncated.length === 0 ? {} : { truncated }) };
+  const suggestionsState = switchedOff ? { state: "collecting" as const, corrections: (await readLearningState(learning, scope))?.liveCorrections ?? 0 } : { state: "on" as const };
+  const answer = { settings, suggestions, dismissed, rules, skippedUnlinked: 0, canDecide, suggestionsState, ...(truncated.length === 0 ? {} : { truncated }) };
   // Nothing leaves that is not the contract's shape: a record that came out wrong is one plain error, not a half answer.
   const checkedAnswer = LearningViewAnswerSchema.safeParse(answer);
   if (!checkedAnswer.success) throw agentXError("RUNTIME_UNAVAILABLE", "Learning could not be shown. Try again.");

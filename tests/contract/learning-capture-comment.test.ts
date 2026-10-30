@@ -5,7 +5,7 @@ import { LEARNING_REMEMBER_MAX, LearningCorrectionSchema } from "../../packages/
 import { forgetTaskComment, rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
 import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { openSuggestion, readLearningState, suggestionSk } from "../../packages/broker/src/learning/store.js";
-import { githubMemberKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { githubMemberKey, orgLearningSettingsKey, projectMemberKey } from "../../packages/contracts/src/index.js";
 import type { PageTaskFixture } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -412,5 +412,23 @@ describe("audit: Remember and Forget emit rule.correction_remembered", () => {
     const comment = seedComment(fixture, SAM, RETRY_TEXT);
     await remember(fixture, PRIYA, comment.commentId);
     expect(corrections(fixture)).toHaveLength(1);
+  });
+});
+
+describe("the company's master suggestions switch does not stop capture", () => {
+  it("Remember still stores the correction and counts it while suggestions are off, and grouping then does nothing", async () => {
+    const fixture = membersTask();
+    fixture.db.set({ ...orgLearningSettingsKey(TEST_ORG), entityType: "LEARNING_COMPANY_SETTINGS", orgId: TEST_ORG, revision: 1, suggestions: "off", changedBy: PRIYA.developerId, changedAt: new Date(0).toISOString() });
+    const comment = seedComment(fixture, SAM, RETRY_TEXT);
+    const answer = await remember(fixture, PRIYA, comment.commentId);
+    expect(answer.correction.standing).toBe("member");
+    expect(corrections(fixture)).toHaveLength(1);
+    expect((await readLearningState(learningDeps(fixture), scope))?.liveCorrections).toBe(1);
+    expect(await groupCorrections(learningDeps(fixture), scope)).toMatchObject({ judged: 0, opened: [] });
+    expect(corrections(fixture)[0]).not.toHaveProperty("groupedAt");
+    // Forget keeps working too.
+    const forgotten = await forget(fixture, PRIYA, comment.commentId);
+    expect(forgotten).toEqual({ forgotten: true });
+    expect(corrections(fixture)).toHaveLength(0);
   });
 });

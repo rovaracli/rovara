@@ -9,13 +9,14 @@
 // reads no approval at all. Home never reads versions: deciding that a published version carries the rule is the settler's, on the learning routes.
 import { createHash } from "node:crypto";
 import {
-  ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, projectAllows, projectLearningKey, projectMetaKey,
+  ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, orgLearningSettingsKey, projectAllows, projectLearningKey, projectMetaKey,
   type ApprovalId, type LearningState, type OrgId,
 } from "@agentx/contracts";
 import { fit, quoted, registerHomeCardSource, HOME_SOURCE_TIMEOUT_MS, type HomeCardSource, type HomeDependencies, type HomeSourceCard } from "../agent-sessions/home.js";
 import { batchGetItems, keyText } from "../agent-sessions/live.js";
 import { getAnyApproval } from "../agents/approvals-store.js";
 import { sameProject } from "./retention.js";
+import { effectiveFromItem } from "./suggestions-switch.js";
 import { readLearningPartition, type LearningDeps } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -75,8 +76,11 @@ export const learningHomeSource: HomeCardSource = {
       .filter((entry) => projectAllows(entry.role, "edit_settings")).map((entry) => entry.project).sort().slice(0, LEARNING_HOME_PROJECTS_MAX);
     if (maintained.length === 0) return [];
 
-    const keys = maintained.flatMap((project) => [projectLearningKey(orgId, project, "STATE"), projectMetaKey(orgId, project)]);
+    // The company's master switch rides in the same batch (one more key). While it is off no card is made, but waiting rules are still settled below.
+    const switchKey = orgLearningSettingsKey(orgId);
+    const keys = [switchKey, ...maintained.flatMap((project) => [projectLearningKey(orgId, project, "STATE"), projectMetaKey(orgId, project)])];
     const read = await batchGetItems(deps, keys);
+    const switchedOff = effectiveFromItem(read.get(keyText(switchKey))).suggestions === "off";
     const found: Found[] = [];
     for (const project of maintained) {
       const meta = read.get(keyText(projectMetaKey(orgId, project)));
@@ -88,7 +92,7 @@ export const learningHomeSource: HomeCardSource = {
     }
 
     const origin = deps.origin.replace(/\/+$/u, "");
-    const cards: HomeSourceCard[] = found.filter(({ state }) => state.openSuggestions > 0).map(({ project, state }) => {
+    const cards: HomeSourceCard[] = found.filter(({ state }) => !switchedOff && state.openSuggestions > 0).map(({ project, state }) => {
       const n = state.openSuggestions;
       return {
         cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,

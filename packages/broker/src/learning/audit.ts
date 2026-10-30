@@ -5,7 +5,7 @@ import type { AuditActor, AuditEventInput } from "@agentx/contracts";
 import { SYSTEM_ACTOR, auditActorOf } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import {
-  auditOccurrence, auditRuleAccepted, auditRuleCorrectionRemembered, auditRuleDismissed, auditRuleNotApplied, auditRuleRolledBack, auditRuleSuggested, auditRuleWithdrawn,
+  auditOccurrence, auditRuleAccepted, auditRuleCorrectionRemembered, auditRuleDismissed, auditRuleNotApplied, auditRuleRolledBack, auditRuleSuggested, auditRuleSuggestionsSet, auditRuleWithdrawn,
 } from "../audit/events.js";
 import { auditedWrite } from "../playbook/project-settings-audit.js";
 import type { LearningDeps, LearningScope } from "./store.js";
@@ -54,3 +54,7 @@ export const rolledBackEvent = (deps: Pick<LearningDeps, "now">, scope: Learning
 
 export const rememberedEvent = (deps: Pick<LearningDeps, "now">, scope: LearningScope, actor: AuditActor, input: { correctionId: string; stage: string; standing: string; op: "remember" | "forget" }): AuditEventInput =>
   auditRuleCorrectionRemembered({ ...base(deps, scope, actor, input.correctionId), ...input });
+
+/** The company's master suggestions switch changed (a person, in both directions). Company-wide, so there is no project; the occurrence is the new settings revision. */
+export const suggestionsSetEvent = (deps: Pick<LearningDeps, "now">, input: { orgId: LearningScope["orgId"]; actor: AuditActor; revision: number; setting: "on" | "off"; previous: "on" | "off" }): AuditEventInput =>
+  auditRuleSuggestionsSet({ orgId: input.orgId, actor: input.actor, occurredAt: new Date(deps.now()).toISOString(), occurrence: auditOccurrence(input.orgId, String(input.revision)), setting: input.setting, previous: input.previous, source: "company" });

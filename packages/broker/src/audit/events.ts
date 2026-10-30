@@ -578,6 +578,11 @@ export function auditProjectLearningChanged(input: AuditBuilderBase & { projectN
   return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
 }
 
+/** `occurrence`: `auditOccurrence(org, settings revision)`. The company's master "suggestions" switch changed; `setting` and `previous` are `on` or `off`, `source` is `company`. The target is the company itself. */
+export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on" | "off"; previous: "on" | "off"; source: "company" }): AuditEventInput {
+  return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source });
+}
+
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
