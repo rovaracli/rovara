@@ -501,3 +501,11 @@ it("Continue-as-task starts its new .5 window after actual historical testing sp
   expect(minted.status, JSON.stringify(minted.body)).toBe(200);
   expect(f.t.access.mintKey.mock.calls.at(-1)![0]).toMatchObject({ maxBudgetUsd: 0.5, tags: { origin: "app", payerKind: "member" } });
 });
+
+it("Continue-as-task leaves the testing payer and pause intact if historical key spend is unavailable", async () => {
+  const f = await pausedTestTransition(0.75), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.access.keySpend.mockRejectedValueOnce(new Error("test proxy unavailable"));
+  const reply = await f.transition(); expect(reply.body.error).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` })).toBeUndefined();
+});

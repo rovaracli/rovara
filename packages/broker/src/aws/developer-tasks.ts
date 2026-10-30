@@ -2901,9 +2901,11 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     if (runSource !== undefined && (!Number.isSafeInteger(runSource.revision) || runSource.revision < 1 || runSource.state !== "PAUSED_BUDGET")) throw agentXError("CHANGE_STALE", "The test run's paused step changed. Review it and continue again.");
     const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, payer, place,
       agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
-    const item = windowAndPauseUpdate(deps, task, undefined, captured)[0]?.Update;
+    const baseline = deps.modelAccess === undefined ? undefined
+      : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
+    const item = windowAndPauseUpdate(deps, task, baseline, captured)[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
-    const source = ["origin", "budgetPause", "startedBy", "place", "workflow"] as const;
+    const source = ["origin", "budgetPause", "startedBy", "place", "workflow", "modelKeyIds"] as const;
     // Transition aliases must not collide with the window source aliases.
     const seen = new Aliases();
     const sourceConditions = source.map(field => {
