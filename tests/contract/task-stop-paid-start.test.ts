@@ -2347,3 +2347,10 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect(retry.status).toBe(202);
   expect(f.t.requests().find(item => item.kind === "owner_cap")?.ownerFinancialTerms).toMatchObject({ carriedUsd: 1, wouldBeUsd: 121 });
 });
+
+for (const origin of ["event", "schedule"] as const) it(`autonomous ${origin} start captures the actual agent stop before paid effects`, async () => {
+  const f = await fixture(), agentId = await f.t.budgeted(40), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, orgId: TEST_ORG, agentId, revision: 1, stopKind: "inherit" });
+  const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Review this event" }, origin, owner: { developerId: MAYA.developerId }, payer: { kind: "agent", agentId } });
+  expect(f.t.meta(started.taskId)).toMatchObject({ budgetUsd: 1.234567, spendingStop: { schemaVersion: 2, orgId: TEST_ORG, agentId, effectiveStopMicrousd: 1234567 } });
+});
