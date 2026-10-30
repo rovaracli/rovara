@@ -32,12 +32,15 @@ it("a paid task commits the exact company stop into existing budgetUsd with its 
 });
 it("initial paid admission commits an immutable window receipt and task reference", async () => {
   const f = await fixture(), reply = await f.start(); expect(reply.status).toBe(200);
-  const task = f.t.meta((reply.body.task as { taskId: string }).taskId);
-  expect(task.spendingAdmission).toMatchObject({ requestId: f.request.requestId, actorId: MAYA.developerId, intentHash: expect.any(String) });
-  const receipt = f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${f.request.requestId}` });
-  expect(receipt).toMatchObject({ entityType: "SPENDING_ADMISSION", outcome: "accepted", workId: task.taskId,
-    requestId: f.request.requestId, actorId: MAYA.developerId, intentHash: task.spendingAdmission?.intentHash,
-    spendingStop: task.spendingStop, budgetBaselineUsd: 0, operationId: expect.any(String) });
+  const taskId = (reply.body.task as { taskId: string }).taskId, task = f.t.meta(taskId);
+  const reference = task.spendingAdmission as { requestId: string; actorId: string; intentHash: string } | undefined;
+  expect(reference).toMatchObject({ requestId: f.request.requestId, actorId: MAYA.developerId });
+  expect(typeof reference?.intentHash).toBe("string");
+  const receipt = f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${taskId}`), sk: `REQUEST#${f.request.requestId}` });
+  expect(receipt).toMatchObject({ entityType: "SPENDING_ADMISSION", outcome: "accepted", workId: taskId,
+    requestId: f.request.requestId, actorId: MAYA.developerId, intentHash: reference?.intentHash,
+    spendingStop: task.spendingStop, budgetBaselineUsd: 0 });
+  expect(typeof receipt?.operationId).toBe("string");
 });
 for (const failure of ["zero", "missing_project", "deleted_policy"] as const) it(`refuses enrolled paid start ${failure} before any workspace is created`, async () => {
   const f = await fixture(failure === "zero" ? 0 : 1_234_567);
@@ -389,7 +392,7 @@ it("Continue resolves a committed native write whose acknowledgement was lost wi
   const reply = await f.continue(); expect(lost).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5); expect(f.t.db.get(f.receipt)).toBeDefined();
   const windows = () => f.t.db.transactions().filter(items => items.some(item => {
-    const put = item.Put; return typeof put === "object" && put !== null && "Item" in put && typeof put.Item === "object" && put.Item !== null && "entityType" in put.Item && put.Item.entityType === "SPENDING_ADMISSION";
+    const put = item.Put; return typeof put === "object" && put !== null && "Item" in put && typeof put.Item === "object" && put.Item !== null && "entityType" in put.Item && put.Item.entityType === "SPENDING_ADMISSION" && "requestId" in put.Item && put.Item.requestId === f.request.requestId;
   }));
   expect(windows()).toHaveLength(1); expect((await f.continue()).status).toBe(200); expect(windows()).toHaveLength(1);
 });

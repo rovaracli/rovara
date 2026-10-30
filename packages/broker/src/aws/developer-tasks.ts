@@ -2194,7 +2194,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const keepsBudget = spendingStop !== undefined || admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
-    ...(spendingStop === undefined ? {} : { spendingStop }),
+    ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
@@ -2246,6 +2246,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
     ...preparationItems,
     putNew(deps.tableName, { ...task }),
+    ...(spendingStop === undefined ? [] : [taskStopWindowItem(deps.tableName, {
+      orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash,
+      project: request.project, agentId: spendingStop.agentId,
+    }, spendingStop, preparation.operationId, receivedAt, 0)]),
     ...(share?.threadTs === undefined ? [] : [putNew(deps.tableName, {
       ...sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
       entityType: "SHARED_TASK", taskId, workspaceId, ownerKey: task.ownerKey, developerId: task.developerId,
