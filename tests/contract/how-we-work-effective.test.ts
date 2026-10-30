@@ -144,12 +144,11 @@ describe("the project's own settings", () => {
       },
     });
     const v = await view(w);
-    for (const id of ["plan", "build", "review"]) {
-      expect(stage(v, id).who.model).toEqual({ value: "anthropic/claude-sonnet-x", source: "project", locked: false });
-      expect(stage(v, id).who.thinking).toEqual({ value: "medium", source: "project", locked: false });
+    // V3: the view decides no model; the stage models come from the resolver's own read (one path), so no stage reports the project's model here.
+    for (const id of ["plan", "build", "review", "plan_critic"]) {
+      expect(stage(v, id).who.model).toEqual({ value: null, source: "rovara", locked: false });
+      expect(stage(v, id).who.thinking).toEqual({ value: null, source: "rovara", locked: false });
     }
-    // The plan check picks its own model; the project's does not stand for it.
-    expect(stage(v, "plan_critic").who.model).toEqual({ value: null, source: "rovara", locked: false });
     expect(stage(v, "check").checked.items).toEqual([
       { value: "Required: npm test", source: "project", locked: false },
       { value: "Required: npm run lint", source: "project", locked: false },
@@ -247,13 +246,13 @@ describe("a process layer", () => {
     expect(stage(v, "build").knows.note).toBeUndefined();
   });
 
-  it("shows a model, thinking level and tools set on a stage as the project's, and the rest as Rovara's", async () => {
+  it("shows tools set on a stage as the project's and decides no model (a model set on a stage is the resolver's to report, not this view's)", async () => {
     const w = mergeWorld();
     await adoptVersion2(w);
     await withProcessLayer(w, { steps: { build: { model: { provider: "openai", modelId: "gpt-x" }, thinkingLevel: "high", tools: ["read", "edit"] }, review: { differentCompanyFrom: "build" } } });
     const v = await view(w);
-    expect(stage(v, "build").who.model).toEqual({ value: "openai/gpt-x", source: "project", locked: false });
-    expect(stage(v, "build").who.thinking).toEqual({ value: "high", source: "project", locked: false });
+    expect(stage(v, "build").who.model).toEqual({ value: null, source: "rovara", locked: false });
+    expect(stage(v, "build").who.thinking).toEqual({ value: null, source: "rovara", locked: false });
     expect(stage(v, "build").may.tools).toEqual({ value: ["read", "edit"], source: "project", locked: false });
     expect(stage(v, "review").who.differentCompanyFrom).toEqual({ value: ["build"], source: "project", locked: false });
     expect(stage(v, "plan").who.model).toEqual({ value: null, source: "rovara", locked: false });

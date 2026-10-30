@@ -1,10 +1,13 @@
-import { PendingAdminApprovalReaderSchema, PendingConfirmationReaderSchema } from "@agentx/contracts/web";
+import { PendingAdminApprovalReaderSchema, PendingConfirmationReaderSchema, type SoleOwnerConfirmationSchema } from "@agentx/contracts/web";
+import type { z } from "zod";
 import type { ApiMethod, ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { RETRY_DELAYS_MS } from "../constants.js";
 import { isConfirmUrl } from "../text/links.js";
 import { ApiError, apiError } from "./errors.js";
+/** The shared confirmation metadata a 202 may carry (the company policy save uses it); absent on ordinary confirmations. */
+export type SoleOwnerConfirmation = z.infer<typeof SoleOwnerConfirmationSchema>;
 export interface Reader<T> { parse(value: unknown): T }
-export type SendResult<T> = { kind: "done"; value: T } | { kind: "needs_confirmation"; confirmUrl?: string; changes: string[] } | { kind: "needs_admin_approval"; spendRequestId: string; message: string };
+export type SendResult<T> = { kind: "done"; value: T } | { kind: "needs_confirmation"; confirmUrl?: string; changes: string[]; soleOwner?: SoleOwnerConfirmation } | { kind: "needs_admin_approval"; spendRequestId: string; message: string };
 const idempotent = (body: unknown) => typeof body === "object" && body !== null && "requestId" in body && typeof body.requestId === "string" && body.requestId !== "";
 const retryDelay = (attempt: number) => RETRY_DELAYS_MS[attempt]! * (1 + Math.random() * 0.3);
 const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms); });
@@ -38,7 +41,7 @@ export function createApiClient(host: AppHost) {
    const response = await request({ method, path, body, ...options });
    if (response.status === 202) {
     const confirmation = PendingConfirmationReaderSchema.safeParse(response.body);
-    if (confirmation.success && (confirmation.data.status === "NEEDS_CONFIRMATION" || confirmation.data.status === "NEEDS_OWNER_APPROVAL")) return { kind: "needs_confirmation", changes: confirmation.data.changes, ...(confirmation.data.confirmUrl !== undefined && isConfirmUrl(confirmation.data.confirmUrl, host.origin) ? { confirmUrl: confirmation.data.confirmUrl } : {}) };
+    if (confirmation.success && (confirmation.data.status === "NEEDS_CONFIRMATION" || confirmation.data.status === "NEEDS_OWNER_APPROVAL")) return { kind: "needs_confirmation", changes: confirmation.data.changes, ...(confirmation.data.soleOwner === undefined ? {} : { soleOwner: confirmation.data.soleOwner }), ...(confirmation.data.confirmUrl !== undefined && isConfirmUrl(confirmation.data.confirmUrl, host.origin) ? { confirmUrl: confirmation.data.confirmUrl } : {}) };
     const admin = PendingAdminApprovalReaderSchema.safeParse(response.body);
     if (admin.success && admin.data.status === "NEEDS_ADMIN_APPROVAL") return { kind: "needs_admin_approval", spendRequestId: admin.data.spendRequestId, message: admin.data.message };
     if (typeof response.body === "object" && response.body !== null && "status" in response.body) throw new ApiError(502, "INVALID_RESPONSE", "This request is still pending. Reload to check its status.");
