@@ -445,3 +445,27 @@ for (const refusal of ["missing", "zero"] as const) it(`Continue-as-task refuses
   expect(reply.body.error).toMatchObject({ code: refusal === "missing" ? "TASK_STOP_CONFIG_MISSING" : "TASK_STOP_ZERO" });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
+
+it("Continue-as-task records its immutable window in the payer transition transaction", async () => {
+  const f = await pausedTestTransition(); expect((await f.transition()).status).toBe(200);
+  const key = { pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${f.task.taskId}`), sk: `REQUEST#${f.request.requestId}` };
+  expect(f.t.db.get(key)).toMatchObject({ entityType: "SPENDING_ADMISSION", workKind: "task-window", workId: f.task.taskId, requestId: f.request.requestId, spendingStop: { effectiveStopMicrousd: 500_000 } });
+  const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.db.delete(f.policy); expect((await f.transition()).status).toBe(200);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
+it("Continue-as-task retry repairs a committed payer transition whose acknowledgement was lost before dispatch", async () => {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id); let lost = false;
+  f.t.db.send = async command => {
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${f.task.taskId}` && item.Update.ExpressionAttributeValues?.[":app"] === "app")) {
+      lost = true; throw new Error("test acknowledgement lost after payer transition committed");
+    }
+    return result;
+  };
+  await f.transition(); expect(lost).toBe(true); expect(f.t.meta(f.task.taskId).origin).toBe("app");
+  f.t.db.delete(f.policy);
+  expect((await f.transition()).status).toBe(200);
+  const resumed = f.t.taskOps(f.task.workspaceId).map(op => op.id); expect(resumed).toHaveLength(operations.length + 1);
+  expect((await f.transition()).status).toBe(200); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(resumed);
+});
