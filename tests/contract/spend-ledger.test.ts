@@ -1455,17 +1455,17 @@ describe("the scheduled run's time", () => {
     const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS, settlementBudgets } = await import("../../packages/broker/src/spend/settlement-job.js");
     expect(SETTLEMENT_TOTAL_LIMIT_MS).toBe(27_000);
     // The caps of Tasks 11, 21, 32, 24b and 26.
-    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, audit: 4_000 });
-    expect(settlementBudgets(0)).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, spend: 23_000, audit: 4_000 });
+    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, learning: 3_000, audit: 4_000 });
+    expect(settlementBudgets(0)).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, learning: 3_000, spend: 23_000, audit: 4_000 });
     // Each later job gets what remains: spend keeps the audit's reserve, and nothing is ever negative or past the deadline.
     expect(settlementBudgets(2_000)).toMatchObject({ spend: 21_000, audit: 4_000 });
     expect(settlementBudgets(12_000)).toMatchObject({ drain: 5_000, spend: 11_000, audit: 4_000 });
-    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, escalate: 2_000, sources: 3_000, spend: 0, audit: 3_000 });
+    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, escalate: 2_000, sources: 3_000, learning: 3_000, spend: 0, audit: 3_000 });
     expect(settlementBudgets(26_500)).toMatchObject({ drain: 500, spend: 0, audit: 500 });
-    expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, escalate: 0, sources: 0, spend: 0, audit: 0 });
+    expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, escalate: 0, sources: 0, learning: 0, spend: 0, audit: 0 });
     // Run one after another, each taking all it is given, the jobs end at the deadline and not after it.
     let elapsed = 0;
-    for (const name of ["drain", "approvals", "escalate", "sources", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
+    for (const name of ["drain", "approvals", "escalate", "sources", "learning", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
     expect(elapsed).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
   });
 

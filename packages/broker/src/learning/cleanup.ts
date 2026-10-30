@@ -11,11 +11,11 @@
 //   can tell whose it was, and a suggestion that held it could not be found again.
 //
 // Nothing here logs or returns text.
-import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { learningWalkKey, projectLearningKey, type OrgId } from "@agentx/contracts";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgIdSchema, learningWalkKey, projectLearningKey, type OrgId } from "@agentx/contracts";
 import { learningItemKind, sameProject } from "./retention.js";
 import { closeSuggestion, readLearningPartition, type LearningDeps } from "./store.js";
-import { clearProjectPartitionJob, runLearningWalk, type ProjectJob, type WalkBudget, type WalkLimits, type WalkResult } from "./walk.js";
+import { WALK_DEFAULT_MILLIS, WALK_DEFAULT_WRITES, WALK_INDEX_PK, WALK_INDEX_STALE_MS, clearProjectPartitionJob, isIndexedWalkKind, runLearningWalk, walkIndexKey, type ProjectJob, type WalkBudget, type WalkLimits, type WalkResult } from "./walk.js";
 
 type Item = Record<string, unknown>;
 
@@ -36,8 +36,11 @@ export function clearOrgLearning(deps: LearningDeps, orgId: OrgId, budget?: Walk
 
 // ---- project archive
 
-/** Deletes one project's learning partition, within `limits`. `"partial"` means the budget ended first (what is left is dead weight that the TTL and the sweep remove). */
-export async function clearProjectLearning(deps: LearningDeps, orgId: OrgId, project: string, limits: { writes?: number; millis?: number } = {}): Promise<"done" | "partial"> {
+/**
+ * Deletes one project's learning partition, within `limits`, and answers how many writes it made. `before` keeps items written for a project created at or after it (see
+ * `clearProjectPartitionJob`). `"partial"` means the budget ended first.
+ */
+export async function clearProjectWithin(deps: LearningDeps, orgId: OrgId, project: string, limits: { writes?: number; millis?: number; before?: string } = {}): Promise<{ status: "done" | "partial"; writes: number }> {
   const writes = limits.writes ?? CLEAR_PROJECT_WRITES, millis = limits.millis ?? CLEAR_PROJECT_MILLIS;
   const startMs = deps.now();
   let spent = 0;
@@ -46,7 +49,32 @@ export async function clearProjectLearning(deps: LearningDeps, orgId: OrgId, pro
     exhausted: () => spent >= writes || deps.now() - startMs >= millis,
     writes: () => spent,
   };
-  return clearProjectPartitionJob(deps)({ orgId, project, budget });
+  const status = await clearProjectPartitionJob(deps, limits.before === undefined ? {} : { before: limits.before })({ orgId, project, budget });
+  return { status, writes: spent };
+}
+
+/** Deletes one project's learning partition, within `limits`. `"partial"` means the budget ended first (the rest is dead weight that the TTL and the sweep remove, or a later run of the clear). */
+export async function clearProjectLearning(deps: LearningDeps, orgId: OrgId, project: string, limits: { writes?: number; millis?: number; before?: string } = {}): Promise<"done" | "partial"> {
+  return (await clearProjectWithin(deps, orgId, project, limits)).status;
+}
+
+/** What the archive request itself may spend on the clear: one page of deletes. The rest is finished by the scheduled run, so archiving answers quickly whatever the project holds. */
+export const ARCHIVE_INLINE_WRITES = 100;
+export const ARCHIVE_INLINE_MILLIS = 2_000;
+
+/**
+ * The archive routes' clear: ONE bounded page inline. A project with more than that leaves an entry in the index of open walks (`clear#<project>`, with the moment of the archive), and
+ * `resumeOpenLearningWalks` goes on from there at the next scheduled run. Items written for a project created again after the archive are never deleted by it.
+ */
+export async function clearArchivedProjectLearning(deps: LearningDeps, orgId: OrgId, project: string, inline: { writes?: number; millis?: number } = {}): Promise<"done" | "partial"> {
+  const before = new Date(deps.now()).toISOString();
+  const status = await clearProjectLearning(deps, orgId, project, { writes: inline.writes ?? ARCHIVE_INLINE_WRITES, millis: inline.millis ?? ARCHIVE_INLINE_MILLIS, before });
+  if (status === "partial") {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName, Item: { ...walkIndexKey(orgId, `clear#${project}`), entityType: "LEARNING_WALK_OPEN", orgId, kind: `clear#${project}`, project, before, since: before },
+    }));
+  }
+  return status;
 }
 
 // ---- person erase
@@ -175,6 +203,96 @@ export async function resumeLearningWalks(deps: LearningDeps, orgId: OrgId, budg
     else if (kind.startsWith("erase#")) results.push({ kind, result: await eraseLearningSubject(deps, orgId, kind.slice("erase#".length), budget) });
   }
   return results;
+}
+
+// ---- the scheduled resume (Cloud)
+
+/** Index entries read a page at a time; at most this many pages a tick, so a pile of entries that cannot be finished never makes the tick read the whole table. */
+const INDEX_PAGE = 25;
+const INDEX_PAGES_MAX = 4;
+
+export interface ResumeReport {
+  /** Walks this tick ran. */
+  walks: number;
+  /** Of those, how many finished, stopped at the budget, or lost a race to another run. */
+  done: number;
+  running: number;
+  busy: number;
+  /** Walks that threw (the error name is logged, nothing else); they stay in the index for the next tick. */
+  failed: number;
+  /** Index entries whose walk is gone and that were removed. */
+  stale: number;
+  /** Item writes the walks made. */
+  writes: number;
+}
+
+/**
+ * Finishes the `close` and `erase#<developerId>` walks that stopped at their budget, for ANY company. A closed company and an erased person make no further requests, so this is what
+ * resumes them: the broker's 5-minute settlement run calls it. It reads the index of open walks (walk.ts) and runs each walk with what is left of ONE budget (writes and time) shared by
+ * the whole tick; the walk's own cursor makes the next tick go on where this one stopped. A walk that throws is logged by error name and does not stop the others. An entry whose walk item
+ * is gone (finished, or never written) starts nothing and is removed once it is `WALK_INDEX_STALE_MS` old.
+ */
+export async function resumeOpenLearningWalks(deps: LearningDeps, limits: { writes?: number; millis?: number } = {}, log: (entry: Record<string, unknown>) => void = () => undefined): Promise<ResumeReport> {
+  const writes = limits.writes ?? WALK_DEFAULT_WRITES, millis = limits.millis ?? WALK_DEFAULT_MILLIS;
+  const startMs = deps.now();
+  const report: ResumeReport = { walks: 0, done: 0, running: 0, busy: 0, failed: 0, stale: 0, writes: 0 };
+  let after: Record<string, unknown> | undefined;
+  for (let pages = 0; pages < INDEX_PAGES_MAX; pages += 1) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": WALK_INDEX_PK }, ConsistentRead: true, Limit: INDEX_PAGE,
+      ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const entry of page.Items ?? []) {
+      const left = { writes: writes - report.writes, millis: millis - (deps.now() - startMs) };
+      if (left.writes <= 0 || left.millis <= 0) return report;
+      const org = OrgIdSchema.safeParse(entry["orgId"]);
+      const kind = entry["kind"];
+      if (!org.success || typeof kind !== "string") continue;
+      const orgId = org.data;
+      if (kind.startsWith("clear#")) {
+        // An archived project's clear that did not finish inline: the entry is the whole record (no walk item), and the clear reads the partition from the start each time.
+        const project = entry["project"], before = entry["before"];
+        if (typeof project !== "string" || typeof before !== "string") continue;
+        try {
+          report.walks += 1;
+          const cleared = await clearProjectWithin(deps, orgId, project, { ...left, before });
+          report.writes += cleared.writes;
+          if (cleared.status === "done") {
+            await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: entry["pk"], sk: entry["sk"] } }));
+            report.done += 1;
+          } else report.running += 1;
+        } catch (error) {
+          report.failed += 1;
+          log({ event: "learning.walk_resume_failed", kind: "clear", error: error instanceof Error ? error.name : "unknown" });
+        }
+        continue;
+      }
+      if (!isIndexedWalkKind(kind)) continue;
+      try {
+        const walk = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: learningWalkKey(orgId, kind), ConsistentRead: true })) as { Item?: Item }).Item;
+        if (walk === undefined || walk["status"] !== "running") {
+          const since = typeof entry["since"] === "string" ? Date.parse(entry["since"]) : Number.NaN;
+          if (!(deps.now() - since < WALK_INDEX_STALE_MS)) {
+            await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: entry["pk"], sk: entry["sk"] } }));
+            report.stale += 1;
+          }
+          continue;
+        }
+        report.walks += 1;
+        const result = kind === "close" ? await clearOrgLearning(deps, orgId, left) : await eraseLearningSubject(deps, orgId, kind.slice("erase#".length), left);
+        report.writes += result.writes;
+        if (result.status === "done") report.done += 1;
+        else if (result.status === "busy") report.busy += 1;
+        else report.running += 1;
+      } catch (error) {
+        report.failed += 1;
+        log({ event: "learning.walk_resume_failed", kind: kind === "close" ? "close" : "erase", error: error instanceof Error ? error.name : "unknown" });
+      }
+    }
+    after = page.LastEvaluatedKey;
+    if (after === undefined) break;
+  }
+  return report;
 }
 
 // ---- wiring helpers

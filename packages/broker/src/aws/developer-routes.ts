@@ -190,7 +190,7 @@ import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
-import { clearOrgLearning, clearProjectLearning } from "../learning/cleanup.js";
+import { clearArchivedProjectLearning as clearArchivedProject, clearOrgLearning } from "../learning/cleanup.js";
 import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
@@ -1094,11 +1094,12 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
 
 /**
  * v1.2 learning loop: an archived project's learning data (people's words) is deleted with it. Best effort, bounded, and run after the archive has applied: a failure logs the error's name only
- * and never undoes or fails the archive. What a stopped clear leaves is ignored by every read of a project created again, and removed by the TTL or the learning sweep.
+ * and never undoes or fails the archive. It does ONE bounded page inline so the request answers quickly; a project with more leaves an entry in the index of open walks and the broker's scheduled
+ * run finishes it (`resumeOpenLearningWalks`). What is left meanwhile is ignored by every read of a project created again.
  */
 async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, project: string): Promise<void> {
   try {
-    await clearProjectLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
+    await clearArchivedProject({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
   } catch (error) {
     logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
   }

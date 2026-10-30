@@ -296,6 +296,8 @@ export const ProjectOverviewLearningSchema = z
     thisMonth: z.object({ repeats: z.number().int().min(0), corrections: z.number().int().min(0), enoughData: z.boolean() }).strict(),
     lastMonthShare: z.number().min(0).max(1).optional(),
     repeatsAfterRule: z.array(z.object({ ruleId: z.string().min(1).max(100), stage: z.string().min(1).max(100), repeats: z.number().int().min(1) }).strict()).max(50),
+    /** Present (as `500+`) only when the month's corrections read to count `repeatsAfterRule` hit the read cap, so those counts are at least what they say. */
+    repeatsAfterRuleLabel: z.string().min(1).max(12).optional(),
   })
   .strict();
 export type ProjectOverviewLearning = z.infer<typeof ProjectOverviewLearningSchema>;
