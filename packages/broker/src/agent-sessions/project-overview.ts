@@ -36,6 +36,8 @@ export interface ProjectOverviewDependencies extends SessionReadDependencies {
   /** Plan 3's core: the roster of the project's agents, and the spend settings. Without it the page lists no agents and a maintainer's budget has no limit. */
   approvals?: (ApprovalDependencies & Partial<AgentRouteDependencies>) | undefined;
   projectPage?: ProjectPageReader | undefined;
+  /** The time the learning block may take (default `OVERVIEW_BLOCK_MILLIS`); a block that is slower is left out of the page. */
+  learningMillis?: number | undefined;
 }
 
 const notFound = () => agentXError("PROJECT_NOT_FOUND", "project not found");
@@ -71,7 +73,7 @@ async function learningOf(deps: ProjectOverviewDependencies, orgId: ProjectOverv
   try {
     const createdAt = (await getItem(deps, projectMetaKey(orgId, project)))?.["createdAt"];
     if (typeof createdAt !== "string") return undefined;
-    return await learningOverviewBlock({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, project, projectCreatedAt: createdAt });
+    return await learningOverviewBlock({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, project, projectCreatedAt: createdAt }, deps.learningMillis === undefined ? {} : { millis: deps.learningMillis });
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "project_overview.learning_unavailable", orgId, error: error instanceof Error ? error.name : "unknown" }));
     return undefined;

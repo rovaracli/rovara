@@ -9,18 +9,19 @@ import { sweepSpend, type LedgerDependencies } from "./ledger.js";
  * job that ends a little late (a page of work finishing, a call returning) still leaves the function its margin. The short jobs have a cap each; the spend
  * sweep, which resumes from its cursor, takes what is left (see `settlementBudgets`), and the key audit is last and has the least.
  */
-export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, audit: 4_000 } as const;
+export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, learning: 3_000, audit: 4_000 } as const;
 export const SETTLEMENT_TOTAL_LIMIT_MS = 27_000;
 
 /**
  * Every job's budget given how much of the run has gone: its cap, or what remains of the one deadline if that is less. The spend sweep keeps the audit's share
  * back and takes the rest. Nothing is ever negative, and no job is given time past the deadline.
  */
-export function settlementBudgets(elapsedMs: number): { drain: number; approvals: number; escalate: number; sources: number; spend: number; audit: number } {
+export function settlementBudgets(elapsedMs: number): { drain: number; approvals: number; escalate: number; sources: number; learning: number; spend: number; audit: number } {
   const left = Math.max(0, SETTLEMENT_TOTAL_LIMIT_MS - elapsedMs);
   const capped = (cap: number) => Math.min(cap, left);
   return {
     drain: capped(SETTLEMENT_BUDGETS_MS.drain), approvals: capped(SETTLEMENT_BUDGETS_MS.approvals), escalate: capped(SETTLEMENT_BUDGETS_MS.escalate), sources: capped(SETTLEMENT_BUDGETS_MS.sources),
+    learning: capped(SETTLEMENT_BUDGETS_MS.learning),
     spend: Math.max(0, left - SETTLEMENT_BUDGETS_MS.audit), audit: capped(SETTLEMENT_BUDGETS_MS.audit),
   };
 }
