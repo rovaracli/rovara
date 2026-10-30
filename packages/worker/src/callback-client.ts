@@ -1,3 +1,5 @@
+import {TaskModelFallbackRequestSchema,type TaskModelFallbackRequest,type TaskModelFallbackAuthorization} from "@agentx/contracts";
+import {parseTaskModelFallbackAuthorization,taskModelPolicyBindingsMatch} from "./model-fallback-authority.js";
 import { createHash } from "node:crypto";
 import {
   CodeBuildCheckResultSchema,
@@ -104,6 +106,7 @@ export function createWorkerCallbackSinks(input: {
   authorizeFeedbackApproval: FeedbackApprovalAuthorizer;
   /** #341: the task owner's ChatGPT access token, for a task that runs on their plan (unparsed; see chatgpt-token.ts). */
   chatGptToken: () => Promise<unknown>;
+  authorizeModelFallback:(request:TaskModelFallbackRequest)=>Promise<TaskModelFallbackAuthorization>;
   /** #342: tells the control plane why the task stopped using its owner's ChatGPT plan. */
   chatGptFallback: (reason: "limit" | "revoked" | "model") => Promise<void>;
 } {
@@ -249,6 +252,13 @@ export function createWorkerCallbackSinks(input: {
   return {
     eventSink: async (events) => post("events", { events }),
     chatGptToken: async () => postForResult("chatgpt-token", {}),
+    authorizeModelFallback:async(raw)=>{
+      const request=TaskModelFallbackRequestSchema.parse(raw),binding=input.invocation.kind==="task"?input.invocation.payload.modelPolicy:undefined;
+      if(binding===undefined||!taskModelPolicyBindingsMatch(request.binding,binding))throw agentXError("RUNTIME_UNAVAILABLE","The task's fallback authorization binding is unavailable.");
+      const reply=await postForResult("model-fallback",request);
+      const answer=typeof reply==="object"&&reply!==null?Object.fromEntries(Object.entries(reply).filter(([key])=>key!=="requestId")):reply;
+      return parseTaskModelFallbackAuthorization(answer,binding);
+    },
     chatGptFallback: async (reason) => post("chatgpt-status", { reason }),
     artifactSink: async (artifact) => post("artifacts", artifact),
     terminalSink: async (result) => post("result", {

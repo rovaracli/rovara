@@ -2,7 +2,7 @@
 // can't be archived. A missing document is as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, projectPlaybookKey } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import { getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { requireNotCurrentProcess } from "../../packages/broker/src/playbook/process-in-use.js";
@@ -54,6 +54,8 @@ describe("a playbook document that exists but can't be read (PB16)", () => {
   it("only the project's own published process layer holds it: an ordinary agent and another project's layer do not", async () => {
     const w = world();
     // Another project's published layer and an ordinary published agent of this one.
+    w.grant(MAX, "mobile", "maintainer");
+    w.db.set({ ...projectRevisionKey(ORG_A, "mobile", 1), entityType: "PROJECT", registeredAt: new Date(w.clock.now).toISOString(), definition: { name: "mobile", revision: 1, repositories: [{ name: "mobile", url: "https://github.com/acme/mobile.git", path: "repo/mobile", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." } });
     const other = await w.store.create({ orgId: ORG_A, name: "mobile process", owner: { kind: "project", project: "mobile" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, purpose: "process", createdBy: MAX });
     await publish(w, other.agentId);
     const ordinary = await w.store.create({ orgId: ORG_A, name: "helper", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, extends: ROVARA_CODE_AGENT_ID, createdBy: MAX });

@@ -18,6 +18,7 @@ import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { PROJECT, PROJECT_CREATED_AT, learningItems, seedPerson, seedProject, type GrantKind } from "../support/learning-page.js";
 
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
@@ -55,6 +56,10 @@ async function waitingPlan(options: { slackThread?: { teamId: string; channelId:
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: PROJECT, instructions: "Retry failed payments", client: "test-client", workflow: true, workflowPath: "QUICK" });
     taskId = String((started.body.task as { taskId: string }).taskId);
   } else {
+    // 0.4.24 (C53 turn authority): a Slack-started task's owner must be a live company member before the first turn is queued; each test then sets the grant it is about.
+    const slackOwnerId = developerIdForSlackUser(String(MAYA.slackUserId));
+    harness.db.set({ pk: `DEVELOPER#${slackOwnerId}`, sk: "META", developerId: slackOwnerId, provider: "slack", slackUserId: MAYA.slackUserId, displayName: "Maya", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedPerson(harness.db, { ...MAYA_CALLER, developerId: slackOwnerId }, "none");
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: options.slackThread, userId: MAYA.slackUserId, instructions: "Retry failed payments", workflowPath: "QUICK", requestId: randomUUID() }) as { body: string };
     taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
   }
@@ -482,14 +487,23 @@ describe("send-back capture: what is not a correction", () => {
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 
-  it("a project with no META (before Plan 2) or an archived project stores nothing; the send-back still happens", async () => {
+  it("a project with no META (before Plan 2) stores nothing; the send-back still happens", async () => {
     const t = await waitingPlan();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     t.harness.db.delete({ pk: `ORG#${TEST_ORG}#PROJECT#${PROJECT}`, sk: "META" });
-    seedProject(t.harness.db, PROJECT, "archived");
     const requestId = randomUUID();
     await t.page(MAYA_CALLER, NOTE, [], requestId);
     expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    expect(learningItems(t.harness.db)).toEqual([]);
+  });
+
+  it("an archived project stores nothing: since 0.4.24 the send-back itself is refused (PROJECT_ARCHIVED)", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    seedProject(t.harness.db, PROJECT, "archived");
+    const requestId = randomUUID();
+    await expect(t.page(MAYA_CALLER, NOTE, [], requestId)).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(requested(t.harness, t.taskId, requestId)).toBe(false);
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 

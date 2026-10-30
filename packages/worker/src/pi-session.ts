@@ -292,8 +292,8 @@ export type PiModelRuntimeResolver = (
 ) => Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration; route?: InvocationModelRoute }>;
 
 /** The worker's Pi session adapter. Without `modelRuntime` it resolves the configured model as the worker always has. */
-export function createDefaultPiSessionAdapter(options: { modelRuntime?: PiModelRuntimeResolver; onModelFallback?: WorkerModelFallbackReporter } = {}): PiSessionAdapter {
-  const resolveModelRuntime = options.modelRuntime ?? ((model: WorkspaceModelConfiguration) => workerModelRuntime(model, undefined, undefined, undefined, options.onModelFallback));
+export function createDefaultPiSessionAdapter(options: { modelRuntime?: PiModelRuntimeResolver; onModelFallback?: WorkerModelFallbackReporter; authorizeModelFallback?:(notice:ModelFallbackNotice)=>Promise<AuthorizedTaskModelRuntime> } = {}): PiSessionAdapter {
+  const resolveModelRuntime = options.modelRuntime ?? ((model: WorkspaceModelConfiguration) => workerModelRuntime(model, undefined, undefined, undefined, options.onModelFallback, options.authorizeModelFallback));
   return {
     async create(input) {
       return createDefaultSession(
@@ -321,34 +321,41 @@ export const defaultPiSessionAdapter: PiSessionAdapter = createDefaultPiSessionA
  * #342: once the plan cannot serve a request, it and every later one run on `fallbackModel` (the install's default,
  * whose runtime is made only then), and `onFallback` is told why, once per task.
  */
-export function createChatGptPiSessionAdapter(
-  apiKey: () => Promise<string>,
-  fallbackModel?: WorkspaceModelConfiguration,
-  onFallback: (reason: ChatGptFallbackReason) => void = () => undefined,
-  /** Where the fallback model's requests go on an install with a model proxy; the plan's own stay direct to OpenAI. */
-  proxy?: ModelProxyOptions,
-): PiSessionAdapter {
-  let fallbackRuntime: Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration }> | undefined;
-  let told = false;
-  const chatgptFallback: ChatGptFallback | undefined = fallbackModel === undefined ? undefined : {
-    async stream(context, options) {
-      fallbackRuntime ??= workerModelRuntime(fallbackModel, undefined, undefined, proxy);
-      const { runtime, model } = await fallbackRuntime;
-      const entry = runtime.getModel(model.provider, model.modelId);
-      if (entry === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `the default model ${model.provider}/${model.modelId} is unavailable`);
-      // The ChatGPT model's output limit is not the default model's: the default model's own applies.
-      const rest = { ...options };
-      delete rest.maxTokens;
-      return runtime.streamSimple(entry, context, rest);
+export interface AuthorizedTaskModelRuntime {model:WorkspaceModelConfiguration;proxy?:ModelProxyOptions|undefined}
+export function createWorkerChatGptFallback(
+  fallbackModel:WorkspaceModelConfiguration,
+  onFallback:(reason:ChatGptFallbackReason)=>void,
+  proxy?:ModelProxyOptions,
+  authorize?:(reason:ChatGptFallbackReason)=>Promise<AuthorizedTaskModelRuntime>,
+  resolveRuntime:(model:WorkspaceModelConfiguration,proxy?:ModelProxyOptions)=>ReturnType<typeof workerModelRuntime>=(model,route)=>workerModelRuntime(model,undefined,undefined,route),
+):ChatGptFallback {
+  let fallbackRuntime:ReturnType<typeof workerModelRuntime>|undefined;
+  let approved=authorize===undefined,told=false;
+  return {
+    ...(authorize===undefined?{}:{authorize:async(reason:ChatGptFallbackReason)=>{
+      const choice=await authorize(reason);fallbackModel=choice.model;proxy=choice.proxy;approved=true;
+    }}),
+    async stream(context,options) {
+      if(!approved)throw agentXError("RUNTIME_UNAVAILABLE","The task's fallback authorization is unavailable.");
+      fallbackRuntime??=resolveRuntime(fallbackModel,proxy);
+      const {runtime,model}=await fallbackRuntime;
+      const entry=runtime.getModel(model.provider,model.modelId);
+      if(entry===undefined)throw agentXError("RUNTIME_UNAVAILABLE",`the authorized default model ${model.provider}/${model.modelId} is unavailable`);
+      const rest={...options};delete rest.maxTokens;
+      return runtime.streamSimple(entry,context,rest);
     },
-    // Every session of the task shares this adapter, so the task is told once.
-    onFallback(reason) {
-      if (told) return;
-      told = true;
-      onFallback(reason);
-    },
+    onFallback(reason) {if(told||!approved)return;told=true;onFallback(reason);},
   };
-  return createDefaultPiSessionAdapter({ modelRuntime: (model) => workerModelRuntime(model, apiKey, chatgptFallback) });
+}
+export function createChatGptPiSessionAdapter(
+  apiKey:()=>Promise<string>,
+  fallbackModel?:WorkspaceModelConfiguration,
+  onFallback:(reason:ChatGptFallbackReason)=>void=()=>undefined,
+  proxy?:ModelProxyOptions,
+  authorize?:(reason:ChatGptFallbackReason)=>Promise<AuthorizedTaskModelRuntime>,
+):PiSessionAdapter {
+  const chatgptFallback=fallbackModel===undefined?undefined:createWorkerChatGptFallback(fallbackModel,onFallback,proxy,authorize);
+  return createDefaultPiSessionAdapter({modelRuntime:model=>workerModelRuntime(model,apiKey,chatgptFallback)});
 }
 
 export function createProxyPiSessionAdapter(proxy: ModelProxyOptions): PiSessionAdapter {
@@ -364,19 +371,22 @@ export async function workerModelRuntime(
   chatgptFallback?: ChatGptFallback,
   proxy?: ModelProxyOptions,
   onModelFallback?: WorkerModelFallbackReporter,
+  authorizeModelFallback?:(notice:ModelFallbackNotice)=>Promise<AuthorizedTaskModelRuntime>,
 ): Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration; route?: InvocationModelRoute }> {
+  let activeProxy=proxy;
   const resolved = await createModelRuntimeWithFallback(configured, "worker", {
     ...(apiKey === undefined ? {} : { apiKey, ...(chatgptFallback === undefined ? {} : { chatgptFallback }) }),
     ...(proxy === undefined ? {} : { proxy }),
     ...(onModelFallback === undefined ? {} : { onFallback: onModelFallback }),
+    ...(authorizeModelFallback===undefined?{}:{authorizeFallback:async(notice:ModelFallbackNotice)=>{const choice=await authorizeModelFallback(notice);activeProxy=choice.proxy;return {model:choice.model,...(choice.proxy===undefined?{}:{proxy:choice.proxy})};}}),
   });
   const modelRuntime = resolved.runtime;
   // Through the proxy, Bedrock is the proxy's to call: the worker's execution role is not registered.
-  if (resolved.model.provider === "amazon-bedrock" && proxy === undefined) {
+  if (resolved.model.provider === "amazon-bedrock" && activeProxy === undefined) {
     modelRuntime.registerNativeProvider(executionRoleBedrockProvider());
     await modelRuntime.refresh({ allowNetwork: false, providers: ["amazon-bedrock"] });
   }
-  return { runtime: modelRuntime, model: resolved.model, ...(apiKey === undefined && proxy?.route !== undefined ? { route: proxy.route } : {}) };
+  return { runtime: modelRuntime, model: resolved.model, ...(apiKey === undefined && activeProxy?.route !== undefined ? { route: activeProxy.route } : {}) };
 }
 
 async function createDefaultSession(

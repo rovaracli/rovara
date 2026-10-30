@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, PER_TEST_CAP_USD, TASK_BUDGET_EXCEEDED_PREFIX,
   agentKey, errorStatus, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
-  type BudgetScope, type OrgId, type PauseScope,
+  builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, type ResolvedRecipe, type BudgetScope, type OrgId, type PauseScope,
 } from "@agentx/contracts";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -798,9 +798,17 @@ const PROXY_URL = "http://internal-proxy.example.test:4000";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const NOW_MONTH = new Date().toISOString().slice(0, 7);
 
-async function brokerSetup(options: { agents?: boolean; env?: (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => void } = {}) {
+async function brokerSetup(options: { stepBudgetUsd?: number; agents?: boolean; env?: (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => void } = {}) {
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ brokerExtra: { ...(options.agents === false ? {} : { agents: {} }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const h = await createDeveloperTaskBroker({ brokerExtra: { ...(options.agents === false ? {} : { agents: { ...(options.stepBudgetUsd === undefined ? {} : { builtins: {
+    currentVersion: (id: string) => currentBuiltinVersion(id as Parameters<typeof currentBuiltinVersion>[0]),
+    defaultPin: (id: string) => builtinDefaultPin(id as Parameters<typeof builtinDefaultPin>[0]),
+    name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    recipe: (id: string, version: number) => {
+      const recipe = builtinRecipe(id as Parameters<typeof builtinRecipe>[0], version);
+      return id !== "rovara-code" ? recipe : { ...recipe, steps: recipe.steps.map(step => step.kind === "build" ? { ...step, settings: { ...step.settings, stepBudgetUsd: options.stepBudgetUsd } } : step) } as ResolvedRecipe;
+    },
+  } }) } }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   // A task with no workflow starts at the TASK estimate's run limit (Task 34); these tests are written for a task budget of $25.
@@ -1017,16 +1025,8 @@ describe("a task's key at the broker", () => {
   });
 
   it("is held to the recipe step's budget, less what the operation's keys spent", async () => {
-    const t = await brokerSetup();
+    const t = await brokerSetup({ stepBudgetUsd: 1.5 });
     const r = await t.running();
-    // The frozen recipe's implement step gets a budget of $1.50 (the snapshot's digest is kept in step with it).
-    const recipeItem = t.db.find((item) => item.pk === `DEVTASK#${r.taskId}` && item.sk === "RECIPE")[0] as unknown as { recipe: { steps: Array<{ kind: string; settings: Record<string, unknown> }> }; digest: string };
-    const step = recipeItem.recipe.steps.find((candidate) => candidate.kind === "build")!;
-    step.settings.stepBudgetUsd = 1.5;
-    const { recipeDigest } = await import("../../packages/contracts/src/agent-recipe-node.js");
-    const digest = recipeDigest(recipeItem.recipe as never);
-    t.db.set({ ...recipeItem, digest });
-    t.db.set({ ...r.task(), agent: { ...(r.task() as unknown as { agent: object }).agent, digest } });
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0].maxBudgetUsd).toBe(1.5);
     t.access.setKeySpent(t.access.mintedKeys()[0]!, 1.25);

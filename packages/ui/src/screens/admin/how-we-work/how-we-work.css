@@ -1,0 +1,6 @@
+.rv-hww-company-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,18rem),1fr));gap:var(--rv-space-4);margin:var(--rv-space-5) 0}
+.rv-hww-company-card{display:grid;gap:var(--rv-space-3);align-content:start;min-width:0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-hww-company-card h2{font-size:var(--rv-font-md);margin:0}.rv-hww-company-card p{margin:0;overflow-wrap:anywhere}
+.rv-hww-company-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);margin:var(--rv-space-4) 0}
+.rv-hww-company-review{display:grid;gap:var(--rv-space-3);max-width:76ch;margin:var(--rv-space-5) 0}.rv-hww-company-review p,.rv-hww-company-review h2{margin:0}
+.rv-hww-company-projects{display:grid;gap:var(--rv-space-3);padding-left:var(--rv-space-5);margin:0;overflow-wrap:anywhere}

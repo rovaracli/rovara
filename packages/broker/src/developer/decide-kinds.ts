@@ -35,6 +35,7 @@ export type DecideInspection =
 
 /** What the page says once the decision was made (for example "Approved. The change was applied."); a failure to apply is thrown with its reason. */
 export interface DecideOutcome {
+  refusal?: {code:string;reason:string;stage?:string|undefined;fixHref:string};
   message: string;
   /** The page's heading when the default ("Approved" or "Declined") would mislead: an approval that was made but could not be applied. */
   title?: string;

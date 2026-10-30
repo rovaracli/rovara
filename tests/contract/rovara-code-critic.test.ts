@@ -7,7 +7,7 @@ import {
   PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, WorkflowSnapshotSchema, ModelSourceSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow, skipPlanRevision,
   readPlanCritique, submitPlanCritique, submitWorkflowArtifact, type PlanCritique, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, recipeDigest, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
+import { builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packages/worker/src/plan-critic.js";
@@ -22,6 +22,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
@@ -443,11 +444,20 @@ const TESTED_PLAN = planDocument({
 const REVISED_PLAN = planDocument({ ...TESTED_PLAN, title: "Retry failed payments, with a limit", notChanging: ["The refund flow stays as it is.", "A payment is retried at most three times."] });
 const critiqueAnswer = (verdict: "ok" | "revise", points: Array<{ id: string; severity: "blocking" | "note"; text: string; claimId?: string }> = []) => block({ verdict, points });
 
-async function world(options: { proxy?: boolean; models?: { default: ModelIdentifier; approved: ModelIdentifier[] } } = {}) {
+async function world(options: { planCheckSettings?: Record<string, unknown>; proxy?: boolean; models?: { default: ModelIdentifier; approved: ModelIdentifier[] } } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
   const h = await createSingleAnswerPlanBroker({
+    audit: capturingAuditDeps(),
     register: options.models === undefined,
-    brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
+    brokerExtra: { agents: { ...(options.planCheckSettings === undefined ? {} : { builtins: {
+      currentVersion: (id: string) => currentBuiltinVersion(id as Parameters<typeof currentBuiltinVersion>[0]),
+      defaultPin: (id: string) => builtinDefaultPin(id as Parameters<typeof builtinDefaultPin>[0]),
+      name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+      recipe: (id: string, version: number) => {
+        const recipe = builtinRecipe(id as Parameters<typeof builtinRecipe>[0], version);
+        return id !== "rovara-code" ? recipe : { ...recipe, steps: recipe.steps.map(step => step.kind === "plan_critic" ? { ...step, settings: { ...step.settings, ...options.planCheckSettings } } : step) } as ResolvedRecipe;
+      },
+    } }) }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (options.models !== undefined) await registerSlackProject(h.handler, { models: options.models });
   if (access !== undefined) {
@@ -491,20 +501,12 @@ async function world(options: { proxy?: boolean; models?: { default: ModelIdenti
     await finishPlanning(started.workspaceId);
     return started;
   };
-  /** The task's frozen recipe, changed the way a company's overlay on the plan check step would have left it (the snapshot's digest kept in step with it). */
-  const settingPlanCheck = (taskId: string, settings: Record<string, unknown>) => {
-    const item = h.db.find((entry) => entry.pk === `DEVTASK#${taskId}` && entry.sk === "RECIPE")[0] as unknown as { recipe: ResolvedRecipe; digest: string };
-    const recipe = { ...item.recipe, steps: item.recipe.steps.map((step) => (step.kind === "plan_critic" ? { ...step, settings: { ...step.settings, ...settings } } : step)) } as ResolvedRecipe;
-    const digest = recipeDigest(recipe);
-    h.db.set({ ...item, recipe, digest });
-    h.db.set({ ...meta(taskId), agent: { ...(meta(taskId).agent as object), digest } });
-  };
   const askForKey = (workspaceId: string, operationId: unknown) => {
     const capability = (h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string }).callbackCapability;
     void workspaceId;
     return call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
   };
-  return { h, access, meta, operations, byMode, invocationOf, dispatchRows, start, finishPrepare, finishPlanning, finishCritique, planned, settingPlanCheck, askForKey };
+  return { h, access, meta, operations, byMode, invocationOf, dispatchRows, start, finishPrepare, finishPlanning, finishCritique, planned, askForKey };
 }
 
 describe("a version 2 plan goes to the plan check", () => {
@@ -865,24 +867,23 @@ describe("the automatic revision never asks for money", () => {
 });
 
 describe("when the company's chosen model for the check is refused", () => {
-  const forbidChosen = async (t: Awaited<ReturnType<typeof world>>, taskId: string, workspaceId: string) => {
+  const forbidChosen = async (t: Awaited<ReturnType<typeof world>>, workspaceId: string) => {
     await t.finishPrepare(workspaceId);
-    const forbidden = { provider: "openai", modelId: "gpt-5.5" };
+    const forbidden = OTHER_CLAUDE;
     t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [forbidden] } });
-    t.settingPlanCheck(taskId, { model: forbidden });
     await t.finishPlanning(workspaceId);
   };
 
   it("blocks the check with the refusal, and the owner's Retry plan check runs it again once the model is allowed", async () => {
-    const t = await world();
+    const t = await world({ planCheckSettings: { model: OTHER_CLAUDE } });
     const { taskId, workspaceId } = await t.start();
-    await forbidChosen(t, taskId, workspaceId);
+    await forbidChosen(t, workspaceId);
     const blocked = t.meta(taskId).workflow;
     expect(blocked).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
     const card = workflowMessage({ taskId, workflow: blocked as never, project: "payments" })!;
     expect(buttonsOf(card.blocks).map((button) => button.action_id)).toEqual(["agentx_workflow_retry_plan_check", "agentx_workflow_close"]);
-    // The company chooses a model it may use for the check; the retry starts it.
-    t.settingPlanCheck(taskId, { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } });
+    // The live guardrail is cleared; the admitted model remains pinned for the retry.
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 2, guardrails: DEFAULT_AGENT_GUARDRAILS });
     const retry = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Retry the plan check.", expectedRevision: blocked.revision });
     expect(retry.status, JSON.stringify(retry.body)).toBe(200);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
@@ -982,11 +983,10 @@ describe("the worker's cut of a long answer", () => {
 async function blockedByCompanyChoice(t: Awaited<ReturnType<typeof world>>) {
   const { taskId, workspaceId } = await t.start();
   await t.finishPrepare(workspaceId);
-  const forbidden = { provider: "openai", modelId: "gpt-5.5" };
+  const forbidden = OTHER_CLAUDE;
   t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [forbidden] } });
-  t.settingPlanCheck(taskId, { model: forbidden });
   await t.finishPlanning(workspaceId);
-  t.settingPlanCheck(taskId, { model: { provider: CLAUDE_DEFAULT.provider, modelId: CLAUDE_DEFAULT.modelId } });
+  t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 2, guardrails: DEFAULT_AGENT_GUARDRAILS });
   expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
   return { taskId, workspaceId };
 }
@@ -996,7 +996,7 @@ describe("retrying a blocked plan check", () => {
     t.h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, instructions: "Try the plan check again", expectedRevision });
 
   it("the owner's retry runs the check again on the same plan, once, whatever blocked it", async () => {
-    const t = await world();
+    const t = await world({ planCheckSettings: { model: OTHER_CLAUDE } });
     const { taskId, workspaceId } = await blockedByCompanyChoice(t);
     const blocked = t.meta(taskId).workflow;
     expect(blocked).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
@@ -1017,7 +1017,7 @@ describe("retrying a blocked plan check", () => {
   });
 
   it("is refused at the wrong revision, and for someone who is not the task's owner", async () => {
-    const t = await world();
+    const t = await world({ planCheckSettings: { model: OTHER_CLAUDE } });
     const { taskId, workspaceId } = await blockedByCompanyChoice(t);
     const blocked = t.meta(taskId).workflow;
     expect((await retry(t, taskId, blocked.revision + 1)).status).toBe(409);
@@ -1029,9 +1029,9 @@ describe("retrying a blocked plan check", () => {
 
 describe("the plan check and its budget", () => {
   it("is a model step like the others: the key is minted for the task's payer, capped by the planning limit and the step's own budget", async () => {
-    const t = await world();
+    // The step budget is part of the admitted frozen recipe, rather than a post-start recipe mutation.
+    const t = await world({ planCheckSettings: { stepBudgetUsd: 0.75 } });
     const { taskId, workspaceId } = await t.planned();
-    t.settingPlanCheck(taskId, { stepBudgetUsd: 0.75 });
     const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
     const reply = await t.askForKey(workspaceId, check.id);
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
@@ -1102,27 +1102,22 @@ describe("the plan check and its budget", () => {
 });
 
 describe("the company's choice of the plan check's model", () => {
-  it("runs the plan check on the model the company set for the step, even when it is the planner's", async () => {
-    const t = await world();
+  it("refuses an explicit same-model check without a bound approval exception", async () => {
+    const t = await world({ planCheckSettings: { model: CLAUDE_DEFAULT } });
     const { taskId, workspaceId } = await t.start();
     await t.finishPrepare(workspaceId);
-    const planner = defaultWorkerModel();
-    t.settingPlanCheck(taskId, { model: { provider: planner.provider, modelId: planner.modelId } });
     await t.finishPlanning(workspaceId);
-    const check = t.byMode(workspaceId, "PLAN_CRITIQUE")[0]!;
-    expect(t.invocationOf(check.id)!.payload.model).toMatchObject({ provider: planner.provider, modelId: planner.modelId });
-    expect(check.criticSameModel).toBeUndefined();
+    expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED" });
   });
 
-  it("falls back to the step's fallback model when the chosen one is forbidden, else refuses with Plan 3's words and blocks the check", async () => {
-    const t = await world();
+  it("blocks the pinned explicit model when a live guardrail forbids it, without an implicit fallback", async () => {
+    const t = await world({ planCheckSettings: { model: OTHER_CLAUDE } });
     const { taskId, workspaceId } = await t.start();
     await t.finishPrepare(workspaceId);
-    const forbidden = { provider: "openai", modelId: "gpt-5.5" };
-    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [forbidden] } });
-    t.settingPlanCheck(taskId, { model: forbidden });
+    t.h.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [OTHER_CLAUDE] } });
     await t.finishPlanning(workspaceId);
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "Rovara Code's Plan check step uses openai/gpt-5.5, which isn't allowed on payments. Ask the agent's owner to pick another model." });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "BLOCKED", blockReason: "The task's pinned stage model is unavailable. Check How we work." });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
   });
 });

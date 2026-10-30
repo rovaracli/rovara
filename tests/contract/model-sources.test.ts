@@ -1010,7 +1010,7 @@ describe("what a task does with the org's order", () => {
   const connected: ChatGptConnectionView = { connected: true, status: "connected", email: "maya@acme.com", models: ["gpt-5.5", "gpt-6.1-sol"] };
 
   /** A Slack task whose owner has a working plan, on an install with the model proxy; `prepare` plants the org's sources and the install-wide switch. */
-  async function task(prepare: (db: FakeDynamoDb) => void, options: { proxy?: boolean; installSwitch?: boolean } = {}) {
+  async function task(prepare: (db: FakeDynamoDb) => void, options: { proxy?: boolean; installSwitch?: boolean; unavailable?:boolean; explicit?:boolean } = {}) {
     const service = {
       settings: vi.fn(async () => ({ enabled: options.installSwitch ?? true, preferredModel: "gpt-6.1-sol" })),
       view: vi.fn(async () => connected),
@@ -1018,12 +1018,19 @@ describe("what a task does with the org's order", () => {
     const { handler, db } = createBroker({ extra: { chatgpt: service, ...(options.proxy === false ? {} : { modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.com" } }) } });
     prepare(db);
     await registerSlackProject(handler, { models });
+    if(options.explicit){const {projectSelectionKey}=await import("../../packages/contracts/src/index.js");db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.default.provider,modelId:models.default.modelId}});}
     const workspace = await ensureWorkspace(handler, thread, maya);
     const workspaceId = workspace.body.workspaceId as string;
     markReady(db, workspaceId);
     const conversation = await serviceCall(handler, thread, maya, "POST", `/v1/service/workspaces/${workspaceId}/conversations`, {});
     const conversationId = (conversation.body.conversation as { id: string }).id;
+    const outboxBefore=db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===workspaceId).length;
     const started = await serviceCall(handler, thread, maya, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
+    if(options.unavailable){
+      expect(started).toMatchObject({status:503,body:{error:{code:"RUNTIME_UNAVAILABLE"}}});
+      expect(db.find(item=>item.entityType==="OUTBOX"&&item.workspaceId===workspaceId)).toHaveLength(outboxBefore);
+      return started.body;
+    }
     expect(started.status, JSON.stringify(started.body)).toBe(202);
     const operationId = (started.body.operation as { id: string }).id;
     return (db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { payload: Record<string, unknown> }).payload;
@@ -1043,15 +1050,18 @@ describe("what a task does with the org's order", () => {
     expect(await task((db) => plant(db, ["rovara"]))).not.toHaveProperty("chatgpt");
   });
 
-  it("runs on the plan when the org's order has personal-chatgpt, and on the default when the org's sources cannot be read", async () => {
+  it("runs on the plan when the org's readable order has personal-chatgpt", async () => {
     expect((await task((db) => plant(db, ["personal-chatgpt", "rovara"]))).chatgpt).toEqual({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
     // The install-wide switch is a hard off: an order that kept personal-chatgpt from when the switch was on no longer runs tasks on a plan.
     expect(await task((db) => plant(db, ["personal-chatgpt", "rovara"]), { installSwitch: false })).not.toHaveProperty("chatgpt");
-    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const payload = await task((db) => { db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: "garbage", order: ["rovara"], credentials: [] }); });
-    expect(payload).not.toHaveProperty("chatgpt");
-    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as { event?: string }).some((entry) => entry.event === "model_sources.unreadable")).toBe(true);
+
+  });
+
+  for(const explicit of [false,true])it(`refuses an unreadable source order for ${explicit?"explicit":"default"} model choice without task dispatch`,async()=>{
+    const log=vi.spyOn(console,"log").mockImplementation(()=>undefined);
+    vi.spyOn(console,"error").mockImplementation(()=>undefined);
+    await task(db=>{db.set({...modelSourcesKey(TEST_ORG),entityType:"ORG_MODEL_SOURCES",revision:1,sources:"garbage",order:["rovara"],credentials:[]});},{unavailable:true,explicit});
+    expect(log.mock.calls.map(([line])=>JSON.parse(String(line)) as {event?:string}).some(entry=>entry.event==="model_sources.unreadable")).toBe(true);
   });
 
   it("leaves the install-wide switch in charge where the install has no model proxy", async () => {

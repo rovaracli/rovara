@@ -3,6 +3,8 @@
 // id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
+import {createHash} from "node:crypto";
+import {ModelPolicyAuditFactsSchema,ModelFallbackAuditFactsSchema,type ModelIdentifier,type StageId,type ModelFallback} from "@agentx/contracts";
 import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
 
 export interface AuditBuilderBase {
@@ -578,6 +580,20 @@ export function auditProjectLearningChanged(input: AuditBuilderBase & { projectN
   return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
 }
 
+// G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
+export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
+ const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");
+ const facts=ModelFallbackAuditFactsSchema.parse({stage:input.stage,usedModelDigest:digest(input.used),...(input.wanted===undefined?{}:{wantedModelDigest:digest(input.wanted)}),cause:input.reasonCode,companyRevision:input.companyRevision});
+ return build("model.fallback_used",input,{kind:"project",name:input.projectName},facts,[input.stage]);
+}
+type ModelPolicyAuditInput=AuditBuilderBase&{revision:number;policyDigest:string;previousDigest?:string;stage?:StageId;mode?:"second_person"|"sole_owner_exception"};
+function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|"model_policy.lock_removed",input:ModelPolicyAuditInput):AuditEventInput {
+ const facts=ModelPolicyAuditFactsSchema.parse({revision:input.revision,policyDigest:input.policyDigest,...(input.previousDigest===undefined?{}:{previousDigest:input.previousDigest}),...(input.stage===undefined?{}:{stage:input.stage}),...(input.mode===undefined?{}:{mode:input.mode})});
+ return build(action,input,{kind:"org",id:input.orgId},facts,input.stage===undefined?[]:[input.stage]);
+}
+export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);
+export const auditModelPolicyLockSet=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_set",input);
+export const auditModelPolicyLockRemoved=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_removed",input);
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });

@@ -1,3 +1,18 @@
+import { readServiceStatusEvidence } from "./service-status-runtime.js";
+import {readTurnActorChecks} from "../model-selection/turn-authority.js";
+import {authorizeTurnModelFallback} from "../model-selection/turn-fallback.js";
+import {turnStagesForMode,prepareTurnModelPolicy} from "../model-selection/turn-policy.js";
+import {ProcessModelRefusal,processModelRefusalBody} from "../model-selection/process-refusal.js";
+import {ModelIdentifierSchema} from "@agentx/contracts";
+import {writeProjectModelSelection} from "../model-selection/selection-write.js";
+import {survivorOf} from "../org/project-members.js";
+import {resolveAndAuthorizeTaskFallback} from "../model-selection/fallback-request.js";
+import {reviewFailures,criticFailures} from "../model-selection/task-failures.js";
+import {taskStageReferenceChecks,taskStageReferences,scopedTaskOperations,taskStageReferenceOperation} from "../model-selection/task-references.js";
+import {prepareTurnModelFallback,prepareTaskModelFallback,joinTaskModelFallback} from "../model-selection/fallback-record.js";
+import type {StageModelResult} from "../model-selection/resolver.js";
+import {loadPinnedTaskStage} from "../model-selection/task-live.js";
+import {type TaskModelPolicyBinding,STAGE_OPERATION_MAPPING} from "@agentx/contracts";
 import { commitRegisteredProjectAllowedDomains, type AppliedDomainProposalProof } from "../org/project-allowed-domains.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 import { planLegacyDomainNarrowing } from "../org/legacy-domain-narrowing.js";
@@ -379,11 +394,11 @@ import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditPullRequestOpened, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
-import { auditedWrite, modelSelectionAuditEvent, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
+import { auditedWrite, projectDefinitionAuditEvents } from "../playbook/project-settings-audit.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "./slack-thread-key.js";
@@ -728,7 +743,7 @@ interface ProjectModelSelectionRecord {
   entityType: "PROJECT_MODEL_SELECTION";
   model: ModelIdentifier;
   updatedAt: string;
-  updatedBy: SlackRequester;
+  updatedBy: SlackRequester | string;
 }
 
 interface PullRequestRecord {
@@ -1256,6 +1271,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...((agents.rovaraCodeV2Live ?? (rovaraCodeV2LiveFromEnvironment(process.env) ? true : undefined)) === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live ?? true }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
     ...(routing === undefined ? {} : { modelRouting: routing }),
+    ...(dependencies.chatgpt === undefined ? {} : { stageChatgpt: dependencies.chatgpt }),
+    modelSignInTableName: developer.signInTableName,
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
@@ -2382,7 +2399,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-tools") return json(await handleAgentTools(dependencies, agents, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/agent-tools/call") return json(await handleAgentTools(dependencies, agents, request, "call"), request.requestId);
-      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status)$/.exec(
+      const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback)$/.exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {
@@ -2497,6 +2514,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
           ...workingBranchPagesRoute(dependencies),
+          ...serviceStatusRouteDependencies(dependencies),
           ...workingBranchPreviewRoute(dependencies),
           projectAllowedDomains: {
             registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
@@ -2832,6 +2850,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Confirmation and task pages remain isolated even when their adapter throws before rendering.
       const errorPath = request.path.split("?", 1)[0]!;
       const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
+      if (error instanceof ProcessModelRefusal) return json({error:processModelRefusalBody(error)},request.requestId,error.statusCode);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
         const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...("reason" in error && error.reason === "settingsChanged" ? {reason:"settingsChanged"} : {}), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
@@ -6216,14 +6235,34 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
-): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true; reviewSameModel?: true }) | undefined> {
+  frozen: Awaited<ReturnType<typeof readTaskRecipe>>,
+): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true; reviewSameModel?: true;modelDecision?:Extract<StageModelResult,{kind:"resolved"}>;modelCompanyRevision?:number;modelPolicy?:TaskModelPolicyBinding }) | undefined> {
   if (task?.agent === undefined) return undefined;
-  const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
   if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
   if (input.agentRun === undefined && recipeRunner(frozen.recipe) === "agent_steps") throw agentXError("CONFIG_INVALID", "an agent run takes no follow-up; start a new run instead");
   const guardrails = await readGuardrails(dependencies, orgId);
+  if(frozen.modelPolicyPin!==undefined&&input.agentRun===undefined&&recipeRunner(frozen.recipe)==="coding") {
+    const mode=input.workflowMode??"IMPLEMENT",stages=STAGE_OPERATION_MAPPING[mode].stages;
+    if(stages.length>0) {
+      const operations=scopedTaskOperations(await queryAllItems(dependencies,`WORKSPACE#${workspace.id}`,"OPERATION#"),{orgId,workspaceId:workspace.id,conversationId:task.conversationId,taskId:task.taskId});
+      const latest=(mode:string)=>operations.filter(item=>item.entityType==="OPERATION"&&item.kind==="task"&&item.workflowMode===mode).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+      const priorModels=taskStageReferences(operations,{orgId,workspaceId:workspace.id,conversationId:task.conversationId,taskId:task.taskId});
+      const history=mode==="PLAN_CRITIQUE"?criticFailures(operations,latest("PLAN")):mode==="REVIEW"?reviewFailures(operations,taskStageReferenceOperation(operations,{orgId,workspaceId:workspace.id,conversationId:task.conversationId,taskId:task.taskId},"build")):undefined;
+      if(mode==="PLAN_CRITIQUE"&&history!==undefined&&"sinceLatestPlan" in history&&history.sinceLatestPlan>=CRITIC_MODEL_ATTEMPTS_MAX)throw new PlanCheckUnavailableError();
+      const decisions=await Promise.all(stages.map(stage=>loadPinnedTaskStage({...dependencies,routing:routingOf(dependencies)??{},chatgpt:dependencies.chatgpt,now:Date.now},{orgId,project:workspace.projectName,agentId:task.agent!.agentId,recipe:frozen.recipe,digest:frozen.digest,pin:frozen.modelPolicyPin,stage,priorModels,...(chatgptModel===undefined?{}:{defaultPreferred:chatgptModel}),deniedModels:history?.models??[],defaultLastAttempt:history!==undefined&&("sinceLatestPlan" in history?history.sinceLatestPlan:history.sinceLatestBuild)+1>=CRITIC_MODEL_ATTEMPTS_MAX,...(task.payer?.kind==="member"?{payerDeveloperId:task.payer.developerId}:{})})));
+      const decision=decisions[0];
+      if(decision===undefined||decision.kind==="refusal"||decisions.some(other=>other.kind!=="resolved"||canonicalModelName(other.model)!==canonicalModelName(decision.model)||other.sourceId!==decision.sourceId||other.thinkingLevel!==decision.thinkingLevel))throw agentXError("MODEL_NOT_ALLOWED","The task's pinned stage model is unavailable. Check How we work.");
+      const model:ModelSelection={...decision.model,...(decision.thinkingLevel===null?{}:{thinkingLevel:decision.thinkingLevel})};
+      const step=stepForOperation(frozen.recipe,mode,input.programStepId);
+      const recipe=ResolvedRecipeSchema.parse({...frozen.recipe,steps:frozen.recipe.steps.map(candidate=>candidate.id===step?.id?{...candidate,settings:{...candidate.settings,model,thinkingLevel:decision.thinkingLevel}}:candidate)});
+      const stepIds=priorStepIds({recipe,mode,programStepId:input.programStepId,guardrails});
+      const priorOperations=stepIds.length===0?[]:await priorStepModels(dependencies,workspace.id,recipe,stepIds);
+      const applied=applyAgentStep({recipe,ref:task.agent,mode,programStepId:input.programStepId,guardrails,project:workspace.projectName,projectModel:model,projectApproved:frozen.modelPolicyPin.frozenInputs?.projectModels?.approved,chatgptModel:decision.sourceId==="personal-chatgpt"?model:undefined,priorOperations});
+      return {...applied,model,ranModel:model,...(decision.fallback?.reasonCode==="DEFAULT_MODEL_UNAVAILABLE"&&(mode==="PLAN_CRITIQUE"?priorModels.plan!==undefined&&canonicalModelName(model)===canonicalModelName(priorModels.plan):mode==="REVIEW"&&priorModels.build!==undefined&&canonicalModelName(model)===canonicalModelName(priorModels.build))?(mode==="PLAN_CRITIQUE"?{criticSameModel:true as const}:mode==="REVIEW"?{reviewSameModel:true as const}:{}):{}),dropChatgpt:decision.sourceId!=="personal-chatgpt",stepName:stepNameOf(recipe,mode,input.programStepId),modelDecision:decision,modelCompanyRevision:frozen.modelPolicyPin.policy.revision,modelPolicy:{version:1,stage:stages[0]!,companyRevision:frozen.modelPolicyPin.policy.revision,recipeDigest:frozen.digest}};
+    }
+  }
   // Plan 6 Task 8: the plan check is an ordinary step. The model the company set on it stands; with none set, Rovara recommends one the project may use (a different one from the planner's by default).
   const critic = input.workflowMode === "PLAN_CRITIQUE" && input.agentRun === undefined
     ? await criticModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
@@ -6289,34 +6328,7 @@ async function reviewerModelOfStep(
  * its operation ended FAILED with the refusal (the operation's own session was refused first), or the operation SUCCEEDED and a reviewer's report says its model call failed (`modelFailure`, a fixed sentence
  * the worker wrote from the model-call monitor's note, on the report's own provider and version). Each operation counts once.
  */
-function reviewFailures(operations: ReadonlyArray<Record<string, unknown>>, latestBuild: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestBuild: number } {
-  const models: ModelSelection[] = [];
-  let sinceLatestBuild = 0;
-  const from = typeof latestBuild?.createdAt === "string" ? latestBuild.createdAt : "";
-  for (const item of operations) {
-    if (item.workflowMode !== "REVIEW") continue;
-    let failed: ModelSelection | undefined;
-    let unusable = false;
-    if (item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined)) {
-      unusable = true;
-      const model = ModelSelectionSchema.safeParse(item.model);
-      if (model.success) failed = model.data;
-    } else if (item.status === "SUCCEEDED") {
-      const reports = (item.result as { workflowReviews?: unknown } | undefined)?.workflowReviews;
-      for (const report of Array.isArray(reports) ? reports : []) {
-        const { provider, version, modelFailure } = (report ?? {}) as { provider?: unknown; version?: unknown; modelFailure?: unknown };
-        if (typeof modelFailure !== "string" || !criticModelUnusable(modelFailure)) continue;
-        unusable = true;
-        const model = ModelSelectionSchema.safeParse({ provider, modelId: version });
-        if (model.success) failed = model.data;
-      }
-    }
-    if (!unusable) continue;
-    if (failed !== undefined) models.push(failed);
-    if (String(item.createdAt) >= from) sinceLatestBuild += 1;
-  }
-  return { models, sinceLatestBuild };
-}
+
 
 /**
  * Plan 6 Task 8: the recipe the plan check runs under. The company's own choice for the step is left as it is (the step's ordinary checks apply to it in `applyAgentStep`); with none,
@@ -6357,16 +6369,7 @@ async function criticModelOfStep(
  * The plan checks of one workspace that failed because their model could not serve this account (`criticModelUnusable`): the models they ran on, to leave out of the next choice, and how many
  * of them came after the latest planning run (a revised plan is checked again, with the earlier refusals remembered but the tries counted afresh). A failed check that recorded no usable model counts as a try.
  */
-function criticFailures(operations: ReadonlyArray<Record<string, unknown>>, latestPlanner: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestPlan: number } {
-  const failed = operations.filter((item) => item.workflowMode === "PLAN_CRITIQUE" && item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined));
-  const models: ModelSelection[] = [];
-  for (const item of failed) {
-    const model = ModelSelectionSchema.safeParse(item.model);
-    if (model.success) models.push(model.data);
-  }
-  const from = typeof latestPlanner?.createdAt === "string" ? latestPlanner.createdAt : "";
-  return { models, sinceLatestPlan: failed.filter((item) => String(item.createdAt) >= from).length };
-}
+
 
 /** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
 async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId: string, recipe: ResolvedRecipe, stepIds: readonly string[]): Promise<Array<{ stepId: string; model?: ModelSelection }>> {
@@ -6386,7 +6389,7 @@ async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId:
 
 /**
  * #341 with the org's say (Task 24b): where the install runs the model proxy, the org's source order decides whether ChatGPT is used at all. An org
- * whose sources cannot be read runs on the default rather than on a plan its admin may have left out of the order.
+ * whose sources cannot be read cannot verify either the plan or a replacement route.
  */
 async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId: OrgId, owner: string | undefined): ReturnType<typeof chatGptTaskSelection> {
   if (dependencies.modelAccess === undefined) return chatGptTaskSelection(dependencies.chatgpt, owner);
@@ -6395,7 +6398,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
     orgSources = await modelSourceStoreOf(dependencies).orgSources(orgId);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "model_sources.unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
-    return undefined;
+    throw agentXError("RUNTIME_UNAVAILABLE","The model sources could not be verified. Reload and try again.");
   }
   return chatGptTaskSelection(dependencies.chatgpt, owner, Date.now(), orgSources);
 }
@@ -6406,30 +6409,59 @@ async function taskOperationParts(
   workspace: WorkspaceInstance,
   input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
-): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
+): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspace.id);
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
-  const resolvedModel = await resolveProjectModel(dependencies, orgId, settings);
+  const resolvedModel:Awaited<ReturnType<typeof resolveProjectModel>> = input.workflowMode === "CHECKS" ? {} : await resolveProjectModel(dependencies, orgId, settings);
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
-  const planOwner = chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
-  const planSelection = dependencies.chatgpt === undefined ? undefined
+  const frozen=task?.agent===undefined?undefined:await readTaskRecipe(dependencies,task.taskId,orgId);
+  const governed=frozen?.modelPolicyPin!==undefined&&recipeRunner(frozen.recipe)==="coding"&&input.agentRun===undefined;
+  const planOwner = governed||task?.payer!==undefined?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
+  const planSelection = dependencies.chatgpt === undefined || input.workflowMode === "CHECKS" || input.agentRun !== undefined ? undefined
     : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
+  const turnMapping=!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"?turnStagesForMode(input.workflowMode??"IMPLEMENT"):undefined;
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
-  const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model);
+  let applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
+  const turnActor=chatGptOwner(task?.developerId,input.requester.requestedBy,developerIdForSlackUser);
+  let turnPolicy:Awaited<ReturnType<typeof prepareTurnModelPolicy>>|undefined;
+  if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS") {
+    const signInTableName=dependencies.developer?.signInTableName;
+    if(turnActor===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
+    const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    const actorDeveloperId=await followMerges(signInStore,turnActor);
+    const payerDeveloperId=planOwner===undefined?undefined:await followMerges(signInStore,planOwner);
+    const referenceScope={orgId,workspaceId:workspace.id,conversationId:input.conversationId,taskId:task?.taskId??workspace.id};
+    const turnOperations=turnMapping?.stages.some(stage=>stage==="code_review"||stage==="security_review"||stage==="plan_check")?await queryAllItems(dependencies,`WORKSPACE#${workspace.id}`,"OPERATION#"):[];
+    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,...(task===undefined&&input.slackThread!==undefined?{threadChannel:{teamId:input.slackThread.teamId,channelId:input.slackThread.channelId}}:{}),workflowMode:input.workflowMode??"IMPLEMENT",priorModels:taskStageReferences(turnOperations,referenceScope),...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
+    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId,projectRevision:turnPolicy.projectRevision,...(turnPolicy.frozen.threadChannel===undefined?{}:{threadChannel:turnPolicy.frozen.threadChannel})});
+    turnPolicy.checks.push(...actorChecks,...taskStageReferenceChecks(dependencies.tableName,turnOperations,referenceScope,turnPolicy.binding.stage));
+  }
+  if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"&&turnPolicy===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
+  if(turnPolicy!==undefined) {
+    applied={...applied,model:turnPolicy.model,ranModel:turnPolicy.model,stepName:turnPolicy.stepName,dropChatgpt:turnPolicy.decision.sourceId!=="personal-chatgpt",modelDecision:turnPolicy.decision,modelCompanyRevision:turnPolicy.binding.companyRevision,modelPolicy:turnPolicy.binding};
+  }
+  // Governed stages resolve the pinned precedence themselves; an ungoverned coding choice cannot silently become the default.
+  if(resolvedModel.selectionUnavailable===true&&(applied?.modelDecision===undefined||applied.modelDecision.reason==="PROJECT_SELECTION")&&input.workflowMode!=="CHECKS"&&input.agentRun===undefined)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan. An agent step of a run never
   // uses a person's ChatGPT plan: the run is the agent's work (it may be started by an event or paid for by a project), not the person's own coding turn.
   let chatgpt = applied?.dropChatgpt === true || input.agentRun !== undefined ? undefined : planSelection;
+  // Governed personal plans execute the exact verified resolver tuple, never the connection's preferred model.
+  if(applied?.modelDecision?.sourceId==="personal-chatgpt") {
+    if((turnPolicy===undefined&&task?.payer?.kind!=="member")||applied.model===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model is unavailable.");
+    chatgpt={developerId:turnPolicy?.frozen.payerDeveloperId??(task!.payer as {developerId:string}).developerId,model:applied.model};
+  }
   // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
   // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
   const routing = routingOf(dependencies);
-  const routed = routing === undefined ? undefined : await routeStep(routing, {
+  const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(routing, {
     orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
     model: applied?.model ?? resolvedModel.model,
-    ...(chatgpt === undefined || planOwner === undefined ? {} : { plan: { developerId: planOwner, model: chatgpt.model } }),
+    expectedSourceId: applied?.modelDecision?.sourceId,
+    ...(chatgpt === undefined ? {} : { plan: { developerId: chatgpt.developerId, model: chatgpt.model } }),
   });
   const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
@@ -6473,6 +6505,10 @@ async function taskOperationParts(
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
   const ranModel = leftThePlan ? applied?.model : applied?.ranModel;
   if (ranModel !== undefined) operation.model = ranModel;
+  if(applied?.modelPolicy!==undefined&&task!==undefined){operation.modelPolicy=applied.modelPolicy;operation.modelTaskId=task.taskId;}
+  if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
+  const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
+  if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
@@ -6545,8 +6581,9 @@ async function taskOperationParts(
     fence,
     projectRevision: workspace.projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, {
+      modelPolicy:applied?.modelPolicy,
       feedbackBundles: input.workflowMode === "FEEDBACK_REVIEW", feedbackApproval: input.workflowFeedbackApproval !== undefined, chatGptToken: chatgpt !== undefined,
-      candidateExport: input.workflowMode === "IMPLEMENT", groundingSource: askGroundingSource, workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
+      candidateExport: input.workflowMode === "IMPLEMENT", groundingSource: askGroundingSource, workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined && (input.workflowMode !== "CHECKS" || input.agentRun !== undefined),
       // The AI browser-test agent's model budget (M1.4): only a round that has agent steps may ask for it.
       e2eModelBudget: input.workflowE2EAdmission?.agentSteps === true,
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
@@ -6582,16 +6619,18 @@ async function taskOperationParts(
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
+      ...(applied?.modelPolicy===undefined?{}:{modelPolicy:applied.modelPolicy}),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
       ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
-      ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
       ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
     },
   };
-  return { operation, outbox: outboxRecord(workspace, invocation), fence };
+  const fallback=turnPolicy!==undefined||applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
+  if(fallback?.replayed===true)throw agentXError("IDEMPOTENCY_CONFLICT","The fallback operation has already been recorded.");
+  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(turnPolicy===undefined?{}:{modelChecks:[...turnPolicy.checks,...(turnAudit?.items??[])]}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
 }
 
 /** Whether the workspace's task has a baseline round that is requested and not yet started, so a coding run is to export the unchanged code. Never throws: a baseline never stops the coding. */
@@ -7489,6 +7528,12 @@ async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspace
   return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
 }
 
+/** Ordinary turn admission keeps policy/source/identity fences and its audit within one small transaction. */
+function boundedTurnAdmission(items:TransactItems):TransactItems {
+  if(items.some(item=>item.Put?.Item?.modelTurnPin!==undefined)&&items.length>25)throw agentXError("RUNTIME_UNAVAILABLE","The turn's atomic model admission is unavailable.");
+  return items;
+}
+
 async function acceptTask(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
@@ -7535,7 +7580,7 @@ async function acceptTask(
     throw agentXError(workspace.status === "BUSY" ? "WORKSPACE_BUSY" : "WORKSPACE_NOT_READY", `workspace is ${workspace.status}`);
   }
   const now = new Date().toISOString();
-  const { operation, outbox, fence } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: request.requestId,
     conversationId: request.conversationId,
     prompt: request.prompt,
@@ -7568,7 +7613,7 @@ async function acceptTask(
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
   }, now);
   try {
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: boundedTurnAdmission(joinTaskModelFallback([
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -7593,7 +7638,8 @@ async function acceptTask(
           type: "progress", timestamp: now, payload: { message: options.firstEvent } },
         ConditionExpression: "attribute_not_exists(pk)",
       } }]),
-    ] }));
+      ...(modelChecks??[]),
+    ],fallback?.items??[])) }));
   } catch (error) {
     if (isConditional(error)) {
       const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
@@ -7612,6 +7658,8 @@ async function acceptTask(
     }
     throw error;
   }
+  if(fallback?.event!==undefined)await flushAuditEvents(dependencies,[fallback.event]);
+  if(turnAudit!==undefined)await flushAuditEvents(dependencies,[turnAudit.event]);
   return { operation: publicOperation(operation), duplicate: false };
 }
 
@@ -9209,6 +9257,15 @@ async function handleCallback(
   if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
   if (action !== "result" && TERMINAL.has(operation.status)) {
     throw agentXError("STALE_FENCE", "terminal operations cannot publish more output");
+  }
+  if(action==="model-fallback") {
+    if(cancelClaims!==undefined||dependencies.developer===undefined||operation.orgId===undefined||(operation.modelTaskId===undefined&&operation.modelTurnPin===undefined))throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
+    const signInTableName=dependencies.developer.signInTableName;
+    if(signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's model authority is unavailable.");
+    const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    if(operation.modelTurnPin!==undefined)return json(await authorizeTurnModelFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
+    if(operation.modelTaskId===undefined)throw agentXError("CALLBACK_FORBIDDEN","This operation has no task model authority.");
+    return json(await resolveAndAuthorizeTaskFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,taskId:operation.modelTaskId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
   }
   if (action === "chatgpt-token") return json(await chatGptTaskToken(dependencies, operation), request.requestId);
   if (action === "chatgpt-status") return json(await recordChatGptFallback(dependencies, operation, parseBody(request.body)), request.requestId);
@@ -12980,9 +13037,9 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems }> {
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
   const task = pointer.pendingWorkflowMode === "PLAN" ? await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)) : undefined;
-  const { operation, outbox, fence } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
     prompt: pointer.pendingPrompt,
@@ -12993,6 +13050,8 @@ async function queuedFirstTask(
     ...(task?.workflow?.reviewPhase === undefined ? {} : { workflowPhase: task.workflow.reviewPhase }),
   }, now);
   return {
+    ...(fallback===undefined?{}:{fallback}),
+    ...(turnAudit===undefined?{}:{turnAudit}),
     workspaceUpdate: { Update: {
       TableName: dependencies.tableName,
       Key: workspaceKey(workspace.id),
@@ -13019,6 +13078,7 @@ async function queuedFirstTask(
         UpdateExpression: "REMOVE pendingPrompt, pendingWorkflowMode",
         ConditionExpression: "attribute_exists(pendingPrompt) AND attribute_not_exists(cancelledAt)",
       } },
+      ...(modelChecks??[]),
     ],
   };
 }
@@ -13089,7 +13149,9 @@ async function sendTerminalResult(
     return terminalStatus;
   }
   try {
-    await send([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items]);
+    await send(boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[])));
+    if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
+    if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
     // C19: a temporary error from the one queuing write committed nothing; the worker tries again.
     // A TransactionCanceledException with a TransactionConflict reason is not temporary here: it
@@ -18264,26 +18326,15 @@ async function putProjectModel(
   await requireSlackRequesterMayWork(dependencies, identity, projectName);
   const requested = ProjectModelSelectionRequestSchema.parse(value);
   const orgId = requireOrgId(identity.orgId);
+  const agents=agentRouteDependencies(dependencies,developerTaskActions(dependencies));
+  if(agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The model authority check is unavailable.");
+  const signedInId=developerIdForSlackUser(requester.userId);
+  const developerId=await survivorOf({developerRecord:id=>agents.signInStore.getDeveloper(id)},signedInId);
+  const applied=await writeProjectModelSelection(agents,{orgId,project:projectName,signedInId,developerId,model:requested,surface:"slack",requestId});
   const project = await requireLatestProject(dependencies, orgId, projectName);
   const policy = project.definition.models;
-  if (!policy) throw agentXError("CONFIG_INVALID", "this project has no approved coding models; ask an administrator to configure models");
-  const selected = policy.approved.find((candidate) => modelKey(candidate) === modelKey(requested));
-  if (!selected) throw agentXError("CONFIG_INVALID", `model ${requested.provider}/${requested.modelId} is not approved for this project`);
-  const record: ProjectModelSelectionRecord = {
-    ...projectModelSelectionKey(orgId, projectName),
-    entityType: "PROJECT_MODEL_SELECTION",
-    model: { provider: selected.provider, modelId: selected.modelId },
-    updatedAt: new Date().toISOString(),
-    updatedBy: requester,
-  };
-  // H6: choosing another model than the one selected is audited, in the transaction that stores it; choosing the same one again changes nothing.
-  const earlier = await getItem<ProjectModelSelectionRecord>(dependencies, projectModelSelectionKey(orgId, projectName));
-  const changed = earlier === undefined || modelKey(earlier.model) !== modelKey(selected);
-  const events = changed ? await tryAuditEvents(dependencies, () => [modelSelectionAuditEvent({
-    orgId, actor: auditActorOf(developerIdForSlackUser(requester.userId)), occurredAt: record.updatedAt, project: projectName, surface: "slack", cleared: false, requestId,
-  })]) : [];
-  await auditTransact(dependencies, { Put: { TableName: dependencies.tableName, Item: record } }, events);
-  await flushAuditEvents(dependencies, events);
+  const selected=policy?.approved.find(candidate=>modelKey(candidate)===modelKey(applied.model));
+  if(policy===undefined||selected===undefined)throw agentXError("PLAYBOOK_STALE","The model settings changed. Reload and try again.");
   return ProjectModelOptionsSchema.parse({
     projectName,
     approved: policy.approved,
@@ -18292,24 +18343,18 @@ async function putProjectModel(
   });
 }
 
-async function resolveProjectModel(
-  dependencies: AwsBrokerDependencies,
+export async function resolveProjectModel(
+  dependencies: {documentClient:{send(command:unknown):Promise<unknown>};tableName:string},
   orgId: OrgId,
-  project: RegisteredProjectRecord,
-): Promise<{ model?: ModelSelection; diagnostic?: string }> {
+  project: Pick<RegisteredProjectRecord,"definition">,
+): Promise<{ model?: ModelSelection; selectionUnavailable?: true }> {
   const policy = project.definition.models;
-  if (!policy) return {};
-  const selection = await getItem<ProjectModelSelectionRecord>(dependencies, projectModelSelectionKey(orgId, project.definition.name));
-  const selected = selection === undefined
-    ? undefined
-    : policy.approved.find((candidate) => modelKey(candidate) === modelKey(selection.model));
-  const effective = selected ?? approvedDefault(policy.default, policy.approved);
-  return {
-    model: approvedSelection(effective),
-    ...(selection !== undefined && selected === undefined
-      ? { diagnostic: `The project's selected coding model ${selection.model.provider}/${selection.model.modelId} is no longer approved. This task uses the project default ${effective.provider}/${effective.modelId}.` }
-      : {}),
-  };
+  const selection=(await dependencies.documentClient.send(new GetCommand({TableName:dependencies.tableName,Key:projectModelSelectionKey(orgId,project.definition.name),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;
+  if(policy===undefined)return selection===undefined?{}:{selectionUnavailable:true};
+  const parsed=selection===undefined?undefined:ModelIdentifierSchema.safeParse(selection.model);
+  const selected=parsed?.success?policy.approved.find(candidate=>modelKey(candidate)===modelKey(parsed.data)):undefined;
+  if(selection!==undefined&&selected===undefined)return {selectionUnavailable:true};
+  return {model:approvedSelection(selected??approvedDefault(policy.default,policy.approved))};
 }
 
 /** Spec 053: what a task or eval run runs: the approved entry's model and, only when it has one, its level. */
@@ -18471,7 +18516,9 @@ function swebenchProjectContext(dependencies: AwsBrokerDependencies, orgId: OrgI
         if (!approved) throw agentXError("CONFIG_INVALID", `model ${requested.provider}/${requested.modelId} is not approved for this project`);
         return approvedSelection(approved);
       }
-      return (await resolveProjectModel(dependencies, orgId, project)).model;
+      const resolved=await resolveProjectModel(dependencies,orgId,project);
+      if(resolved.selectionUnavailable===true)throw agentXError("MODEL_NOT_ALLOWED","The project model selection is unavailable. Check How we work.");
+      return resolved.model;
     },
   };
 }
@@ -19287,3 +19334,9 @@ export const handler = createAwsBrokerHandler({
       }
     : {}),
 });
+
+/** Stored qualification status only; no probe or qualification service is exposed. */
+function serviceStatusRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "serviceStatus"> {
+ const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId;if (runtimeCatalogId === undefined) return {};
+ return { serviceStatus: { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId, read: key => getItem<Record<string, unknown>>(dependencies, key) }) } };
+}
