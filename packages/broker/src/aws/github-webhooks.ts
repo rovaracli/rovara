@@ -1055,6 +1055,11 @@ export async function handleGithubWebhook(input: {
    * those events are what they were (refused unless they are a linked pull request's feedback). Present, a signed event neither this nor the feedback path uses is answered `IGNORED`.
    */
   triggerEvents?: (input: { eventName: string; payload: unknown; installationId: number }) => Promise<{ events: number; duplicates: number }>;
+  /**
+   * Team record (R5): offered every verified delivery before it is looked at (`createGithubRecordTap`). It never throws and decides for itself what to keep;
+   * an event it does not use, or a repository no project has registered, is left alone. Absent: nothing is offered, as before.
+   */
+  recordTap?: (verified: { eventName: string | undefined; deliveryId: string; payload: unknown }) => Promise<unknown>;
   now(): string;
 }): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS" | "IGNORED"; deliveryId: string; lifecycle?: true; trigger?: true }> {
   if ((input.installationCreated !== undefined || input.installationLifecycle !== undefined)
@@ -1080,10 +1085,11 @@ export async function handleGithubWebhook(input: {
         ...delivery,
         now: input.now(),
       }),
-      ...(triggerEvents === undefined ? {} : {
+      ...(triggerEvents === undefined && input.recordTap === undefined ? {} : {
         onVerified: async ({ eventName, deliveryId, payload }) => {
           verifiedDelivery = deliveryId;
-          if (eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
+          if (input.recordTap !== undefined) await input.recordTap({ eventName, deliveryId, payload }).catch(() => undefined);
+          if (triggerEvents === undefined || eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
           const installation = z.object({ installation: z.object({ id: z.number().int().positive() }).passthrough() }).passthrough().safeParse(payload);
           if (installation.success) triggered = await triggerEvents({ eventName, payload, installationId: installation.data.installation.id });
         },
