@@ -24,6 +24,8 @@ export const REASON_LINE: Readonly<Record<Reason, string>> = {
  COMPANY_DEFAULT: "Company default",
  COMPANY_LOCK: "Locked by company",
  BUILTIN_DEFAULT: "Rovara's default",
+ PERSONAL_PLAN_DEFAULT: "Default of your plan",
+ RECIPE_DEFAULT: "Default of the process",
  APPROVED_SAME_MODEL: "Approved: same model as Build",
 };
 export const UNKNOWN_REASON_LINE = "Rovara chose it";

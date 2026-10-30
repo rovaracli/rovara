@@ -237,9 +237,9 @@ describe("review and publish", () => {
 });
 
 describe("a publish refused for its model choices", () => {
- const refuse = (message: string): Handler => (request, url) => url.pathname.endsWith("/publish") ? { status: 400, body: { error: { code: "CONFIG_INVALID", message } } } : undefined;
- const refused = async (message: string) => {
-  await open({ handle: refuse(message) });
+ const refuse = (status: number, error: Record<string, unknown>): Handler => (request, url) => url.pathname.endsWith("/publish") ? { status, body: { error } } : undefined;
+ const refused = async (status: number, error: Record<string, unknown>) => {
+  await open({ handle: refuse(status, error) });
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Review changes" }).disabled).toBe(false));
   fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
   const dialog = await screen.findByRole("dialog", { name: "Review changes" });
@@ -248,26 +248,36 @@ describe("a publish refused for its model choices", () => {
   return dialog;
  };
 
- it("shows each stage's fixed sentence, with the page that fixes it, instead of the codes", async () => {
-  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build /app/admin/models/sources; STAGE_LOCKED code_review /app/admin/how-we-work; MODEL_FORBIDDEN plan_check");
+ it("shows the stage's fixed sentence, with the page that fixes it, instead of the code (lane C's 409 refusal)", async () => {
+  const dialog = await refused(409, { code: "MODEL_NOT_VERIFIED", stage: "build", fixHref: "/app/admin/models/sources", message: "build: MODEL_NOT_VERIFIED" });
   const alert = await within(dialog).findByRole("alert");
   expect(within(alert).getByText("Build: This account has no fresh verified access to this model.")).toBeTruthy();
-  expect(within(alert).getByText("Code review: Your company locked this stage's model choice.")).toBeTruthy();
-  expect(within(alert).getByText("Plan check: Your company's rules do not allow this model.")).toBeTruthy();
-  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/models/sources", "/app/admin/how-we-work"]);
+  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/models/sources"]);
   expect(alert.textContent).not.toContain("MODEL_NOT_VERIFIED");
  });
 
- it("shows an ordinary refusal as the server wrote it, and reads a link only from the app's own pages", async () => {
-  const plain = await refused("The draft has a problem.");
+ it("shows a company lock on one stage with the company page", async () => {
+  const dialog = await refused(409, { code: "STAGE_LOCKED", stage: "code_review", fixHref: "/app/admin/how-we-work", message: "code_review: STAGE_LOCKED" });
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).getByText("Code review: Your company locked this stage's model choice.")).toBeTruthy();
+  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/how-we-work"]);
+ });
+
+ it("shows an ordinary refusal as the server wrote it", async () => {
+  const plain = await refused(400, { code: "CONFIG_INVALID", message: "The draft has a problem." });
   expect((await within(plain).findByRole("alert")).textContent).toContain("The draft has a problem.");
  });
 
- it("does not read a message that has a word it does not know", async () => {
-  const dialog = await refused("Model choices can't be published: MODEL_NOT_VERIFIED build //evil.example/x");
+ it("reads a link only from the app's own pages", async () => {
+  const dialog = await refused(409, { code: "MODEL_NOT_VERIFIED", stage: "build", fixHref: "//evil.example/x", message: "build: MODEL_NOT_VERIFIED" });
   const alert = await within(dialog).findByRole("alert");
   expect(within(alert).queryByRole("link")).toBeNull();
-  expect(alert.textContent).toContain("//evil.example/x");
+  expect(alert.textContent).toContain("Build: This account has no fresh verified access to this model.");
+ });
+
+ it("does not read a refusal with a stage it does not know", async () => {
+  const dialog = await refused(409, { code: "MODEL_NOT_VERIFIED", stage: "nowhere", message: "nowhere: MODEL_NOT_VERIFIED" });
+  expect((await within(dialog).findByRole("alert")).textContent).toContain("nowhere: MODEL_NOT_VERIFIED");
  });
 });
 

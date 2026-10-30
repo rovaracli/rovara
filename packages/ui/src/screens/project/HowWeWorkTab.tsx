@@ -42,7 +42,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
  if (view.isPending) return <section aria-label="How we work"><Skeleton label="Loading how this project works" /></section>;
  if (view.isError || data === undefined) return <section aria-label="How we work"><p role="alert"><VisibleText text={failureText(view.error, "Couldn't load how this project works. Try again.")} /></p><Button onClick={() => { void view.refetch(); }}>Try again</Button></section>;
  /** Pending model edits only live as long as the read that allowed them: a draft that moved on, a stale-draft refusal, a lock, a stage that stopped being editable or a model that is no longer verified drops them (never written onto a newer revision). */
- const staleRead = models.error instanceof ApiError && (models.error.code === "DRAFT_STALE" || (models.error.code === "PLAYBOOK_STALE" && models.error.message.startsWith("DRAFT_STALE")));
+ const staleRead = models.error instanceof ApiError && models.error.code === "DRAFT_STALE";
  if (Object.keys(modelEdits).length > 0) {
   if (editRevision !== draftRevision || staleRead) { setModelEdits({});setDiscarded(true); }
   else {
