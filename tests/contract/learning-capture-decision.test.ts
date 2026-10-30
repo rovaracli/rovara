@@ -1,7 +1,7 @@
 // v1.2 learning loop, B4: a plan send-back reason becomes a correction (design 2.2, 2.4; test I1b; review Critical 1).
 // The DECIDER's standing is read live at capture, on every surface (task page, developer API, Slack, MCP), never taken from the task role.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type PlanDocument, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
 import { decideTaskWorkflow, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -11,7 +11,7 @@ import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
 import { LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
-import { finishPlanningWithMarkdown, planAnswer } from "../support/plan-documents.js";
+import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
@@ -62,7 +62,6 @@ async function waitingPlan(options: { slackThread?: { teamId: string; channelId:
   const planning = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN" && item.status === "ACCEPTED")!;
   await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(PLAN));
   await harness.finish(workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
-  void finishPlanningWithMarkdown;
   const digest = () => workflowOf(harness, taskId).artifacts.at(-1)!.sha256;
   let minute = 0;
   const comment = (author: DeveloperCaller, text: string, extra: Partial<TaskComment> = {}): string => {
@@ -94,7 +93,9 @@ async function waitingPlan(options: { slackThread?: { teamId: string; channelId:
   const slack = (thread: { teamId: string; channelId: string; threadTs: string }, decision: "APPROVE" | "REQUEST_CHANGES", reason: string, requestId = randomUUID()) =>
     harness.handler({ source: "agentx.slack-ingress", action: "workflow-decision", taskId, userId: MAYA.slackUserId, thread, requestId,
       expectedRevision: workflowOf(harness, taskId).revision, artifactDigest: digest(), decision, reason, selectedOptionalCheckIds: [] }) as Promise<{ statusCode: number; body: string }>;
-  return { harness, taskId, comment, takeOver, page, api, slack };
+  /** The task's own developer: for a task started in Slack this is the id derived from the Slack user, not Maya's API id. */
+  const owner: DeveloperCaller = { ...MAYA_CALLER, developerId: String((harness.db.get(`DEVTASK#${taskId}`, "META") as { developerId: string }).developerId) };
+  return { harness, taskId, comment, takeOver, page, api, slack, owner };
 }
 
 const corrections = (harness: Harness): LearningCorrection[] => learningItems(harness.db).filter((item) => String(item.sk).startsWith("CORRECTION#"))
@@ -131,9 +132,9 @@ describe("send-back capture: a member decider", () => {
     expect(corrections(api.harness)).toMatchObject([{ source: "send_back", standing: "member", author: MAYA.developerId }]);
 
     const slack = await waitingPlan({ slackThread: THREAD });
-    seedPerson(slack.harness.db, MAYA_CALLER, "contributor");
+    seedPerson(slack.harness.db, slack.owner, "contributor");
     expect((await slack.slack(THREAD, "REQUEST_CHANGES", NOTE)).statusCode).toBe(200);
-    expect(corrections(slack.harness)).toMatchObject([{ source: "send_back", standing: "member", author: MAYA.developerId }]);
+    expect(corrections(slack.harness)).toMatchObject([{ source: "send_back", standing: "member", author: slack.owner.developerId }]);
   });
 
   it("MCP's decideWorkflowTask is the developer API route the test above drives", async () => {
@@ -193,17 +194,28 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
       seedPerson(t.harness.db, OMAR_CALLER, grant);
       t.takeOver(OMAR_CALLER);
       const answer = await t.api(OMAR, NOTE);
-      // A viewer may be refused outright by the route; whoever gets through is stored as an outsider, and nobody is ever stored as a member.
-      if (answer.status === 200) expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: OMAR.developerId }]);
-      else expect(corrections(t.harness)).toEqual([]);
-      if (grant === "none") expect(answer.status).toBe(200);
+      // The API refuses a viewer outright (403), so nothing reaches capture; a person with no grant gets through and is an outsider.
+      if (grant === "none") {
+        expect(answer.status).toBe(200);
+        expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: OMAR.developerId }]);
+      } else {
+        expect(answer.status).toBe(403);
+        expect(corrections(t.harness)).toEqual([]);
+      }
     });
 
     it(`on Slack: the task's owner who is ${label} is stored as outsider`, async () => {
       const t = await waitingPlan({ slackThread: THREAD });
-      seedPerson(t.harness.db, MAYA_CALLER, grant);
-      expect((await t.slack(THREAD, "REQUEST_CHANGES", NOTE)).statusCode).toBe(200);
-      expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: MAYA.developerId }]);
+      seedPerson(t.harness.db, t.owner, grant);
+      const answer = await t.slack(THREAD, "REQUEST_CHANGES", NOTE);
+      // Slack and the API refuse a viewer outright (PROJECT_ACCESS_DENIED), so nothing reaches capture; a person with no grant gets through and is an outsider.
+      if (grant === "none") {
+        expect(answer.statusCode).toBe(200);
+        expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: t.owner.developerId }]);
+      } else {
+        expect(answer.statusCode).not.toBe(200);
+        expect(corrections(t.harness)).toEqual([]);
+      }
     });
   }
 
@@ -236,7 +248,7 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
       // The decision's own reads go through; the member record is unreadable only once the send-back is recorded, which is when capture reads it.
       if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk).includes("MEMBER#") && requested(t.harness, t.taskId, requestId)) throw new Error("boom");
       return send(command as never);
-    }) as typeof t.harness.db.send;
+    });
     await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
     expect(requested(t.harness, t.taskId, requestId)).toBe(true);
     expect(corrections(t.harness)).toEqual([]);
@@ -254,7 +266,7 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
         seedPerson(t.harness.db, MAYA_CALLER, "viewer");
       }
       return send(command as never);
-    }) as typeof t.harness.db.send;
+    });
     const requestId = randomUUID();
     await t.page(MAYA_CALLER, NOTE, [], requestId);
     expect(demoted).toBe(true);
@@ -302,7 +314,7 @@ describe("send-back capture: what is not a correction", () => {
     t.harness.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { entityType?: string } } }> } }) => {
       if (command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Put?.Item?.entityType === "LEARNING_CORRECTION") === true) throw new Error("table unavailable");
       return send(command as never);
-    }) as typeof t.harness.db.send;
+    });
     const requestId = randomUUID();
     await t.page(MAYA_CALLER, NOTE, [], requestId, (entry) => logs.push(entry));
     expect(requested(t.harness, t.taskId, requestId)).toBe(true);
@@ -328,7 +340,8 @@ describe("send-back capture: included comments", () => {
     const linked = all.filter((c) => c.linkedTo === main.id);
     expect(linked.map((c) => [c.author, c.standing]).sort()).toEqual([[OMAR.developerId, "outsider"], [SAM_ID, "member"]].sort());
     for (const c of linked) {
-      expect(c).toMatchObject({ source: "send_back", stage: "plan", taskId: t.taskId, rememberedBy: undefined });
+      expect(c).toMatchObject({ source: "send_back", stage: "plan", taskId: t.taskId });
+      expect(c.rememberedBy).toBeUndefined();
       expect(c.sourceRef.decisionRequestId).toBe(requestId);
     }
     expect(all).toHaveLength(3);
@@ -341,7 +354,8 @@ describe("send-back capture: included comments", () => {
     seedPerson(t.harness.db, SAM, "contributor");
     const sams = t.comment(SAM, "Name the migration files with the date prefix first.");
     await t.page(MAYA_CALLER, undefined, [sams]);
-    expect(corrections(t.harness)).toMatchObject([{ author: SAM_ID, standing: "member", linkedTo: undefined }]);
+    expect(corrections(t.harness)).toMatchObject([{ author: SAM_ID, standing: "member" }]);
+    expect(corrections(t.harness)[0]!.linkedTo).toBeUndefined();
   });
 
   it("a comment that was remembered already is not captured twice", async () => {
@@ -412,7 +426,7 @@ describe("send-back capture: grouping", () => {
     t.harness.db.send = (async (command: { constructor: { name: string }; input?: { KeyConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }) => {
       if (command.constructor.name === "QueryCommand" && JSON.stringify(command.input).includes("PROJECT_LEARNING")) throw new Error("query failed");
       return send(command as never);
-    }) as typeof t.harness.db.send;
+    });
     const requestId = randomUUID();
     await t.page(MAYA_CALLER, NOTE, [], requestId);
     expect(requested(t.harness, t.taskId, requestId)).toBe(true);
@@ -420,4 +434,3 @@ describe("send-back capture: grouping", () => {
   });
 });
 
-void vi;

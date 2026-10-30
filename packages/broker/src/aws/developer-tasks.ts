@@ -295,6 +295,7 @@ import { pageCommentViews, type CommentViewContext, type PageCommentView } from 
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { captureSendBackQuietly } from "../learning/capture-decision.js";
 import { getTaskPeoplePresentation, loadTaskPeople, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
 import { confirmTaskPeopleProposal as confirmPeopleProposal, getTaskPeopleProposal as readPeopleProposal, getTaskPeopleProposalMetadata as readPeopleProposalMetadata, proposeTaskOwnership, proposeTaskPeopleRole,
@@ -3213,6 +3214,11 @@ export async function decideTaskWorkflow(
       throw Object.assign(agentXError("IDEMPOTENCY_CONFLICT", COMMENT_CHANGED_MESSAGE), { pageReason: "comment_changed" });
     }
     return busyOrClosing(deps, task, error);
+  }
+  // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP), after the decision, its detail and the
+  // comment locks have committed. The decider's own standing is read inside; a failure is logged and never fails the send-back.
+  if (request.decision === "REQUEST_CHANGES" && documentType !== undefined) {
+    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: options.note ?? request.reason, included });
   }
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
