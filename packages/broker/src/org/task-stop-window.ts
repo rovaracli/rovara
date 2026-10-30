@@ -11,7 +11,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -61,10 +61,11 @@ const transitionSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
   actorRole: OrgRoleSchema, peopleRevision: revision.nullable(),
+  firstDispatch: z.object({ operationId: z.string().uuid(), checkout: z.array(RunCheckoutSchema).optional(), readOnly: z.literal(true).optional() }).strict().nullable().optional(),
   origin: z.enum(WORK_ORIGINS).optional(), transitionKind: z.enum(["continue-as-task", "spend-approval"]), spendRequestId: SpendRequestIdSchema.optional(), spendingStop: snapshotSchema, payer: PayerSchema, place: PlaceSchema,
   agentRunRevision: revision.nullable(), workflowRevision: revision.nullable(), outcome: z.literal("transitioned"), admittedAt: z.string().datetime(),
 }).strict().superRefine((value, context) => {
-  if (value.transitionKind === "spend-approval" && value.origin === undefined) context.addIssue({ code: "custom", message: "The approved origin is missing." });
+  if (value.transitionKind === "spend-approval" && (value.origin === undefined || value.firstDispatch === undefined)) context.addIssue({ code: "custom", message: "The approved origin is missing." });
   if ((value.transitionKind === "spend-approval") !== (value.spendRequestId !== undefined)) context.addIssue({ code: "custom", message: "Approval admission reference is missing or unexpected." });
 });
 export type TaskStopTransition = z.infer<typeof transitionSchema>;
@@ -79,7 +80,7 @@ export async function readTaskStopTransition(deps: Pick<TableInput, "documentCli
   if (row.actorId !== input.actorId || row.intentHash !== input.intentHash) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already accepted a different spending transition. Use a new request ID.");
   return row;
 }
-export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision"> & { transitionKind?: "spend-approval"; spendRequestId?: string; origin?: WorkOrigin }): TransactItem {
+export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision"> & { transitionKind?: "spend-approval"; spendRequestId?: string; origin?: WorkOrigin; firstDispatch?: TaskStopTransition["firstDispatch"] }): TransactItem {
   const Item = transitionSchema.parse({ ...taskStopWindowKey(input.orgId, input.taskId, input.requestId), ...value,
     entityType: "SPENDING_ADMISSION", version: 1, orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId,
     actorId: input.actorId, intentHash: input.intentHash, transitionKind: value.transitionKind ?? "continue-as-task", outcome: "transitioned" });
@@ -95,6 +96,7 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
   if (receipt === undefined || task.origin !== (receipt.transitionKind === "spend-approval" ? receipt.origin : "app") || task.closedAt !== undefined || !isDeepStrictEqual(task.payer, receipt.payer)
     || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)
     || usdToWholeMicrodollars(task.budgetUsd) !== receipt.spendingStop.effectiveStopMicrousd) throw invalid();
+  if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null && task.budgetPause?.firstDispatch !== undefined && !isDeepStrictEqual(task.budgetPause.firstDispatch, receipt.firstDispatch)) throw invalid();
   if (receipt.transitionKind === "spend-approval" && receipt.agentRunRevision === null && !isDeepStrictEqual(task.spendingAdmission, reference)) throw invalid();
   const actor = { orgId: task.orgId, developerId: receipt.actorId, orgRole: receipt.actorRole }, agentId = task.agent.agentId, draft = task.agent.version === "draft";
   const projectChecks = await taskStartProjectAuthorityChecks(deps, { orgId: task.orgId, developerId: actor.developerId, role: actor.orgRole, project: task.project },
@@ -105,7 +107,7 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
     taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined), ...projectChecks, ...agentChecks];
 }
 
-const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "spendingAdmission", "closedAt"] as const;
+const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "spendingAdmission", "budgetPause", "closedAt"] as const;
 export async function admittedTaskSourceUnchanged(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<boolean> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(task.taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   return response.Item !== undefined && admittedTaskFields.every(field => isDeepStrictEqual(response.Item?.[field], task[field]));

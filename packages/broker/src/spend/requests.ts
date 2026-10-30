@@ -1257,6 +1257,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
       conditions.push(`#${attribute} = :was_${attribute}`);
     }
   };
+  if (firstDispatch && approvalStop !== undefined) same("budgetPause", task.budgetPause);
   let resetRunWindow = false;
   let raisedPastRunLimit: number | undefined;
   // A plan's run limit request (`resume: "implement"`) applies only while the plan is still blocked on that limit, and only to the workflow as it was read:

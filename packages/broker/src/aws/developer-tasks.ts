@@ -2842,6 +2842,15 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     if (receipt === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved spending admission is missing.");
     if (receipt.transitionKind === "spend-approval" && receipt.spendRequestId !== input.spendRequestId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recovery does not name the approved spending request.");
     if (input.resume === "implement" && (receipt.transitionKind !== "spend-approval" || receipt.workflowRevision === null || usdToWholeMicrodollars(input.runLimitUsd) !== receipt.spendingStop.effectiveStopMicrousd)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation limit does not match the approved spending admission.");
+    if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null) {
+      if (task.budgetPause?.firstDispatch === undefined) {
+        const workspace = await deps.actions.workspace(task.workspaceId);
+        const mark = await get<{ operationId?: string; taskId?: string; workspaceId?: string }>(deps, setupWatchKey(workspace.createdAt, workspace.id));
+        if (mark?.operationId === receipt.firstDispatch.operationId && mark.taskId === task.taskId && mark.workspaceId === task.workspaceId) return;
+        throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved preparation dispatch could not be verified.");
+      }
+      input = { ...input, firstDispatch: true };
+    }
     if (receipt.agentRunRevision !== null) input = { ...input, expectedPausedAgentRevision: receipt.agentRunRevision };
   }
   if (input.firstDispatch) {
@@ -2951,7 +2960,7 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
       ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
       ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
       ExpressionAttributeValues: { ":admission": reference, ":nextRevision": pausedRevision, ":revision": run.revision, ":state": "PAUSED_BUDGET", ":org": deps.orgId, ":type": "AGENT_RUN" } } }]),
-      taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
+      taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", firstDispatch: task.budgetPause?.firstDispatch ?? null, origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
         actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) })] };
 }
 
