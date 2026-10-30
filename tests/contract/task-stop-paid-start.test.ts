@@ -747,3 +747,25 @@ for (const scope of ["company", "project", "agent"] as const) it(`a new run-limi
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });
+
+it("a new enrolled run-limit request stores original task and exact asked/proposed terms", async () => {
+  const f = await approvalWindow();
+  expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ approvalTerms: { version: 1, sourcePresence: true,
+    originalFields: { orgId: TEST_ORG, project: "payments", budgetUsd: 10 }, askedFiguresMicrousd: { budget: 10_000_000 }, proposedFiguresMicrousd: { budget: 15_000_000 }, operation: "run_limit" } });
+});
+for (const field of ["budget", "payer"] as const) it(`an enrolled approval requires a new ask after original task ${field} figures change`, async () => {
+  const f = await approvalWindow();
+  f.t.db.set({ ...f.t.meta(f.task.taskId), ...(field === "budget" ? { budgetUsd: 20 } : { payer: { kind: "project", project: "payments" } }) });
+  const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
+it("an enrolled approval cannot synthesize missing original request terms at decision", async () => {
+  const f = await approvalWindow(), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "META" }, row = { ...f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "META" })! };
+  delete row.approvalTerms; f.t.db.set(row);
+  const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  await expect(f.t.decide(BEN, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+});
