@@ -393,3 +393,28 @@ it("legacy project identity migration preserves numeric policy and audits its pr
   const txn = f.db.transactions().at(-1), event = txn?.map(putItem).map(item => item?.event).find(event => typeof event === "object" && event !== null && "action" in event && event.action === "spending.policy_seeded");
   expect(event).toMatchObject({ target: { kind: "project", name: project }, facts: { mode: "limited", source: "upgrade", outcome: "updated" } });
 });
+
+for (const target of ["catalog", "settings"] as const) for (const when of ["before", "commit"] as const) it(`project legacy identity refuses foreign ${target} org ${when}`, async () => {
+  const f = fixture(), project = "payments", catalogKey = orgProjectCatalogKey(orgId, project), key = projectAiKey(orgId, project);
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const catalog = { ...catalogKey, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 }, settings = { ...key, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50 };
+  f.db.set(catalog); f.db.set(settings);
+  const winner = { ...(target === "catalog" ? catalog : settings), orgId: "org_bbbbbbbbbbbbbbbbbbbb" }, send = f.db.send.bind(f.db); let raced = false;
+  if (when === "before") f.db.set(winner);
+  f.db.send = async command => { if (when === "commit" && !raced && command instanceof TransactWriteCommand) { raced = true; f.db.set(winner); } return send(command); };
+  await expect(taskStopBootstrap.upgradeTaskStopProjectInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, project })).rejects.toThrow();
+  expect(raced).toBe(when === "commit");
+  expect(f.db.get(catalogKey.pk, catalogKey.sk)).toEqual(target === "catalog" ? winner : catalog);
+  expect(f.db.get(key.pk, key.sk)).toEqual(target === "settings" ? winner : settings);
+});
+it("project inventory replays its original page after a missing later settings row is repaired", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  for (const project of ["alpha", "beta"]) f.db.set({ ...orgProjectCatalogKey(orgId, project), entityType: "PROJECT_CATALOG", name: project, latestRevision: 1 });
+  const settings = (project: string) => ({ ...projectAiKey(orgId, project), entityType: "PROJECT_AI", project, revision: 1, monthlyBudgetUsd: 50 }); f.db.set(settings("alpha"));
+  const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, limit: 2 };
+  await expect(taskStopBootstrap.upgradeTaskStopProjectInventoryPage(deps, input)).rejects.toThrow();
+  const key = projectAiKey(orgId, "alpha"), first = f.db.get(key.pk, key.sk); expect(first).toMatchObject({ orgId, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+  f.db.set(settings("beta"));
+  expect(await taskStopBootstrap.upgradeTaskStopProjectInventoryPage(deps, input)).toMatchObject({ examined: 2, updated: 1, preserved: 1, complete: true });
+  expect(f.db.get(key.pk, key.sk)).toEqual(first);
+});
