@@ -38,20 +38,20 @@ export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(com
   const keys = [orgMetaKey(orgId), orgSettingsKey(orgId, "TASK_STOP_POLICY"), agentGuardrailsKey(orgId), { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#upgrade" }];
   const result = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })).length(4) }).parse(await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) })));
   const rows = result.Responses.map(response => response.Item);
-  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["status", "revision", "policy", "guardrails", "enrollment"]);
+  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["closingAt", "closedAt", "revision", "policy", "guardrails", "enrollment"]);
   const [org, policy, ceiling, receipt] = rows;
-  if (org?.orgId !== orgId || org.status !== "open") throw agentXError("CONFIG_INVALID", "The company must be open before spending upgrade.");
+  if (org?.orgId !== orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined) throw agentXError("CONFIG_INVALID", "The company must be open before spending upgrade.");
   if (receipt !== undefined) {
     const saved = z.object({ orgId: z.literal(orgId), entityType: z.literal("TASK_STOP_SEED"), source: z.literal("upgrade"), version: z.literal(1), occurrenceId: z.literal(`task-stop-upgrade-v1#${orgId}`), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), completedAt: z.string().datetime(), policyRevision: z.number().int().positive(), auditOccurrence: z.string().min(1), outcome: z.enum(["created", "preserved"]) }).parse(receipt);
     return { outcome: saved.outcome };
   }
   if (policy !== undefined) {
     const numeric = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-    z.object({ orgId: z.literal(orgId), entityType: z.literal("ORG_TASK_STOP_POLICY"), revision: z.number().int().positive(),
+    z.object({ orgId: z.literal(orgId), entityType: z.literal("ORG_TASK_STOP_POLICY"), revision: z.number().int().positive(), enrollment: z.object({ version: z.literal(1), state: z.enum(["disabled", "ready", "enabled"]) }).passthrough(),
       policy: z.union([z.object({ schemaVersion: z.literal(1), defaultStopMicrousd: numeric }).strict(), z.object({ schemaVersion: z.literal(2), defaultPolicy: z.union([z.object({ kind: z.literal("rovara_estimate") }).strict(), z.object({ kind: z.literal("limited"), stopMicrousd: numeric }).strict()]) }).strict()]) }).parse(policy);
   }
   const guardrails = ceiling === undefined ? DEFAULT_AGENT_GUARDRAILS : AgentGuardrailsSchema.parse(ceiling.guardrails);
-  if (ceiling !== undefined && (ceiling.orgId !== orgId || ceiling.entityType !== "AGENT_GUARDRAILS" || !Number.isSafeInteger(ceiling.revision) || Number(ceiling.revision) < 1)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
+  if (ceiling !== undefined && (ceiling.orgId !== orgId || ceiling.entityType !== "AGENT_GUARDRAILS" || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(ceiling, field)) || !Number.isSafeInteger(ceiling.revision) || Number(ceiling.revision) < 1)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
   const ceilingMicrousd = guardrails.maxPerRunCeilingUsd * 1_000_000;
   if (!Number.isSafeInteger(ceilingMicrousd)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
   const at = new Date(deps.now()).toISOString(), occurrence = `task-stop-upgrade-v1#${orgId}`, outcome = policy === undefined ? "created" : "preserved", revision = policy === undefined ? 1 : Number(policy.revision);
