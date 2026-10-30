@@ -216,3 +216,26 @@ for (const explicit of [false, true]) it(`project inheritance upgrade preserves 
   const count = f.db.transactions().length;
   expect(await invoke(deps, input)).toMatchObject({ outcome: "preserved" }); expect(f.db.transactions()).toHaveLength(count);
 });
+
+for (const failure of ["missing_catalog", "missing_settings", "corrupt_policy", "catalog_commit", "policy_commit"] as const) it(`project inheritance refuses ${failure} without replacing authority`, async () => {
+  const f = fixture(), project = "payments", key = projectAiKey(orgId, project), catalogKey = orgProjectCatalogKey(orgId, project);
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const catalog = { ...catalogKey, orgId, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 };
+  const original = { ...key, orgId, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50 };
+  if (failure !== "missing_catalog") f.db.set(catalog);
+  if (failure !== "missing_settings") f.db.set({ ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : {}) });
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    if (!raced && failure.endsWith("_commit") && command instanceof TransactWriteCommand) {
+      raced = true;
+      if (failure === "catalog_commit") f.db.set({ ...catalog, latestRevision: 3 });
+      else f.db.set({ ...original, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } });
+    }
+    return send(command);
+  };
+  await expect(taskStopBootstrap.upgradeTaskStopProjectInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, project })).rejects.toThrow();
+  expect(raced).toBe(failure.endsWith("_commit"));
+  const saved = f.db.get(key.pk, key.sk);
+  expect(saved).toEqual(failure === "missing_settings" ? undefined : { ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : failure === "policy_commit" ? { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } } : {}) });
+  if (saved !== undefined) expect(saved).not.toHaveProperty("seedProvenance");
+});
