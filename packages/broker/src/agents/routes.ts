@@ -1,3 +1,4 @@
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { OwnerFinancialTerms } from "../spend/owner-approval-terms.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
@@ -7,6 +8,7 @@ import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  topUpKey,
   AgentGuardrailsSchema,
   AgentPublishBodySchema as PublishBodySchema,
   AgentRollbackBodySchema as RollbackBodySchema,
@@ -89,7 +91,6 @@ import type { ChainRunPorts } from "../chains/runner.js";
 import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
-import { readTopUp } from "../spend/top-ups.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -819,8 +820,17 @@ export async function holdingOwnerCap<T>(
     const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
     // Fix round 2 (N-1): its top-up for the month goes with it to an owner it newly counts for.
     const topUpScope: BudgetScope = subject.kind === "agent" ? { kind: "agent", agentId: subject.agentId } : { kind: "chain", chainId: subject.chainId };
-    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope) : 0;
-    return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
+    let carried = 0, carriedSource: OwnerFinancialTerms["carriedSource"];
+    if (to !== undefined && from?.owner !== to.owner) {
+      const key = topUpKey(caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope);
+      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      if (response.Item !== undefined && usdToWholeMicrodollars(response.Item.amountUsd) === undefined) throw agentXError("CONFIG_INVALID", "The carried monthly amount could not be read. Review Spending before retrying.");
+      carried = response.Item === undefined ? 0 : response.Item.amountUsd as number;
+      carriedSource = { key, exists: response.Item !== undefined, fields: response.Item ?? {} };
+    }
+    const checked = await ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
+    if ("over" in checked && checked.over.ownerFinancialTerms !== undefined && carriedSource !== undefined) checked.over.ownerFinancialTerms = { ...checked.over.ownerFinancialTerms, carriedSource };
+    return checked;
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;

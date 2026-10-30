@@ -1,5 +1,5 @@
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
-import { OwnerFinancialTermsSchema, ownerFinancialChecks } from "./owner-approval-terms.js";
+import { OwnerFinancialTermsSchema, ownerFinancialChecks, assertOwnerCarriedSource } from "./owner-approval-terms.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
@@ -1146,7 +1146,7 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
     ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }), forOwner: input.owner,
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
     reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change, approvalSource, ownerFinancialTerms: input.ownerFinancialTerms,
-    extraItems: () => [{ ConditionCheck: { TableName: deps.tableName, Key: key, ...sourceCondition(approvalSource) } }, ...(input.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, input.orgId, input.ownerFinancialTerms))],
+    extraItems: () => [{ ConditionCheck: { TableName: deps.tableName, Key: key, ...sourceCondition(approvalSource) } }, ...(input.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, input.orgId, input.ownerFinancialTerms, input))],
     ...(input.request === undefined ? {} : { request: input.request }),
     requestResult: (record) => ({ status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message: ownerCapMessage(record.reason) }),
   });
@@ -1430,10 +1430,10 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
         ExpressionAttributeValues: { ":destinationGrantRole": "developer", ":destinationProjectRole": "maintainer" } } });
     }
   }
-  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, financialChecks: record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms), spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
+  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, financialChecks: record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms, record), spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
-    const financial = record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms);
+    const financial = record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms, record);
     try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...financial, ...checks] })); }
     catch (error) {
       const failed = failedIndexes(error);
@@ -1545,10 +1545,13 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     if (status === "APPROVED" && record.ownerFinancialTerms !== undefined) {
       const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
       const terms = parsed.success ? parsed.data : undefined;
+      if (terms !== undefined) assertOwnerCarriedSource(terms, record.orgId, record);
       const base = terms?.basis === "base" ? await getItem(deps, ownerBudgetKey(record.orgId, terms.owner)) : undefined;
       const current = terms === undefined ? undefined : terms.basis === "base" ? { totalUsd: base?.totalUsd, counterUsd: base?.totalUsd, version: base === undefined ? undefined : base.version ?? 0 } : await effectiveOwnerCap(deps, record.orgId, terms.owner);
       const policy = await readSpendPolicyWithRevision(deps, record.orgId);
-      if (terms === undefined || terms.owner !== record.forOwner || terms.month !== iso(deps.now()).slice(0, 7) || current?.version !== terms.counterVersion || current.totalUsd !== terms.totalUsd || current.counterUsd !== terms.counterUsd || policy.revision !== terms.policyRevision || policy.policy.ownerAgentBudgetCapUsd !== terms.capUsd) {
+      const carried = terms?.carriedSource, currentCarried = carried === undefined ? undefined : await getItem(deps, carried.key);
+      const carriedChanged = carried !== undefined && (carried.exists !== (currentCarried !== undefined) || canonicalJson(carried.fields) !== canonicalJson(currentCarried ?? {}));
+      if (carriedChanged || terms === undefined || terms.owner !== record.forOwner || terms.month !== iso(deps.now()).slice(0, 7) || current?.version !== terms.counterVersion || current.totalUsd !== terms.totalUsd || current.counterUsd !== terms.counterUsd || policy.revision !== terms.policyRevision || policy.policy.ownerAgentBudgetCapUsd !== terms.capUsd) {
         await expireOne(deps, record, "figures_changed"); throw staleApproval();
       }
     }
@@ -2154,10 +2157,13 @@ export async function expireOwnerCapCutoverApproval(deps: SpendRequestDependenci
   const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
   if (!parsed.success || parsed.data.owner !== record.forOwner) throw staleApproval();
   const terms = parsed.data, confirm = record.change?.op === "confirm_move";
+  assertOwnerCarriedSource(terms, record.orgId, record);
   const sourceKey = confirm ? undefined : record.chainId !== undefined ? chainKey(record.orgId, record.chainId, "META") : isBuiltinAgentId(record.agentId as never) ? builtinSettingsKey(record.orgId, record.agentId as never) : agentKey(record.orgId, record.agentId as never, "META");
   const source = confirm ? undefined : ApprovalSourceSchema.safeParse(record.approvalSource);
   if (!confirm && (source === undefined || !source.success || source.data.key.pk !== sourceKey?.pk || source.data.key.sk !== sourceKey.sk)) throw staleApproval();
   const keys = [ownerBudgetKey(record.orgId, terms.owner), orgSettingsKey(record.orgId, "SPEND_POLICY"), orgMemberKey(record.orgId, actor.developerId), developerOrgKey(actor.developerId), orgMetaKey(record.orgId), ...(sourceKey === undefined ? [] : [sourceKey])];
+  const carried = terms.carriedSource, carrierIndex = keys.length;
+  if (carried !== undefined) keys.push(carried.key);
   const response = await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) }));
   const snapshot = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })) }).safeParse(response);
   if (!snapshot.success || snapshot.data.Responses.length !== keys.length) throw staleApproval();
@@ -2168,7 +2174,9 @@ export async function expireOwnerCapCutoverApproval(deps: SpendRequestDependenci
   const policy = decodeSpendPolicySnapshot(rows[1], org.plan);
   const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["orgId", "developerId", "role", "closingAt", "closedAt", "plan", "totalUsd", "version", "revision", "ownerAgentBudgetCapUsd", "owner", "accountable", "status", "monthlyBudgetUsd", "maxPerRunUsd", "updatedAt", "updatedBy", "pinnedVersion"]);
   const sourceChanged = !confirm && source?.success === true && (source.data.exists !== (rows[5] !== undefined) || canonicalJson(source.data.fields) !== canonicalJson(sourceFields(rows[5])));
-  const changed = sourceChanged || terms.month !== iso(deps.now()).slice(0, 7) || terms.counterVersion !== counterVersion || terms.counterUsd !== counter.totalUsd || terms.policyRevision !== policy.revision || terms.capUsd !== policy.policy.ownerAgentBudgetCapUsd;
+  const currentCarried = carried === undefined ? undefined : rows[carrierIndex];
+  const carriedChanged = carried !== undefined && (carried.exists !== (currentCarried !== undefined) || canonicalJson(carried.fields) !== canonicalJson(currentCarried ?? {}));
+  const changed = carriedChanged || sourceChanged || terms.month !== iso(deps.now()).slice(0, 7) || terms.counterVersion !== counterVersion || terms.counterUsd !== counter.totalUsd || terms.policyRevision !== policy.revision || terms.capUsd !== policy.policy.ownerAgentBudgetCapUsd;
   if (!changed) return { kind: "retain" };
   return { kind: await expireOne(deps, record, "spending_rules_changed", guards) ? "expired" : "retry" };
 }
