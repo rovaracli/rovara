@@ -925,6 +925,14 @@ export const RECORD_EVENT_SK_PREFIX = "REC#";
 export function recordSourceIndexValue(orgId: OrgId, system: string, sourceId: string): string {
   return `WS#${OrgIdSchema.parse(orgId)}#SRC#${keyPart(system, "a source system")}#${teamRecordSourceHash(system, sourceId)}`;
 }
+/** A marker that one source item was deleted at its source (kept for a while, in the workspace partition), so a late retry of its create cannot bring it back. */
+export function recordDeletedMarkerKey(orgId: OrgId, system: string, sourceId: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `DELETED#${teamRecordSourceHash(system, sourceId)}` };
+}
+/** The GSI1 partition value of the one source row (`SOURCE#`) of a scope: how a tap finds a scope's retention and audience without knowing its project. */
+export function recordSourceConfigIndexValue(orgId: OrgId, source: string, scope: string): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#CFG#${teamRecordSourceHash(source, scope)}`;
+}
 /** The GSI3 partition value of every row of one scope (`slack:T1/C9`, `github:repo/123`; a scope is already prefixed with its source). */
 export function recordScopeIndexValue(orgId: OrgId, scope: string): string {
   if (scope.length === 0) throw new Error("a scope can't be empty");
