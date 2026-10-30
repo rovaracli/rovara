@@ -60,7 +60,7 @@ it("previews before anything is sent: who takes over (you by default), what move
  const f = mount();
  try {
   await f.open();
-  expect((screen.getByLabelText("Who takes over?") as HTMLSelectElement).value).toBe(me);
+  expect(screen.getByLabelText<HTMLSelectElement>("Who takes over?").value).toBe(me);
   expect(screen.getByText("Goes to Priya")).toBeTruthy();
   expect(screen.getByText(/2 agents/)).toBeTruthy();expect(screen.getByText(/3 approvals waiting on them/)).toBeTruthy();
   expect(screen.getByText(/Their running tasks stop after their current step/)).toBeTruthy();

@@ -59,11 +59,12 @@ export async function previewMemberRemoval(deps: Deps, caller: DeveloperCaller, 
     const invites = await listOrganizationInvites(deps, caller, new URL("https://rovara.invalid/v1/app/org/invites?limit=50"));
     invitesCreated = invites.invites.filter((invite) => invite.createdBy === developerId).length;
   } catch { warnings.push("Their open invites could not be read."); }
-  const capped = [...Object.values(handOffs.moves), duties.projectGrants, duties.maintainerProjects].some((count) => count >= COUNT_CAP);
+  const { moves } = handOffs;
+  const capped = [moves.agents, moves.skills, moves.chains, moves.triggers, moves.approvals, moves.spendRequests, duties.projectGrants, duties.maintainerProjects].some((count) => count >= COUNT_CAP);
   if (capped) warnings.push(`Counts of ${String(COUNT_CAP)} mean ${String(COUNT_CAP)} or more.`);
   return MemberRemovalPreviewSchema.parse({
     member: { developerId, name: target.name, role: target.role }, successor: { developerId: successorId, name: successor.name },
-    moves: handOffs.moves, ends: [...REMOVAL_ENDS], duties: { wasRole: target.role, ...duties, invitesCreated }, warnings,
+    moves: handOffs.moves, ends: Array.from(REMOVAL_ENDS), duties: { wasRole: target.role, ...duties, invitesCreated }, warnings,
   });
 }
 
