@@ -11,7 +11,7 @@ import { CompanyPolicyReader, isRefusalCode, modelKey, type CompanyOverride, typ
 import { COMPANY_ROWS } from "../../../api/stage-cards.js";
 import type { SoleOwnerConfirmation } from "../../../api/client.js";
 import { previewCompanyPolicy, saveCompanyPolicy, COMPANY_POLICY_PATH } from "../../../api/company-model-policy.js";
-import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, effortLabel } from "../../project/stage-model-text.js";
+import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, codedText, effortLabel } from "../../project/stage-model-text.js";
 import { ReadSection, checkedTime, useAdminRead } from "../models/read.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, type CompanyRow, type EffortChoice } from "./company-edit.js";
@@ -72,7 +72,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
  const busy = saving || reviewing, outOfDate = notice?.kind === "stale" || notice?.kind === "saved_reload_failed";
  function edit(next: CompanyOverrides) { ticket.current += 1;setDraft(next);setReview(undefined);setReviewing(false);setBlocked(undefined);setNotice(undefined); }
  const body = () => ({ expectedRevision: policy.revision, stepOverrides: normalize(draft) });
- function failure(error: unknown): Notice { return error instanceof ApiError && error.code === "POLICY_STALE" ? { kind: "stale" } : { kind: "failed", text: error instanceof ApiError && error.status === 403 && error.code === "MODEL_NOT_ALLOWED" ? error.message : error instanceof ApiError && error.status === 403 ? T.DENIED : error instanceof ApiError && isRefusalCode(error.code) ? REFUSAL_TEXT[error.code] : T.SAVE_FAILED }; }
+ function failure(error: unknown): Notice { return error instanceof ApiError && error.code === "POLICY_STALE" ? { kind: "stale" } : { kind: "failed", text: error instanceof ApiError && error.status === 403 && error.code === "MODEL_NOT_ALLOWED" ? error.message : error instanceof ApiError && error.status === 403 ? T.DENIED : error instanceof ApiError && isRefusalCode(error.code) ? REFUSAL_TEXT[error.code] : error instanceof ApiError && codedText(error.code) !== undefined ? codedText(error.code)! : T.SAVE_FAILED }; }
  async function openReview() {
   if (busy || !dirty || outOfDate) return;
   const missing = incompleteLocks(draft);

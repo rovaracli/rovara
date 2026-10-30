@@ -263,6 +263,20 @@ describe("a publish refused for its model choices", () => {
   expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/how-we-work"]);
  });
 
+ it("shows LOCK_UNSATISFIABLE from the 409 body in its fixed sentence, with the company page", async () => {
+  const dialog = await refused(409, { code: "LOCK_UNSATISFIABLE", stage: "plan_check", fixHref: "/app/admin/how-we-work", message: "plan_check: LOCK_UNSATISFIABLE" });
+  const alert = await within(dialog).findByRole("alert");
+  expect(within(alert).getByText("Plan check: The company lock cannot be met with verified models.")).toBeTruthy();
+  expect(within(alert).getAllByRole("link", { name: "How to fix this" }).map(link => link.getAttribute("href"))).toEqual(["/app/admin/how-we-work"]);
+  expect(alert.textContent).not.toContain("LOCK_UNSATISFIABLE");
+ });
+
+ it("shows WORKFLOW_MODE_UNMAPPED in its fixed sentence, by its code and not the server's words", async () => {
+  const dialog = await refused(409, { code: "WORKFLOW_MODE_UNMAPPED", message: "server words that must not show" });
+  const alert = await within(dialog).findByRole("alert");
+  expect(alert.textContent).toBe("This kind of work has no model stage, so no model can be chosen for it.");
+ });
+
  it("shows an ordinary refusal as the server wrote it", async () => {
   const plain = await refused(400, { code: "CONFIG_INVALID", message: "The draft has a problem." });
   expect((await within(plain).findByRole("alert")).textContent).toContain("The draft has a problem.");

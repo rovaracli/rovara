@@ -15,7 +15,7 @@ import { RecipeDiffView, useRecipeDiff } from "../builder/RecipeDiffView.js";
 import { summariseChange } from "./how-we-work-summary.js";
 import { PendingConfirmation, publishedMessage } from "./PendingConfirmation.js";
 import { isRefusalCode } from "../../api/stage-models.js";
-import { STAGE_LABELS, refusalText } from "./stage-model-text.js";
+import { STAGE_LABELS, codedText, refusalText } from "./stage-model-text.js";
 import { safeAppPath } from "../../text/links.js";
 /** "Review changes": what the draft changes against what runs now, the less-safe reasons, and Publish. A less-safe change waits for a second person; the page says so and never claims it is live. */
 export function ReviewChangesDialog({ project, agentId, from, revision, disabled, notInUse = false, openRequest = 0, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; /** The project runs the built-in, not this layer: a publish saves a version only. */ notInUse?: boolean; /** Opens the dialog when it goes up (the page moved the draft and wants it reviewed), unless it is disabled: that request is dropped. */ openRequest?: number; onPublished: () => void }) {
@@ -35,7 +35,7 @@ export function ReviewChangesDialog({ project, agentId, from, revision, disabled
   } catch (failure) {
    // A refusal for the model choices is lane C's (409 `{code, stage, fixHref}`): the fixed sentence is shown, never the code. Any other refusal is shown as the server wrote it.
    const found = failure instanceof ApiError && isRefusalCode(failure.code) && failure.refusal !== undefined && (STAGE_IDS as readonly string[]).includes(failure.refusal.stage) ? [{ code: failure.code, stage: failure.refusal.stage as StageRefusal["stage"], ...(failure.refusal.fixHref === undefined ? {} : { fixHref: failure.refusal.fixHref }) }] : undefined;
-   setRefusals(found);setError(failureText(failure, "Couldn't publish this draft. Your edits are saved as a draft."));if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") onPublished(); }
+   setRefusals(found);setError((failure instanceof ApiError ? codedText(failure.code) : undefined) ?? failureText(failure, "Couldn't publish this draft. Your edits are saved as a draft."));if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") onPublished(); }
   finally { sending.current = false;setBusy(false); }
  }
  /** A read, never a replay of the write: has the version that was waiting for confirmation been published? */

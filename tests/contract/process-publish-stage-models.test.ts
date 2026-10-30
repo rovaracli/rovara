@@ -12,7 +12,7 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import { writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { putProjectPlaybook } from "../../packages/broker/src/playbook/routes.js";
 import { MAX, OLA, ORG_A } from "../support/agent-session-world.js";
-import { callerOf, failure, layerWith, playbook, playbookDeps, world as baseWorld } from "../support/process-switch-world.js";
+import { bumpLayerVersion, callerOf, failure, intercepting, isPlaybookWrite, layerWith, playbook, playbookDeps, world as baseWorld } from "../support/process-switch-world.js";
 import type { MergeWorld } from "../support/rovara-code-merge-world.js";
 
 const [MODEL_A, MODEL_B, MODEL_C] = [...new Map(bedrockClaudeModelIds("us").map((modelId) => ({ provider: "amazon-bedrock", modelId })).map((model) => [canonicalModelName(model), model])).values()];
@@ -354,6 +354,54 @@ describe("pointing the playbook at a process layer checks the layer's model choi
         ? await failure(publishDraft(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, lost.agentId))!, { requestId: randomUUID(), expectedRevision: lost.draftRevision }))
         : await failure(redrive(w, lost));
       expect(refusalOf(refused), how).toMatchObject({ code: "MODEL_NOT_ALLOWED_IN_PROJECT", stage: "build", status: 409 });
+      expect(await pointed(w), how).toBe("builtin");
+    }
+  });
+
+  // C53: the write binds to what the check read. Something lands after the check passed and before the write: the write is refused as stale and nothing moves.
+  /** Moves the company policy to a new revision each time (so a retry's fresh read is overtaken too). */
+  const bumpPolicy = (w: MergeWorld) => {
+    const key = { pk: `ORG#${ORG_A}#SETTINGS`, sk: "MODEL_SELECTION_POLICY" };
+    const old = w.db.get(key.pk, key.sk) as { revision?: number } | undefined;
+    w.db.set({ ...key, orgId: ORG_A, entityType: "MODEL_SELECTION_POLICY", version: 1, revision: (old?.revision ?? 0) + 1, rankingVersion: "g3-v1", stepOverrides: {} });
+  };
+  const STALE = { code: "PLAYBOOK_STALE", message: "Reload and try again" };
+
+  it("refuses the PUT as stale when the company model policy changes between the check and the write", async () => {
+    const w = world();
+    const layer = await chosenLayerOnBuiltin(w);
+    const before = await playbook(w);
+    const racing = intercepting(w.db, (command) => { if (isPlaybookWrite(command)) bumpPolicy(w); });
+    const refused = await failure(putProjectPlaybook(playbookDeps(w, racing), callerOf(w, MAX), "web", { expectedRevision: before.revision, defaultProcess: { kind: "project_process", agentId: layer } }));
+    expect(refused).toMatchObject({ code: STALE.code });
+    expect(refused?.message).toContain(STALE.message);
+    expect(await playbook(w)).toEqual(before);
+  });
+
+  it("refuses the PUT as stale when the layer gets a new version between the check and the write", async () => {
+    const w = world();
+    const layer = await chosenLayerOnBuiltin(w);
+    const before = await playbook(w);
+    let bumped = 0;
+    const racing = intercepting(w.db, (command) => { if (bumped === 0 && isPlaybookWrite(command)) { bumped += 1; bumpLayerVersion(w, layer); } });
+    const refused = await failure(putProjectPlaybook(playbookDeps(w, racing), callerOf(w, MAX), "web", { expectedRevision: before.revision, defaultProcess: { kind: "project_process", agentId: layer } }));
+    expect(bumped).toBe(1);
+    expect(refused).toMatchObject({ code: STALE.code });
+    expect(refused?.message).toContain(STALE.message);
+    expect(await playbook(w)).toEqual(before);
+  });
+
+  it("refuses a pointer repair as stale when the policy keeps changing between its check and its write, by a republish or a redriven confirmation", async () => {
+    for (const how of ["republish", "redrive"] as const) {
+      const w = world();
+      const x = await lostPointer(w);
+      let writes = 0;
+      const racing = { ...w.deps, documentClient: intercepting(w.db, (command) => { if (isPlaybookWrite(command)) { writes += 1; bumpPolicy(w); } }) };
+      const refused = how === "republish"
+        ? await failure(publishDraft(racing, callerOf(w, MAX), (await w.store.get(ORG_A, x.agentId))!, { requestId: randomUUID(), expectedRevision: x.draftRevision }))
+        : await failure(getApprovalSubjectHandler("agent_publish")!(racing, { orgId: ORG_A, approvalId: "apr_r", decidedBy: OLA, requestedBy: MAX, subject: { kind: "agent_publish", agentId: x.agentId, draftRevision: x.draftRevision, digest: x.digest } } as unknown as ApprovalRecord));
+      expect(writes, how).toBeGreaterThan(0);
+      expect(refused, how).toMatchObject({ code: "PLAYBOOK_STALE" });
       expect(await pointed(w), how).toBe("builtin");
     }
   });

@@ -15,6 +15,9 @@ export const REFUSAL_TEXT: Readonly<Record<RefusalCode, string>> = {
  DRAFT_STALE: "This draft changed. Reload and try again.",
 };
 export const UNKNOWN_REFUSAL_TEXT = "Rovara could not use a model for this stage.";
+/** A code outside lane C's refusal table with fixed words of its own (a turn whose workflow mode has no model stage). Matched on `code` only: the server's message is never read for it. */
+export const WORKFLOW_MODE_UNMAPPED_TEXT = "This kind of work has no model stage, so no model can be chosen for it.";
+export const codedText = (code: string): string | undefined => code === "WORKFLOW_MODE_UNMAPPED" ? WORKFLOW_MODE_UNMAPPED_TEXT : undefined;
 /** A refusal code in its fixed sentence; a code this build does not know gets the generic one. */
 export const refusalText = (code: string): string => isRefusalCode(code) ? REFUSAL_TEXT[code] : UNKNOWN_REFUSAL_TEXT;
 export const REASON_LINE: Readonly<Record<Reason, string>> = {

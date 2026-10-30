@@ -253,6 +253,13 @@ describe("Save", () => {
   await waitFor(() => expect(f.calls().filter(call => call === "GET " + POLICY).length).toBe(before + 1));
   await waitFor(() => expect(screen.queryByText(/The model settings changed/)).toBeNull());
  });
+ it("says WORKFLOW_MODE_UNMAPPED in its fixed sentence, by its code and never the server's words", async () => {
+  await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 409, body: { error: { code: "WORKFLOW_MODE_UNMAPPED", message: "private detail" } } } : undefined });
+  fireEvent.change(effort("Build"), { target: { value: "high" } });
+  await save();
+  expect((await screen.findByRole("alert")).textContent).toBe("This kind of work has no model stage, so no model can be chosen for it.");
+  expect(screen.queryByText(/private detail/)).toBeNull();
+ });
  it("says a refusal in its fixed sentence and never shows the server's words", async () => {
   await open({ handle: request => request.method === "PUT" && request.path === POLICY ? { status: 400, body: { error: { code: "LOCK_UNSATISFIABLE", message: "private detail" } } } : undefined });
   fireEvent.change(effort("Build"), { target: { value: "high" } });

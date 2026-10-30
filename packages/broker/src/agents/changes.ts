@@ -46,6 +46,7 @@ import {
 } from "./approvals.js";
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import type { TransactItem } from "./table-writes.js";
 import { pointPlaybookAtFirstVersion } from "../playbook/process-layer.js";
 import { registerPlaybookApprovals } from "../playbook/process-switch-approval.js";
 import { confirmedBySoleOwner, processSelfConfirmGuard } from "../playbook/process-approvals.js";
@@ -55,7 +56,7 @@ import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
 import { requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
-import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
+import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, stageRevisionChecks, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
 export type ChangeResult<T> =
@@ -200,6 +201,11 @@ export async function assertStoredVersionModelsResolvable(
  return assertProcessModelsResolvable(deps,caller,agent,stored,await resolveRecipe(deps,caller.orgId,agentId,version),{...options,...(stored.modelApproval===undefined?{}:{existingProof:stored.modelApproval})});
 }
 
+/** What a pointer write must still find true when it lands: the policy and sources revisions and the authority fences the check read (the items lane C fences its publish and rollback with). */
+export function pointerModelGuards(deps:ApprovalDependencies,orgId:OrgId,result:{modelRevisions:{companyRevision:number;sourcesRevision:number};authorityChecks:TransactItem[]}):TransactItem[] {
+ return [...stageRevisionChecks(deps.tableName,orgId,result.modelRevisions),...result.authorityChecks];
+}
+
 // ---- who is asked
 
 export async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promise<string[]> {
@@ -309,7 +315,7 @@ export async function publishDraft(
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
     // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
-    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt, before: async () => { await assertStoredVersionModelsResolvable(deps, caller, agent.agentId, running.version); } });
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt, before: async () => pointerModelGuards(deps, caller.orgId, await assertStoredVersionModelsResolvable(deps, caller, agent.agentId, running.version)) });
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
@@ -459,7 +465,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
     if (landed !== undefined && landed.digest === subject.digest) {
-      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt, before: async () => { await assertStoredVersionModelsResolvable(deps, { orgId: record.orgId, developerId: record.requestedBy, orgRole: "member" }, subject.agentId, landed.version, { deciderId: by, approvalBinding: { approvalId: record.approvalId, tupleDigest: subject.modelContext?.tupleDigest ?? "" } }); } });
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt, before: async () => pointerModelGuards(deps, record.orgId, await assertStoredVersionModelsResolvable(deps, { orgId: record.orgId, developerId: record.requestedBy, orgRole: "member" }, subject.agentId, landed.version, { deciderId: by, approvalBinding: { approvalId: record.approvalId, tupleDigest: subject.modelContext?.tupleDigest ?? "" } })) });
       return;
     }
     throw stale("The published version changed after this was asked. Publish again.");

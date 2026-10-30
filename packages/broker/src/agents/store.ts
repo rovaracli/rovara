@@ -248,6 +248,12 @@ function checkAmount(label: string, value: number | null | undefined): void {
   if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) throw coded("CONFIG_INVALID", `${label}: must be a number of dollars, zero or more`);
 }
 
+/** ConditionChecks that the company model policy and model sources are still at the revisions a model check read (lane C's publish and rollback share these with the playbook pointer writes). */
+export function stageRevisionChecks(tableName:string,orgId:OrgId,revisions:{companyRevision:number;sourcesRevision:number}):TransactItem[] {
+  if(!Object.values(revisions).every(revision=>Number.isSafeInteger(revision)&&revision>=0)) throw coded("CONFIG_INVALID","Invalid model validation revisions.");
+  return ([[orgSettingsKey(orgId,"MODEL_SELECTION_POLICY"),revisions.companyRevision],[modelSourcesKey(orgId),revisions.sourcesRevision]] as const).map(([key,revision])=>({ConditionCheck:{TableName:tableName,Key:key,...(revision===0?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"#revision = :revision",ExpressionAttributeNames:{"#revision":"revision"},ExpressionAttributeValues:{":revision":revision}})}}));
+}
+
 export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, AgentEventKind> {
   protected declare readonly input: AgentStoreInput;
   private readonly newId: () => AgentId;
@@ -562,10 +568,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
    * was resolved with, so the version is the recipe that was compared) or else the skill's current digest. The write applies only while
    * the skill still has that content, so a skill edited in between refuses the publish instead of publishing something else.
    */
-  private stageRevisionChecks(orgId:OrgId,revisions:{companyRevision:number;sourcesRevision:number}):TransactItem[] {
-    if(!Object.values(revisions).every(revision=>Number.isSafeInteger(revision)&&revision>=0)) throw coded("CONFIG_INVALID","Invalid model validation revisions.");
-    return ([[orgSettingsKey(orgId,"MODEL_SELECTION_POLICY"),revisions.companyRevision],[modelSourcesKey(orgId),revisions.sourcesRevision]] as const).map(([key,revision])=>({ConditionCheck:{TableName:this.input.tableName,Key:key,...(revision===0?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"#revision = :revision",ExpressionAttributeNames:{"#revision":"revision"},ExpressionAttributeValues:{":revision":revision}})}}));
-  }
+  private stageRevisionChecks(orgId:OrgId,revisions:{companyRevision:number;sourcesRevision:number}):TransactItem[] { return stageRevisionChecks(this.input.tableName,orgId,revisions); }
   async publish(input: {
     orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark;
     /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
