@@ -612,3 +612,33 @@ for (const receiptState of ["valid", "missing", "corrupt"] as const) it(`platfor
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (receiptState === "valid" ? 1 : 0));
   expect(f.t.meta(f.task.taskId).spendingStop).toEqual(admitted); expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
 });
+
+async function queuedPayerTransition() {
+  const f = await pausedTestTransition(), send = f.t.db.send.bind(f.t.db); let interrupted = false;
+  f.t.db.send = async command => {
+    if (!interrupted && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      interrupted = true; throw new Error("test process stopped before accepted operation");
+    }
+    return send(command);
+  };
+  await f.transition(); expect(interrupted).toBe(true);
+  const rows = f.t.db.find(row => row.pk === "WORKFLOW_DISPATCH" && row.taskId === f.task.taskId); expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) f.t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+  return f;
+}
+for (const source of ["project", "agent"] as const) for (const when of ["before_sweep", "at_commit"] as const) it(`platform payer recovery retains ${source} authority ${when}`, async () => {
+  const f = await queuedPayerTransition(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let changed = false;
+  const change = async () => {
+    changed = true;
+    const reply = source === "project" ? await f.t.api(ADA, "PUT", `/v1/app/projects/payments/members/${MAYA.developerId}`, { role: "viewer" })
+      : await f.t.api(MAYA, "POST", `/v1/app/agents/${f.t.meta(f.task.taskId).agent!.agentId}/archive`, {});
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  };
+  if (when === "before_sweep") await change();
+  else f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) await change();
+    return send(command);
+  };
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(changed).toBe(true);
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
