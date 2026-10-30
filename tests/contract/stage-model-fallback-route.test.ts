@@ -1,3 +1,4 @@
+import {routeStep} from "../../packages/broker/src/agents/dispatch.js";
 import {expect,it} from "vitest";
 import {routeTaskFallback} from "../../packages/broker/src/model-selection/fallback-route.js";
 const model={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"};
@@ -15,4 +16,10 @@ it("preserves an existing verified company Bedrock route and refuses its removal
  expect(result?.sourceId).toBe(sourceId);expect(result?.wire.alias).toBeTruthy();
  source.tested=false;
  await expect(routeTaskFallback(deps,{...input,sourceId})).rejects.toThrow();
+});
+
+it("refuses a first dispatch whose live source differs from the resolver decision",async()=>{
+ const requested={...input,step:"build",expectedSourceId:"src_aaaaaaaaaaaaaaaaaaaa"};
+ await expect(routeStep({},requested)).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});
+ await expect(routeStep({},{...requested,expectedSourceId:"rovara"})).resolves.toMatchObject({keepChatgpt:false,route:{sourceId:"rovara"}});
 });

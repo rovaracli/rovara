@@ -6422,10 +6422,9 @@ async function taskOperationParts(
   const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(routing, {
     orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
     model: applied?.model ?? resolvedModel.model,
+    expectedSourceId: applied?.modelDecision?.sourceId,
     ...(chatgpt === undefined ? {} : { plan: { developerId: chatgpt.developerId, model: chatgpt.model } }),
   });
-  // Fresh routing cannot silently replace a governed personal source after its resolver evidence changed.
-  if(applied?.modelDecision?.sourceId==="personal-chatgpt"&&routed?.keepChatgpt===false)throw agentXError("RUNTIME_UNAVAILABLE","The task's verified personal model changed. Reload and try again.");
   const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;
