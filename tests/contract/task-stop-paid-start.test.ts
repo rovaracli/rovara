@@ -1329,3 +1329,20 @@ it("a new payer window retains an existing task per-run stop when current agent 
   expect(f.t.meta(f.task.taskId).maxPerRunUsd).toBe(4); expect((await f.transition()).status).toBe(200);
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4, spendingStop: { effectiveStopMicrousd: 4_000_000, calculationInput: { committedMaxPerRunMicrousd: 4_000_000 } } });
 });
+
+for (const corruption of ["valid", "cap", "baseline", "reference", "receipt"] as const) it(`model key issuance checks the immutable admitted window: ${corruption}`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!;
+  const stored = f.t.meta(task.taskId), reference = stored.spendingAdmission as { requestId: string };
+  if (corruption === "cap") f.t.db.set({ ...stored, budgetUsd: 100 });
+  if (corruption === "baseline") f.t.db.set({ ...stored, budgetBaselineUsd: 100 });
+  if (corruption === "reference") { const changed = { ...stored }; delete changed.spendingAdmission; f.t.db.set(changed); }
+  if (corruption === "receipt") f.t.db.delete({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${reference.requestId}` });
+  f.t.db.delete(f.policy);
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).toBe(corruption === "valid" ? 200 : 409);
+  expect(f.t.access.mintedKeys().length).toBe(before + (corruption === "valid" ? 1 : 0));
+});
