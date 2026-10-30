@@ -1400,3 +1400,21 @@ for (const change of ["closing", "member", "project"] as const) it(`key recordin
   expect(raced).toBe(true); expect(reply.status).not.toBe(200);
   expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
 });
+
+for (const change of ["archive", "roster"] as const) it(`key recording refuses competing agent ${change} loss`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true;
+      if (change === "archive") f.t.db.set({ ...f.t.db.get(key)!, status: "archived" });
+      else f.t.db.delete(projectAgentKey(TEST_ORG, "payments", agentId));
+    }
+    return send(command);
+  };
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(raced).toBe(true); expect(reply.status).not.toBe(200);
+  expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1);
+});
