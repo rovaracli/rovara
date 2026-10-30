@@ -1,3 +1,4 @@
+import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
@@ -1451,4 +1452,24 @@ it("a prior window callback cannot adopt a valid newly admitted Continue window"
   const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
     "x-agentx-callback-capability": (f.t.outboxOf(f.task.operationId)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
+});
+
+for (const loss of ["pointer", "task", "pointer_race"] as const) it(`an admitted operation refuses lost task binding: ${loss}`, async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  if (loss === "pointer") f.t.db.delete(taskPointerKey(task.workspaceId));
+  if (loss === "task") f.t.db.delete(taskKey(task.taskId));
+  f.t.db.send = async command => {
+    if (loss === "pointer_race" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; f.t.db.delete(taskPointerKey(task.workspaceId));
+    }
+    return send(command);
+  };
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).not.toBe(200);
+  if (loss === "pointer_race") { expect(raced).toBe(true); expect(f.t.access.blockKey).toHaveBeenCalledTimes(1); expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined(); }
+  else expect(f.t.access.mintedKeys().length).toBe(before);
 });
