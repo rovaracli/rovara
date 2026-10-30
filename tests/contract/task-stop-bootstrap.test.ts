@@ -381,3 +381,15 @@ it("project inheritance recognizes native legacy catalog and settings identity w
   expect(f.db.get(key.pk, key.sk)).toMatchObject({ orgId, project, monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
   expect(f.db.get(catalogKey.pk, catalogKey.sk)).toMatchObject({ orgId, name: project, latestRevision: 2 });
 });
+
+it("legacy project identity migration preserves numeric policy and audits its project name", async () => {
+  const f = fixture(), project = "payments", key = projectAiKey(orgId, project), catalogKey = orgProjectCatalogKey(orgId, project);
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  f.db.set({ ...catalogKey, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 });
+  const policy = { schemaVersion: 1, stopMicrousd: 123456 };
+  f.db.set({ ...key, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50, taskStopPolicy: policy });
+  expect(await taskStopBootstrap.upgradeTaskStopProjectInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, project })).toMatchObject({ outcome: "updated" });
+  expect(f.db.get(key.pk, key.sk)).toMatchObject({ orgId, revision: 3, taskStopPolicy: policy, monthlyBudgetUsd: 50 });
+  const txn = f.db.transactions().at(-1), event = txn?.map(putItem).map(item => item?.event).find(event => typeof event === "object" && event !== null && "action" in event && event.action === "spending.policy_seeded");
+  expect(event).toMatchObject({ target: { kind: "project", name: project }, facts: { mode: "limited", source: "upgrade", outcome: "updated" } });
+});
