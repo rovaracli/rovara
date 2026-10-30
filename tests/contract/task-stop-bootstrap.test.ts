@@ -1,3 +1,4 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { orgMetaKey, orgSettingsKey, agentGuardrailsKey } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
@@ -91,4 +92,24 @@ for (const missing of ["occurrenceId", "sourceDigest", "completedAt", "policyRev
   const count = f.db.transactions().length;
   await expect(taskStopBootstrap.bootstrapTaskStopPolicy(deps, orgId)).rejects.toThrow();
   expect(f.db.transactions()).toHaveLength(count);
+});
+
+for (const race of ["policy", "ceiling", "closed"] as const) it(`upgrade rolls back atomically when native ${race} changes at commit`, async () => {
+  const f = fixture(); const orgKey = orgMetaKey(orgId), guardKey = agentGuardrailsKey(orgId);
+  f.db.set({ ...orgKey, orgId, entityType: "ORG", status: "open" });
+  const send = f.db.send.bind(f.db); let raced = false;
+  f.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand) {
+      raced = true;
+      if (race === "policy") f.db.set({ ...policyKey, orgId, entityType: "ORG_TASK_STOP_POLICY", revision: 9, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 314159 } } });
+      if (race === "ceiling") f.db.set({ ...guardKey, orgId, entityType: "AGENT_GUARDRAILS", revision: 9, guardrails: { maxPerRunCeilingUsd: 42 } });
+      if (race === "closed") f.db.set({ ...orgKey, orgId, entityType: "ORG", status: "closed" });
+    }
+    return send(command);
+  };
+  await expect(taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId)).rejects.toThrow();
+  expect(raced).toBe(true);
+  expect(f.db.get(seedKey.pk, "V1#upgrade")).toBeUndefined();
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toEqual(race === "policy" ? expect.objectContaining({ revision: 9 }) : undefined);
+  expect(f.db.get(guardKey.pk, guardKey.sk)).toEqual(race === "ceiling" ? expect.objectContaining({ revision: 9 }) : undefined);
 });
