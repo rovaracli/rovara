@@ -12,7 +12,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
-  OrgIdSchema, OrgRoleSchema, orgMemberKey, calculateTaskStop,
+  OrgIdSchema, OrgRoleSchema, orgMemberKey, projectMetaKey, calculateTaskStop,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -232,7 +232,11 @@ export async function startSwebenchRun(
     const role = OrgRoleSchema.parse(member.Item?.role);
     const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
     authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,
-      () => requireNativeProjectWorkRole(dependencies, { project: context.projectName }, { orgId, developerId: context.developerId!, orgRole: role }))];
+      async () => {
+        await requireNativeProjectWorkRole(dependencies, { project: context.projectName }, { orgId, developerId: context.developerId!, orgRole: role });
+        const project = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: projectMetaKey(orgId, context.projectName), ConsistentRead: true }));
+        if (project.Item?.status === "archived") throw agentXError("FORBIDDEN", "This project is archived; new eval work cannot start.");
+      })];
     if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
   }
   const createdAt = now(dependencies).toISOString();
