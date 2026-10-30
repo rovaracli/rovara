@@ -929,3 +929,14 @@ describe("stopping a batch (spec 052 FR-009)", () => {
     expect(await getBatch(h.dependencies, batch.batchId)).toMatchObject({ status: "STOPPING", counts: { running: 1, cancelled: 3 } });
   });
 });
+
+it("M47 batch and actual refill retain the trusted requesting scope", async () => {
+  const h = await harness();
+  const orgId = "org_aaaaaaaaaaaaaaaaaaaa", developerId = "a".repeat(64);
+  const batch = await createBatch(h.dependencies, { ...h.context, orgId, developerId }, file());
+  expect(h.db.find(row => row.entityType === "EVAL_BATCH")[0]).toMatchObject({ orgId, developerId, projectName: h.context.projectName });
+  await topUpBatches(h.dependencies);
+  const runs = h.db.find(row => row.entityType === "SWEBENCH_RUN");
+  expect(runs.length).toBeGreaterThan(0);
+  for (const run of runs) expect(run).toMatchObject({ batchId: batch.batchId, orgId, developerId, projectName: h.context.projectName });
+});
