@@ -216,6 +216,10 @@ export interface CaptureInput {
   /** The person whose Remember rate is used (`limit: "remember"`). */
   actor?: string;
 }
+export interface CaptureOptions {
+  /** `ConditionCheck`s the caller read its decision from (the rememberer's standing, the project's status), put in the capture's own transaction: if one fails, nothing is written and the result is `stale`. */
+  conditions?: TransactItem[];
+}
 export type CaptureRefusal = "store_full" | "daily_cap" | "pr_daily_cap" | "rate_limited" | "stale";
 export type CaptureResult =
   | { ok: true; created: true; correction: LearningCorrection }
@@ -232,7 +236,7 @@ async function existingSource(deps: LearningDeps, scope: LearningScope, sourceKe
  * Writes one correction under the caps. Returns `created: false` for a source that was captured already (nothing is counted again) and `ok: false` with a fixed reason when a cap
  * holds. Standing, author and stage are the caller's; this layer stores what it is given and never works them out.
  */
-export async function captureCorrection(deps: LearningDeps, rawScope: LearningScope, input: CaptureInput): Promise<CaptureResult> {
+export async function captureCorrection(deps: LearningDeps, rawScope: LearningScope, input: CaptureInput, options: CaptureOptions = {}): Promise<CaptureResult> {
   const scope = normalized(rawScope);
   if (input.limit === "remember" && (input.actor === undefined || input.actor.length === 0)) throw invalid("The person");
   const nowMs = deps.now();
@@ -319,12 +323,17 @@ export async function captureCorrection(deps: LearningDeps, rawScope: LearningSc
     } });
   }
 
+  const callerChecks = options.conditions ?? [];
+  const checksFrom = items.length;
+  items.push(...callerChecks);
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     return { ok: true, created: true, correction };
   } catch (error) {
     const failed = failedIndexes(error);
     if (cancellationCodes(error) === undefined) throw error;
+    // A record the caller read its decision from changed after it was read: nothing was written.
+    if (failed.some((index) => index >= checksFrom)) return { ok: false, reason: "stale" };
     if (failed.includes(0)) {
       // A racing capture of the same source got there first.
       const raced = await existingSource(deps, scope, input.sourceKey);

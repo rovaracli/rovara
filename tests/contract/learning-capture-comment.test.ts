@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { LEARNING_REMEMBER_MAX, LearningCorrectionSchema } from "../../packages/contracts/src/project-learning.js";
 import { forgetTaskComment, rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
+import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { openSuggestion, readLearningState, suggestionSk } from "../../packages/broker/src/learning/store.js";
+import { githubMemberKey, projectMemberKey } from "../../packages/contracts/src/index.js";
 import type { PageTaskFixture } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
 import {
@@ -110,7 +112,18 @@ describe("Remember this", () => {
       fixture.members.add(OMAR.slackUserId!);
       const comment = seedComment(fixture, SAM, RETRY_TEXT);
       const error = await refusal(remember(fixture, OMAR, comment.commentId));
-      expect(error.pageReason === "not_allowed" || error.code === "TASK_NOT_FOUND").toBe(true);
+      expect(error).toMatchObject({ code: "FORBIDDEN", pageReason: "not_allowed" });
+      nothingStored(fixture);
+    });
+
+    it("a person linked only through GitHub, with no company member record, cannot Remember", async () => {
+      const fixture = learningTask();
+      seedPerson(fixture.db, SAM, "contributor");
+      seedGrant(fixture.db, LEO, "maintainer");
+      fixture.db.set({ ...githubMemberKey(TEST_ORG, "4242"), entityType: "GITHUB_MEMBER", orgId: TEST_ORG, githubUserId: "4242", developerId: LEO.developerId });
+      takeOver(fixture, LEO);
+      const comment = seedComment(fixture, SAM, RETRY_TEXT);
+      expect(await refusal(remember(fixture, LEO, comment.commentId))).toMatchObject({ code: "FORBIDDEN", pageReason: "not_allowed" });
       nothingStored(fixture);
     });
 
@@ -139,6 +152,45 @@ describe("Remember this", () => {
       fixture.db.injectFault({ command: "GetCommand", match: (input) => String((input.Key as { sk?: string }).sk ?? "").startsWith("MEMBER#"), error: { name: "InternalServerError" }, times: 10 });
       await expect(remember(fixture, PRIYA, comment.commentId)).rejects.toBeDefined();
       nothingStored(fixture);
+    });
+  });
+
+  describe("review: standing and project status are checked inside the capture transaction", () => {
+    /** Runs `change` after the standing was read and before the capture is written, as a removal made at that moment would. */
+    function racing(fixture: PageTaskFixture, change: () => void) {
+      let done = false;
+      const send = fixture.db.send;
+      const documentClient = {
+        send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (!done && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("CORRECTION#")) { done = true; change(); }
+          return send(command);
+        },
+      };
+      return { ...fixture.deps, documentClient } as never;
+    }
+    const memberKey = (who: typeof PRIYA) => ({ pk: `ORG#${TEST_ORG}`, sk: `MEMBER#${who.developerId}` });
+
+    it.each([
+      ["is removed from the company", (fixture: PageTaskFixture) => { fixture.db.delete(memberKey(PRIYA)); }],
+      ["is downgraded to a project viewer", (fixture: PageTaskFixture) => { seedGrant(fixture.db, PRIYA, "viewer"); }],
+      ["loses the project grant", (fixture: PageTaskFixture) => { fixture.db.delete(projectMemberKey(TEST_ORG, PRIYA.developerId, PROJECT)); }],
+      ["is moved to another company role", (fixture: PageTaskFixture) => { seedMember(fixture.db, PRIYA, "owner"); }],
+      ["is in a project that is archived", (fixture: PageTaskFixture) => { seedProject(fixture.db, PROJECT, "archived"); }],
+    ])("a Remember by someone who %s between the read and the write is refused and stores nothing", async (_label, change) => {
+      const fixture = membersTask();
+      const comment = seedComment(fixture, SAM, RETRY_TEXT);
+      const deps = racing(fixture, () => change(fixture));
+      const error = await refusal(rememberTaskComment(deps, PRIYA, fixture.taskId, comment.commentId));
+      expect(error.pageReason).toBeDefined();
+      expect(corrections(fixture)).toEqual([]);
+      expect(learningItems(fixture.db).filter((item) => /^(SOURCE|RATE)#/.test(String(item.sk)))).toEqual([]);
+    });
+
+    it("an unchanged standing still captures with the checks in the same transaction", async () => {
+      const fixture = membersTask();
+      const comment = seedComment(fixture, SAM, RETRY_TEXT);
+      await rememberTaskComment(racing(fixture, () => undefined), PRIYA, fixture.taskId, comment.commentId);
+      expect(corrections(fixture)).toHaveLength(1);
     });
   });
 
@@ -234,6 +286,29 @@ describe("Forget", () => {
     expect(corrections(fixture)).toHaveLength(1);
   });
 
+  it("takes a grouped correction out of the month's counters (it is B5's Forget)", async () => {
+    const fixture = membersTask();
+    const first = seedComment(fixture, SAM, RETRY_TEXT);
+    const second = seedComment(fixture, SAM, RETRY_TEXT);
+    await remember(fixture, PRIYA, first.commentId);
+    await remember(fixture, PRIYA, second.commentId);
+    for (const item of corrections(fixture)) fixture.db.set({ ...item, taskId: `${String(item.taskId)}-${String(item.id)}` });
+    await groupCorrections(learningDeps(fixture), scope);
+    const metric = () => learningItems(fixture.db).find((item) => String(item.sk).startsWith("METRIC#"));
+    expect(metric()).toMatchObject({ memberCorrections: 2 });
+    await forget(fixture, PRIYA, first.commentId);
+    expect(metric()).toMatchObject({ memberCorrections: 1 });
+  });
+
+  it("is refused while the suggestion is being accepted", async () => {
+    const fixture = membersTask();
+    const { commentId } = await inSuggestion(fixture, 2);
+    const key = { pk: `ORG#${TEST_ORG}#PROJECT_LEARNING#${PROJECT}`, sk: suggestionSk("s1") };
+    fixture.db.set({ ...fixture.db.get(key)!, status: "accepting" });
+    expect(await refusal(forget(fixture, PRIYA, commentId))).toMatchObject({ pageReason: "refused" });
+    expect(corrections(fixture)).toHaveLength(2);
+  });
+
   it("is allowed for the person who remembered it, the comment's author and a project maintainer", async () => {
     for (const forgetter of [PRIYA, SAM, LEO]) {
       const fixture = membersTask();
@@ -277,7 +352,8 @@ describe("Forget", () => {
       id: "s1", stage: "plan", correctionIds: ids, allFromOnePerson: true, proposedText: RETRY_TEXT, signature: ["h"], lessSafe: false, kinds: [], overlaps: [],
     });
     expect(opened.ok).toBe(true);
-    for (const item of corrections(fixture)) fixture.db.set({ ...item, suggestionId: "s1" });
+    // Each source on its own task: a suggestion needs sources from at least 2 tasks.
+    for (const item of corrections(fixture)) fixture.db.set({ ...item, suggestionId: "s1", taskId: `task-of-${String(item.id)}` });
     return { ids, commentId };
   }
 
@@ -298,7 +374,9 @@ describe("Forget", () => {
     const before = fixture.db.get({ pk: `ORG#${TEST_ORG}#PROJECT_LEARNING#${PROJECT}`, sk: suggestionSk("s1") })!;
     await forget(fixture, PRIYA, commentId);
     const after = fixture.db.get({ pk: `ORG#${TEST_ORG}#PROJECT_LEARNING#${PROJECT}`, sk: suggestionSk("s1") })!;
-    expect(after).toMatchObject({ status: "open", correctionIds: ids.slice(1) });
+    // The fixture's clock is frozen, so the three corrections share a time and grouping orders them by id (a hash of a random comment id): compare as a set.
+    expect(after).toMatchObject({ status: "open" });
+    expect([...(after.correctionIds as string[])].sort()).toEqual(ids.slice(1).sort());
     expect(after.revision).toBe((before.revision as number) + 1);
     expect((await readLearningState(learningDeps(fixture), scope))?.openSuggestions).toBe(1);
   });

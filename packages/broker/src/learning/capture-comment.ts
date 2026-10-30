@@ -6,27 +6,26 @@
 //   - the comment AUTHOR's is stored on the correction. An outsider's comment is kept, so a maintainer can see it, but it never joins a group.
 // Nothing the request says about standing, author or stage is read: the routes take an empty body (or ids only).
 //
-// Forget deletes the correction (and, for a comment, its source record, so the comment can be remembered again). It is allowed for the person who remembered it, the comment's author
-// (or a correction's own author) and a project maintainer read live. It is refused once the correction belongs to a rule that is accepted or being accepted. A suggestion that loses a
-// source is updated under its revision, or withdrawn when fewer than 2 sources remain.
+// Forget asks whether the caller may (the person who remembered it, the comment's author or a correction's own author, and a project maintainer read live) and hands the deletion to
+// B5's `forgetCorrection`, which also deletes a comment's source record so it can be remembered again. It is refused once the correction belongs to a rule that is accepted or being accepted.
 import { createHash } from "node:crypto";
-import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  LearningCorrectionSchema, LearningSuggestionSchema, TaskCommentSchema, agentXError, projectLearningKey,
+  LearningCorrectionSchema, TaskCommentSchema, agentXError,
   type AgentXErrorCode, type LearningCorrection, type LearningStanding
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { commentKey, withoutKeys } from "../developer/page-comments.js";
 import { can, resolveTaskAccess } from "../developer/task-access.js";
-import { learningScopeOf, learningSalt, readProjectRole, readStanding } from "./standing.js";
+import { forgetCorrection } from "./grouping.js";
+import { learningScopeChecked, learningScopeOf, learningSalt, readProjectRole, readStanding, readStandingChecked } from "./standing.js";
 import { signatureOf } from "./similarity.js";
-import { captureCorrection, getLearningItem, readLearningPartition, sourceSk, suggestionSk, terminalSuggestionItems, type LearningDeps, type LearningScope } from "./store.js";
+import { captureCorrection, getLearningItem, readLearningPartition, sourceSk, type LearningDeps, type LearningScope } from "./store.js";
 import { prepareCorrection } from "./text.js";
 
 export type CaptureCommentDeps = DeveloperTaskRouteDependencies;
 type ForgetDeps = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now">;
-type TransactItem = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
 
 /** A comment is made on the requirements, design or plan of a task, so a correction from one is about the plan step. Accept lets a person choose another stage. */
 export const COMMENT_STAGE = "plan";
@@ -69,9 +68,11 @@ export async function rememberTaskComment(deps: CaptureCommentDeps, caller: Deve
   const project = access.task.project;
   if (options.project !== undefined && options.project !== project) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   // The task role is not enough: the person's own standing in the project, read now.
-  if (await readStanding(deps, caller.orgId, caller.developerId, project) !== "member") throw notAllowed("Only members of this project can use Remember.");
-  const scope = await learningScopeOf(deps, caller.orgId, project);
-  if (scope === undefined) throw notHere();
+  const rememberer = await readStandingChecked(deps, caller.orgId, caller.developerId, project);
+  if (rememberer.standing !== "member") throw notAllowed("Only members of this project can use Remember.");
+  const checkedScope = await learningScopeChecked(deps, caller.orgId, project);
+  if (checkedScope === undefined) throw notHere();
+  const { scope } = checkedScope;
 
   const stored = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentKey(taskId, commentId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
   const parsed = stored.Item === undefined ? undefined : TaskCommentSchema.safeParse(withoutKeys(stored.Item));
@@ -90,7 +91,7 @@ export async function rememberTaskComment(deps: CaptureCommentDeps, caller: Deve
   const result = await captureCorrection(learningDepsOf(deps), scope, {
     id: correctionIdOf(sourceKey), stage: COMMENT_STAGE, source: "comment", sourceKey, sourceRef: { taskId, commentId }, taskId, text: prepared.text,
     signature: [...signatureOf(prepared.text, learningSalt(scope))], author: authorId, standing: authorStanding, rememberedBy: caller.developerId, limit: "remember", actor: caller.developerId,
-  });
+  }, { conditions: [...rememberer.checks, ...checkedScope.checks] });
   if (result.ok) {
     if (result.created) return view(result.correction);
     const existing = parseCorrection(await getLearningItem(learningDepsOf(deps), scope, result.correctionSk));
@@ -139,60 +140,29 @@ async function mayForget(deps: ForgetDeps, caller: DeveloperCaller, scope: Learn
   return await readProjectRole(deps, caller.orgId, caller.developerId, scope.project) === "maintainer";
 }
 
+/** Forgets one correction. B5's `forgetCorrection` does the work (the counters, the metric, the suggestion, the source record); this route only asks whether the caller may. */
 async function forgetAt(deps: ForgetDeps, caller: DeveloperCaller, scope: LearningScope, sk: string): Promise<ForgetAnswer> {
   const learning = learningDepsOf(deps);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const correction = parseCorrection(await getLearningItem(learning, scope, sk));
     if (correction === undefined) return { forgotten: true };
     if (!await mayForget(deps, caller, scope, correction)) throw notAllowed("Only the person who remembered this, the person who wrote it, or a project maintainer can forget it.");
-
-    const items: TransactItem[] = [{ Delete: { TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, sk), ConditionExpression: "attribute_exists(pk)" } }];
-    // A comment can be remembered again; an automatic capture keeps its source record, so a retry of the same decision does not bring a forgotten correction back.
-    if (correction.source === "comment" && correction.sourceRef.taskId !== undefined && correction.sourceRef.commentId !== undefined) {
-      items.push({ Delete: { TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, sourceSk(scope.projectCreatedAt, commentSourceKey(correction.sourceRef.taskId, correction.sourceRef.commentId))) } });
-    }
-    if (correction.suggestionId !== undefined) {
-      const stored = await getLearningItem(learning, scope, suggestionSk(correction.suggestionId));
-      // Judged by the stored status first, so an item that does not read as a suggestion never lets a forget through while a rule may be built from it.
-      const status = stored?.["status"];
-      if (status === "accepted" || status === "accepting" || status === "awaiting_approval") {
-        throw refusal("CONFIG_INVALID", "refused", "This is part of a rule that was accepted. Remove the rule instead.");
-      }
-      if (status === "open") {
-        const suggestion = LearningSuggestionSchema.safeParse(stored);
-        if (!suggestion.success) throw refusal("IDEMPOTENCY_CONFLICT", "changed", "This changed while you were forgetting it. Try again.");
-        const { correctionIds, revision, id } = suggestion.data;
-        if (correctionIds.includes(correction.id)) {
-          const remaining = correctionIds.filter((other) => other !== correction.id);
-          if (remaining.length >= 2) {
-            items.push({ Update: {
-              TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, suggestionSk(id)),
-              UpdateExpression: "SET correctionIds = :ids, #revision = #revision + :one",
-              ConditionExpression: "projectCreatedAt = :pc AND #status = :open AND #revision = :revision", ExpressionAttributeNames: { "#status": "status", "#revision": "revision" },
-              ExpressionAttributeValues: { ":ids": remaining, ":one": 1, ":pc": scope.projectCreatedAt, ":open": "open", ":revision": revision },
-            } });
-          } else {
-            items.push(...terminalSuggestionItems(learning, scope, { id, expectedRevision: revision, status: "withdrawn" }));
-          }
-        }
-      }
-    }
+    // A comment can be remembered again, so its source record goes too; an automatic capture keeps its source record, so a retry of the same decision does not bring a forgotten correction back.
+    const sourceKey = correction.source === "comment" && correction.sourceRef.taskId !== undefined && correction.sourceRef.commentId !== undefined
+      ? commentSourceKey(correction.sourceRef.taskId, correction.sourceRef.commentId) : undefined;
+    let result;
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      result = await forgetCorrection(learning, scope, { correctionSk: sk, ...(sourceKey === undefined ? {} : { sourceKey }) });
     } catch (error) {
-      if (error instanceof Error && error.name === "TransactionCanceledException") continue;
+      // The correction changed under the write (judged or grouped meanwhile): look again.
+      if (attempt < 2 && (error as { code?: string }).code === "RUNTIME_UNAVAILABLE") continue;
       throw error;
     }
-    // The counter is a best-effort second write: if it is missed, the count runs high, which is the safe side (capture recounts at the cap).
-    try {
-      await deps.documentClient.send(new UpdateCommand({
-        TableName: deps.tableName, Key: projectLearningKey(scope.orgId, scope.project, "STATE"), UpdateExpression: "ADD liveCorrections :minus",
-        ConditionExpression: "projectCreatedAt = :pc AND liveCorrections > :zero", ExpressionAttributeValues: { ":minus": -1, ":pc": scope.projectCreatedAt, ":zero": 0 },
-      }));
-    } catch (error) {
-      if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
-    }
-    return { forgotten: true };
+    if (result.ok || result.reason === "missing") return { forgotten: true };
+    // Part of an accepted rule, or of a suggestion that is being accepted.
+    throw refusal("CONFIG_INVALID", "refused", result.reason === "in_accepted_rule"
+      ? "This is part of a rule that was accepted. Remove the rule instead."
+      : "This is part of a rule that is being accepted. Try again once it is decided.");
   }
   throw refusal("IDEMPOTENCY_CONFLICT", "changed", "This changed while you were forgetting it. Try again.");
 }

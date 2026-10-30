@@ -25,7 +25,7 @@ import {
 } from "./similarity.js";
 import { proposedRuleText } from "./text.js";
 import {
-  closeSuggestion, getLearningItem, putDismissed, readLearningPartition, readLearningState, suggestionSk, type LearningDeps, type LearningScope,
+  getLearningItem, putDismissed, readLearningPartition, readLearningState, sourceSk, suggestionSk, terminalSuggestionItems, closeSuggestion, type LearningDeps, type LearningScope,
 } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -41,8 +41,12 @@ const FORM_ROUNDS_MAX = 25;
 const CONFLICTS_MAX = 8;
 /** The document-frequency weighting needs a sample worth the name: with a handful of corrections every word looks rare. */
 const FREQUENCY_MIN_SAMPLE = 30;
-/** Older members of a suggestion are found by reading the corrections of the partition; the cap on that read. */
+/** Older members of a suggestion are found by reading the corrections of the partition (at most as many as a project may hold); the cap on that read. */
 const RESOLVE_MAX_ITEMS = 2000;
+/** Design 4.2: grouping works from at most 200 items of one stage family. The same cap holds for the older members read outside the window. */
+const RESOLVE_PER_FAMILY_MAX = GROUPING_WINDOW_MAX_ITEMS;
+/** Suggestions are read in full, a page at a time, up to this many items (terminal ones included; they expire 180 days after they end). */
+const SUGGESTIONS_READ_MAX = 2000;
 
 /** Stage families (design 4.2): a correction groups with others of its own family. Any other stage is a family of its own. */
 const STAGE_FAMILIES: ReadonlyArray<readonly string[]> = [["plan", "plan_critic"], ["review", "code_review", "security_review"]];
@@ -141,22 +145,50 @@ interface Context {
   /** Active rules, with the signatures they are matched against: the suggestion's own and those of its members still in the window. */
   rules: Array<{ rule: LearningRule; signatures: Signature[] }>;
   frequency: DocumentFrequency | undefined;
-  /** Every correction of the partition, read once and only when a suggestion has a member older than the window. */
-  all?: Map<string, Corr>;
+  /** Shared by every context of one run, so the older members of a stage family are read once per run, not once per round. */
+  cache: RunCache;
 }
 
-async function readContext(deps: LearningDeps, scope: LearningScope, off: boolean): Promise<Context | undefined> {
+/** Per stage family, the older corrections (outside the window) read from the partition: at most 200 each, read only when a suggestion has a member older than the window. */
+interface RunCache { fallback: Map<string, Map<string, Corr>> }
+const newCache = (): RunCache => ({ fallback: new Map() });
+
+/** Every suggestion of the project, paged in full: a live suggestion that is not read would leave its members looking free. */
+async function readSuggestions(deps: LearningDeps, scope: LearningScope): Promise<Map<string, LearningSuggestion>> {
+  const suggestions = new Map<string, LearningSuggestion>();
+  let cursor: string | undefined;
+  let scanned = 0;
+  do {
+    const page = await readLearningPartition(deps, scope, { prefix: "SUGGESTION#", ...(cursor === undefined ? {} : { cursor }), maxItems: 100, maxPages: 1, pageSize: 100 });
+    scanned += page.scanned;
+    for (const item of page.items) {
+      const parsed = parseSuggestion(item);
+      if (parsed !== undefined) suggestions.set(parsed.id, parsed);
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined && scanned < SUGGESTIONS_READ_MAX);
+  return suggestions;
+}
+
+async function readContext(deps: LearningDeps, scope: LearningScope, off: boolean, cache: RunCache = newCache()): Promise<Context | undefined> {
   const state = await readLearningState(deps, scope);
   if (state === undefined) return undefined;
   const corrections = await readWindow(deps, scope);
-  const suggestionPage = await readLearningPartition(deps, scope, { prefix: "SUGGESTION#", maxItems: 300, maxPages: 3 });
-  const suggestions = new Map<string, LearningSuggestion>();
-  for (const item of suggestionPage.items) {
-    const parsed = parseSuggestion(item);
-    if (parsed !== undefined) suggestions.set(parsed.id, parsed);
-  }
+  const suggestions = await readSuggestions(deps, scope);
   const byId = new Map(corrections.map((entry) => [entry.c.id, entry]));
   const rulePage = await readLearningPartition(deps, scope, { prefix: "RULE#", maxItems: 300, maxPages: 3 });
+  // Past the page budget a suggestion can still be missing: read the ones a window correction or an active rule points at, so a held correction never looks free.
+  const wanted = new Set<string>(corrections.flatMap((entry) => entry.c.suggestionId === undefined ? [] : [entry.c.suggestionId]));
+  for (const item of rulePage.items) {
+    const parsed = LearningRuleSchema.safeParse(item);
+    if (parsed.success && parsed.data.status === "active") wanted.add(parsed.data.suggestionId);
+  }
+  for (const id of wanted) {
+    if (suggestions.has(id)) continue;
+    const raw = await getLearningItem(deps, scope, suggestionSk(id));
+    const parsed = raw === undefined ? undefined : parseSuggestion(raw);
+    if (parsed !== undefined) suggestions.set(parsed.id, parsed);
+  }
   const rules: Context["rules"] = [];
   for (const item of rulePage.items) {
     const parsed = LearningRuleSchema.safeParse(item);
@@ -168,28 +200,31 @@ async function readContext(deps: LearningDeps, scope: LearningScope, off: boolea
   }
   const usable = corrections.filter((entry) => entry.c.standing === "member");
   const frequency = usable.length >= FREQUENCY_MIN_SAMPLE ? buildDocumentFrequency(usable.map((entry) => asSignature(entry.c))) : undefined;
-  return { state, off, corrections, byId, suggestions, rules, frequency };
+  return { state, off, corrections, byId, suggestions, rules, frequency, cache };
 }
 
-/** The members of a suggestion that still exist: from the window, else from the whole partition (read once). Forgotten and expired members are absent. */
+/** The members of a suggestion that still exist: from the window, else from the older corrections of its stage family (read once per run). Forgotten and expired members are absent. */
 async function membersOf(deps: LearningDeps, scope: LearningScope, context: Context, suggestion: LearningSuggestion): Promise<Corr[]> {
+  const family = stageFamily(suggestion.stage);
   const missing = suggestion.correctionIds.filter((id) => !context.byId.has(id));
-  if (missing.length > 0 && context.all === undefined) {
-    const all = new Map<string, Corr>();
+  if (missing.length > 0 && !context.cache.fallback.has(family)) {
+    const older = new Map<string, Corr>();
     let cursor: string | undefined;
-    for (let pages = 0; pages < 4; pages += 1) {
-      const page = await readLearningPartition(deps, scope, { prefix: "CORRECTION#", ...(cursor === undefined ? {} : { cursor }), maxItems: RESOLVE_MAX_ITEMS / 4, maxPages: 1, pageSize: RESOLVE_MAX_ITEMS / 4 });
+    let scanned = 0;
+    do {
+      const page = await readLearningPartition(deps, scope, { prefix: "CORRECTION#", ...(cursor === undefined ? {} : { cursor }), maxItems: 500, maxPages: 1, pageSize: 500 });
+      scanned += page.scanned;
       for (const item of page.items) {
         const parsed = parseCorrection(item);
-        if (parsed !== undefined) all.set(parsed.c.id, parsed);
+        if (parsed !== undefined && stageFamily(parsed.c.stage) === family && older.size < RESOLVE_PER_FAMILY_MAX) older.set(parsed.c.id, parsed);
       }
       cursor = page.cursor;
-      if (cursor === undefined) break;
-    }
-    context.all = all;
+    } while (cursor !== undefined && scanned < RESOLVE_MAX_ITEMS);
+    context.cache.fallback.set(family, older);
   }
+  const older = context.cache.fallback.get(family);
   return suggestion.correctionIds.flatMap((id) => {
-    const found = context.byId.get(id) ?? context.all?.get(id);
+    const found = context.byId.get(id) ?? older?.get(id);
     return found === undefined ? [] : [found];
   });
 }
@@ -230,9 +265,10 @@ async function judge(deps: LearningDeps, scope: LearningScope, context: Context,
   const items: TransactItem[] = [{
     Update: {
       TableName: deps.tableName, Key: keyOf(scope, entry.sk),
-      UpdateExpression: repeatOf === undefined ? "SET groupedAt = :at" : "SET groupedAt = :at, repeatOf = :repeat",
+      // `repeatOfRule` marks a repeat of an accepted rule (repeatOf then holds the rule's id), so Forget can reverse the counter without the rule item.
+      UpdateExpression: repeatOf === undefined ? "SET groupedAt = :at" : `SET groupedAt = :at, repeatOf = :repeat${rule === undefined ? "" : ", repeatOfRule = :yes"}`,
       ConditionExpression: "attribute_exists(pk) AND projectCreatedAt = :pc AND attribute_not_exists(groupedAt)",
-      ExpressionAttributeValues: { ":at": now, ":pc": scope.projectCreatedAt, ...(repeatOf === undefined ? {} : { ":repeat": repeatOf }) },
+      ExpressionAttributeValues: { ":at": now, ":pc": scope.projectCreatedAt, ...(repeatOf === undefined ? {} : { ":repeat": repeatOf }), ...(rule === undefined || repeatOf === undefined ? {} : { ":yes": true }) },
     },
   }];
   if (member) {
@@ -427,7 +463,8 @@ export async function groupCorrections(deps: LearningDeps, rawScope: LearningSco
   const off = await (options.prCaptureOff ?? prCaptureOff)(deps, scope);
   if (off) result.withdrawn.push(...await withdrawPrDependentSuggestions(deps, scope));
 
-  const first = await readContext(deps, scope, off);
+  const cache = newCache();
+  const first = await readContext(deps, scope, off, cache);
   if (first === undefined) return result;
   for (const entry of first.corrections.filter((candidate) => candidate.c.groupedAt === undefined && !(candidate.c.source === "pr_comment" && off)).slice(0, JUDGE_MAX)) {
     if (await judge(deps, scope, first, entry)) result.judged += 1;
@@ -435,7 +472,7 @@ export async function groupCorrections(deps: LearningDeps, rawScope: LearningSco
 
   let conflicts = 0;
   for (let round = 0; round < FORM_ROUNDS_MAX; round += 1) {
-    const context = await readContext(deps, scope, off);
+    const context = await readContext(deps, scope, off, cache);
     if (context === undefined) break;
     const free = freeCorrections(context);
     if (free.length === 0) break;
@@ -466,6 +503,7 @@ export async function withdrawPrDependentSuggestions(deps: LearningDeps, rawScop
   if (context === undefined) return [];
   const withdrawn: string[] = [];
   for (const suggestion of context.suggestions.values()) {
+    // Only open suggestions are withdrawn or rewritten here; one that is accepting or awaiting approval is left alone. B6 must re-check PR-only membership at Accept.
     if (suggestion.status !== "open") continue;
     const members = await membersOf(deps, scope, context, suggestion);
     const dependent = members.filter((entry) => entry.c.source === "pr_comment");
@@ -504,23 +542,29 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
   if (entry === undefined) return { ok: false, reason: "missing" };
   const { c } = entry;
 
-  let rewrite: TransactItem | undefined;
+  // What the suggestion becomes, written in the same transaction as the delete: a rewrite, or the withdrawal of one left with fewer than 2 sources.
+  let suggestionWrites: TransactItem[] = [];
+  let readSuggestion: LearningSuggestion | undefined;
+  let withdrawing = false;
   if (c.suggestionId !== undefined) {
     const raw = await getLearningItem(deps, scope, suggestionSk(c.suggestionId));
     const suggestion = raw === undefined ? undefined : parseSuggestion(raw);
-    if (suggestion?.status === "accepted") return { ok: false, reason: "in_accepted_rule" };
+    // Judged by the stored status first: an item that does not read as a suggestion never lets a forget through while a rule may be built from it.
+    const storedStatus = raw?.["status"];
+    if (storedStatus === "accepted") return { ok: false, reason: "in_accepted_rule" };
+    if (storedStatus === "accepting" || storedStatus === "awaiting_approval" || (storedStatus === "open" && suggestion === undefined)) return { ok: false, reason: "suggestion_busy" };
     if (suggestion !== undefined && isLive(suggestion)) {
       if (suggestion.status !== "open") return { ok: false, reason: "suggestion_busy" };
+      readSuggestion = suggestion;
       const context = await readContext(deps, scope, true);
       const members = context === undefined ? [] : await membersOf(deps, scope, context, suggestion);
       const rest = members.filter((member) => member.c.id !== c.id);
       const fields = rest.length >= LEARNING_SUGGESTION_SOURCES_MIN && tasksOf(rest) >= 2 ? fieldsFor(rest) : undefined;
-      if (fields === undefined) {
-        const closed = await closeSuggestion(deps, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "withdrawn" });
-        if (!closed.ok && closed.reason === "stale") return { ok: false, reason: "suggestion_busy" };
-      } else {
-        rewrite = rewriteSuggestionItem(deps, scope, suggestion, fields);
-      }
+      // The withdrawal's own STATE update (one fewer open) is folded into Forget's single STATE update below: a transaction may not name an item twice.
+      suggestionWrites = fields === undefined
+        ? terminalSuggestionItems(deps, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "withdrawn" }).slice(0, 1)
+        : [rewriteSuggestionItem(deps, scope, suggestion, fields)];
+      withdrawing = fields === undefined;
     }
   }
 
@@ -535,14 +579,16 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
     },
     {
       Update: {
-        TableName: deps.tableName, Key: keyOf(scope, "STATE"), UpdateExpression: "ADD liveCorrections :minus",
+        TableName: deps.tableName, Key: keyOf(scope, "STATE"), UpdateExpression: withdrawing ? "ADD liveCorrections :minus, openSuggestions :minus" : "ADD liveCorrections :minus",
         ConditionExpression: "attribute_exists(pk) AND projectCreatedAt = :pc", ExpressionAttributeValues: { ":minus": -1, ":pc": scope.projectCreatedAt },
       },
     },
   ];
-  if (rewrite !== undefined) items.push(rewrite);
+  items.push(...suggestionWrites);
   if (counted) {
-    const rule = c.repeatOf === undefined ? undefined : await getLearningItem(deps, scope, `RULE#${c.repeatOf}`);
+    // A repeat of a rule is reversed from the correction's own marker; an item written before the marker existed falls back to the rule item.
+    const ruleRepeat = c.repeatOf !== undefined && (item?.["repeatOfRule"] === true || await getLearningItem(deps, scope, `RULE#${c.repeatOf}`) !== undefined);
+    const rule = ruleRepeat ? c.repeatOf : undefined;
     const pr = c.source === "pr_comment";
     const month = metricMonth(c.createdAt);
     await ensureMetricCurrent(deps, scope, month);
@@ -552,12 +598,16 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
       ...(pr ? { prMemberCorrections: -1, ...(c.repeatOf === undefined ? {} : { prRepeats: -1 }), ...(rule === undefined ? {} : { prRepeatsOfAcceptedRules: -1 }) } : {}),
     }));
   }
-  if (input.sourceKey !== undefined) items.push({ Delete: { TableName: deps.tableName, Key: keyOf(scope, `SOURCE#${input.sourceKey}`) } });
+  if (input.sourceKey !== undefined) items.push({ Delete: { TableName: deps.tableName, Key: keyOf(scope, sourceSk(scope.projectCreatedAt, input.sourceKey)) } });
 
   const outcome = await send(deps, items);
   if (outcome === "ok") return { ok: true };
   // Changed under us (judged, grouped or forgotten meanwhile): a gone correction is answered as gone, anything else asks the caller to try again.
   const again = await getLearningItem(deps, scope, input.correctionSk);
   if (again === undefined) return { ok: false, reason: "missing" };
+  if (readSuggestion !== undefined) {
+    const now = await getLearningItem(deps, scope, suggestionSk(readSuggestion.id));
+    if (now === undefined || now["revision"] !== readSuggestion.revision || now["status"] !== "open") return { ok: false, reason: "suggestion_busy" };
+  }
   throw unavailable();
 }
