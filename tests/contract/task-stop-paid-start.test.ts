@@ -1,3 +1,4 @@
+import { call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
@@ -422,10 +423,16 @@ for (const enrolled of [false, true]) it(`initial human run preserves a legacy s
   }
 });
 
-async function pausedTestTransition() {
+async function pausedTestTransition(spentUsd?: number) {
   const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
   f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId, { version: "draft" });
+  if (spentUsd !== undefined) {
+    const step = f.t.taskOps(task.workspaceId).at(-1)!;
+    const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": (f.t.outboxOf(step.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    f.t.access.setKeySpent(f.t.access.mintedKeys().at(-1)!, spentUsd);
+  }
   await f.t.pauseAndEnd(task, { kind: "test", taskId: task.taskId });
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
   const request = { requestId: randomUUID() };
@@ -484,4 +491,13 @@ it("an old Continue-as-task receipt cannot redrive a later paused agent revision
   await f.t.set(f.task.taskId, "REMOVE budgetPause");
   const operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
   expect((await f.transition()).status).toBe(200); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+});
+
+it("Continue-as-task starts its new .5 window after actual historical testing spend", async () => {
+  const f = await pausedTestTransition(0.75), reply = await f.transition(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 0.5, budgetBaselineUsd: 0.75 });
+  const next = f.t.taskOps(f.task.workspaceId).at(-1)!;
+  const minted = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": (f.t.outboxOf(next.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(minted.status, JSON.stringify(minted.body)).toBe(200);
+  expect(f.t.access.mintKey.mock.calls.at(-1)![0]).toMatchObject({ maxBudgetUsd: 0.5, tags: { origin: "app", payerKind: "member" } });
 });
