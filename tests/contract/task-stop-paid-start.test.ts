@@ -175,3 +175,21 @@ it("an agent per-run numeric edit after capture affects only the next admission"
   expect(next.status, JSON.stringify(next.body)).toBe(200);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK").map(row => row.budgetUsd).sort()).toEqual([0.5, 1.234567]);
 });
+for (const loss of ["settings_missing", "disabled"] as const) it(`paid builtin start refuses ${loss} at native commit`, async () => {
+  const f = await fixture(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true;
+      if (loss === "settings_missing") f.t.db.delete(f.agent);
+      else {
+        const row = f.t.db.get(agentGuardrailsKey(TEST_ORG))!;
+        const saved = await f.t.api(ADA, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: row.revision, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1, disabledBuiltins: [ROVARA_CODE_AGENT_ID] } });
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      }
+    }
+    return send(command);
+  };
+  const reply = await f.start(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
