@@ -955,7 +955,7 @@ for (const loss of ["closing", "cap_source"] as const) it(`a plain-task approval
   expect(changed).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
 
-for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", "changed_origin", "changed_baseline"] as const) it(`plain approval acknowledgement loss uses a ${receiptState} receipt without current financial settings`, async () => {
+for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", "changed_origin", "changed_baseline", "missing_baseline"] as const) it(`plain approval acknowledgement loss uses a ${receiptState} receipt without current financial settings`, async () => {
   const f = await approvalWindow(), decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0;
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
@@ -976,6 +976,7 @@ for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", 
   if (receiptState === "changed_reference") f.t.db.set({ ...f.t.meta(f.task.taskId), spendingAdmission: { requestId: randomUUID(), actorId: MAYA.developerId, intentHash: "a".repeat(64) } });
   if (receiptState === "changed_origin") f.t.db.set({ ...f.t.meta(f.task.taskId), origin: "app" });
   if (receiptState === "changed_baseline") f.t.db.set({ ...f.t.meta(f.task.taskId), budgetBaselineUsd: 100 });
+  if (receiptState === "missing_baseline") { const receipt: Record<string, unknown> = { ...f.t.db.get(receiptKey)! }; delete receipt.budgetBaselineUsd; f.t.db.set(receipt); }
   f.t.db.delete(f.policy); captures = 0;
   expect((await f.t.decide(BEN, f.spendRequest.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
@@ -1015,6 +1016,8 @@ for (const recovery of ["valid", "spent_valid", "closing", "cap_source"] as cons
   await expect(f.t.decide(MAYA, request.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test workflow approval acknowledgement lost");
   expect(f.t.meta(task.taskId)).toMatchObject({ spendingAdmission: { requestId: decisionId, actorId: MAYA.developerId } });
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({ transitionKind: "spend-approval", spendRequestId: request.spendRequestId, agentRunRevision: null });
+  expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({ budgetBaselineUsd: recovery === "spent_valid" ? 0.75 : 0 });
+  expect(f.t.meta(task.taskId).budgetBaselineUsd).toBe(recovery === "spent_valid" ? 0.75 : 0);
   f.t.db.delete(f.policy); captures = 0;
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
   expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" || recovery === "spent_valid" ? 1 : 0)); expect(changed).toBe(true);

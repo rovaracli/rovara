@@ -2715,7 +2715,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
       ...windowAndPauseUpdate(deps, task, baseline, windowStop),
       ...windowChecks,
-      ...(windowStop === undefined ? [] : [taskStopWindowItem(deps.tableName, windowIdentity, windowStop, operation.id, receivedAt)]),
+      ...(windowStop === undefined ? [] : [taskStopWindowItem(deps.tableName, windowIdentity, windowStop, operation.id, receivedAt, baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline)]),
       ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
@@ -2927,7 +2927,7 @@ const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict()
 /** Server-only preparation: a new approval's money is captured by the spend
  * calculator; this contributes current execution authority and its receipt. */
 export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller,
-  input: { taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop }): Promise<PreparedTaskApprovalAdmission | undefined> {
+  input: { taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop; budgetBaselineUsd: number }): Promise<PreparedTaskApprovalAdmission | undefined> {
   const access = await authorizeTaskAction(deps, caller, input.taskId, "work"), task = access.task;
   // The accepted recipe distinguishes agent-step state from coding/workflow
   // state; every new approved window keeps the same immutable receipt.
@@ -2970,7 +2970,7 @@ export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDepen
       ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
       ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
       ExpressionAttributeValues: { ":admission": reference, ":nextRevision": pausedRevision, ":revision": run.revision, ":state": "PAUSED_BUDGET", ":org": deps.orgId, ":type": "AGENT_RUN" } } }]),
-      taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", firstDispatch: task.budgetPause?.firstDispatch ?? null, origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
+      taskStopTransitionItem(deps.tableName, identity, { transitionKind: "spend-approval", budgetBaselineUsd: input.budgetBaselineUsd, firstDispatch: task.budgetPause?.firstDispatch ?? null, origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
         actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) })] };
 }
 
@@ -3037,7 +3037,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     const baseline = deps.modelAccess === undefined ? undefined
       : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
     const transitionAccess = await authorizeTaskAction(deps, caller, taskId, "work");
-    const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, payer, place, actorRole: caller.orgRole, peopleRevision: transitionAccess.peopleRevision ?? null,
+    const receipt = taskStopTransitionItem(deps.tableName, identity, { spendingStop: captured, budgetBaselineUsd: baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline, payer, place, actorRole: caller.orgRole, peopleRevision: transitionAccess.peopleRevision ?? null,
       agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
     const item = windowAndPauseUpdate(deps, task, baseline, captured)[0]?.Update;
     if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");

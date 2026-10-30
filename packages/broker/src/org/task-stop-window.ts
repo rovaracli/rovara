@@ -54,10 +54,11 @@ export function checkedTaskMaxPerRun(task: Pick<DeveloperTaskRecord, "maxPerRunU
   if (task.spendingStop !== undefined && taskMaxPerRunForAdmission(checkedTaskStopSnapshot(task.spendingStop)) !== actual) throw invalid();
   return actual;
 }
+const baselineUsdSchema = z.number().finite().nonnegative();
 const receiptSchema = z.object({
   pk: z.string(), sk: z.string(), entityType: z.literal("SPENDING_ADMISSION"), version: z.literal(1), orgId: OrgIdSchema,
   workKind: z.literal("task-window"), workId: z.string().uuid(), requestId: z.string().uuid(), actorId: sha, intentHash: sha,
-  spendingStop: snapshotSchema, operationId: z.string().min(1).max(256), outcome: z.literal("accepted"), admittedAt: z.string().datetime(),
+  budgetBaselineUsd: baselineUsdSchema, spendingStop: snapshotSchema, operationId: z.string().min(1).max(256), outcome: z.literal("accepted"), admittedAt: z.string().datetime(),
 }).strict();
 export interface TaskStopWindowIdentity { orgId: OrgId; taskId: string; requestId: string; actorId: string; intentHash: string; project: string; agentId: string }
 export const taskStopWindowKey = (orgId: OrgId, taskId: string, requestId: string) => ({ pk: orgScoped(orgId, `SPENDING_ADMISSION#task-window#${taskId}`), sk: `REQUEST#${requestId}` });
@@ -72,10 +73,10 @@ export async function readTaskStopWindow(deps: Pick<TableInput, "documentClient"
   if (row.actorId !== input.actorId || row.intentHash !== input.intentHash) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already accepted a different spending window. Use a new request ID.");
   return row;
 }
-export function taskStopWindowItem(tableName: string, input: TaskStopWindowIdentity, snapshot: CapturedTaskStop, operationId: string, admittedAt: string): TransactItem {
+export function taskStopWindowItem(tableName: string, input: TaskStopWindowIdentity, snapshot: CapturedTaskStop, operationId: string, admittedAt: string, budgetBaselineUsd: number): TransactItem {
   const Item = receiptSchema.parse({ ...taskStopWindowKey(input.orgId, input.taskId, input.requestId), entityType: "SPENDING_ADMISSION", version: 1,
     orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId, actorId: input.actorId, intentHash: input.intentHash,
-    spendingStop: snapshot, operationId, outcome: "accepted", admittedAt });
+    budgetBaselineUsd, spendingStop: snapshot, operationId, outcome: "accepted", admittedAt });
   return { Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } };
 }
 
@@ -87,7 +88,7 @@ const transitionSchema = z.object({
   actorRole: OrgRoleSchema, peopleRevision: revision.nullable(),
   firstDispatch: z.object({ operationId: z.string().uuid(), checkout: z.array(RunCheckoutSchema).optional(), readOnly: z.literal(true).optional() }).strict().nullable().optional(),
   origin: z.enum(WORK_ORIGINS).optional(), transitionKind: z.enum(["continue-as-task", "spend-approval"]), spendRequestId: SpendRequestIdSchema.optional(), spendingStop: snapshotSchema, payer: PayerSchema, place: PlaceSchema,
-  agentRunRevision: revision.nullable(), workflowRevision: revision.nullable(), outcome: z.literal("transitioned"), admittedAt: z.string().datetime(),
+  budgetBaselineUsd: baselineUsdSchema, agentRunRevision: revision.nullable(), workflowRevision: revision.nullable(), outcome: z.literal("transitioned"), admittedAt: z.string().datetime(),
 }).strict().superRefine((value, context) => {
   if (value.transitionKind === "spend-approval" && (value.origin === undefined || value.firstDispatch === undefined)) context.addIssue({ code: "custom", message: "The approved origin is missing." });
   if ((value.transitionKind === "spend-approval") !== (value.spendRequestId !== undefined)) context.addIssue({ code: "custom", message: "Approval admission reference is missing or unexpected." });
@@ -104,7 +105,7 @@ export async function readTaskStopTransition(deps: Pick<TableInput, "documentCli
   if (row.actorId !== input.actorId || row.intentHash !== input.intentHash) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID already accepted a different spending transition. Use a new request ID.");
   return row;
 }
-export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision"> & { transitionKind?: "spend-approval"; spendRequestId?: string; origin?: WorkOrigin; firstDispatch?: TaskStopTransition["firstDispatch"] }): TransactItem {
+export function taskStopTransitionItem(tableName: string, input: TaskStopWindowIdentity, value: Pick<TaskStopTransition, "spendingStop" | "budgetBaselineUsd" | "payer" | "place" | "agentRunRevision" | "workflowRevision" | "admittedAt" | "actorRole" | "peopleRevision"> & { transitionKind?: "spend-approval"; spendRequestId?: string; origin?: WorkOrigin; firstDispatch?: TaskStopTransition["firstDispatch"] }): TransactItem {
   const Item = transitionSchema.parse({ ...taskStopWindowKey(input.orgId, input.taskId, input.requestId), ...value,
     entityType: "SPENDING_ADMISSION", version: 1, orgId: input.orgId, workKind: "task-window", workId: input.taskId, requestId: input.requestId,
     actorId: input.actorId, intentHash: input.intentHash, transitionKind: value.transitionKind ?? "continue-as-task", outcome: "transitioned" });
@@ -121,6 +122,8 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
     || !isDeepStrictEqual(task.spendingStop, receipt.spendingStop)
     || usdToWholeMicrodollars(task.budgetUsd) !== receipt.spendingStop.effectiveStopMicrousd) throw invalid();
   checkedTaskMaxPerRun(task);
+  const actualBaseline = baselineUsdSchema.safeParse(task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd);
+  if (!actualBaseline.success || actualBaseline.data !== receipt.budgetBaselineUsd) throw invalid();
   if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null && task.budgetPause?.firstDispatch !== undefined && !isDeepStrictEqual(task.budgetPause.firstDispatch, receipt.firstDispatch)) throw invalid();
   if (receipt.transitionKind === "spend-approval" && receipt.agentRunRevision === null && !isDeepStrictEqual(task.spendingAdmission, reference)) throw invalid();
   const actor = { orgId: task.orgId, developerId: receipt.actorId, orgRole: receipt.actorRole }, agentId = task.agent.agentId, draft = task.agent.version === "draft";

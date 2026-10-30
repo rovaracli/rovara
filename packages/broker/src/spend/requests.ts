@@ -49,7 +49,7 @@ import { cleanUsd, readTopUp } from "./top-ups.js";
 export interface SpendRequestHost {
   /** Goes on with a task whose limit was raised (`resumeTaskAfterSpendApproval` in developer-tasks.ts). Never asked for a task in another org. */
   resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number; spendingAdmission?: SpendingAdmissionReference; expectedPausedAgentRevision?: number }): Promise<void | "STALE">;
-  prepareApprovalAdmission?(input: { orgId: OrgId; taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop }): Promise<PreparedTaskApprovalAdmission | undefined>;
+  prepareApprovalAdmission?(input: { orgId: OrgId; taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop; budgetBaselineUsd: number }): Promise<PreparedTaskApprovalAdmission | undefined>;
   /** A test run that reached its cap goes on as a normal task of its owner (`POST /v1/app/tasks/{id}/continue-as-task`). */
   continueAsTask?(caller: AgentCaller, taskId: string, body: unknown): Promise<unknown>;
   /** What a task's model keys have spent so far, in dollars (the proxy's figure); how a pause that was never written is worked out from the end. */
@@ -1232,7 +1232,7 @@ const legacySubjectOf = (record: SpendRequestRecord): string =>
  * a condition too (fix round 1, I-3): while the task is still paused on it, the approval removes it and the task goes on (`resume`); once it is gone (the
  * owner went on) or another limit paused the task, the approval only raises the limit. A `resume: "implement"` request is asked at plan approval, with no pause.
  */
-async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRecord, task: DeveloperTaskRecord, approvedUsd: number, approvalStop?: CapturedTaskStop): Promise<{ items: TransactItem[]; resume: boolean; resetRunWindow: boolean; firstDispatch: boolean; raisedPastRunLimit?: number }> {
+async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRecord, task: DeveloperTaskRecord, approvedUsd: number, approvalStop?: CapturedTaskStop): Promise<{ items: TransactItem[]; resume: boolean; resetRunWindow: boolean; firstDispatch: boolean; budgetBaselineUsd: number; raisedPastRunLimit?: number }> {
   const names: Record<string, string> = { "#pause": "budgetPause", "#scope": "scope", "#kind": "kind" };
   const values: Record<string, unknown> = { ":org": task.orgId };
   const sets: string[] = ["updatedAt = :now"];
@@ -1259,6 +1259,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   };
   if (firstDispatch && approvalStop !== undefined) same("budgetPause", task.budgetPause);
   let resetRunWindow = false;
+  let budgetBaselineUsd = task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd;
   let raisedPastRunLimit: number | undefined;
   // A plan's run limit request (`resume: "implement"`) applies only while the plan is still blocked on that limit, and only to the workflow as it was read:
   // once the plan moved on (another decision accepted a limit, coding runs), approving it rewrites nothing.
@@ -1283,7 +1284,8 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
       const spentOf = deps.spendRequests?.taskSpentUsd;
       // A window can only be reset at what the keys have spent: a proxy that can't say refuses the approval (retryable), nothing is written.
       if (spentOf === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy can't say what this task has spent; try again in a minute");
-      values[":baseline"] = cleanUsd(await spentOf(task.modelKeyIds ?? []));
+      budgetBaselineUsd = cleanUsd(await spentOf(task.modelKeyIds ?? []));
+      values[":baseline"] = budgetBaselineUsd;
       sets.push("budgetBaselineUsd = :baseline");
     }
     // A run held at its start is dispatched by the resume, which takes the pause in the same write as the dispatch.
@@ -1320,7 +1322,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
       ExpressionAttributeNames: names, ExpressionAttributeValues: values,
     },
   };
-  return { items: [update], resume: !(approvalStop !== undefined && raisedPastRunLimit !== undefined) && (forThis || (forPlan && planBlocked) || (!forPlan && record.resume === "implement")), resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
+  return { items: [update], budgetBaselineUsd, resume: !(approvalStop !== undefined && raisedPastRunLimit !== undefined) && (forThis || (forPlan && planBlocked) || (!forPlan && record.resume === "implement")), resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
 }
 
 /** The run limit request that follows a max-per-run raise past the run limit: who it goes to, worked out before the approval writes its event. */
@@ -1567,7 +1569,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
         `That is more than this run's ${dollars(change.raisedPastRunLimit)} run limit, so I also asked ${followUpWords} to raise it.`));
     }
     const admission = current === undefined || approvalStop === undefined || change?.resume !== true ? undefined
-      : await deps.spendRequests?.prepareApprovalAdmission?.({ orgId: record.orgId, taskId: current.taskId, decisionRequestId: body.requestId, spendRequestId: record.spendRequestId, snapshot: approvalStop });
+      : await deps.spendRequests?.prepareApprovalAdmission?.({ orgId: record.orgId, taskId: current.taskId, decisionRequestId: body.requestId, spendRequestId: record.spendRequestId, snapshot: approvalStop, budgetBaselineUsd: change.budgetBaselineUsd });
     const admissionStart = extra.length;
     if (admission?.taskReference === true) {
       const update = change?.items.find(item => item.Update?.Key?.pk === taskKey(current!.taskId).pk && item.Update.Key.sk === "META")?.Update;
