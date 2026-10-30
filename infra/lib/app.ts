@@ -9,6 +9,8 @@ import { INSTALLER_DESCRIPTION, InstallerStack } from "./installer.js";
 import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { ProductionFoundationStack } from "./production-foundation.js";
+import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
+import { EDITION_CONTEXT_KEY } from "@agentx/contracts";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
@@ -136,6 +138,10 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });
+  // The edition of this install (-c rovaraEdition=enterprise|public). Unset keeps today's network. Only the foundation reads it here: the control plane reads it in task E2.
+  const edition = parseEditionContext(app.node.tryGetContext(EDITION_CONTEXT_KEY));
+  const enterpriseInternetEgressContext = app.node.tryGetContext(ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY) as unknown;
+  const enterpriseEgressCidrsContext = app.node.tryGetContext(ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY) as unknown;
   new ProductionFoundationStack(app, "AgentXProductionFoundation", {
     description: "Stable AgentX production network, encryption, and persistent workspace capacity",
     deploymentRegion: deploymentRegion ?? "us-east-1",
@@ -143,6 +149,9 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     terminationProtection: true,
     naming,
     ...(agentxCloud ? { cloud: true } : {}),
+    ...(edition === undefined ? {} : { edition }),
+    ...(enterpriseInternetEgressContext === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext) }),
+    ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: parseEnterpriseEgressCidrs(enterpriseEgressCidrsContext) }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });
   // The identity stack is new with named environments; the legacy deployment brings its own OIDC
