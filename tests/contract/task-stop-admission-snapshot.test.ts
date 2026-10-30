@@ -126,7 +126,8 @@ for (const state of ["disabled", "ready"] as const) it(`cutover preview uses the
   expect(await f.capture()).toEqual({ kind: "disabled" });
   const preview: unknown = Reflect.get(company, "previewTaskStopCutover"); expect(typeof preview).toBe("function");
   if (typeof preview !== "function") throw new Error("cutover preview missing");
-  expect(await preview(f.deps, f.input)).toEqual({ kind: "preview", enrolled: false, snapshot: enabled });
+  const invoke = preview as (deps: unknown, input: unknown) => Promise<unknown>;
+  expect(await invoke(f.deps, f.input)).toEqual({ kind: "preview", enrolled: false, snapshot: enabled });
   expect(f.rows).toEqual(before); expect(f.calls).toHaveLength(3); expect(f.order.slice(-2)).toEqual(["authorized", "snapshot"]);
 });
 for (const drift of ["member", "pointer", "seed", "scope"] as const) it(`cutover preview refuses ${drift} loss without enabling enrollment`, async () => {
@@ -136,7 +137,18 @@ for (const drift of ["member", "pointer", "seed", "scope"] as const) it(`cutover
   if (drift === "scope") f.deps.requireScopeAccess = async () => { throw new Error("scope denied"); };
   const preview: unknown = Reflect.get(company, "previewTaskStopCutover"); expect(typeof preview).toBe("function");
   if (typeof preview !== "function") throw new Error("cutover preview missing");
-  await expect(preview(f.deps, f.input)).rejects.toBeDefined();
+  const invoke = preview as (deps: unknown, input: unknown) => Promise<unknown>;
+  await expect(invoke(f.deps, f.input)).rejects.toBeDefined();
   expect(f.rows[3]!.enrollment).toEqual({ version: 1, state: "disabled" });
   if (drift === "scope") expect(f.calls).toHaveLength(0);
+});
+
+it("cutover preview never labels an enabled org unenrolled or accepts a client review mode", async () => {
+  const f = fixture(), preview: unknown = Reflect.get(company, "previewTaskStopCutover");
+  expect(typeof preview).toBe("function"); if (typeof preview !== "function") throw new Error("cutover preview missing");
+  const invoke = preview as (deps: unknown, input: unknown) => Promise<unknown>;
+  await expect(invoke(f.deps, f.input)).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  f.rows[3]!.enrollment = { version: 1, state: "disabled" };
+  await expect(f.capture({ cutoverPreview: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  expect(await f.capture()).toEqual({ kind: "disabled" });
 });

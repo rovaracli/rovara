@@ -48,6 +48,18 @@ const positiveRevision = (value: unknown): value is number => typeof value === "
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies, value: unknown): Promise<CapturedTaskStop | { kind: "disabled" }> {
+  return captureTaskStopSnapshot(deps, value, false);
+}
+
+/** Read-only cutover review. The preview wrapper is deliberately not an
+ * admission envelope, changes no enrollment and grants no paid-work authority. */
+export async function previewTaskStopCutover(deps: TaskStopCaptureDependencies, value: unknown): Promise<{ kind: "preview"; enrolled: false; snapshot: CapturedTaskStop }> {
+  const snapshot = await captureTaskStopSnapshot(deps, value, true);
+  if (snapshot.kind !== "captured") throw missing();
+  return { kind: "preview", enrolled: false, snapshot };
+}
+
+async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value: unknown, cutoverPreview: boolean): Promise<CapturedTaskStop | { kind: "disabled" }> {
   const parsedIdentity = CaptureIdentity.safeParse(value);
   if (!parsedIdentity.success) throw forbidden();
   const identity = parsedIdentity.data;
@@ -95,10 +107,11 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
     || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(company, field))) throw invalid();
   const enrollment = company.enrollment;
   if (!object(enrollment) || enrollment.version !== 1) throw invalid();
-  if (enrollment.state === "disabled" || enrollment.state === "ready") return { kind: "disabled" };
-  if (enrollment.state !== "enabled") throw invalid();
-  // Only enabled cutover requires migrated exact native identities. Disabled
-  // and ready preserve the already-authorized legacy path, never inheritance.
+  const disabled = enrollment.state === "disabled" || enrollment.state === "ready";
+  if (disabled && !cutoverPreview) return { kind: "disabled" };
+  if ((!disabled && enrollment.state !== "enabled") || (cutoverPreview && !disabled)) throw invalid();
+  // Admission after enrollment and explicit read-only cutover review both
+  // require migrated native identities. Ordinary disabled admission stays legacy.
   const member = row(0, true), pointer = row(1, true);
   if (member.developerId !== developerId || member.role !== role || pointer.role !== role) throw forbidden();
   if (receipts.length === 0) throw missing();
