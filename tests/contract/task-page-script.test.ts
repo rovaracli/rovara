@@ -1081,10 +1081,11 @@ describe("the deciding and commenting script", () => {
       return { status: 200, body: {} };
     } });
     await page.advance(20_000);
-    expect(page.sent.filter((entry) => entry.url.endsWith("/api/comments"))).toHaveLength(0);
+    // One read when the page opens (it brings the learning flags); none more until the comment counter moves.
+    expect(page.sent.filter((entry) => entry.url.endsWith("/api/comments"))).toHaveLength(1);
     seq = 4;
     await page.advance(20_000);
-    expect(page.sent.filter((entry) => entry.url.endsWith("/api/comments"))).toHaveLength(1);
+    expect(page.sent.filter((entry) => entry.url.endsWith("/api/comments"))).toHaveLength(2);
     const thread = page.document.querySelector('[data-comments="claim:2"]')!;
     const shown = thread.querySelector(`#comment-${id(5)}`)!;
     expect(shown.querySelector(".comment-text")!.textContent).toBe("<img src=x onerror=alert(1)> **bold** javascript:alert(1)");
@@ -1260,5 +1261,128 @@ describe("the deciding and commenting script", () => {
     expect(page.document.activeElement).toBe(button);
     expect(page.byId("decide-dialog").getAttribute("aria-labelledby")).toBe("decide-title");
     page.document.dispatchEvent(makeEvent("keydown", page.document, { key: "Tab" }));
+  });
+  // v1.2 learning loop: Remember this / Forget on a person's comment, for a reader who may (`canRemember: true`, never false).
+  describe("Remember this and Forget", () => {
+    const rovara = comment(3, { author: { kind: "agentx", name: "AgentX", owner: false, you: false }, text: "Rovara's own reply" });
+    const stateBody = (extra: Record<string, unknown> = {}) => ({ revision: 7, waiting: true, stage: "Coding plan", documents: [], commentSeq: 3, csrf: "n".repeat(43), canRead: true, canComment: true, canSuggest: false, canDecide: true, canAsk: true, canManagePeople: false, canTakeOwnership: false, ...extra });
+    const learnPath = (page: Page, which: "remember" | "forget", n = 1) => posts(page, `/api/comments/${id(n)}/${which}`);
+    async function open(options: { comments?: PageCommentView[]; canRemember?: true; state?: () => Record<string, unknown>; learn?: (sent: Sent) => Reply | undefined; seq?: () => number } = {}) {
+      const comments = options.comments ?? [comment(1), comment(2, { author: { kind: "person", name: "Priya", owner: false, you: true }, version: 2, target: { kind: "document" } }), rovara];
+      const page = boot(await pageHtml(), { respond: (entry) => {
+        if (/\/comments\/[^/]+\/(remember|forget)$/.test(entry.url)) return options.learn === undefined ? { status: 200, body: {} } : options.learn(entry);
+        if (entry.url.endsWith("/api/state")) return { status: 200, body: options.state === undefined ? stateBody({ ...(options.canRemember ? { canRemember: true } : {}), commentSeq: options.seq?.() ?? 3 }) : options.state() };
+        if (entry.url.endsWith("/api/comments")) return { status: 200, body: { comments, suggestions: [], ...(options.canRemember ? { canRemember: true } : {}) } };
+        return { status: 200, body: {} };
+      } });
+      await page.settle();
+      return page;
+    }
+    const row = (page: Page, n = 1) => page.document.querySelector(`#comment-${id(n)} .comment-remember`);
+    const button = (page: Page, which: "remember" | "forget", n = 1) => page.document.querySelector(`#comment-${id(n)} .comment-remember button.${which}`)!;
+
+    it("shows no action when the reader may not remember (canRemember absent), even if a comment carries learning", async () => {
+      const page = await open({ comments: [comment(1, { learning: { remembered: true, correctionId: "c1" } }), rovara] });
+      expect(page.document.querySelectorAll(".comment-remember")).toHaveLength(0);
+      expect(page.document.querySelectorAll("button.remember, button.forget")).toHaveLength(0);
+    });
+
+    it("shows Remember this on a person's comment and none on Rovara's own", async () => {
+      const page = await open({ canRemember: true });
+      expect(button(page, "remember").textContent).toBe("Remember this");
+      expect(button(page, "remember", 2).textContent).toBe("Remember this");
+      expect(row(page, 3)).toBeNull();
+      expect(page.document.querySelector(`#comment-${id(3)}`)).not.toBeNull();
+    });
+
+    it("treats a missing learning flag and remembered: false alike, and shows Remembered plus Forget for remembered: true", async () => {
+      const page = await open({ canRemember: true, comments: [comment(1), comment(2, { learning: { remembered: false }, author: { kind: "person", name: "Priya", owner: false, you: true }, version: 2, target: { kind: "document" } }), comment(4, { learning: { remembered: true, correctionId: "c4" } })] });
+      expect(button(page, "remember", 1).textContent).toBe("Remember this");
+      expect(button(page, "remember", 2).textContent).toBe("Remember this");
+      expect(row(page, 4)!.textContent).toContain("Remembered for this project");
+      expect(button(page, "forget", 4).textContent).toBe("Forget");
+      expect(page.document.querySelector(`#comment-${id(4)} .comment-remember button.remember`)).toBeNull();
+    });
+
+    it("posts the exact path with an empty body, then shows Remembered plus Forget", async () => {
+      const page = await open({ canRemember: true, learn: () => ({ status: 200, body: { correction: { id: "c1", standing: "member", stage: "plan" } } }) });
+      button(page, "remember").click();
+      await page.settle();
+      expect(learnPath(page, "remember")).toHaveLength(1);
+      expect(learnPath(page, "remember")[0]!.body).toEqual({});
+      expect(learnPath(page, "remember")[0]!.headers["x-agentx-csrf"]).toBeTruthy();
+      expect(row(page)!.textContent).toContain("Remembered for this project");
+      expect(button(page, "forget").textContent).toBe("Forget");
+    });
+
+    it("says an outsider's correction is shown only", async () => {
+      const page = await open({ canRemember: true, learn: () => ({ status: 200, body: { correction: { id: "c1", standing: "outsider", stage: "plan" } } }) });
+      button(page, "remember").click();
+      await page.settle();
+      expect(row(page)!.textContent).toContain("Remembered (from outside: shown only, won't be suggested)");
+      expect(button(page, "forget").textContent).toBe("Forget");
+    });
+
+    it("Forget posts to forget and goes back to Remember this", async () => {
+      const page = await open({ canRemember: true, comments: [comment(1, { learning: { remembered: true, correctionId: "c1" } })], learn: () => ({ status: 200, body: { forgotten: true } }) });
+      button(page, "forget").click();
+      await page.settle();
+      expect(learnPath(page, "forget")).toHaveLength(1);
+      expect(learnPath(page, "forget")[0]!.body).toEqual({});
+      expect(button(page, "remember").textContent).toBe("Remember this");
+      expect(row(page)!.textContent).not.toContain("Remembered");
+    });
+
+    it("sends one request for a double click", async () => {
+      const page = await open({ canRemember: true, learn: () => undefined });
+      const target = button(page, "remember");
+      target.click();
+      target.click();
+      await page.settle();
+      expect(learnPath(page, "remember")).toHaveLength(1);
+      expect(target.disabled).toBe(true);
+    });
+
+    it("shows a refusal as plain text, keeps the page, re-reads state, and drops the actions when canRemember is gone", async () => {
+      const message = "<img src=x onerror=alert(1)> Only members of this project can use Remember.";
+      let may = true;
+      const page = await open({ canRemember: true, state: () => stateBody(may ? { canRemember: true } : {}), learn: () => { may = false; return { status: 403, body: { error: "not_allowed", message } }; } });
+      const before = page.sent.filter((entry) => entry.url.endsWith("/api/state")).length;
+      button(page, "remember").click();
+      await page.settle();
+      expect(page.sent.filter((entry) => entry.url.endsWith("/api/state")).length).toBeGreaterThan(before);
+      expect(page.document.querySelector("main")!.hidden).toBe(false);
+      expect(page.document.querySelectorAll("img")).toHaveLength(0);
+      expect(page.document.querySelectorAll("button.remember, button.forget")).toHaveLength(0);
+      const shown = page.document.querySelector(`#comment-${id(1)}`)!.textContent;
+      expect(shown).not.toContain("Remember this");
+      expect(row(page)!.textContent).toBe(message);
+    });
+
+    it("keeps the actions and shows the message when the refusal leaves canRemember in place", async () => {
+      const message = "That comment is too short to remember <b>x</b>.";
+      const page = await open({ canRemember: true, learn: () => ({ status: 422, body: { error: "refused", message } }) });
+      button(page, "remember").click();
+      await page.settle();
+      expect(page.document.querySelector(`#comment-${id(1)} .comment-remember`)!.textContent).toContain(message);
+      expect(page.document.querySelectorAll("b")).toHaveLength(0);
+      expect(button(page, "remember").disabled).toBe(false);
+    });
+
+    it("reflects the latest learning when the comments are re-read, and stores nothing in the browser", async () => {
+      let seq = 3, remembered = false;
+      const local = fakeStorage();
+      const page = boot(await pageHtml(), { local, respond: (entry) => {
+        if (entry.url.endsWith("/api/state")) return { status: 200, body: stateBody({ canRemember: true, commentSeq: seq }) };
+        if (entry.url.endsWith("/api/comments")) return { status: 200, body: { comments: [comment(1, remembered ? { learning: { remembered: true, correctionId: "c1" } } : {})], suggestions: [], canRemember: true } };
+        return { status: 200, body: {} };
+      } });
+      await page.settle();
+      expect(button(page, "remember").textContent).toBe("Remember this");
+      seq = 4; remembered = true;
+      await page.advance(20000);
+      expect(row(page)!.textContent).toContain("Remembered for this project");
+      expect(local.length).toBe(0);
+    });
   });
 });
