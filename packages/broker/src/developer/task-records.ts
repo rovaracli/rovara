@@ -1,3 +1,4 @@
+import type { SpendingAdmissionReference } from "@agentx/contracts";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
@@ -77,7 +78,7 @@ export interface DeveloperTaskRecord {
   /** Immutable numeric capture for this accepted admission; not an authority lease. */
   spendingStop?: CapturedTaskStop;
   /** Durable receipt of the approved plain-task window; never fresh money. */
-  spendingAdmission?: import("@agentx/contracts").SpendingAdmissionReference;
+  spendingAdmission?: SpendingAdmissionReference;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */
   budgetBaselineUsd?: number;
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */
