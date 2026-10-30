@@ -1075,7 +1075,7 @@ for (const recovery of ["valid", "closing", "cap_source", "invalid_limit", "wron
   expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0);
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0); expect(captures).toBe(0);
 });
-for (const source of ["valid", "dispatch_lost", "changed_operation", "changed_readonly"] as const) it(`held preparation approval lost acknowledgement retains ${source} original dispatch terms`, async () => {
+for (const source of ["valid", "dispatch_lost", "dispatch_completed", "changed_operation", "changed_readonly"] as const) it(`held preparation approval lost acknowledgement retains ${source} original dispatch terms`, async () => {
   const f = await fixture();
   f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
   const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Fix the retry bug" }, origin: "app",
@@ -1090,7 +1090,7 @@ for (const source of ["valid", "dispatch_lost", "changed_operation", "changed_re
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
     const result = await send(command);
-    if (source === "dispatch_lost" && lost && !dispatchLost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.UpdateExpression === "SET updatedAt = :now REMOVE budgetPause")) { dispatchLost = true; throw new Error("test committed preparation dispatch acknowledgement lost"); }
+    if ((source === "dispatch_lost" || source === "dispatch_completed") && lost && !dispatchLost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.UpdateExpression === "SET updatedAt = :now REMOVE budgetPause")) { dispatchLost = true; throw new Error("test committed preparation dispatch acknowledgement lost"); }
     if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === `DEVTASK#${started.taskId}` && item.Update.ExpressionAttributeValues?.[":spendingStop"] !== undefined)) { lost = true; throw new Error("test held approval acknowledgement lost"); }
     return result;
   };
@@ -1100,10 +1100,15 @@ for (const source of ["valid", "dispatch_lost", "changed_operation", "changed_re
   if (source === "changed_readonly") f.t.db.set({ ...before, budgetPause: { ...pause, firstDispatch: { ...pause.firstDispatch, readOnly: true } } });
   f.t.db.delete(f.policy); captures = 0;
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
-  if ((source === "valid" || source === "dispatch_lost")) expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  if ((source === "valid" || (source === "dispatch_lost" || source === "dispatch_completed"))) expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
+  if (source === "dispatch_completed") {
+    await f.t.finish(task.workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+    for (const mark of f.t.db.find(row => row.entityType === "SETUP_WATCH" && row.taskId === started.taskId)) f.t.db.delete({ pk: String(mark.pk), sk: String(mark.sk) });
+    expect(f.t.operations(task.workspaceId).find(operation => operation.id === prepare.id)).toMatchObject({ status: "SUCCEEDED", kind: "prepare", workspaceId: task.workspaceId });
+  }
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(captures).toBe(0);
-  if (source === "dispatch_lost") { expect(dispatchLost).toBe(true); expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(0); }
-  if (source !== "valid" && source !== "dispatch_lost") expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(1);
+  if ((source === "dispatch_lost" || source === "dispatch_completed")) { expect(dispatchLost).toBe(true); expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(0); }
+  if (source !== "valid" && source !== "dispatch_lost" && source !== "dispatch_completed") expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === started.taskId)).toHaveLength(1);
 });
 
 for (const timing of ["before_decision", "at_commit"] as const) it(`held preparation approval retains the original asked dispatch terms ${timing}`, async () => {
