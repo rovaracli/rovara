@@ -190,8 +190,8 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 .comment-meta{margin:0;font-size:.85rem;color:var(--muted)}
 .comment-author{color:var(--fg);font-weight:600}
 .comment-text{margin:.2rem 0;white-space:pre-wrap;overflow-wrap:anywhere}
-.comment-state,.comment-sent,.comment-deleted,.from-version,.comment-edited{color:var(--muted);font-size:.9rem}
-.comment-state,.comment-sent,.comment-deleted,.comment-link{margin:.2rem 0}
+.comment-state,.comment-sent,.comment-deleted,.from-version,.comment-edited,.comment-remembered{color:var(--muted);font-size:.9rem}
+.comment-state,.comment-sent,.comment-deleted,.comment-link,.comment-remember{margin:.2rem 0}
 .comment-link{font-size:.9rem}
 .chip{display:inline-block;border-radius:999px;padding:0 .5rem;font-size:.8rem;font-weight:600;background:var(--focus);color:var(--bg)}
 .tag-owner{font-size:.75rem}
@@ -352,9 +352,12 @@ function applyProjection(state){
   hasProjection=true;
   if(state.peopleRevision!==undefined)peopleRevision=state.peopleRevision;
   canRead=state.canRead;canComment=canRead&&state.canComment;canSuggest=canRead&&state.canSuggest;canDecide=canRead&&state.canDecide;canAsk=canRead&&state.canAsk&&state.askAvailable!==false;canManagePeople=canRead&&state.canManagePeople;canTakeOwnership=canRead&&state.canTakeOwnership;
+  var remembered0=canRemember;
   canRemember=canRead&&state.canRemember===true;
   if(changed)accessGeneration+=1;
   applyCurrentAccess();
+  /* Turned on: the rows come now, not at the next comment change (turned off: applyCurrentAccess took them away). */
+  if(canRemember&&!remembered0)known?renderAll():refreshComments();
   return true;
 }
 var current=data.current&&typeof data.current==="object"?data.current:null;
@@ -679,27 +682,39 @@ function paintRemember(row,remembered,note){
     row.appendChild(make("span",{"class":"comment-remembered"},has(outsiders,id)?COPY.rememberedOutside:COPY.remembered));
     row.appendChild(document.createTextNode(" "));
   }
-  row.appendChild(make("button",{type:"button","class":remembered?"forget":"remember","data-comment":id,"aria-describedby":"comment-"+id},remembered?COPY.forget:COPY.remember));
+  var action=make("button",{type:"button","class":remembered?"forget":"remember","data-comment":id,"aria-describedby":"comment-"+id},remembered?COPY.forget:COPY.remember);
+  if(has(pendingLearn,id))action.disabled=true;
+  row.appendChild(action);
   if(note){row.appendChild(document.createTextNode(" "));row.appendChild(make("span",{"class":"comment-error",role:"alert"},note));}
 }
+var pendingLearn={};
+function rowOf(id){var article=document.getElementById("comment-"+id);return article?article.querySelector(".comment-remember"):null;}
 function learnComment(button,forgetting){
-  if(stopped||!canRead||!canRemember||button.disabled)return;
-  var row=button.closest(".comment-remember"),id=button.getAttribute("data-comment")||"";
-  if(!row||!UUID.test(id))return;
+  if(stopped||!canRead||!canRemember)return;
+  var id=button.getAttribute("data-comment")||"";
+  if(!UUID.test(id)||has(pendingLearn,id))return;
+  pendingLearn[id]=true;
   button.disabled=true;
   var generation=accessGeneration;
-  function remember(on,outside){
-    if(outside)outsiders[id]=true;else delete outsiders[id];
-    if(known)for(var k=0;k<known.length;k++)if(known[k].id===id)known[k].learning={remembered:on};
-    paintRemember(row,on);
+  function settle(on,note){
+    var row=rowOf(id);
+    if(row)paintRemember(row,on,note);
   }
   call("POST","comments/"+id+"/"+(forgetting?"forget":"remember"),{}).then(function(answer){
-    if(generation!==accessGeneration)return;
+    delete pendingLearn[id];
+    /* A 401 ended the sign-in (the page has stopped); a changed access generation means the page's rights changed meanwhile. */
+    if(answer.status===401||generation!==accessGeneration)return;
     var correction=answer.body.correction;
-    if(answer.status===200&&(forgetting?answer.body.forgotten===true:correction&&typeof correction==="object")){remember(!forgetting,!forgetting&&correction.standing==="outsider");return;}
-    paintRemember(row,forgetting,said(answer));
+    if(answer.status===200&&(forgetting?answer.body.forgotten===true:correction&&typeof correction==="object")){
+      var on=!forgetting;
+      if(on&&correction.standing==="outsider")outsiders[id]=true;else delete outsiders[id];
+      if(known)for(var k=0;k<known.length;k++)if(known[k].id===id)known[k].learning={remembered:on};
+      settle(on);
+      return;
+    }
+    settle(forgetting,said(answer));
     return readState();
-  },function(){if(generation!==accessGeneration)return;paintRemember(row,forgetting,COPY.unavailable);}).then(null,function(){});
+  },function(){delete pendingLearn[id];if(generation!==accessGeneration)return;settle(forgetting,COPY.unavailable);}).then(null,function(){});
 }
 function threadList(comments,shownVersion){
   var top=comments.filter(function(c){return c.parentId===undefined;});
@@ -794,11 +809,15 @@ function setSuggest(button,on){
   if(on)button.setAttribute("data-mine","true");else button.removeAttribute("data-mine");
   button.textContent=on?COPY.youSuggest:COPY.suggest;
 }
+var commentsAsked=0,commentsApplied=0;
 function refreshComments(){
-  var generation=accessGeneration;
+  var generation=accessGeneration,ticket=++commentsAsked;
   return call("GET","comments").then(function(answer){
     if(generation!==accessGeneration||stopped||!canRead)return;
+    /* An answer older than one already applied would put back an older canRemember or learning. */
+    if(ticket<commentsApplied)return;
     if(answer.status!==200||Object.prototype.toString.call(answer.body.comments)!=="[object Array]")return;
+    commentsApplied=ticket;
     known=arr(answer.body.comments).filter(validComment);
     canRemember=canRead&&answer.body.canRemember===true;
     applyCurrentAccess();

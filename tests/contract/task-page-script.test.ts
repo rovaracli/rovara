@@ -1369,6 +1369,95 @@ describe("the deciding and commenting script", () => {
       expect(button(page, "remember").disabled).toBe(false);
     });
 
+    it("shows the rows when a later state poll turns canRemember on, and takes them away when a poll turns it off", async () => {
+      let may = false;
+      const seq = 3;
+      const page = boot(await pageHtml(), { respond: (entry) => {
+        if (entry.url.endsWith("/api/state")) return { status: 200, body: stateBody({ commentSeq: seq, ...(may ? { canRemember: true } : {}) }) };
+        if (entry.url.endsWith("/api/comments")) return { status: 200, body: { comments: [comment(1), rovara], suggestions: [] } };
+        return { status: 200, body: {} };
+      } });
+      await page.settle();
+      expect(page.document.querySelectorAll("button.remember")).toHaveLength(0);
+      may = true;
+      await page.advance(20000);
+      expect(button(page, "remember").textContent).toBe("Remember this");
+      may = false;
+      await page.advance(20000);
+      expect(page.document.querySelectorAll("button.remember, button.forget")).toHaveLength(0);
+    });
+
+    it("ignores a comments answer older than one already applied", async () => {
+      let seq = 3, reads = 0;
+      const page = boot(await pageHtml(), { respond: (entry) => {
+        if (entry.url.endsWith("/api/state")) return { status: 200, body: stateBody({ canRemember: true, commentSeq: seq }) };
+        if (entry.url.endsWith("/api/comments")) { reads += 1; return reads === 1 ? undefined : { status: 200, body: { comments: [comment(1, { learning: { remembered: true, correctionId: "c1" } })], suggestions: [], canRemember: true } }; }
+        return { status: 200, body: {} };
+      } });
+      await page.settle();
+      seq = 4;
+      await page.advance(20000);
+      expect(row(page)!.textContent).toContain("Remembered for this project");
+      page.pending[0]!({ status: 200, body: { comments: [comment(1)], suggestions: [] } });
+      await page.settle();
+      expect(row(page)!.textContent).toContain("Remembered for this project");
+      expect(button(page, "forget").textContent).toBe("Forget");
+    });
+
+    it("keeps a request in flight across a re-render: one POST, and the new button stays disabled", async () => {
+      let seq = 3;
+      const page = await open({ canRemember: true, learn: () => undefined, seq: () => seq });
+      button(page, "remember").click();
+      seq = 4;
+      await page.advance(20000);
+      const fresh = button(page, "remember");
+      expect(fresh.disabled).toBe(true);
+      fresh.click();
+      await page.settle();
+      expect(learnPath(page, "remember")).toHaveLength(1);
+      page.pending[0]!({ status: 200, body: { correction: { id: "c1", standing: "member", stage: "plan" } } });
+      await page.settle();
+      expect(row(page)!.textContent).toContain("Remembered for this project");
+      expect(button(page, "forget").disabled).toBe(false);
+    });
+
+    it("shows no rows and does not loop when the open-time comments read fails", async () => {
+      const page = boot(await pageHtml(), { respond: (entry) => {
+        if (entry.url.endsWith("/api/state")) return { status: 200, body: stateBody() };
+        if (entry.url.endsWith("/api/comments")) return { status: 503, body: {} };
+        return { status: 200, body: {} };
+      } });
+      await page.settle();
+      await page.advance(60000);
+      expect(page.document.querySelectorAll(".comment-remember")).toHaveLength(0);
+      expect(page.document.querySelector("main")!.hidden).toBe(false);
+      expect(page.sent.filter((entry) => entry.url.endsWith("/api/comments"))).toHaveLength(1);
+    });
+
+    it("sends nothing for a comment id that is not a UUID", async () => {
+      const page = await open({ canRemember: true });
+      const article = page.document.querySelector(`#comment-${id(1)}`)!;
+      const stray = page.document.createElement("button");
+      stray.setAttribute("class", "remember");
+      stray.setAttribute("data-comment", "../../people/role");
+      article.appendChild(stray);
+      stray.click();
+      await page.settle();
+      expect(page.sent.filter((entry) => entry.method === "POST")).toHaveLength(0);
+    });
+
+    it("treats a 401 from Remember as the sign-in ending: the page stops and sends nothing more", async () => {
+      const page = await open({ canRemember: true, learn: () => ({ status: 401, body: {} }) });
+      button(page, "remember").click();
+      await page.settle();
+      expect(learnPath(page, "remember")).toHaveLength(1);
+      expect(page.document.querySelector("main")!.hidden).toBe(true);
+      expect(page.document.querySelectorAll("button.remember, button.forget")).toHaveLength(0);
+      const sentBefore = page.sent.length;
+      await page.advance(60000);
+      expect(page.sent.length).toBe(sentBefore);
+    });
+
     it("reflects the latest learning when the comments are re-read, and stores nothing in the browser", async () => {
       let seq = 3, remembered = false;
       const local = fakeStorage();
