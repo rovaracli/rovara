@@ -1,3 +1,4 @@
+import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
 import { approveCapturedTaskStop, captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
@@ -17,7 +18,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
+  projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
@@ -1402,10 +1403,21 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
   const destinationIds = change?.op === "set_accountable" ? [change.accountable.developerId]
     : change?.op === "set_owner" ? [...(change.owner.kind === "member" ? [change.owner.developerId] : []), ...(change.accountable === undefined ? [] : [change.accountable.developerId])] : [];
   const destinationChecks: TransactItem[] = [];
+  const currentSubject = change?.op === "set_accountable" ? record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId) : isBuiltinAgentId(agentId) ? undefined : await deps.store.get(record.orgId, agentId) : undefined;
+  const destinationOwner = change?.op === "set_owner" ? change.owner : currentSubject?.owner;
+  const accountableProject = destinationOwner?.kind === "project" ? destinationOwner.project : undefined;
   for (const developerId of new Set(destinationIds)) {
     const role = await orgRoleOf(deps, record.orgId, developerId);
     if (role === undefined) throw staleApproval();
     destinationChecks.push(...budgetActorChecks(deps.tableName, record.orgId, { developerId, role }).slice(0, 2));
+    if (accountableProject !== undefined && (change?.op === "set_accountable" || change?.op === "set_owner") && change.accountable?.developerId === developerId && role !== "owner" && role !== "admin") {
+      const key = projectMemberKey(record.orgId, developerId, accountableProject), grant = await getItem(deps, key);
+      if (grantRoleOf(grant) !== "maintainer") throw staleApproval();
+      destinationChecks.push({ ConditionCheck: { TableName: deps.tableName, Key: key,
+        ConditionExpression: "#destinationGrantRole = :destinationGrantRole AND #destinationProjectRole = :destinationProjectRole",
+        ExpressionAttributeNames: { "#destinationGrantRole": "role", "#destinationProjectRole": "projectRole" },
+        ExpressionAttributeValues: { ":destinationGrantRole": "developer", ":destinationProjectRole": "maintainer" } } });
+    }
   }
   const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
