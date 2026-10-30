@@ -605,7 +605,14 @@ export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: 
     if (run.state === "PAUSED_BUDGET") {
       if (task.budgetPause !== undefined) return "paused";
       // A run goes on only after a real pause was told, or its stop was answered before it could be: never on a stop whose pause is not known yet.
-      const answered = run.pause?.operationId !== undefined && task.budgetStopOf === run.pause.operationId;
+      // An approval may replace the paused run's admission atomically before a
+      // delayed notification is acknowledged. Its exact native revision and
+      // durable reference prove that this pause was answered; notifying it now
+      // would re-create the old budget pause against the newly approved cap.
+      const approvedAdmission = spendingAdmission !== undefined && expectedPausedRevision === run.revision
+        && run.spendingAdmission?.requestId === spendingAdmission.requestId
+        && run.spendingAdmission.actorId === spendingAdmission.actorId && run.spendingAdmission.intentHash === spendingAdmission.intentHash;
+      const answered = approvedAdmission || (run.pause?.operationId !== undefined && task.budgetStopOf === run.pause.operationId);
       if (run.pause?.unconfirmed === true && !answered) return "paused";
       if (run.pause !== undefined && run.pause.unconfirmed !== true && run.pause.notifiedAt === undefined && !answered) {
         // The pause was lifted before the handlers heard it: they hear it now, and then the step runs again.
