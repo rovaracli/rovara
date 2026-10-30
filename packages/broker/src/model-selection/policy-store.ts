@@ -20,3 +20,13 @@ export function modelSelectionRevisionChecks(tableName:string,orgId:OrgId,revisi
  if(![revisions.companyRevision,revisions.sourcesRevision,revisions.guardrailsRevision].every(value=>Number.isSafeInteger(value)&&value>=0))throw agentXError("RUNTIME_UNAVAILABLE","The model settings could not be read. Reload and try again.");
  return ([[modelSelectionPolicyKey(orgId),revisions.companyRevision],[modelSourcesKey(orgId),revisions.sourcesRevision],[agentGuardrailsKey(orgId),revisions.guardrailsRevision]] as const).map(([Key,revision])=>({ConditionCheck:{TableName:tableName,Key,...(revision===0?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"#revision = :revision",ExpressionAttributeNames:{"#revision":"revision"},ExpressionAttributeValues:{":revision":revision}})}}));
 }
+
+/** A proxy-less install ignores source order but still fences the revision of an old stored row. */
+export async function inactiveModelSourcesRevision(deps:Partial<ModelPolicyReader>,orgId:OrgId):Promise<number> {
+ if(deps.documentClient===undefined||deps.tableName===undefined)return 0;
+ let row:Record<string,unknown>|undefined;
+ try {row=(await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:modelSourcesKey(orgId),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}catch{throw agentXError("RUNTIME_UNAVAILABLE","The model source revision could not be read.");}
+ if(row===undefined)return 0;
+ if(!Number.isSafeInteger(row.revision)||Number(row.revision)<0)throw agentXError("RUNTIME_UNAVAILABLE","The model source revision could not be verified.");
+ return Number(row.revision);
+}

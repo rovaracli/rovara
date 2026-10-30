@@ -52,12 +52,12 @@ describe("immutable 0.2.12 parser fixture", () => {
     const parser = await loadRollback0212Parser();
     const chatgpt = {
       settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
-      view: async () => ({ connected: true, status: "connected", email: "owner@example.test", models: ["gpt-6.1-sol"] }),
+      view: async () => ({ connected: true, status: "connected", connectedAt:"2026-10-01T00:00:00.000Z", email: "owner@example.test", models: ["gpt-6.1-sol"] }),
       accessToken: async () => ({ access: "test-token", expiresAt: Date.now() + 60_000, models: ["gpt-6.1-sol"] }),
     } as unknown as ChatGptConnections;
     const harness = await createSingleAnswerPlanBroker({ register: false, brokerExtra: { chatgpt } });
-    const fallbackModel = { provider: "amazon-bedrock", modelId: "default-model" };
-    await registerSlackProject(harness.handler, { models: { default: fallbackModel, approved: [fallbackModel] } });
+    const fallbackModel = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+    await registerSlackProject(harness.handler, { models: { default: fallbackModel, approved: [fallbackModel,{provider:"openai",modelId:"gpt-6.1-sol"}] } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
       requestId: randomUUID(), project: "payments", instructions: "Keep the accepted task stable", client: "rollback-0212-parser", workflow: true, workflowPath: "QUICK",
     });
@@ -92,12 +92,19 @@ describe("immutable 0.2.12 parser fixture", () => {
     expect(outbox.invocation.kind).toBe("task");
     if (outbox.invocation.kind !== "task") throw new Error("accepted implementation outbox must carry a task invocation");
     expect(outbox.invocation.payload.chatgpt).toMatchObject({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
-    expect(outbox.invocation.payload.model).toEqual(fallbackModel);
+    expect(outbox.invocation.payload.model).toEqual({provider:"openai",modelId:"gpt-6.1-sol"});
     expect(outbox.invocation.payload.workflowBase).toBeDefined();
     expect(WorkerInvocationSchema.safeParse(outbox.invocation).success).toBe(true);
     expect(parser.WorkerInvocationSchema.safeParse(outbox.invocation).success).toBe(false);
+    // Isolate the old parser's ChatGPT boundary from the new governed-policy boundary.
+    const legacyShape=structuredClone(outbox.invocation);
+    delete legacyShape.payload.modelPolicy;
+    expect(parser.WorkerInvocationSchema.safeParse(legacyShape).success).toBe(false);
+    delete legacyShape.payload.chatgpt;
+    expect(parser.WorkerInvocationSchema.safeParse(legacyShape).success).toBe(true);
 
     let postedBody: string | undefined;
+    let capable=false,planCapable=false;
     const deliver = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 1, privateIp: "127.0.0.1" }) },
@@ -105,24 +112,31 @@ describe("immutable 0.2.12 parser fixture", () => {
       sign: async () => new Uint8Array([1, 2, 3]),
       post: async (_url, init) => { postedBody = init.body; return { status: 202, body: "" }; },
       progress: async () => undefined,
-      workerFeatures: async () => ["task.workflowMode", "task.workflowBase"],
+      workerFeatures: async () => ["task.workflowMode", "task.workflowBase",...(capable?["task.modelPolicy"]:[]),...(planCapable?["model.chatgpt"]:[])],
     });
+    await expect(deliver(outbox,outbox.invocation)).rejects.toMatchObject({code:"RUNTIME_UNAVAILABLE"});
+    expect(postedBody).toBeUndefined();
+    capable=true;
+    await expect(deliver(outbox,outbox.invocation)).rejects.toMatchObject({code:"RUNTIME_UNAVAILABLE"});
+    expect(postedBody).toBeUndefined();
+    planCapable=true;
     await expect(deliver(outbox, outbox.invocation)).resolves.toBe("DELIVERED");
     if (postedBody === undefined) throw new Error("real EC2 delivery must POST the feature-negotiated invocation");
     const sent = JSON.parse(postedBody) as unknown;
     const parsedSent = WorkerInvocationSchema.safeParse(sent);
     expect(parsedSent.success).toBe(true);
-    expect(parser.WorkerInvocationSchema.safeParse(sent).success).toBe(true);
-    const expectedFeatureStripped = structuredClone(outbox.invocation);
-    if (expectedFeatureStripped.kind !== "task") throw new Error("accepted implementation outbox must carry a task invocation");
-    delete expectedFeatureStripped.payload.chatgpt;
-    expect(sent).toEqual(expectedFeatureStripped);
-    expect(expectedFeatureStripped.payload.model).toEqual(outbox.invocation.payload.model);
-    expect(expectedFeatureStripped.payload.workflowBase).toEqual(outbox.invocation.payload.workflowBase);
-    expect(expectedFeatureStripped.payload).toMatchObject({
+    expect(parser.WorkerInvocationSchema.safeParse(sent).success).toBe(false);
+    const expectedGoverned = structuredClone(outbox.invocation);
+    if (expectedGoverned.kind !== "task") throw new Error("accepted implementation outbox must carry a task invocation");
+    // Governed personal-plan authority is retained for the capable worker.
+    expect(expectedGoverned.payload.chatgpt).toEqual(outbox.invocation.payload.chatgpt);
+    expect(sent).toEqual(expectedGoverned);
+    expect(expectedGoverned.payload.model).toEqual(outbox.invocation.payload.model);
+    expect(expectedGoverned.payload.workflowBase).toEqual(outbox.invocation.payload.workflowBase);
+    expect(expectedGoverned.payload).toMatchObject({
       conversationId: outbox.invocation.payload.conversationId,
       workflowMode: "IMPLEMENT",
     });
-    expect(parser.WorkerInvocationSchema.safeParse({ ...expectedFeatureStripped, unknownCompatibilityField: true }).success).toBe(false);
+    expect(parser.WorkerInvocationSchema.safeParse({ ...expectedGoverned, unknownCompatibilityField: true }).success).toBe(false);
   });
 });

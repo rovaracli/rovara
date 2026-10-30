@@ -645,6 +645,7 @@ async function feedbackReviewScenario(): Promise<Captured> {
 
 const THREAD = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const SLACK_USER = "U0123456789";
+export const GOLDEN_THREAD_MODELS={default:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6",label:"Balanced"},approved:[{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6",label:"Balanced"},{provider:"openai",modelId:"gpt-6.1-sol",label:"Personal plan"}]};
 
 /** A task the Slack orchestrator starts in a thread's workspace; with `chatgpt`, its asker has a working ChatGPT plan and the install's switch is on. */
 async function slackThreadOperation(chatgpt: boolean): Promise<Captured> {
@@ -653,15 +654,12 @@ async function slackThreadOperation(chatgpt: boolean): Promise<Captured> {
   const owner = developerIdForSlackUser(SLACK_USER);
   const connections = chatgpt ? {
     settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
-    view: async () => ({ connected: true, status: "connected", email: "maya@example.test", models: ["gpt-5.5", "gpt-6.1-sol"] }),
+    view: async () => ({ connected: true, status: "connected", connectedAt:"2026-10-01T00:00:00.000Z", email: "maya@example.test", models: ["gpt-5.5", "gpt-6.1-sol"] }),
     accessToken: async () => ({ access: "never-recorded", expiresAt: Date.parse("2026-10-20T01:00:00.000Z"), models: [] }),
     markStatus: async () => undefined, refreshModels: async () => undefined,
   } as unknown as ChatGptConnections : undefined;
   const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(connections === undefined ? {} : { chatgpt: connections }) } });
-  await registerSlackProject(handler, { models: {
-    default: { provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" },
-    approved: [{ provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" }],
-  } });
+  await registerSlackProject(handler, { models: GOLDEN_THREAD_MODELS });
   access.setMemberSpent(TEST_ORG, owner, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const workspace = await ensureWorkspace(handler, THREAD, SLACK_USER);

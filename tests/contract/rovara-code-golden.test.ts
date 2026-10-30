@@ -1,3 +1,6 @@
+import {developerIdForSlackUser} from "../../packages/broker/src/aws/admin-actions.js";
+import {TEST_ORG} from "../support/orgs.js";
+import {SLACK_TEAM,SLACK_CHANNEL} from "../support/slack-broker.js";
 // Task 1 of the agents plan: what an unchanged Rovara Code does, recorded before anything changes. Each scenario below
 // is recorded by tests/support/golden-recorder.ts and compared with its fixture in tests/fixtures/rovara-code-golden.
 // Fixtures are written only with UPDATE_GOLDEN=1, and SHA256SUMS (made with `shasum -a 256`) pins them: a later task never
@@ -10,7 +13,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { STAGE_OPERATION_MAPPING, TaskModelPolicyBindingSchema } from "../../packages/contracts/src/index.js";
-import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
+import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, GOLDEN_THREAD_MODELS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 // Every id the broker and the worker make comes from randomUUID; the recorder seeds a sequence per scenario.
@@ -139,6 +142,33 @@ function modelPolicyChanges(record: unknown): Array<{ path: string; expected: un
   ];
 }
 
+/** C53: exact attribution for legacy operation policy, verified model and scoped key additions. */
+function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{path:string;expected:unknown;change:7}> {
+ const recipe=builtinRecipe("rovara-code",builtinDefaultPin("rovara-code")),digest=recipeDigest(recipe);
+ const thread=scenario==="slack-thread-operation"||scenario==="chatgpt-task",actor=thread?developerIdForSlackUser("U0123456789"):"d".repeat(64);
+ const model=scenario==="chatgpt-task"?{provider:"openai",modelId:"gpt-6.1-sol"}:{provider:"amazon-bedrock",modelId:scenario==="review"?"us.anthropic.claude-fable-5-1":ROVARA_DEFAULT};
+ const policyNodes=nodePaths(record,node=>"modelPolicy" in node);
+ if(scenario!=="checks"&&scenario!=="orchestrator-turn")expect(policyNodes.length,"each model-using scenario retains C53 governance").toBeGreaterThan(0);
+ const changes=policyNodes.flatMap(path=>{
+  const node=valueAt(record,path) as Record<string,unknown>;
+  const fields:Array<{path:string;expected:unknown;change:7}>=[{path:`${path}.modelPolicy`,expected:expectedModelPolicy(node),change:7 as const},{path:`${path}.model`,expected:model,change:7 as const}];
+  if(node.entityType==="OPERATION") {
+   const mode=typeof node.workflowMode==="string"?node.workflowMode:"IMPLEMENT";
+   fields.push({path:`${path}.modelTurnPin`,expected:{version:1,...(mode===undefined?{}:{workflowMode:mode}),actorDeveloperId:actor,payerDeveloperId:actor,agentId:"rovara-code",recipe,digest,...(thread?{slackUserId:"U0123456789",threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}}:{}),pin:{version:1,orgId:TEST_ORG,project:"payments",registeredAt:"2026-10-20T00:00:00.000Z",processAgentId:"rovara-code",recipeDigest:digest,policy:{version:1,revision:0,rankingVersion:"g3-v1",stepOverrides:{}},sourcesRevision:0,frozenInputs:{projectRevision:1,projectChoices:{},recipeDefaults:{},clearedFallbacks:[],...(thread?{projectModels:GOLDEN_THREAD_MODELS}:{})}}},change:7});
+   if(scenario!=="task-no-workflow-no-proxy"&&scenario!=="chatgpt-task")fields.push({path:`${path}.modelRoute`,expected:{sourceId:"rovara",alias:model.modelId,model},change:7});
+  }
+  return fields;
+ });
+ if(policyNodes.length>0)changes.push(...nodePaths(record,node=>"purpose" in node&&"refId" in node&&"maxBudgetUsd" in node).map(path=>({path:`${path}.models`,expected:[model.modelId],change:7 as const})));
+ if(scenario==="chatgpt-task") {
+  for(const path of nodePaths(record,node=>node.entityType==="OPERATION"&&"modelPolicy" in node))changes.push({path:`${path}.modelRoute`,expected:null,change:7},{path:`${path}.modelKeyIds`,expected:undefined,change:7});
+  const access=(record as {modelAccess:{response:{requestId:string}}}).modelAccess;
+  expect(access.response.requestId).toBe("0000000e-0000-4000-8000-000000000011");
+  changes.push({path:"modelAccess.status",expected:403,change:7},{path:"modelAccess.response",expected:{error:{code:"MODEL_NOT_ALLOWED",message:"This task's ChatGPT plan has no backup among your company's AI sources, so no company AI key can be issued for it."},requestId:access.response.requestId},change:7},{path:"modelAccess.mintKeyCalls",expected:[],change:7},{path:"modelAccess.calls.mintKey",expected:[],change:7},{path:"modelAccess.calls.keySpend",expected:[],change:7},{path:"modelAccess.calls.orgSpend",expected:[[TEST_ORG]],change:7});
+ }
+ return changes;
+}
+
 /**
  * Change 7 (mainline #408 sync, plan quality): a coding plan's planning run is asked for the plan quality members, so (a) its operation record says `planQualityAsked`, (b) its prompt gains the
  * "Plan quality guidance" block, wherever the prompt is recorded, and (c) the plan-ready card lists the answers Approve takes and what AgentX's plan check says of the plan ("Not checked" when it
@@ -182,7 +212,7 @@ describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
     it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
       const record = await recordGolden(scenario);
-      expectGolden(scenario, record, updatingGolden() ? [] : [...modelFreeChecksChanges(scenario, record), ...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
+      expectGolden(scenario, record, updatingGolden() ? [] : [...ordinaryStageChanges(scenario,record), ...modelFreeChecksChanges(scenario, record), ...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
     }, 120_000);
   }
 

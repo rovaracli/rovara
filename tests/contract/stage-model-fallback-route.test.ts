@@ -23,3 +23,12 @@ it("refuses a first dispatch whose live source differs from the resolver decisio
  await expect(routeStep({},requested)).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});
  await expect(routeStep({},{...requested,expectedSourceId:"rovara"})).resolves.toMatchObject({keepChatgpt:false,route:{sourceId:"rovara"}});
 });
+
+it("routes a governed configured fallback past a source whose key was removed",async()=>{
+ const sourceId="src_aaaaaaaaaaaaaaaaaaaa";
+ const stored={sources:[{sourceId,kind:"anthropic" as const,label:"Fixture",models:[{catalog:{provider:"anthropic",modelId:"claude-sonnet-4-6"}}]}],order:[sourceId,"rovara"],credentials:[] as string[],removing:[],revision:2};
+ const deps={sources:{read:async()=>stored},launch:{kinds:["anthropic" as const]}};
+ await expect(routeStep(deps,{...input,step:"plan",expectedSourceId:"rovara"})).resolves.toMatchObject({route:{sourceId:"rovara"}});
+ stored.credentials.push(sourceId);
+ await expect(routeStep(deps,{...input,step:"plan",expectedSourceId:"rovara"})).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});
+});

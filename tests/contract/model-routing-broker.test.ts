@@ -184,14 +184,13 @@ describe("a task's operation is routed to the first source that serves its model
     expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
   });
 
-  it("does nothing on an install without agents set up: the key is minted unscoped, as it always was", async () => {
+  it("C53 refuses an unavailable governed default even before agents are configured", async () => {
     const t = await taskSetup({ agents: false });
     await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
     const r = await t.running();
-    expect(r.payload()).not.toHaveProperty("modelRoute");
-    expect(r.operation()).not.toHaveProperty("modelRoute");
-    expect((await r.ask()).status).toBe(200);
-    expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");
+    expect(t.db.find(item=>item.entityType==="OPERATION"&&item.workspaceId===r.workspaceId&&item.kind==="task")).toHaveLength(0);
+    expect(r.outbox()).toBeUndefined();
+    expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 });
 

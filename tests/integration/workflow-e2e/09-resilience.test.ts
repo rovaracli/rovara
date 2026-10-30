@@ -1162,7 +1162,7 @@ describe("Suite 9: resilience", () => {
     void logged;
   }, 120_000);
 
-  it("9.24 the pinned 0.2.12 parser accepts a current candidate-bearing final snapshot and broker-only People adds no worker fields", async () => {
+  it("9.24 the pinned 0.2.12 parser accepts current snapshots and model-policy delivery requires a capable worker", async () => {
     const parser = await loadRollback0212Parser();
     const ownerProofRequests: TaskPersonProofRequest[] = [];
     const { e2e, pullRequest } = await waiting({ taskPeople: { changesEnabled: false, checkTaskPerson: freshOwner(),
@@ -1215,7 +1215,9 @@ describe("Suite 9: resilience", () => {
       proposalDigest: feedback.proposalDigest, bundleDigests: feedback.bundleDigests });
     expect(feedbackBinding.selectedFindingIds).toEqual(["finding-1"]);
     expect(approvedInvocation.payload.workflowMode).toBe("IMPLEMENT");
-    expect(approvedInvocation.payload).not.toHaveProperty("model");
+    expect(approvedInvocation.payload.model?.provider).toBe("amazon-bedrock");
+    expect(typeof approvedInvocation.payload.model?.modelId).toBe("string");
+    expect(approvedInvocation.payload.modelPolicy).toMatchObject({stage:"build"});
     const outboxRow = e2e.db.find((item) => item.entityType === "OUTBOX" && item.operationId === approvedInvocation.operationId)[0];
     if (outboxRow === undefined) throw new Error("the actual implementation invocation must retain its durable outbox record");
     const outbox = outboxRow as unknown as Ec2OutboxRecord;
@@ -1223,6 +1225,7 @@ describe("Suite 9: resilience", () => {
     let postedBody: string | undefined;
     const binding: Ec2RuntimeBinding = { deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
       subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0aaaaaaaaaaaaaaaa" }], volumeSizeGiB: 20, volumeType: "gp3" };
+    let supportsModelPolicy=false;
     const deliver = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 1, privateIp: "10.0.0.9" }) },
@@ -1230,20 +1233,27 @@ describe("Suite 9: resilience", () => {
       sign: async () => new Uint8Array([1, 2, 3]),
       post: async (_url, init) => { postedBody = init.body; return { status: 202, body: "" }; },
       progress: async () => undefined,
-      workerFeatures: async () => ROLLBACK_0212_WORKER_FEATURES,
+      workerFeatures: async () => supportsModelPolicy?[...ROLLBACK_0212_WORKER_FEATURES,"task.modelPolicy"]:ROLLBACK_0212_WORKER_FEATURES,
     });
+    await expect(deliver(outbox,approvedInvocation)).rejects.toMatchObject({code:"RUNTIME_UNAVAILABLE"});
+    expect(postedBody).toBeUndefined();
+    supportsModelPolicy=true;
     await expect(deliver(outbox, approvedInvocation)).resolves.toBe("DELIVERED");
     if (postedBody === undefined) throw new Error("production EC2 delivery must POST the feature-negotiated feedback invocation");
     const sent: unknown = JSON.parse(postedBody);
     expect(WorkerInvocationSchema.safeParse(sent).success).toBe(true);
-    expect(parser.WorkerInvocationSchema.safeParse(sent).success).toBe(true);
+    // The rollback parser cannot accept governed policy payloads; negotiation above blocks it.
+    expect(parser.WorkerInvocationSchema.safeParse(sent).success).toBe(false);
+    const legacyShape=structuredClone(approvedInvocation);
+    delete legacyShape.payload.modelPolicy;
+    expect(parser.WorkerInvocationSchema.safeParse(legacyShape).success).toBe(true);
     expect(sent).toEqual(approvedInvocation);
     expect(JSON.stringify(sent)).toBe(postedBody);
     if (typeof sent !== "object" || sent === null || !("payload" in sent)) throw new Error("the POST body must be a task invocation");
     const sentPayload = sent.payload as typeof approvedInvocation.payload;
     expect(sentPayload.model).toEqual(approvedInvocation.payload.model);
     expect(sentPayload.modelSelectionDiagnostic).toEqual(approvedInvocation.payload.modelSelectionDiagnostic);
-    expect(sentPayload).not.toHaveProperty("model");
+    expect(sentPayload.modelPolicy).toEqual(approvedInvocation.payload.modelPolicy);
     expect(sentPayload.workflowMode).toBe("IMPLEMENT");
     expect(sentPayload.workflowFeedbackApproval).toEqual(feedbackBinding);
     expect(sentPayload.workflowFeedbackApproval?.candidateDigest).toBe(candidate.digest);

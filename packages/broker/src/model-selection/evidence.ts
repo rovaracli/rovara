@@ -1,3 +1,4 @@
+import {inactiveModelSourcesRevision,type ModelPolicyReader} from "./policy-store.js";
 // v1.1 source-level evidence only: no probes, secrets or new evidence State rows.
 import { createHash } from "node:crypto";
 import { agentXError, canonicalModelName, canonicalJson, modelCompany, sourceKindProblem, type ModelIdentifier, type OrgId } from "@agentx/contracts";
@@ -11,11 +12,11 @@ export interface StageEvidenceDependencies {
  chatgpt?:Pick<ChatGptConnections,"settings"|"view">|undefined;
  now():number;
 }
-export async function readStageModelEvidence(deps:StageEvidenceDependencies,input:{orgId:OrgId;project:string;models:readonly ModelIdentifier[];payerDeveloperId?:string|undefined;excludePersonalPlan?:boolean|undefined}) {
+export async function readStageModelEvidence(deps:StageEvidenceDependencies&Partial<ModelPolicyReader>,input:{orgId:OrgId;project:string;models:readonly ModelIdentifier[];payerDeveloperId?:string|undefined;excludePersonalPlan?:boolean|undefined}) {
  if(input.models.length>23) throw agentXError("RUNTIME_UNAVAILABLE","The model scope exceeds this request's limit.");
  let sources:Awaited<ReturnType<typeof effectiveSources>>;
  try {sources=await effectiveSources(deps.routing,input.orgId,input.project);} catch {throw agentXError("RUNTIME_UNAVAILABLE","The model sources could not be read.");}
- const sourcesRevision=sources?.stored.revision??0;
+ const sourcesRevision=sources?.stored.revision??await inactiveModelSourcesRevision(deps,input.orgId);
  // Runtime failure context only; never persists or changes company source configuration.
  const order=(sources?.order??["personal-chatgpt","rovara"]).filter(sourceId=>!input.excludePersonalPlan||sourceId!=="personal-chatgpt");
  const rovara=new Set(bedrockClaudeModelIds(deps.routing.rovaraGeography??"us"));

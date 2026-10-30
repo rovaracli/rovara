@@ -346,17 +346,24 @@ export async function routeStep(deps: RoutingDependencies, input: {
   /** Server resolver source for governed dispatches; fresh routing must agree. */
   expectedSourceId?: string | undefined;
 }): Promise<RoutedStep> {
+  // Governed source evidence requires stored-key presence. Keep the router's fresh
+  // source ordering and disagreement guard, but never route through a removed key.
+  const sourceStore=deps.sources;
+  const routing=input.expectedSourceId===undefined||sourceStore===undefined?deps:{...deps,sources:{read:async(orgId:OrgId)=>{
+    const stored=await sourceStore.read(orgId);
+    return {...stored,sources:stored.sources.filter(source=>source.kind==="bedrock"||source.kind==="endpoint"||stored.credentials.includes(source.sourceId))};
+  }}};
   const requested: ModelIdentifier = input.model === undefined ? defaultWorkerModel(deps.rovaraGeography) : { provider: input.model.provider, modelId: input.model.modelId };
   const base = { orgId: input.orgId, project: input.project };
   let keepChatgpt = false;
   if (input.plan !== undefined) {
-    const [first] = await servingRoutes(deps, { ...base, payerDeveloperId: input.plan.developerId, model: input.plan.model });
+    const [first] = await servingRoutes(routing, { ...base, payerDeveloperId: input.plan.developerId, model: input.plan.model });
     keepChatgpt = first?.sourceId === "personal-chatgpt";
   }
   // The plan is not in play for the model the proxy serves: it is never asked to serve it, so a route here always has an alias.
   const route = keepChatgpt
-    ? (await servingRoutes(deps, { ...base, model: requested }))[0] ?? null
-    : await routeModel(deps, { ...base, model: requested, subject: { agent: input.agent, step: input.step } });
+    ? (await servingRoutes(routing, { ...base, model: requested }))[0] ?? null
+    : await routeModel(routing, { ...base, model: requested, subject: { agent: input.agent, step: input.step } });
   const actualSourceId = keepChatgpt ? "personal-chatgpt" : route?.sourceId ?? "rovara";
   if (input.expectedSourceId !== undefined && actualSourceId !== input.expectedSourceId) throw agentXError("MODEL_NOT_ALLOWED", "The task's verified model source changed. Reload and try again.");
   const wire = route === null ? undefined : routeOnWire(route, requested);

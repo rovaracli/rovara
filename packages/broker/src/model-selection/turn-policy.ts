@@ -2,12 +2,12 @@ import {ProcessModelRefusal} from "./process-refusal.js";
 import {mergeProcessModelAuthorityChecks} from "./authority.js";
 import {z} from "zod";
 // Ordinary project turns share the task resolver, but freeze policy on their operation.
-import {STAGE_OPERATION_MAPPING,canonicalModelName,AgentIdSchema,ResolvedRecipeSchema,builtinRecipe,recipeDigest,ROVARA_CODE_AGENT_ID,agentXError,type StageId,type OrgId,type ModelIdentifier,type AgentId,type ResolvedRecipe} from "@agentx/contracts";
+import {STAGE_OPERATION_MAPPING,SlackUserIdSchema,canonicalModelName,AgentIdSchema,ResolvedRecipeSchema,builtinRecipe,recipeDigest,ROVARA_CODE_AGENT_ID,agentXError,type StageId,type OrgId,type ModelIdentifier,type AgentId,type ResolvedRecipe} from "@agentx/contracts";
 import {resolveAgent,type AgentStore} from "../agents/store.js";
 import {loadStageModelSnapshot} from "./snapshot.js";
 import {prepareTaskModelPolicyPin,taskModelPolicyAdmissionChecks,parseTaskModelPolicyPin,type TaskModelPolicyPin} from "./task-pin.js";
 import {loadPinnedTaskStageContext,type TaskStageLiveDependencies} from "./task-live.js";
-export interface TurnModelPin {version:1;workflowMode?:string;threadChannel?:{teamId:string;channelId:string};actorDeveloperId:string;payerDeveloperId?:string;agentId:AgentId;recipe:ResolvedRecipe;digest:string;pin:TaskModelPolicyPin}
+export interface TurnModelPin {version:1;workflowMode?:string;slackUserId?:string;slackTask?:{taskId:string;threadTs:string};threadChannel?:{teamId:string;channelId:string};actorDeveloperId:string;payerDeveloperId?:string;agentId:AgentId;recipe:ResolvedRecipe;digest:string;pin:TaskModelPolicyPin}
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","The project's model policy could not be pinned. Reload and try again.");
 export function turnStagesForMode(mode:string) {
  if(!Object.hasOwn(STAGE_OPERATION_MAPPING,mode))throw agentXError("WORKFLOW_MODE_UNMAPPED","This workflow mode has no governed model stage.");
@@ -15,7 +15,7 @@ export function turnStagesForMode(mode:string) {
  if(mapping.stages.length===0)throw agentXError("WORKFLOW_MODE_UNMAPPED","This workflow mode does not invoke a model.");
  return mapping;
 }
-export async function prepareTurnModelPolicy(deps:TaskStageLiveDependencies&{store:AgentStore|undefined},input:{orgId:OrgId;project:string;actorDeveloperId:string;workflowMode:string;threadChannel?:{teamId:string;channelId:string};priorModels?:Partial<Record<StageId,ModelIdentifier>>;payerDeveloperId?:string;defaultPreferred?:ModelIdentifier}) {
+export async function prepareTurnModelPolicy(deps:TaskStageLiveDependencies&{store:AgentStore|undefined},input:{orgId:OrgId;project:string;actorDeveloperId:string;workflowMode:string;slackUserId?:string;slackTask?:{taskId:string;threadTs:string};threadChannel?:{teamId:string;channelId:string};priorModels?:Partial<Record<StageId,ModelIdentifier>>;payerDeveloperId?:string;defaultPreferred?:ModelIdentifier}) {
  const mapping=turnStagesForMode(input.workflowMode);
  const caller={orgId:input.orgId,developerId:input.actorDeveloperId};
  const snapshot=await loadStageModelSnapshot(deps,caller,input.project);
@@ -42,13 +42,13 @@ export async function prepareTurnModelPolicy(deps:TaskStageLiveDependencies&{sto
  if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(decision.model)||value.decision.sourceId!==decision.sourceId||value.decision.thinkingLevel!==decision.thinkingLevel))throw new ProcessModelRefusal("LOCK_UNSATISFIABLE","code_review","/app/admin/how-we-work");
  const policyChecks=taskModelPolicyAdmissionChecks(deps.tableName,pin);
  const checks=mergeProcessModelAuthorityChecks([contexts.flatMap(value=>value.checks).filter(item=>!policyChecks.some(other=>JSON.stringify(other.ConditionCheck?.Key)===JSON.stringify(item.ConditionCheck?.Key))),policyChecks]);
- const frozen:TurnModelPin={version:1,workflowMode:input.workflowMode,...(input.threadChannel===undefined?{}:{threadChannel:input.threadChannel}),actorDeveloperId:input.actorDeveloperId,agentId,recipe,digest,pin,...(input.payerDeveloperId===undefined?{}:{payerDeveloperId:input.payerDeveloperId})};
+ const frozen:TurnModelPin={version:1,workflowMode:input.workflowMode,...(input.slackUserId===undefined?{}:{slackUserId:input.slackUserId}),...(input.slackTask===undefined?{}:{slackTask:input.slackTask}),...(input.threadChannel===undefined?{}:{threadChannel:input.threadChannel}),actorDeveloperId:input.actorDeveloperId,agentId,recipe,digest,pin,...(input.payerDeveloperId===undefined?{}:{payerDeveloperId:input.payerDeveloperId})};
  return {frozen,checks,projectRevision:context.projectRevision,stepName:mapping.stepKind,decision:context.decision,binding:{version:1 as const,stage:context.stage,companyRevision:pin.policy.revision,recipeDigest:digest},model:{...context.decision.model,...(context.decision.thinkingLevel===null?{}:{thinkingLevel:context.decision.thinkingLevel})}};
 }
 
-const TurnPin=z.object({version:z.literal(1),workflowMode:z.string().optional(),threadChannel:z.object({teamId:z.string().regex(/^T[A-Z0-9]+$/u),channelId:z.string().regex(/^[CG][A-Z0-9]+$/u)}).strict().optional(),actorDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u),payerDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u).optional(),agentId:AgentIdSchema,recipe:ResolvedRecipeSchema,digest:z.string().regex(/^[a-f0-9]{64}$/u),pin:z.unknown()}).strict();
+const TurnPin=z.object({version:z.literal(1),workflowMode:z.string().optional(),slackUserId:SlackUserIdSchema.optional(),slackTask:z.object({taskId:z.uuid(),threadTs:z.string().regex(/^\d+\.\d+$/u)}).strict().optional(),threadChannel:z.object({teamId:z.string().regex(/^T[A-Z0-9]+$/u),channelId:z.string().regex(/^[CG][A-Z0-9]+$/u)}).strict().optional(),actorDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u),payerDeveloperId:z.string().regex(/^[a-f0-9]{64}$/u).optional(),agentId:AgentIdSchema,recipe:ResolvedRecipeSchema,digest:z.string().regex(/^[a-f0-9]{64}$/u),pin:z.unknown()}).strict();
 export function parseTurnModelPin(raw:unknown,orgId:OrgId,project:string):TurnModelPin {
  const value=TurnPin.safeParse(raw);if(!value.success)throw unavailable();
  const pin=parseTaskModelPolicyPin(value.data.pin,{orgId,project,agentId:value.data.agentId,recipe:value.data.recipe,digest:value.data.digest});
- return {version:1,...(value.data.threadChannel===undefined?{}:{threadChannel:value.data.threadChannel}),...(value.data.workflowMode===undefined?{}:{workflowMode:value.data.workflowMode}),actorDeveloperId:value.data.actorDeveloperId,agentId:value.data.agentId,recipe:value.data.recipe,digest:value.data.digest,pin,...(value.data.payerDeveloperId===undefined?{}:{payerDeveloperId:value.data.payerDeveloperId})};
+ return {version:1,...(value.data.slackTask===undefined?{}:{slackTask:value.data.slackTask}),...(value.data.slackUserId===undefined?{}:{slackUserId:value.data.slackUserId}),...(value.data.threadChannel===undefined?{}:{threadChannel:value.data.threadChannel}),...(value.data.workflowMode===undefined?{}:{workflowMode:value.data.workflowMode}),actorDeveloperId:value.data.actorDeveloperId,agentId:value.data.agentId,recipe:value.data.recipe,digest:value.data.digest,pin,...(value.data.payerDeveloperId===undefined?{}:{payerDeveloperId:value.data.payerDeveloperId})};
 }

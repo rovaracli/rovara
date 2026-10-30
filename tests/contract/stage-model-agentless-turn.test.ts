@@ -232,7 +232,7 @@ it("starts a channel-only developer's first task without a native project grant"
 
 it("uses and fences the real legacy task identity at turn fallback",async()=>{
  const h=await runtimeTurnFixture(),taskId=randomUUID();const {taskKey,taskPointerKey}=await import("../../packages/broker/src/developer/task-records.js");
- h.db.set({...taskPointerKey(h.workspaceId),taskId});h.db.set({...taskKey(taskId),taskId,orgId:TEST_ORG,workspaceId:h.workspaceId,project:"payments"});
+ h.db.set({...taskPointerKey(h.workspaceId),taskId});h.db.set({...taskKey(taskId),taskId,orgId:TEST_ORG,workspaceId:h.workspaceId,project:"payments",developerId:h.actor,developerName:"Owner",provider:"slack"});
  const original=h.db.send.bind(h.db);let fenced=false;h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"){const input=command.input as {TransactItems?:Array<{ConditionCheck?:{Key?:{pk?:string}}}>};fenced=input.TransactItems?.some(item=>item.ConditionCheck?.Key?.pk===`DEVTASK#${taskId}`)??false;}return original(command);};
  const response=await call(h.handler,{method:"POST",path:h.path,headers:{"x-agentx-callback-capability":h.invocation.callbackCapability},body:h.body});expect(response.status,JSON.stringify(response.body)).toBe(200);expect(fenced).toBe(true);
 });
