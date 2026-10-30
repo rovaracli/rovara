@@ -125,9 +125,10 @@ describe("switching back to the built-in when the layer is stricter", () => {
 
   it("counts a project maintainer with manage_agents as another approver", async () => {
     const w = world();
-    w.member(ORG_A, OLA, "member");
     w.grant(ARJUN, "web", "maintainer");
     await layerWith(w, STRICT);
+    // Ola, who confirmed the stricter version as an admin, is a plain member from here, so nobody else is left to confirm (the decision checks the role it was judged under).
+    w.member(ORG_A, OLA, "member");
     const approvalId = w.approvalIdOf(((await toBuiltin(w)).body as { confirmUrl: string }).confirmUrl);
     expect(await failure(decide(w, MAX, approvalId))).toMatchObject({ code: "PROCESS_SELF_CONFIRM" });
     await decide(w, ARJUN, approvalId);
@@ -136,8 +137,9 @@ describe("switching back to the built-in when the layer is stricter", () => {
 
   it("lets the requester confirm when they are the only eligible approver, with a fresh sign-in", async () => {
     const w = world();
-    w.member(ORG_A, OLA, "member");
     await layerWith(w, STRICT);
+    // Ola, who confirmed the stricter version as an admin, is a plain member from here, so nobody else is left to confirm (the decision checks the role it was judged under).
+    w.member(ORG_A, OLA, "member");
     const approvalId = w.approvalIdOf(((await toBuiltin(w)).body as { confirmUrl: string }).confirmUrl);
     expect(await w.kind.decide({ orgId: ORG_A, developerId: MAX, approvalId }, "approve", { kind: "none" } as never).then(() => "decided", (error: { code?: string }) => error.code)).toBe("FORBIDDEN");
     expect((await playbook(w)).defaultProcess.kind).toBe("project_process");

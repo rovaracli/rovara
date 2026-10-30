@@ -66,6 +66,17 @@ describe("a decision across the removal (G6)", () => {
     expect((await getAnyApproval(w.deps, ORG_A, record.approvalId))!.status).toBe("PENDING");
   });
 
+  it("a click judged under a role the decider no longer holds when it commits (a demoted admin) is FORBIDDEN, and the approval stays pending", async () => {
+    const { w, record, caller, body } = await pending();
+    const realSend = w.db.send;
+    w.db.send = async (command) => {
+      if (command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes(record.approvalId)) w.db.set({ ...w.db.get(orgMemberKey(ORG_A, OLA))!, role: "member" });
+      return realSend(command);
+    };
+    await expect(decideApproval(w.deps, caller, record.approvalId, body)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await getAnyApproval(w.deps, ORG_A, record.approvalId))!.status).toBe("PENDING");
+  });
+
   it("a click committed before the removal stands", async () => {
     const { w, record, caller, body } = await pending();
     await decideApproval(w.deps, caller, record.approvalId, body);

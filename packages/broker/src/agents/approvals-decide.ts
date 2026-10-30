@@ -237,9 +237,9 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
       },
     });
   }
-  // The decider is still a member when the claim commits: a removal (or a demotion) that lands after the check and before the
+  // The decider is still a member, with the role this decision was judged under, when the claim commits: a removal (or a demotion) that lands after the check and before the
   // claim fails it, so a click judged before it never counts after it.
-  items.push(deciderStillMemberCheck(deps.tableName, record.orgId, caller.developerId));
+  items.push(deciderStillMemberCheck(deps.tableName, record.orgId, caller.developerId, caller.orgRole));
   const claimed = await claim(deps, items, fence === undefined ? undefined : items.length - 2, items.length - 1);
   if (claimed === "forbidden") throw agentXError("FORBIDDEN", REMOVAL_FORBIDDEN_MESSAGE);
   if (claimed === "owner_changed") {

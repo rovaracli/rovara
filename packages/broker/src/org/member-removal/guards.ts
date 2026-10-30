@@ -1,7 +1,7 @@
 // Member removal (v1.1), task 3: the checks that make authority that was cached or stored elsewhere (a Slack identity link, a stored task person, a decision judged earlier, a
 // realtime token) notice a removal. Each reads the member record live and consistently.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgMemberKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { agentXError, orgMemberKey, orgRemovedKey, type OrgId, type OrgRole } from "@agentx/contracts";
 import { REMOVED_FROM_ORG_MESSAGE } from "../sign-in.js";
 
 export interface GuardDeps {
@@ -25,14 +25,14 @@ export async function requireNotRemoved(deps: GuardDeps, orgId: OrgId, developer
 }
 
 /**
- * The ConditionCheck that a decision's claim carries: the decider is still a member of the org. The role is not part of it: the caller's role was read live by the route that
- * built the caller, and a change of role bumps the org's membership version, which the second-person rules fence.
+ * The ConditionCheck that a decision's claim carries: the decider is still a member of the org and still holds the role their authority was judged under (a demoted admin must not
+ * decide, and a removed person cannot).
  */
-export function deciderStillMemberCheck(tableName: string, orgId: OrgId, developerId: string) {
+export function deciderStillMemberCheck(tableName: string, orgId: OrgId, developerId: string, role: OrgRole) {
   return {
     ConditionCheck: {
-      TableName: tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :decider",
-      ExpressionAttributeValues: { ":org": orgId, ":decider": developerId },
+      TableName: tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :decider AND #role = :seenRole",
+      ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": orgId, ":decider": developerId, ":seenRole": role },
     },
   };
 }
