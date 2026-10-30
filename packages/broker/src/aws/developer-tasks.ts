@@ -1,3 +1,4 @@
+import { projectAiKey } from "@agentx/contracts";
 import { checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItem } from "../org/task-stop-window.js";
 import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
@@ -2856,8 +2857,55 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     throw agentXError("CONFIG_INVALID", "only a test run that reached its cap can continue as a normal task");
   }
   if (deps.agentRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-  const { payer, place } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
-  try {
+  const authorize = async () => {
+    await authorizeTaskAction(deps, caller, taskId, "work");
+    if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, task.agent.agentId, task.agent.version === "draft" ? "edit" : "use");
+  };
+  const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+  const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
+    orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent.agentId,
+    pathLimitMicrousd: previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+    // The testing allowance belongs to historical spend; this is a new payer.
+    ...(previous?.calculationInput.requestedMicrousd !== undefined ? { requestedMicrousd: previous.calculationInput.requestedMicrousd }
+      : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: usdToWholeMicrodollars(task.requestedRunLimitUsd) ?? null }),
+  });
+  const { payer, place, projectPays } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  if (captured.kind === "captured") {
+    if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+    if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+    const checks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+      ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize),
+      ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, draft: task.agent.version === "draft", process: task.agent.process === true,
+        developerId: caller.developerId, role: caller.orgRole, ...(task.agent.draftRevision === undefined ? {} : { expectedDraftRevision: task.agent.draftRevision }) }, authorize,
+      async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
+    const item = windowAndPauseUpdate(deps, task, undefined, captured)[0]?.Update;
+    if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
+    const source = ["origin", "budgetPause", "startedBy", "place"] as const;
+    // Transition aliases must not collide with the window source aliases.
+    const seen = new Aliases();
+    const sourceConditions = source.map(field => {
+      const name = `#transition_${field}`; seen.names[name] = field;
+      if (task[field] === undefined) return `attribute_not_exists(${name})`;
+      const value = `:transition_${field}`; seen.values[value] = task[field]; return `${name} = ${value}`;
+    });
+    try {
+      await deps.actions.transact([{ Update: { ...item,
+        UpdateExpression: `${item.UpdateExpression?.split(" REMOVE ")[0]}, #transition_origin = :app, payer = :payer, #transition_place = :place, #transition_startedBy = :startedBy REMOVE budgetPause${task.maxPerRunUsd !== undefined && captured.calculationInput.agentStop.kind === "inherit" ? ", maxPerRunUsd" : ""}`,
+        ConditionExpression: `${item.ConditionExpression} AND ${sourceConditions.join(" AND ")}`,
+        ExpressionAttributeNames: { ...item.ExpressionAttributeNames, ...seen.names },
+        ExpressionAttributeValues: { ...item.ExpressionAttributeValues, ...seen.values, ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId } },
+      } }, ...checks, { ConditionCheck: { TableName: deps.tableName, Key: projectAiKey(deps.orgId, task.project),
+        ConditionExpression: "#type = :type AND #org = :org AND #project = :project AND #pays = :pays",
+        ExpressionAttributeNames: { "#type": "entityType", "#org": "orgId", "#project": "project", "#pays": "projectPays" },
+        ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": deps.orgId, ":project": task.project, ":pays": projectPays } } }]);
+    } catch (error) {
+      const failures = failedIndexes(error);
+      if (failures !== undefined && [...failures].some(index => index > 0)) throw budgetActorRefused();
+      if (failures?.has(0)) throw agentXError("CHANGE_STALE", "The task's payer or spending window changed. Review it and continue again.");
+      throw error;
+    }
+  } else try {
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: taskKey(taskId),
       UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now REMOVE budgetPause",
