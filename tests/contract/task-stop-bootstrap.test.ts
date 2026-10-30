@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -139,4 +139,17 @@ for (const invalid of ["missing_enrollment", "bad_enrollment", "competing_ceilin
   await expect(taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId)).rejects.toThrow();
   expect(f.db.transactions()).toHaveLength(count);
   expect(f.db.get(seedKey.pk, "V1#upgrade")).toBeUndefined(); expect(f.db.get(key.pk, key.sk)).toEqual(changed);
+});
+
+it("upgrade preserves an administrator ceiling and records the actual seed outcome", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const key = agentGuardrailsKey(orgId), admin = { ...key, orgId, entityType: "AGENT_GUARDRAILS", revision: 7,
+    guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 37.25 }, updatedBy: who, updatedAt: new Date(now - 1000).toISOString() };
+  f.db.set(admin);
+  await taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId);
+  expect(f.db.get(key.pk, key.sk)).toEqual(admin);
+  const txn = f.db.transactions().find(items => items.some(item => putItem(item)?.sk === "V1#upgrade"));
+  const event = txn?.map(putItem).map(item => item?.event).find(event => typeof event === "object" && event !== null && "action" in event && event.action === "spending.policy_seeded");
+  expect(event).toMatchObject({ actor: { kind: "system", id: "rovara" }, facts: { source: "upgrade", mode: "rovara_estimate", outcome: "created", ceilingMicrousd: 37250000 } });
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toMatchObject({ enrollment: { state: "disabled" } });
 });
