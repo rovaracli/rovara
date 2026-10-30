@@ -1196,3 +1196,25 @@ it("an approved per-run raise within the original run limit commits its exact ca
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1); expect(captures).toBe(1);
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
 });
+
+it("a later run-limit approval retains the already approved task per-run stop", async () => {
+  const f = await pausedTestTransition(undefined, true);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
+  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
+  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
+
+  const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!;
+
+  expect((await f.t.decide(ADA, request.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
+  const runRequest = f.t.requestOf(f.task.taskId, "run_limit").find(record => record.status === "PENDING")!; expect(runRequest.newLimitUsd).toBe(14);
+  expect(runRequest.approvalTerms).toMatchObject({ proposedFiguresMicrousd: { budget: 9_000_000, runLimit: 14_000_000, maxPerRun: 9_000_000 } });
+  const operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id);
+  expect((await f.t.decide(BEN, runRequest.spendRequestId)).spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000, calculationInput: { approvedRunLimitMicrousd: 14_000_000, committedMaxPerRunMicrousd: 9_000_000 } } });
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
+});
