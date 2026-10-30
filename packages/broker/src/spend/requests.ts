@@ -2111,7 +2111,14 @@ export async function expireLegacySpendingRequests(deps: SpendRequestDependencie
       const terms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
       try { completeTerms = terms.success && taskApprovalRecordMatches(terms.data, record); } catch { completeTerms = false; }
     }
-    if (!completeTerms && await expireOne(deps, record, "spending_rules_changed")) expired += 1;
+    if (!completeTerms) {
+      if (!await expireOne(deps, record, "spending_rules_changed")) {
+        // Revisit this page after a source race. Earlier expiries are already
+        // receipt-backed; advancing past the pending loser would skip it.
+        return { examined: (page.Items ?? []).length, expired, complete: false, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
+      }
+      expired += 1;
+    }
   }
   return { examined: (page.Items ?? []).length, expired, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
 }

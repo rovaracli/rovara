@@ -1993,8 +1993,9 @@ for (const input of [{ limit: 0 }, { limit: 101 }, { limit: 2, cursor: { pk: "OT
   await expect(spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, ...input })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
 });
 
-it("legacy expiry retries its original page after a native request-source conflict", async () => {
+for (const laterPage of [false, true]) it(`legacy expiry retries its original page after a native request-source conflict: later=${laterPage}`, async () => {
   const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  if (laterPage) await createSpendRequest(f.t.deps(() => Date.now() - 60_000), { orgId: TEST_ORG, kind: "month", taskId, scope: { kind: "org" }, amountUsd: 1, newLimitUsd: 5, reason: "Older monthly room", requestedBy: { kind: "member", developerId: MAYA.developerId } });
   const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind: "run_limit", taskId, scope: { kind: "task", taskId }, amountUsd: 1, newLimitUsd: 5, reason: "Legacy ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
   const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" };
   const { approvalTerms: _terms, ...legacy } = f.t.db.get(key)!; void _terms; f.t.db.set(legacy);
@@ -2005,8 +2006,11 @@ it("legacy expiry retries its original page after a native request-source confli
     }
     return send(command);
   };
-  const first = await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 1 });
-  expect(raced).toBe(true); expect(first).toMatchObject({ expired: 0, complete: false }); expect(first.cursor).toBeUndefined();
+  const cursor = laterPage ? (await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 1 })).cursor : undefined;
+  if (laterPage) expect(cursor).toBeDefined();
+  const input = { orgId: TEST_ORG, limit: 1, ...(cursor === undefined ? {} : { cursor }) };
+  const first = await spendRequests.expireLegacySpendingRequests(f.t.deps(), input);
+  expect(raced).toBe(true); expect(first).toMatchObject({ expired: 0, complete: false }); expect(first.cursor).toEqual(cursor);
   expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", amountUsd: 2 }); expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
-  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 1 })).toMatchObject({ expired: 1, complete: true });
+  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), input)).toMatchObject({ expired: 1, complete: true });
 });
