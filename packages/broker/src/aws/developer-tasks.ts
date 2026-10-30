@@ -2720,12 +2720,20 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     ], { sharedTask: task.shared === true });
   } catch (error) {
     if (await readTaskStopWindow(deps, windowIdentity) !== undefined) return { task: await taskView(deps, await loadOwnedTask(deps, caller, taskId), { events: 0, details: false }) };
+    const windowFailures = error instanceof AgentXError ? (error as { extraCancellation?: string[] }).extraCancellation : undefined;
+    if (windowStop !== undefined && windowFailures !== undefined) {
+      // acceptTask reports reasons relative to this callback's items. The one
+      // task update precedes authority checks; TaskAccess is the final item.
+      if (windowFailures.slice(1, 1 + windowChecks.length).includes("ConditionalCheckFailed") || windowFailures.at(-1) === "ConditionalCheckFailed") throw budgetActorRefused();
+      if (windowFailures[0] === "ConditionalCheckFailed") throw agentXError("CHANGE_STALE", "The task's spending window changed. Review it and continue again.");
+    }
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
   await withdrawal?.flush();
-  const view = await taskView(deps, task, { events: 0, details: false });
-  await syncIndex(deps, task, view.status, view.updatedAt);
+  const current = windowStop === undefined ? task : await loadOwnedTask(deps, caller, taskId);
+  const view = await taskView(deps, current, { events: 0, details: false });
+  await syncIndex(deps, current, view.status, view.updatedAt);
   return { task: view };
 }
 

@@ -361,3 +361,32 @@ for (const field of ["payer", "budgetUsd"] as const) it(`Continue refuses concur
   const reply = await f.continue(); expect(changed).toBe(true); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "CHANGE_STALE" });
   expect(f.t.meta(f.task.taskId)).toEqual(winner); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
 });
+it("Continue resolves a committed native write whose acknowledgement was lost without a second window", async () => {
+  const f = await continueWindow(), send = f.t.db.send.bind(f.t.db); let lost = false;
+  f.t.db.send = async command => {
+    const result = await send(command);
+    if (!lost && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "SPENDING_ADMISSION")) {
+      lost = true; throw Object.assign(new Error("test lost acknowledgement"), { name: "TimeoutError" });
+    }
+    return result;
+  };
+  const reply = await f.continue(); expect(lost).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5); expect(f.t.db.get(f.receipt)).toBeDefined();
+  const windows = () => f.t.db.transactions().filter(items => items.some(item => {
+    const put = item.Put; return typeof put === "object" && put !== null && "Item" in put && typeof put.Item === "object" && put.Item !== null && "entityType" in put.Item && put.Item.entityType === "SPENDING_ADMISSION";
+  }));
+  expect(windows()).toHaveLength(1); expect((await f.continue()).status).toBe(200); expect(windows()).toHaveLength(1);
+});
+for (const corruption of ["version", "calculation"] as const) it(`Continue refuses corrupt saved ${corruption} without starting another operation`, async () => {
+  const f = await continueWindow(); expect((await f.continue()).status).toBe(200);
+  const row = f.t.db.get(f.receipt)!, operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), snapshot = f.t.meta(f.task.taskId).spendingStop;
+  expect(snapshot).toBeDefined(); f.t.db.set({ ...row, ...(corruption === "version" ? { version: 999 } : { spendingStop: { ...snapshot!, effectiveStopMicrousd: 1 } }) });
+  const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.meta(f.task.taskId).budgetUsd).toBe(0.5);
+});
+it("Continue refuses a zero current stop without changing the admitted old window", async () => {
+  const f = await continueWindow(), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
+  const reply = await f.continue(); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "TASK_STOP_BUDGET_EXCEEDED" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations); expect(f.t.db.get(f.receipt)).toBeUndefined();
+});
