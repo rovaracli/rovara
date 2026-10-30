@@ -476,7 +476,7 @@ describe("the task ends", () => {
 
   it("a settle never fails the close", async () => {
     const w = world({ failing: true });
-    await expect(settleTaskOutcomes(w.deps, task, T2)).resolves.toBeUndefined();
+    await expect(settleTaskOutcomes(w.deps, task, T2)).resolves.toBe("incomplete");
     expect(w.metrics).toContain("OutcomeWriteFailed");
   });
 });

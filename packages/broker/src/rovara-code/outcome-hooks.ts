@@ -325,12 +325,15 @@ export type EndedPullRequestReader = (repositoryId: string, number: number) => P
 /** What one scoring may wait on GitHub in all, and what a settle may (one deadline for all its reads, never one for each). */
 const READ_BUDGET_MS = 8_000;
 /** A GitHub read is bounded by a deadline (an absolute time): a hung one, or one asked for after it, is a failed one, and what waits on it goes on. */
-function bounded<T>(work: Promise<T>, deadline: number): Promise<T> {
+function bounded<T>(work: Promise<T>, deadline: number, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const left = deadline - Date.now();
-    if (left <= 0) { reject(Object.assign(new Error("read deadline passed"), { name: "OutcomeReadTimeout" })); return; }
-    const timer = setTimeout(() => reject(Object.assign(new Error("read timed out"), { name: "OutcomeReadTimeout" })), left);
-    work.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error("read failed")); });
+    if (left <= 0 || signal?.aborted === true) { reject(Object.assign(new Error("read deadline passed"), { name: "OutcomeReadTimeout" })); return; }
+    const stop = (error: Error) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); reject(error); };
+    const onAbort = () => stop(Object.assign(new Error("read stopped"), { name: "OutcomeReadTimeout" }));
+    const timer = setTimeout(() => stop(Object.assign(new Error("read timed out"), { name: "OutcomeReadTimeout" })), left);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work.then((value) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); resolve(value); }, (error: unknown) => stop(error instanceof Error ? error : new Error("read failed")));
   });
 }
 
@@ -349,7 +352,7 @@ async function reviewsOn(read: EndedPullRequestRead, heads: readonly string[]): 
  */
 export async function scoreMergedCandidate(
   deps: OutcomeDependencies, task: OutcomeTask & { workflow: WorkflowSnapshot },
-  input: { candidateDigest: string; read: EndedPullRequestReader; now: string; merged?: ReadonlyArray<{ repositoryId: string; number: number }>; deadline?: number },
+  input: { candidateDigest: string; read: EndedPullRequestReader; now: string; merged?: ReadonlyArray<{ repositoryId: string; number: number }>; deadline?: number; signal?: AbortSignal },
 ): Promise<"scored" | "nothing" | "failed"> {
   try {
     const round = outcomeRoundOf(input.candidateDigest);
@@ -366,12 +369,12 @@ export async function scoreMergedCandidate(
     let reviewed = false;
     let first: { repositoryId: string; number: number; mergeCommit: string | undefined; mergedAt: string | undefined } | undefined;
     for (const entry of merged) {
-      const read = await bounded(input.read(entry.repositoryId, entry.number), deadline);
+      const read = await bounded(input.read(entry.repositoryId, entry.number), deadline, input.signal);
       const ci = read.status.checksUnavailable === true || read.status.checks.length === 0 ? "none" : readCi(read.status, { checksEverSeen: true, lastRovaraPushAt: undefined, now: Date.parse(input.now) }).ci;
       failing ||= ci === "failing";
       allPassing &&= ci === "passing";
       anyPending_ ||= ci === "pending";
-      const said = await bounded(reviewsOn(read, heads), deadline);
+      const said = await bounded(reviewsOn(read, heads), deadline, input.signal);
       changes ||= said === "changes_requested";
       reviewed ||= said !== "none";
       first ??= { repositoryId: entry.repositoryId, number: entry.number, mergeCommit: read.mergeCommit, mergedAt: read.mergedAt };
@@ -404,11 +407,13 @@ export async function scoreMergedCandidate(
  * - A candidate no pull request holds any more was replaced: `superseded`. Anything else: `task_closed`.
  */
 export async function settleTaskOutcomes(
-  deps: OutcomeDependencies, task: OutcomeTask & { workflow?: WorkflowSnapshot | undefined }, now: string, read?: EndedPullRequestReader, budgetMs: number = READ_BUDGET_MS,
-): Promise<void> {
+  deps: OutcomeDependencies, task: OutcomeTask & { workflow?: WorkflowSnapshot | undefined }, now: string, read?: EndedPullRequestReader, budgetMs: number = READ_BUDGET_MS, until?: number,
+): Promise<"done" | "incomplete" | "skipped"> {
   try {
-    if (task.orgId === undefined) return;
-    const deadline = Date.now() + budgetMs;
+    if (task.orgId === undefined) return "done";
+    // A pass that settles many tasks has one overall time (`until`): once it is reached nothing more is settled, and what is left stays open for the next pass.
+    if (until !== undefined && Date.now() >= until) return "skipped";
+    const deadline = Math.min(Date.now() + budgetMs, until ?? Number.POSITIVE_INFINITY);
     const unavailable = (round: string) => scoreClaims(deps, task, round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
     for (const pointer of await pointersOf(deps, task.taskId)) {
       try {
@@ -442,7 +447,11 @@ export async function settleTaskOutcomes(
         noteFailure(deps, "settle", error);
       }
     }
+    // Done only when nothing of the task is open: a write that failed, or a crash, leaves the settle to be tried again.
+    for (const pointer of await pointersOf(deps, task.taskId)) if (await anyPending(deps, task, pointer.round)) return "incomplete";
+    return "done";
   } catch (error) {
     noteFailure(deps, "settle", error);
+    return "incomplete";
   }
 }

@@ -2095,7 +2095,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return { attempted: 0 };
         });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
-        const releases = await releasePendingFinishedTasks(releaseDependenciesOf(dependencies))
+        const releases = await releasePendingFinishedTasks(releaseDependenciesOf(dependencies, Date.now() + OUTCOME_SETTLE_PASS_MS))
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
@@ -5885,7 +5885,7 @@ async function healSlackMemberSlots(dependencies: AwsBrokerDependencies, orgId: 
     const key = slackMemberLimitKey(orgId, requester.teamId, requester.userId);
     const member = await getItem<{ count?: number }>(dependencies, key);
     if ((member?.count ?? 0) < effective.memberWorkspaceLimit) return;
-    await releaseFinishedTasksOf(releaseDependenciesOf(dependencies), key);
+    await releaseFinishedTasksOf(releaseDependenciesOf(dependencies, Date.now() + OUTCOME_SETTLE_PASS_MS), key);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_heal_failed", error: error instanceof Error ? error.name : "unknown" }));
   }
@@ -13239,11 +13239,12 @@ async function completedTurnItems(
 
 /** A finished workflow task gives back its workspace slot and its workspace (releaseFinishedTask); never throws. */
 /** What every release of a finished task needs, the track record's fresh GitHub read included: the settle after a release is the same whichever path made the release. */
-function releaseDependenciesOf(dependencies: AwsBrokerDependencies) {
+function releaseDependenciesOf(dependencies: AwsBrokerDependencies, settleUntil?: number) {
   return {
     tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient,
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     outcomeReader: (task: DeveloperTaskRecord) => endedPullRequestReader(dependencies, task),
+    ...(settleUntil === undefined ? {} : { outcomeSettleUntil: settleUntil }),
   };
 }
 
@@ -13416,6 +13417,8 @@ export async function processGithubWorkflowEvent(
 const MERGE_RECOVERY_RETRY_MS = 5 * 60_000;
 /** What one run of the merge-recovery schedule may spend in all (the merge pass, then the tracking pass), inside the broker's 30-second timeout. */
 const SWEEP_EVENT_BUDGET_MS = 26_000;
+/** What a pass over many finished tasks may spend settling their track record in all: well inside the sweep's event budget, which also has the rest of its work to do. */
+const OUTCOME_SETTLE_PASS_MS = SWEEP_EVENT_BUDGET_MS - 20_000;
 
 async function stronglyRead<T>(dependencies: AwsBrokerDependencies, key: { pk: string; sk: string }): Promise<T | undefined> {
   const response = await dependencies.documentClient.send(new GetCommand({
@@ -13482,21 +13485,26 @@ function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: Devel
     const url = await webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId);
     if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
     const scope = githubScope(dependencies, orgId);
-    // The sweep's reads count against its request budget (the status and permission reads count themselves; the pull request read is counted here): one that is spent refuses the read, and the samples wait for a later pass.
-    const status = await github.getPullRequestStatus!.call(github, url, number, scope, budget);
-    if (status.state === "merged") budget?.beforeRequest();
-    const details = status.state === "merged" && github.getPullRequest !== undefined ? await github.getPullRequest.call(github, url, number, scope).catch(() => undefined) : undefined;
+    // Every read goes through the budgeted provider (the tracking pass's own): the sweep's budget when there is one, else this read's own short signal. A spent budget refuses the read and the
+    // samples wait for a later pass.
+    const reads: GithubMergeReadBudget = budget ?? { signal: AbortSignal.timeout(OUTCOME_READ_SIGNAL_MS), beforeRequest: () => undefined };
+    const status = await github.getPullRequestStatus!.call(github, url, number, scope, reads);
+    // The merge commit and time: the budgeted merge observation reads them (a merged pull request only).
+    const details = status.state === "merged" && github.getPullRequestMergeObservation !== undefined
+      ? await github.getPullRequestMergeObservation.call(github, url, number, reads, scope).catch(() => undefined) : undefined;
     return {
       status, mergeCommit: details?.mergeCommit, mergedAt: details?.mergedAt,
       permission: (login) => {
         const key = `${url}:${login.toLowerCase()}`;
         let found = permissions.get(key);
-        if (found === undefined) { found = github.getRepositoryPermission!.call(github, url, login, scope, budget); permissions.set(key, found); }
+        if (found === undefined) { found = github.getRepositoryPermission!.call(github, url, login, scope, reads); permissions.set(key, found); }
         return found;
       },
     };
   };
 }
+/** How long one read of a pull request may take when no sweep budget bounds it. */
+const OUTCOME_READ_SIGNAL_MS = 8_000;
 
 /**
  * Track record: a pull request the workflow now records as merged has its candidate's samples scored, from GitHub's answer read now, not from the tracking item. Only a version 2 task, and nothing
@@ -13510,7 +13518,7 @@ async function scoreMergedPullRequestOutcomes(dependencies: AwsBrokerDependencie
     const ended = workflow.pullRequests?.find((entry) => entry.repositoryId === repositoryId && entry.number === number);
     const read = endedPullRequestReader(dependencies, task, budget);
     if (ended === undefined || ended.state !== "MERGED" || read === undefined) return;
-    await scoreMergedCandidate(outcomeDepsOf(dependencies), { taskId, orgId: task.orgId, project: task.project, agent: task.agent, workflow }, { candidateDigest: ended.candidateDigest, read, now: new Date().toISOString() });
+    await scoreMergedCandidate(outcomeDepsOf(dependencies), { taskId, orgId: task.orgId, project: task.project, agent: task.agent, workflow }, { candidateDigest: ended.candidateDigest, read, now: new Date().toISOString(), ...(budget === undefined ? {} : { signal: budget.signal }) });
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", level: "warn", event: "outcomes.merge_failed", taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
