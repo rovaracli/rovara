@@ -2234,7 +2234,7 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect(f.t.ownerTotal(BEN)).toBe(120); expect(f.t.db.get(topUpKey(TEST_ORG, month, scope))).toMatchObject({ amountUsd: 1 });
 });
 
-for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) it(`legacy cutover expires ${resource} ${operation} asks missing original carried proof`, async () => {
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const consumer of ["legacy", "decision", "single_cutover"] as const) it(`${consumer} expires ${resource} ${operation} asks missing original carried proof`, async () => {
   const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
   const projectOwned = operation === "accountable";
   let id: string;
@@ -2254,6 +2254,8 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" }, row = f.t.db.get(key)!;
   const financial = row.ownerFinancialTerms as Record<string, unknown>, { carriedSource: _source, ...incomplete } = financial; void _source;
   expect(financial.carriedSource).toBeDefined(); f.t.db.set({ ...row, ownerFinancialTerms: incomplete });
-  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 100 })).toMatchObject({ expired: 1, complete: true });
+  if (consumer === "legacy") expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 100 })).toMatchObject({ expired: 1, complete: true });
+  if (consumer === "decision") await expect(f.t.decide(DEB, requestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  if (consumer === "single_cutover") expect(await spendRequests.expireOwnerCapCutoverApproval(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, requestId)).toMatchObject({ kind: "expired" });
   expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });
