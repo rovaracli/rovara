@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
-import { setup, CODING, DEB, ADA } from "../support/spend-world.js";
+import { setup, CODING, TRIAGE, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function fixture(amount = 1_234_567) {
   const t = await setup(), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
@@ -420,4 +420,28 @@ for (const enrolled of [false, true]) it(`initial human run preserves a legacy s
     const result = await start(); expect(f.t.meta(result.taskId).budgetUsd).toBe(0.0000001);
     expect(f.t.meta(result.taskId).spendingStop).toBeUndefined();
   }
+});
+
+async function pausedTestTransition() {
+  const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId, { version: "draft" });
+  await f.t.pauseAndEnd(task, { kind: "test", taskId: task.taskId });
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
+  const request = { requestId: randomUUID() };
+  return { ...f, task, request, transition: () => f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue-as-task`, request) };
+}
+it("Continue-as-task captures the current stop for its new payer and retains historical testing identity", async () => {
+  const f = await pausedTestTransition(), before = f.t.meta(f.task.taskId), reply = await f.transition();
+  expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ origin: "app", budgetUsd: 0.5, spendingStop: { effectiveStopMicrousd: 500_000 }, payer: { kind: "member", developerId: MAYA.developerId }, agent: before.agent });
+  expect(f.t.meta(f.task.taskId).budgetPause).toBeUndefined();
+});
+for (const refusal of ["missing", "zero"] as const) it(`Continue-as-task refuses ${refusal} spending configuration before changing its payer or testing pause`, async () => {
+  const f = await pausedTestTransition(), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  if (refusal === "missing") f.t.db.delete(f.policy);
+  else f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } } });
+  const reply = await f.transition(); expect(reply.status).toBe(409);
+  expect(reply.body.error).toMatchObject({ code: refusal === "missing" ? "TASK_STOP_CONFIG_MISSING" : "TASK_STOP_ZERO" });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
