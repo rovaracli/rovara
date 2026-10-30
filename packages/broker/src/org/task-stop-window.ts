@@ -137,7 +137,7 @@ export async function requireTaskStopWindowContext(deps: Pick<TableInput, "docum
 /** Current owner and payer membership plus live project work authority.
  * Numeric spending policy is intentionally absent from these native fences. */
 export async function taskStopKeyActorChecks(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord,
-  ownerId: string, payerId?: string): Promise<TransactItem[]> {
+  ownerId: string, payerId?: string, access?: AgentAccessDeps): Promise<TransactItem[]> {
   if (task.orgId === undefined) throw invalid();
   const orgId = task.orgId;
   const read = async (Key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> => {
@@ -162,6 +162,11 @@ export async function taskStopKeyActorChecks(deps: Pick<TableInput, "documentCli
     const project = await read(projectMetaKey(orgId, task.project));
     if (project !== undefined && (project.status !== "active" || project.archivedAt !== undefined)) throw invalid();
   }));
+  if (access === undefined || task.agent === undefined) throw invalid();
+  const agentId = task.agent.agentId, draft = task.agent.version === "draft";
+  checks.push(...await taskStartAgentAuthorityChecks(deps, { orgId, project: task.project, agentId, draft, frozenRecipe: true,
+    process: task.agent.process === true, developerId: ownerId, role: ownerRole },
+  () => requireAgentAccess(access, actor, agentId, draft ? "edit" : "use").then(() => undefined), () => access.store.listShares(orgId, agentId)));
   return checks;
 }
 

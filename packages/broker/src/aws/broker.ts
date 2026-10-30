@@ -7115,7 +7115,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
       await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
       await requireTaskStopWindowContext(dependencies, task);
-      const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined);
+      const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
