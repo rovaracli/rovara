@@ -37,3 +37,5 @@ export async function getTaskStopCompany(deps: Dependencies, caller: DeveloperCa
     throw unavailable();
   }
 }
+
+export { captureTaskStopAdmission, type TaskStopCaptureDependencies, type TaskStopCaptureRequest, type CapturedTaskStop } from "./task-stop-admission.js";
