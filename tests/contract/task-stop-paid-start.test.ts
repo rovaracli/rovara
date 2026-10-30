@@ -955,7 +955,7 @@ for (const loss of ["closing", "cap_source"] as const) it(`a plain-task approval
   expect(changed).toBe(true); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
 });
 
-for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", "changed_origin"] as const) it(`plain approval acknowledgement loss uses a ${receiptState} receipt without current financial settings`, async () => {
+for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", "changed_origin", "changed_baseline"] as const) it(`plain approval acknowledgement loss uses a ${receiptState} receipt without current financial settings`, async () => {
   const f = await approvalWindow(), decisionId = randomUUID(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0;
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
@@ -975,6 +975,7 @@ for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", 
   if (receiptState === "corrupt") f.t.db.set({ ...f.t.db.get(receiptKey)!, version: 999 });
   if (receiptState === "changed_reference") f.t.db.set({ ...f.t.meta(f.task.taskId), spendingAdmission: { requestId: randomUUID(), actorId: MAYA.developerId, intentHash: "a".repeat(64) } });
   if (receiptState === "changed_origin") f.t.db.set({ ...f.t.meta(f.task.taskId), origin: "app" });
+  if (receiptState === "changed_baseline") f.t.db.set({ ...f.t.meta(f.task.taskId), budgetBaselineUsd: 100 });
   f.t.db.delete(f.policy); captures = 0;
   expect((await f.t.decide(BEN, f.spendRequest.spendRequestId, "APPROVE", { requestId: decisionId })).spendRequest.status).toBe("APPROVED");
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
@@ -984,12 +985,17 @@ for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", 
   expect(f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === f.task.taskId)).toHaveLength(receiptState === "valid" ? 0 : 1);
 });
 
-for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow planning approval repair retains its original stage and native ${recovery} guard`, async () => {
+for (const recovery of ["valid", "spent_valid", "closing", "cap_source"] as const) it(`workflow planning approval repair retains its original stage and native ${recovery} guard`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
   f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
   const task = await f.t.runOf(agentId); expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
+  if (recovery === "spent_valid") {
+    const plan = f.t.taskOps(task.workspaceId).at(-1)!;
+    const mint = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+    expect(mint.status).toBe(200); f.t.access.setKeySpent(f.t.access.mintedKeys().at(-1)!, 0.75);
+  }
   await f.t.pauseAndEnd(task, { kind: "planning", taskId: task.taskId });
   const request = f.t.requestOf(task.taskId, "planning")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0, changed = false;
   expect(request.approvalTerms).toMatchObject({ operation: "planning", askedFiguresMicrousd: { budget: 2_000_000, maxPerRun: null, baseline: 0, amount: 5_000_000 }, proposedFiguresMicrousd: { budget: 5_000_000, maxPerRun: null, window: "reset" } });
@@ -1011,9 +1017,9 @@ for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${decisionId}` })).toMatchObject({ transitionKind: "spend-approval", spendRequestId: request.spendRequestId, agentRunRevision: null });
   f.t.db.delete(f.policy); captures = 0;
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 });
-  expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(changed).toBe(true);
-  if (recovery === "valid") expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
-  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" ? 1 : 0)); expect(captures).toBe(0);
+  expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" || recovery === "spent_valid" ? 1 : 0)); expect(changed).toBe(true);
+  if (recovery === "valid" || recovery === "spent_valid") expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(f.t.taskOps(task.workspaceId)).toHaveLength(operations.length + (recovery === "valid" || recovery === "spent_valid" ? 1 : 0)); expect(captures).toBe(0);
 });
 
 for (const source of ["valid", "closing", "cap_source"] as const) it(`a newly reviewed held preparation retains native ${source} authority after cap approval`, async () => {
