@@ -39,7 +39,7 @@ export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDepe
  const context=contexts[0];if(context===undefined||context.decision.kind!=="resolved")throw refused();
  const resolved=context.decision;
  if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(resolved.model)||value.decision.sourceId!==resolved.sourceId||value.decision.thinkingLevel!==resolved.thinkingLevel))throw refused();
- const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId,projectRevision:context.projectRevision});
+ const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId,projectRevision:context.projectRevision,...(frozen.threadChannel===undefined?{}:{threadChannel:frozen.threadChannel})});
  const decision=context.decision,route=await routeTaskFallback(deps.routing,{orgId:input.orgId,project:workspace.projectName,agent:frozen.agentId,stage:binding.data.stage,model:decision.model,sourceId:decision.sourceId});
  const model={...decision.model,...(decision.thinkingLevel===null?{}:{thinkingLevel:decision.thinkingLevel})};
  const authorization=TaskModelFallbackAuthorizationSchema.parse({version:1,binding:binding.data,model,sourcesRevision:context.sourcesRevision,...(route===undefined?{}:{modelRoute:route.wire})});

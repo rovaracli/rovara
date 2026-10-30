@@ -194,3 +194,8 @@ it("does not attribute inherited recipe models to company policy",async()=>{
  const result=await getStageModels(f.deps,caller,"web",{});
  expect(result.stages.find(row=>row.stage==="build")).toMatchObject({effective:{reason:"RECIPE_DEFAULT",decidedBy:"rovara",model:other}});
 });
+
+it("preserves a structured split-lock refusal from its snapshot",async()=>{
+ const f=fixture();const {ProcessModelRefusal}=await import("../../packages/broker/src/model-selection/process-refusal.js");f.deps.snapshot=async()=>{throw new ProcessModelRefusal("LOCK_UNSATISFIABLE","code_review","/app/admin/how-we-work");};
+ await expect(getStageModels(f.deps,caller,"web",{})).rejects.toMatchObject({code:"LOCK_UNSATISFIABLE",stage:"code_review",fixHref:"/app/admin/how-we-work"});
+});

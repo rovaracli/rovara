@@ -10,7 +10,7 @@ import type {TransactItem} from "../agents/table-writes.js";
 type Deps=Pick<TaskModelAuthorizationDependencies,"documentClient"|"tableName"|"signInStore"|"modelSignInTableName">&{developer?:DeveloperApiConfiguration};
 const refused=()=>agentXError("MODEL_NOT_ALLOWED","Your project or company access changed. Reload and check your access.");
 async function read(deps:Deps,Key:{pk:string;sk:string}) {return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}
-export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:string;developerId:string;signedInId?:string;projectRevision?:number}):Promise<TransactItem[]> {
+export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:string;developerId:string;signedInId?:string;projectRevision?:number;threadChannel?:{teamId:string;channelId:string}}):Promise<TransactItem[]> {
  const member=await read(deps,orgMemberKey(input.orgId,input.developerId)),role=OrgRoleSchema.safeParse(member?.role);
  if(!role.success||member?.orgId!==input.orgId||member.developerId!==input.developerId)throw refused();
  const identity=await modelIdentityChecks(deps,{signedInId:input.signedInId??input.developerId,developerId:input.developerId});
@@ -18,7 +18,12 @@ export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:s
  if(role.data!=="owner"&&role.data!=="admin") {
   const Key=projectMemberKey(input.orgId,input.developerId,input.project),grant=await read(deps,Key);
   let channelAccess=false;
-  if(grant===undefined&&deps.developer!==undefined) {
+  if(grant===undefined&&input.threadChannel!==undefined) {
+   const {teamId,channelId}=input.threadChannel,bindingKey=slackBindingKey(input.orgId,teamId,channelId),binding=await read(deps,bindingKey);
+   if(binding?.teamId!==teamId||binding.channelId!==channelId||binding.projectName!==input.project||typeof binding.updatedAt!=="string")throw refused();
+   checks.push({ConditionCheck:{TableName:deps.tableName,Key:bindingKey,ConditionExpression:"teamId = :team AND channelId = :channel AND projectName = :project AND updatedAt = :updated",ExpressionAttributeValues:{":team":teamId,":channel":channelId,":project":input.project,":updated":binding.updatedAt}}},{ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:"attribute_not_exists(pk)"}});
+   channelAccess=true;
+  } else if(grant===undefined&&deps.developer!==undefined) {
    const person=await deps.signInStore.getDeveloper(input.developerId);
    if(person?.slackUserId!==undefined) {
     const memberChannels=new Set<string>(),developer=deps.developer;

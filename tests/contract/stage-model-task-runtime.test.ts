@@ -40,3 +40,8 @@ it("keeps the project default as an audited fallback when the personal default b
  const defaultPin={...pin,policy:{...pin.policy,stepOverrides:{}},frozenInputs:{...pin.frozenInputs,projectSelection:undefined,projectModels:{default:model,approved:[model,other]}}};
  expect(resolvePinnedTaskStage({...input,pin:defaultPin,defaultPreferred:other,live:{...input.live,forbidden:[other]}})).toMatchObject({kind:"resolved",model,fallback:{reasonCode:"DEFAULT_MODEL_UNAVAILABLE"}});
 });
+
+it("returns a non-retryable refusal for split pinned review company locks",()=>{
+ const split={...pin,policy:{...pin.policy,stepOverrides:{code_review:{model,thinkingLevel:null,locked:true},security_review:{model:other,thinkingLevel:null,locked:true}}}};
+ expect(resolvePinnedTaskStage({...input,pin:split,stage:"code_review",priorModels:{build:other}})).toEqual({kind:"refusal",code:"LOCK_UNSATISFIABLE"});
+});

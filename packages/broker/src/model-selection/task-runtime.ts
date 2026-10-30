@@ -19,7 +19,7 @@ export function resolvePinnedTaskStage(input:PinnedTaskStageInput):StageModelRes
  const group=STAGE_EDIT_GROUPS.find(group=>group.some(stage=>stage===input.stage));
  if(group===undefined)throw unavailable();
  const configured=group.map(stage=>pin.policy.stepOverrides[stage]).filter(value=>value!==undefined),company=configured[0];
- if(configured.some(value=>JSON.stringify(value)!==JSON.stringify(company)))throw unavailable();
+ if(configured.some(value=>JSON.stringify(value)!==JSON.stringify(company)))return {kind:"refusal",code:"LOCK_UNSATISFIABLE"};
  const own=group.map(stage=>frozen.projectChoices[stage]).filter(value=>value!==undefined),projectChoice=own[0];
  if(own.some(value=>JSON.stringify(value)!==JSON.stringify(projectChoice)))throw unavailable();
  const inherited=frozen.recipeDefaults[input.stage];

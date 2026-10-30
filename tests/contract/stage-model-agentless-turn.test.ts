@@ -110,7 +110,8 @@ for(const changed of ["membership","global-org","sign-in","workspace-fence","ope
  if(changed==="operation-org")f.db.set({...f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)!,orgId:"org_bbbbbbbbbbbbbbbbbbbb"});
  const token=f.invocation.callbackCapability+(changed==="signature"?"tampered":"");
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":token},body:f.body});
- expect(response.status).not.toBe(200);
+ const expected=changed==="signature"?{status:409,code:"CALLBACK_FORBIDDEN"}:changed==="global-org"?{status:400,code:"CONFIG_INVALID"}:changed==="sign-in"?{status:403,code:"FORBIDDEN"}:{status:403,code:"MODEL_NOT_ALLOWED"};
+ expect(response).toMatchObject({status:expected.status,body:{error:{code:expected.code}}});
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.model).toEqual(f.invocation.payload.model);
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.modelFallbacks).toBeUndefined();
  expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(0);
@@ -121,14 +122,14 @@ for(const projectRole of ["maintainer","contributor","viewer","none"] as const)i
  seedMembership(f.db,f.actor,{orgId:TEST_ORG,role:"member"});
  if(projectRole!=="none")f.db.set({...projectMemberKey(TEST_ORG,f.actor,"payments"),role:projectRole==="viewer"?"viewer":"developer",projectRole});
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body});
- expect(response.status).toBe(projectRole==="viewer"||projectRole==="none"?403:200);
- expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(projectRole==="viewer"||projectRole==="none"?0:1);
+ expect(response.status).toBe(projectRole==="viewer"?403:200);
+ expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(projectRole==="viewer"?0:1);
 });
 it("rolls back the agentless fallback model, history and audit when identity is withdrawn at commit",async()=>{
  const f=await runtimeTurnFixture();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {orgMemberKey}=await import("@agentx/contracts");
  const send=f.db.send.bind(f.db);f.db.send=async command=>{if(command instanceof TransactWriteCommand)f.db.delete(orgMemberKey(TEST_ORG,f.actor));return send(command);};
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body});
- expect(response.status).not.toBe(200);
+ expect(response).toMatchObject({status:400,body:{error:{code:"CONFIG_INVALID"}}});
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.model).toEqual(f.invocation.payload.model);
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.modelFallbacks).toBeUndefined();
  expect(f.audit.pending()).toHaveLength(0);
@@ -144,7 +145,7 @@ for(const changed of ["membership","sign-in","policy","sources"] as const)it(`fe
  const before=f.db.find(row=>row.entityType==="OUTBOX").length,send=f.db.send.bind(f.db);
  f.db.send=async command=>{if(command instanceof TransactWriteCommand){if(changed==="membership")f.db.delete(orgMemberKey(TEST_ORG,f.actor));else if(changed==="sign-in")f.db.set({...f.db.get(`DEVELOPER#${f.actor}`,"META")!,revoked:true});else if(changed==="policy")f.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",revision:1});else f.db.set({...modelSourcesKey(TEST_ORG),revision:1});}return send(command);};
  const response=await serviceCall(f.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix the project."});
- expect(response.status).not.toBe(202);
+ expect(response).toMatchObject({status:409,body:{error:{code:"WORKSPACE_BUSY"}}});
  expect(f.db.find(row=>row.entityType==="OUTBOX")).toHaveLength(before);
  expect(f.db.find(row=>row.entityType==="OPERATION"&&row.kind==="task")).toHaveLength(0);
 });
@@ -207,18 +208,20 @@ it("uses the canonical merged identity at admission and runtime fallback",async(
  expect(h.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(1);
 });
 
-for(const variant of ["allowed","viewer","binding-race","policy-race","viewer-race"] as const)it(`channel-only Slack thread sender: ${variant}`,async()=>{
+for(const variant of ["allowed","viewer","binding-race","tasks-disabled","channel-policy-disabled","viewer-race"] as const)it(`channel-only Slack thread sender: ${variant}`,async()=>{
  const viewer=variant==="viewer";
  const {developerIdForSlackUser}=await import("../../packages/broker/src/aws/admin-actions.js");const {seedMembership}=await import("../support/developer-task-broker.js");const {projectMemberKey}=await import("@agentx/contracts");
  const user="U0123456789",actor=developerIdForSlackUser(user);
- const developer={issuer:"https://cell.example/v1/auth",env:"staging",slackTeamId:SLACK_TEAM,signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>({ok:true as const,memberOf:[SLACK_CHANNEL]})};
- const h=createAuditedSlackBroker({developer});await registerSlackProject(h.handler);seedMembership(h.db,actor,{orgId:TEST_ORG,role:"member"});h.db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",slackUserId:user,revoked:false});
+ let membershipCalls=0;const developer={issuer:"https://cell.example/v1/auth",env:"staging",slackTeamId:SLACK_TEAM,signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>{membershipCalls++;return {ok:true as const,memberOf:[SLACK_CHANNEL]};}};
+ const h=createAuditedSlackBroker({developer});await registerSlackProject(h.handler,{developerTasks:{enabled:variant!=="tasks-disabled",channelMembersMayUse:variant!=="channel-policy-disabled"}});seedMembership(h.db,actor,{orgId:TEST_ORG,role:"member"});h.db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",slackUserId:user,revoked:false});
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000009`,workspace=await ensureWorkspace(h.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
   if(viewer)h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});
 const conversation=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
  if(variant.endsWith("race")) {const original=h.db.send.bind(h.db);h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"&&JSON.stringify(command).includes("modelTurnPin")){h.db.send=original;if(variant==="binding-race"){const {slackBindingKey}=await import("@agentx/contracts");const key=slackBindingKey(TEST_ORG,SLACK_TEAM,SLACK_CHANNEL);h.db.set({...h.db.get(key)!,updatedAt:"2026-10-30T20:00:00Z"});}else if(variant==="viewer-race"){h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});}else{const {projectRevisionKey}=await import("@agentx/contracts");const key=projectRevisionKey(TEST_ORG,"payments",1),row=h.db.get(key)!;h.db.set({...row,definition:{...(row.definition as object),developerTasks:{enabled:true,channelMembersMayUse:false}}});}}return original(command);};}
  const result=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Channel work"});
- if(variant.endsWith("race")){expect(result.status).not.toBe(202);expect(h.db.find(row=>row.entityType==="OPERATION"&&row.modelTurnPin!==undefined)).toHaveLength(0);}else expect(result.status,JSON.stringify(result.body)).toBe(viewer?403:202);
+ if(variant.endsWith("race")){expect(result).toMatchObject({status:409,body:{error:{code:"WORKSPACE_BUSY"}}});expect(h.db.find(row=>row.entityType==="OPERATION"&&row.modelTurnPin!==undefined)).toHaveLength(0);}else expect(result.status,JSON.stringify(result.body)).toBe(viewer?403:202);
+ expect(membershipCalls).toBe(0);
+ if(viewer){const {readTurnActorChecks}=await import("../../packages/broker/src/model-selection/turn-authority.js"),{DeveloperSignInStore}=await import("../../packages/broker/src/developer/store.js");await expect(readTurnActorChecks({documentClient:h.db,tableName:"state",developer,signInStore:new DeveloperSignInStore({documentClient:h.db,tableName:"signin",now:Date.now}),modelSignInTableName:"signin"},{orgId:TEST_ORG,project:"payments",developerId:actor,projectRevision:1,threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}})).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});}
 });
 it("starts a channel-only developer's first task without a native project grant",async()=>{
  const {createDeveloperTaskBroker,MAYA}=await import("../support/developer-task-broker.js");const h=await createDeveloperTaskBroker();
