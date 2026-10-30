@@ -1961,6 +1961,9 @@ it("legacy spending-request cutover expires bounded pages with terminal receipts
       scope: { kind: "task", taskId }, amountUsd: 1, newLimitUsd: 5, reason: "Legacy stop ask", requestedBy: { kind: "member", developerId: MAYA.developerId },
       ...(kind === "owner_cap" ? { change: { op: "set_budget" as const, budget: { monthlyUsd: 5 } } } : {}) });
     ids.push(record.spendRequestId);
+    const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" };
+    const { approvalTerms: _taskTerms, ownerFinancialTerms: _ownerTerms, approvalSource: _source, ...legacy } = f.t.db.get(key)!;
+    void _taskTerms; void _ownerTerms; void _source; f.t.db.set(legacy);
   }
   const before = f.t.meta(taskId), policy = f.t.db.get(f.policy), operations = f.t.taskOps(before.workspaceId).map(item => item.id);
   const first = await expire(f.t.deps(), { orgId: TEST_ORG, limit: 2 });
@@ -1974,4 +1977,18 @@ it("legacy spending-request cutover expires bounded pages with terminal receipts
   }
   expect(await expire(f.t.deps(), { orgId: TEST_ORG, limit: 2 })).toMatchObject({ examined: 0, expired: 0, complete: true });
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.taskOps(before.workspaceId).map(item => item.id)).toEqual(operations);
+});
+
+it("legacy ask expiry preserves complete modern asks and monthly-room requests", async () => {
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const modern = (await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: 1, newLimitUsd: 5, reason: "Modern ask", requestedBy: { kind: "member", developerId: MAYA.developerId } })).record;
+  const monthly = (await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "month", scope: { kind: "org" }, amountUsd: 1, newLimitUsd: 5, reason: "Monthly room", requestedBy: { kind: "member", developerId: MAYA.developerId } })).record;
+  expect(modern.approvalTerms).toBeDefined();
+  const before = [modern, monthly].map(record => f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" }));
+  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 100 })).toMatchObject({ examined: 2, expired: 0, complete: true });
+  expect([modern, monthly].map(record => f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" }))).toEqual(before);
+});
+for (const input of [{ limit: 0 }, { limit: 101 }, { limit: 2, cursor: { pk: "OTHER_ORG", sk: "x" } }, { limit: 2, cursor: { pk: "OTHER_ORG", sk: "x", injected: true } }]) it(`legacy ask expiry refuses invalid page authority ${JSON.stringify(input)}`, async () => {
+  const f = await fixture();
+  await expect(spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, ...input })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
 });

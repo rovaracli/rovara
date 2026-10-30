@@ -2090,6 +2090,32 @@ function expirySource(record: SpendRequestRecord) {
   return { termsDigest: createHash("sha256").update(canonicalJson({ version: 1, terms })).digest("hex"), condition, names, values };
 }
 
+/** Explicit maintenance phase for old asks without complete terms. This does
+ * not enroll an org or certify ceiling/cutover readiness. The controller retains
+ * the returned native cursor; each expiry already has an immutable receipt. */
+export async function expireLegacySpendingRequests(deps: SpendRequestDependencies, input: { orgId: OrgId; limit: number; cursor?: Record<string, unknown> }): Promise<{ examined: number; expired: number; complete: boolean; cursor?: Record<string, unknown> }> {
+  const partition = openSpendRequestsKey(input.orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk;
+  if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > PAGE || (input.cursor !== undefined && (input.cursor.pk !== partition || typeof input.cursor.sk !== "string" || Object.keys(input.cursor).some(key => key !== "pk" && key !== "sk")))) throw agentXError("CONFIG_INVALID", "Invalid spending-request maintenance page.");
+  const page = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": partition }, ConsistentRead: true, Limit: input.limit,
+    ...(input.cursor === undefined ? {} : { ExclusiveStartKey: input.cursor }) })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+  let expired = 0;
+  for (const index of page.Items ?? []) {
+    if (index.orgId !== input.orgId || !SpendRequestIdSchema.safeParse(index.spendRequestId).success) throw agentXError("CONFIG_INVALID", "Spending-request index needs repair before cutover.");
+    const record = await getSpendRequest(deps, input.orgId, String(index.spendRequestId));
+    if (record === undefined || record.status !== "PENDING" || record.kind === "month") continue;
+    let completeTerms: boolean;
+    if (record.kind === "owner_cap") {
+      const terms = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
+      completeTerms = terms.success && terms.data.owner === record.forOwner && (record.change?.op === "confirm_move" ? terms.data.basis === "base" : ApprovalSourceSchema.safeParse(record.approvalSource).success);
+    } else {
+      const terms = TaskApprovalTermsSchema.safeParse(record.approvalTerms);
+      try { completeTerms = terms.success && taskApprovalRecordMatches(terms.data, record); } catch { completeTerms = false; }
+    }
+    if (!completeTerms && await expireOne(deps, record, "spending_rules_changed")) expired += 1;
+  }
+  return { examined: (page.Items ?? []).length, expired, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
+}
+
 async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now" | "audit">, record: SpendRequestRecord, because?: SpendRequestRecord["endedBecause"]): Promise<boolean> {
   const at = iso(deps.now());
   const events = await audited(deps, () => [auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) })]);
