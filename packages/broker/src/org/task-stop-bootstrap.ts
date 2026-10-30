@@ -74,13 +74,17 @@ export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(com
 }
 
 /** One bounded legacy resource; callers must checkpoint the whole inventory
- * separately. This operation never creates a missing resource or enables it. */
+ * separately. Missing custom resources refuse; registered built-ins may acquire
+ * their optional settings metadata. This operation never enables enforcement. */
 export async function upgradeTaskStopInheritance(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }, input: { orgId: OrgId; kind: "agent"; agentId: string }): Promise<{ outcome: "updated" | "preserved" }> {
   const { orgId, agentId } = z.object({ orgId: OrgIdSchema, kind: z.literal("agent"), agentId: AgentIdSchema }).strict().parse(input);
   const builtin = isBuiltinAgentId(agentId);
   const keys = [orgMetaKey(orgId), builtin ? builtinSettingsKey(orgId, agentId) : agentKey(orgId, agentId, "META")];
   const response = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })).length(2) }).parse(await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) })));
-  const rows = response.Responses.map(entry => entry.Item), [org, resource] = rows;
+  const rows = response.Responses.map(entry => entry.Item), [org, stored] = rows;
+  // The immutable server registry establishes a built-in's existence. Absence
+  // of its optional legacy settings is recognized inheritance, never money.
+  const resource = stored ?? (builtin ? { ...keys[1], orgId, agentId, entityType: "BUILTIN_AGENT_SETTINGS", revision: 1 } : undefined);
   const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["orgId", "agentId", "closingAt", "closedAt", "status", "revision", "stopKind", "maxPerRunUsd", "seedProvenance"]);
   if (org?.orgId !== orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined || resource === undefined
     || resource.entityType !== (builtin ? "BUILTIN_AGENT_SETTINGS" : "AGENT")
@@ -100,7 +104,7 @@ export async function upgradeTaskStopInheritance(deps: { documentClient: { send(
   const base = auditTaskStopPolicySeeded({ orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence, source: "upgrade", mode: "rovara_estimate", revision: Number(revision), ceilingMicrousd: 0 });
   const event = AuditEventInputSchema.parse({ ...base, target: { kind: "agent", id: agentId }, facts: { mode: kind, source: "upgrade", revision, outcome: "updated" } });
   const source = guards[1]!.ConditionCheck!;
-  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedKind = :seedKind, #seedProof = :seedProof, #seedOrg = :seedOrg, #seedAgent = :seedAgent, #seedRevision = :seedRevision", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedOrg": "orgId", "#seedAgent": "agentId", "#seedRevision": "revision", "#seedKind": "stopKind", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedOrg": orgId, ":seedAgent": agentId, ":seedRevision": revision, ":seedKind": kind, ":seedProof": { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedType = :seedType, #seedKind = :seedKind, #seedProof = :seedProof, #seedOrg = :seedOrg, #seedAgent = :seedAgent, #seedRevision = :seedRevision", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedType": "entityType", "#seedOrg": "orgId", "#seedAgent": "agentId", "#seedRevision": "revision", "#seedKind": "stopKind", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedType": builtin ? "BUILTIN_AGENT_SETTINGS" : "AGENT", ":seedOrg": orgId, ":seedAgent": agentId, ":seedRevision": revision, ":seedKind": kind, ":seedProof": { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
   return { outcome: "updated" };
 }
 
