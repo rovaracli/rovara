@@ -2,7 +2,7 @@ import { OwnerFinancialTermsSchema, ownerFinancialChecks } from "./owner-approva
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
-import { approveCapturedTaskStop, captureTaskStopAdmission, previewTaskStopCutover, type CapturedTaskStop } from "../org/task-stop-admission.js";
+import { approveCapturedTaskStop, captureTaskStopAdmission, previewTaskStopCutover, captureTaskStopCutoverReview, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { savedTaskStopBounds, checkedTaskStopSnapshot, withAdmittedTaskSource, type PreparedTaskApprovalAdmission } from "../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { ApprovalSourceSchema, sourceFields, sourceCondition, staleApproval, type ApprovalSource } from "./approval-source.js";
@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  agentGuardrailsKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
+  projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
@@ -2104,7 +2104,8 @@ async function reviewCutoverApproval(deps: SpendRequestDependencies, actor: Agen
   const task = await readTask(deps, record.orgId, record.taskId);
   if (task === undefined) throw notFound();
   const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop), agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
-  const preview = await previewTaskStopCutover({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+  const captureReview: (deps: Parameters<typeof previewTaskStopCutover>[0], value: unknown) => Promise<Awaited<ReturnType<typeof previewTaskStopCutover>> & { sourceChecks?: TransactItem[] }> = nativeGuards === undefined ? previewTaskStopCutover : captureTaskStopCutoverReview;
+  const preview = await captureReview({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
     await requireNativeProjectWorkRole(deps, task, actor);
     await requireAgentAccess(deps, actor, agentId, task.agent?.version === "draft" ? "edit" : "use");
   } }, { orgId: record.orgId, developerId: actor.developerId, role: actor.orgRole, project: task.project, agentId, ...savedTaskStopBounds(previous),
@@ -2112,19 +2113,8 @@ async function reviewCutoverApproval(deps: SpendRequestDependencies, actor: Agen
     pathLimitMicrousd: record.kind === "max_per_run" ? taskRunLimitMicrousd(task) ?? null : previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null });
   const snapshot = preview.snapshot, policyDigest = taskApprovalPolicyDigest(snapshot);
   if (nativeGuards !== undefined) {
-    nativeGuards.push(...budgetActorChecks(deps.tableName, record.orgId, { developerId: actor.developerId, role: actor.orgRole }));
-    const revisions = snapshot.sourceRevisions;
-    for (const [key, field, revision] of [
-      [orgSettingsKey(record.orgId, "TASK_STOP_POLICY"), "revision", revisions.company],
-      [agentGuardrailsKey(record.orgId), "revision", revisions.ceiling],
-      [orgProjectCatalogKey(record.orgId, task.project), "latestRevision", revisions.projectCatalog],
-      [projectAiKey(record.orgId, task.project), "revision", revisions.project],
-      [isBuiltinAgentId(agentId) ? builtinSettingsKey(record.orgId, agentId) : agentKey(record.orgId, agentId, "META"), "revision", revisions.agent],
-    ] as const) nativeGuards.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: "#cutoverRevision = :cutoverRevision", ExpressionAttributeNames: { "#cutoverRevision": field }, ExpressionAttributeValues: { ":cutoverRevision": revision } } });
-    const company = nativeGuards[nativeGuards.length - 5]!.ConditionCheck!;
-    company.ConditionExpression += " AND (#cutoverEnrollment.#cutoverState = :cutoverDisabled OR #cutoverEnrollment.#cutoverState = :cutoverReady)";
-    company.ExpressionAttributeNames = { ...company.ExpressionAttributeNames, "#cutoverEnrollment": "enrollment", "#cutoverState": "state" };
-    company.ExpressionAttributeValues = { ...company.ExpressionAttributeValues, ":cutoverDisabled": "disabled", ":cutoverReady": "ready" };
+    if (preview.sourceChecks === undefined) throw staleApproval();
+    nativeGuards.push(...preview.sourceChecks);
     const fenced = withAdmittedTaskSource(deps.tableName, task, nativeGuards, "cutoverTask");
     nativeGuards.splice(0, nativeGuards.length, ...fenced.items);
   }

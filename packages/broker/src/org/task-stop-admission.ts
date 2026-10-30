@@ -1,3 +1,4 @@
+import type { TransactItem } from "../agents/table-writes.js";
 // A captured numeric policy is not paid-work permission: callers still commit
 // live authority, lifecycle, monthly admission, audit and their idempotent work.
 import { createHash } from "node:crypto";
@@ -59,7 +60,14 @@ export async function previewTaskStopCutover(deps: TaskStopCaptureDependencies, 
   return { kind: "preview", enrolled: false, snapshot };
 }
 
-async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value: unknown, cutoverPreview: boolean): Promise<CapturedTaskStop | { kind: "disabled" }> {
+/** Internal transaction context. Never serialize these native source checks. */
+export async function captureTaskStopCutoverReview(deps: TaskStopCaptureDependencies, value: unknown): Promise<{ kind: "preview"; enrolled: false; snapshot: CapturedTaskStop; sourceChecks: TransactItem[] }> {
+  const sourceChecks: TransactItem[] = [], snapshot = await captureTaskStopSnapshot(deps, value, true, sourceChecks);
+  if (snapshot.kind !== "captured") throw missing();
+  return { kind: "preview", enrolled: false, snapshot, sourceChecks };
+}
+
+async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value: unknown, cutoverPreview: boolean, nativeChecks?: TransactItem[]): Promise<CapturedTaskStop | { kind: "disabled" }> {
   const parsedIdentity = CaptureIdentity.safeParse(value);
   if (!parsedIdentity.success) throw forbidden();
   const identity = parsedIdentity.data;
@@ -171,6 +179,21 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   if (calculation.kind !== "resolved" || !("approvalCapMicrousd" in calculation)) throw invalid();
   const sourceRevisions = { company: company.revision, ceiling: ceiling.revision, projectCatalog: catalog.latestRevision, project: settings.revision, agent: agent.revision };
   const policyDigest = createHash("sha256").update(JSON.stringify([orgId, project, agentId, sourceRevisions, data.data])).digest("hex");
+  if (nativeChecks !== undefined) {
+    const presenceFields = ["orgId", "developerId", "role", "closingAt", "closedAt", "revision", "latestRevision", "policy", "enrollment", "guardrails", "taskStopPolicy", "stopKind", "stopMicrousd", "maxPerRunUsd", "status", "owner", "accountable", "shares", "pinnedVersion", "version", "source", "outcome", "policyRevision"];
+    keys.forEach((key, index) => {
+      const source = rows[index];
+      if (source === undefined) { nativeChecks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: "attribute_not_exists(pk)" } }); return; }
+      const names: Record<string, string> = {}, values: Record<string, unknown> = {};
+      const fields = [...new Set([...Object.keys(source), ...presenceFields])];
+      const clauses = fields.map((field, fieldIndex) => {
+        const name = `#cutoverSource${index}_${fieldIndex}`, value = `:cutoverSource${index}_${fieldIndex}`; names[name] = field;
+        if (source[field] === undefined) return `attribute_not_exists(${name})`;
+        values[value] = source[field]; return `${name} = ${value}`;
+      });
+      nativeChecks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: clauses.join(" AND "), ExpressionAttributeNames: names, ExpressionAttributeValues: values } });
+    });
+  }
   return { kind: "captured", schemaVersion: 2, orgId, project, agentId, capturedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
     policyDigest, effectiveStopMicrousd: calculation.effectiveStopMicrousd, approvalCapMicrousd: calculation.approvalCapMicrousd,
     bindingScopes: calculation.bindingScopes, calculationInput: data.data, sourceRevisions };

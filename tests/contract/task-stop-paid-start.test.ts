@@ -2047,10 +2047,14 @@ for (const race of ["none", "ceiling", "actor", "task", "company", "project", "a
   const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
   const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: 5, newLimitUsd: 5, reason: "Complete above-ceiling ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
   f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
-  const before = f.t.meta(taskId), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" }, send = f.t.db.send.bind(f.t.db); let attempted = false;
+  const before = f.t.meta(taskId), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" }, send = f.t.db.send.bind(f.t.db); let attempted = false; let snapshots = 0;
   f.t.db.send = async command => {
+    if (command instanceof TransactGetCommand) snapshots += 1;
     if (!attempted && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
       attempted = true;
+      const keys = command.input.TransactItems.map(item => { const source = item.Update?.Key ?? item.ConditionCheck?.Key ?? item.Put?.Item ?? item.Delete?.Key; return `${String(source?.pk)}|${String(source?.sk)}`; });
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(command.input.TransactItems.some(item => item.ConditionCheck?.Key?.pk === orgScoped(TEST_ORG, "TASK_STOP_SEED") && item.ConditionCheck.Key.sk === "V1#upgrade")).toBe(true);
       if (race === "ceiling") { const ceiling = agentGuardrailsKey(TEST_ORG), row = f.t.db.get(ceiling)!; f.t.db.set({ ...row, revision: Number(row.revision) + 1, guardrails: { ...(row.guardrails as Record<string, unknown>), maxPerRunCeilingUsd: 10 } }); }
       if (race === "actor") { const actor = orgMemberKey(TEST_ORG, ADA.developerId); f.t.db.set({ ...f.t.db.get(actor)!, role: "member" }); }
       if (race === "task") f.t.db.set({ ...f.t.db.get(taskKey(taskId))!, budgetUsd: 2 });
@@ -2068,7 +2072,7 @@ for (const race of ["none", "ceiling", "actor", "task", "company", "project", "a
   if (typeof fn !== "function") throw new Error("fenced cutover expiry missing");
   const invoke = fn as (deps: unknown, actor: unknown, id: string) => Promise<unknown>;
   expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record.spendRequestId)).toMatchObject({ kind: race === "none" ? "expired" : "retry" });
-  expect(attempted).toBe(true);
+  expect(attempted).toBe(true); expect(snapshots).toBe(1);
   expect(f.t.db.get(key)?.status).toBe(race === "none" ? "EXPIRED" : "PENDING");
   if (race === "none") expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
   else expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
