@@ -132,6 +132,8 @@ describe("the health route's grants (A13)", () => {
       "packages/contracts/src/admin-changes.ts", "packages/broker/src/aws/admin-changes.ts",
       // The plan evidence job row (spec 061) expires on it too.
       "packages/broker/src/developer/plan-evidence-jobs.ts",
+      // Fixed-window rate rows (takeRateAt): each window's row expires on it, 30 days after the window opens.
+      "packages/broker/src/developer/page-comments.ts",
       // Retired and quarantined recovery rows only; active retries remove the due/lease fields without TTL.
       "packages/broker/src/aws/workflow-merge-recovery.ts",
       // The audit outbox's AUDIT_PENDING# items (Audit Ledger, Task 6) expire on it too; the drain only reads them.
