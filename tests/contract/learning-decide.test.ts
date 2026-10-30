@@ -450,14 +450,26 @@ describe("the re-check at Accept", () => {
   });
 });
 
-describe("L3: the person whose corrections produced the rule may accept it", () => {
-  it("lets a contributor who wrote one of the corrections accept; the version is theirs", async () => {
+describe("L3: being the author never grants the right to accept; How we work edit rights do", () => {
+  it("refuses a contributor who wrote one of the corrections, and writes nothing", async () => {
     const w = world();
     const layer = await processLayer(w);
     const id = await suggest(w);
-    expect(await acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id))).toEqual({ outcome: "published", version: 2 });
-    expect((await w.store.getVersion(ORG_A, layer, 2))!.publishedBy).toBe(ARJUN);
-    expect(eventsOf(w, "rule.accepted").at(-1)).toMatchObject({ actor: { id: ARJUN } });
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id)));
+    expect(refusal!.code).toBe("FORBIDDEN");
+    expect(refusal!.message).toContain("only a project maintainer can change how the project works");
+    expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
+    expect(ruleItems(w)).toEqual([]);
+    expect((await w.store.get(ORG_A, layer))!.currentVersion).toBe(1);
+  });
+
+  it("lets a maintainer who wrote one of the corrections accept their own suggestion; the version is theirs", async () => {
+    const w = world();
+    const layer = await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    expect(await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id))).toEqual({ outcome: "published", version: 2 });
+    expect((await w.store.getVersion(ORG_A, layer, 2))!.publishedBy).toBe(MAX);
+    expect(eventsOf(w, "rule.accepted").at(-1)).toMatchObject({ actor: { id: MAX } });
   });
 
   it("refuses a contributor who wrote none of them, and a viewer", async () => {
@@ -898,16 +910,24 @@ describe("I3: a Remove that was declined or expired gives the draft back", () =>
   });
 });
 
-describe("L3: a contributor author cannot accept before the project has How we work", () => {
-  it("refuses with the fixed words and a link to the page, and writes nothing", async () => {
+describe("a project with no How we work layer yet", () => {
+  it("refuses a contributor author with the same words as a publish (no set-up message, no link), and writes nothing", async () => {
     const w = world();
     const id = await suggest(w);
     const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, ARJUN), "web", id, acceptBody(w, id)));
-    expect(refusal).toMatchObject({ code: "FORBIDDEN" });
-    expect(refusal!.message).toContain("A maintainer needs to set up How we work for this project first");
-    expect(refusal!.message).toContain("https://cell.example.com/app/projects/web?tab=how-we-work");
+    expect(refusal!.code).toBe("FORBIDDEN");
+    expect(refusal!.message).toContain("only a project maintainer can change how the project works");
+    expect(refusal!.message).not.toContain("set up How we work");
+    expect(refusal!.message).not.toContain("how-we-work");
     expect(suggestionOf(w, id)).toMatchObject({ status: "open" });
     expect(ruleItems(w)).toEqual([]);
+  });
+
+  it("lets a maintainer set the layer up as they accept", async () => {
+    const w = world();
+    const id = await suggest(w);
+    const answer = await acceptSuggestion(decideDeps(w), callerOf(w, MAX), "web", id, acceptBody(w, id));
+    expect(answer).toMatchObject({ outcome: "published" });
   });
 });
 
@@ -1023,11 +1043,36 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     await agree(w, MAX, id, true);
   });
 
-  it("an author who still has standing: true, and Accept goes through", async () => {
+  it("a contributor who wrote a source: false, and Accept refuses (being the author grants nothing)", async () => {
     const w = world();
     await processLayer(w);
     const id = await suggest(w);
-    await agree(w, ARJUN, id, true);
+    await agree(w, ARJUN, id, false);
+  });
+
+  it("a maintainer who wrote a source: true, and Accept goes through", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w, { sources: [{ author: MAX, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await agree(w, MAX, id, true);
+  });
+
+  it("an org admin (edit rights through the company role): view and Accept agree", async () => {
+    const w = world();
+    await processLayer(w);
+    const id = await suggest(w);
+    const seen = (await viewLearning(decideDeps(w), callerOf(w, OLA), "web")).suggestions[0]!.canDecide;
+    const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, OLA), "web", id, acceptBody(w, id)));
+    expect(seen).toBe(refusal?.code !== "FORBIDDEN");
+  });
+
+  it("view and Accept agree for every role", async () => {
+    for (const [who, expected] of [[MAX, true], [PRIYA, false], [ARJUN, false], [MIA, false]] as const) {
+      const w = world();
+      await processLayer(w);
+      const id = await suggest(w);
+      await agree(w, who, id, expected);
+    }
   });
 
   it("an author who has lost standing (now a viewer): false, and Accept refuses", async () => {
@@ -1054,15 +1099,14 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     await agree(w, "f".repeat(64), id, false);
   });
 
-  it("is decided suggestion by suggestion: an author sees true only on the suggestion they wrote", async () => {
+  it("a contributor sees false on every suggestion, including the one they wrote", async () => {
     const w = world();
     await processLayer(w);
-    const mine = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
+    await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: RETRY_A }, { author: ARJUN, task: "t2", text: RETRY_B }] });
     await suggest(w, { stage: "plan", sources: [{ author: MAX, task: "t3", text: "Name database migrations with the date prefix and a short description." }, { author: OLA, task: "t4", text: "Database migrations need a date prefix in the name and a short description." }] });
     const view = await viewLearning(decideDeps(w), callerOf(w, PRIYA), "web");
     expect(view.suggestions).toHaveLength(2);
-    expect(view.suggestions.find((one) => one.id === mine)!.canDecide).toBe(true);
-    expect(view.suggestions.find((one) => one.id !== mine)!.canDecide).toBe(false);
+    expect(view.suggestions.every((one) => one.canDecide === false)).toBe(true);
     expect(view.canDecide).toBe(false);
   });
 
