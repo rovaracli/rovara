@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -310,4 +310,24 @@ it("absent built-in inheritance cannot overwrite concurrently created administra
   expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(winner);
   expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "updated" });
   expect(f.db.get(key.pk, key.sk)).toMatchObject({ ...winner, stopKind: "limited", revision: 1 });
+});
+
+it("agent inheritance inventory advances bounded native directory pages without claiming enrollment readiness", async () => {
+  const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  const ids = ["agt_aaaaaaaaaaaaaaaaaaaa", "agt_bbbbbbbbbbbbbbbbbbbb"];
+  for (const agentId of ids) {
+    f.db.set({ pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId, entityType: "AGENT_DIRECTORY", agentId });
+    f.db.set({ ...agentKey(orgId, agentId, "META"), orgId, entityType: "AGENT", agentId, status: "active", revision: 1, monthlyBudgetUsd: 50 });
+  }
+  const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopAgentInventoryPage"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("bounded inventory missing");
+  const invoke = fn as (deps: unknown, input: unknown) => Promise<{ examined: number; updated: number; complete: boolean; cursor?: { pk: string; sk: string } }>;
+  const deps = { documentClient: f.db, tableName: "state", now: () => now };
+  const first = await invoke(deps, { orgId, limit: 1 });
+  expect(first).toMatchObject({ examined: 1, updated: 1, complete: false, cursor: { pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: ids[0] } });
+  expect(f.db.get(agentKey(orgId, ids[1]!, "META").pk, "META")).not.toHaveProperty("stopKind");
+  const second = await invoke(deps, { orgId, limit: 1, cursor: first.cursor });
+  expect(second).toMatchObject({ examined: 1, updated: 1, complete: true }); expect(second.cursor).toBeUndefined();
+  expect(f.db.get(agentKey(orgId, ids[1]!, "META").pk, "META")).toMatchObject({ stopKind: "inherit", monthlyBudgetUsd: 50 });
+  expect(f.db.get(policyKey.pk, policyKey.sk)).toBeUndefined();
 });
