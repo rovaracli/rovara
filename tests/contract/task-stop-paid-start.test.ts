@@ -427,9 +427,10 @@ for (const enrolled of [false, true]) it(`initial human run preserves a legacy s
   }
 });
 
-async function pausedTestTransition(spentUsd?: number, history = false) {
+async function pausedTestTransition(spentUsd?: number, history = false, initialMax?: number) {
   const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, ...(initialMax === undefined ? { stopKind: "inherit" } : { stopKind: "limited", maxPerRunUsd: initialMax }) });
+  if (initialMax !== undefined) f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
   if (history) for (let index = 0; index < 5; index += 1) f.t.db.set({ ...runCostKey(TEST_ORG, "payments", agentId, "AGENT", new Date(Date.now() - index * 1000).toISOString(), randomUUID()), entityType: "RUN_COST", costUsd: 7 });
   const task = await f.t.runOf(agentId, { version: "draft" });
   if (spentUsd !== undefined) {
@@ -1266,4 +1267,27 @@ it("saved admission digest verification tolerates stored map key reordering", as
   const f = await hardRequestedTask(), saved = checkedTaskStopSnapshot(f.t.meta(f.task.taskId).spendingStop);
   const reordered = { ...saved, calculationInput: Object.fromEntries(Object.entries(saved.calculationInput).reverse()), sourceRevisions: Object.fromEntries(Object.entries(saved.sourceRevisions).reverse()) };
   expect(checkedTaskStopSnapshot(reordered)).toEqual(saved);
+});
+
+it("Continue retains the task-specific per-run stop granted by its prior approval", async () => {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  f.t.db.set({ ...f.t.db.get(f.agent)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  const task = await f.t.plainTask();
+  const settings: Record<string, unknown> = { ...f.t.db.get(f.agent)!, revision: 3, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
+  await f.t.pauseAndEnd(task, { kind: "max_per_run", taskId: task.taskId });
+  const request = f.t.requestOf(task.taskId, "max_per_run")[0]!; await f.t.decide(ADA, request.spendRequestId);
+  expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9 });
+  await f.t.finish(task.workspaceId, f.t.taskOps(task.workspaceId).at(-1)!.id, "SUCCEEDED");
+  const reply = await f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue`, { requestId: randomUUID(), instructions: "Continue within the approved per-run stop." }); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000, calculationInput: { committedMaxPerRunMicrousd: 9_000_000 } } });
+});
+it("a new payer window retains an existing task per-run stop when current agent settings inherit", async () => {
+  const f = await pausedTestTransition(undefined, true, 4), key = agentKey(TEST_ORG, f.agentId, "META");
+  const settings: Record<string, unknown> = { ...f.t.db.get(key)!, revision: 2, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  expect(f.t.meta(f.task.taskId).maxPerRunUsd).toBe(4); expect((await f.transition()).status).toBe(200);
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4, spendingStop: { effectiveStopMicrousd: 4_000_000, calculationInput: { committedMaxPerRunMicrousd: 4_000_000 } } });
 });
