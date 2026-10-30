@@ -93,3 +93,17 @@ it("refuses an eligibility directory changed while it was enumerated", async () 
  };
  await expect(f.read()).rejects.toMatchObject({ code: "CHANGE_STALE" });
 });
+
+it("legacy companies approve with distinct live people and an absent-generation commit fence", async () => {
+ const f = fixture();f.person(admin, "admin");const meta = { ...f.db.get(orgMetaKey(orgId)) };delete meta.approvalMembershipVersion;delete meta.approvalTrackingSince;f.db.set(meta);
+ const proof = await f.read(admin);expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("second_person");
+ await f.db.send(new TransactWriteCommand({ TransactItems: [...proof.conditions, { Put: { TableName: "state", Item: { pk: "LEGACY", sk: "APPROVED" } } }] }));
+ expect(f.db.get({ pk: "LEGACY", sk: "APPROVED" })).toBeDefined();
+ f.db.set({ ...meta, approvalMembershipVersion: 0 });
+ await expect(f.db.send(new TransactWriteCommand({ TransactItems: [...proof.conditions, { Put: { TableName: "state", Item: { pk: "LEGACY", sk: "RACED" } } }] }))).rejects.toMatchObject({ name: "TransactionCanceledException" });
+ expect(f.db.get({ pk: "LEGACY", sk: "RACED" })).toBeUndefined();
+});
+it("legacy companies without generation evidence cannot use the sole-owner exception", async () => {
+ const f = fixture();const meta = { ...f.db.get(orgMetaKey(orgId)) };delete meta.approvalMembershipVersion;delete meta.approvalTrackingSince;f.db.set(meta);
+ await expect(f.read()).rejects.toMatchObject({ code: "CHANGE_STALE" });
+});

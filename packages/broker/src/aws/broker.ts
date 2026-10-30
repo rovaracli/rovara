@@ -3496,7 +3496,25 @@ export async function registerProjectFor(
     // One transaction holds at most 100 items; the project revision, its membership, the catalog and the setup admission take the rest.
     if (accounts.items.length > 60) throw agentXError("CONFIG_INVALID", "the setup declares more synthetic test accounts than one registration can store");
     try {
-      const registrationItems: TransactItems = [
+      // DynamoDB allows one action per item. Keep the narrowing snapshot AND
+    // eligibility-loss fence when a takeover updates that same META row.
+    const commonDomainItems = commonDomainPlan?.items.filter(item => {
+      const check = item.ConditionCheck;if (check === undefined) return true;
+      const update = membershipGeneration.find(generation => generation.Update?.TableName === check.TableName
+        && generation.Update?.Key?.pk === check.Key?.pk && generation.Update?.Key?.sk === check.Key?.sk)?.Update;
+      if (update === undefined) return true;
+      for (const [token, value] of Object.entries(check.ExpressionAttributeNames ?? {})) {
+        if (update.ExpressionAttributeNames?.[token] !== undefined && update.ExpressionAttributeNames[token] !== value) throw agentXError("CONFIG_INVALID", "Website transaction condition conflicts.");
+      }
+      for (const [token, value] of Object.entries(check.ExpressionAttributeValues ?? {})) {
+        if (update.ExpressionAttributeValues?.[token] !== undefined && canonicalJson(update.ExpressionAttributeValues[token]) !== canonicalJson(value)) throw agentXError("CONFIG_INVALID", "Website transaction condition conflicts.");
+      }
+      update.ConditionExpression = [update.ConditionExpression, check.ConditionExpression].filter(Boolean).join(" AND ");
+      if (check.ExpressionAttributeNames !== undefined) update.ExpressionAttributeNames = { ...update.ExpressionAttributeNames, ...check.ExpressionAttributeNames };
+      if (check.ExpressionAttributeValues !== undefined) update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
+      return false;
+    }) ?? [];
+    const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       // The operator's first registration and a takeover write the registrant's administrator membership; an administrator's own is left as it is (its grant is not reissued)
       // but must still hold when the revision commits. A registration the caller authorized writes the creator's grant (or none), as it always did.
@@ -3543,9 +3561,7 @@ export async function registerProjectFor(
       ...(options.extraItems ?? []),
       ...membershipGeneration,
       ...(initialDomainPlan?.items ?? []),
-      // A takeover's generation update already fences the same org META open.
-      ...(commonDomainPlan?.items.filter(item => !(item.ConditionCheck?.Key?.pk === orgMetaKey(orgId).pk && item.ConditionCheck.Key.sk === orgMetaKey(orgId).sk
-        && membershipGeneration.some(generation => generation.Update?.Key?.pk === orgMetaKey(orgId).pk && generation.Update.Key.sk === orgMetaKey(orgId).sk))) ?? []),
+      ...commonDomainItems,
       ...audit.items,
       ];
       if (registrationItems.length > 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");

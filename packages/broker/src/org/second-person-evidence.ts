@@ -85,14 +85,18 @@ export async function readSecondPersonApprovalEvidence(deps: SecondPersonEvidenc
  const approver = await livePerson(deps, scope, scope.approverId);
  const proposer = scope.proposerId === scope.approverId ? approver : await livePerson(deps, scope, scope.proposerId);
  const meta = await read(deps, orgMetaKey(scope.orgId));
- if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined || !Number.isSafeInteger(meta.approvalMembershipVersion) || Number(meta.approvalMembershipVersion) < 0) throw stale();
- const version = Number(meta.approvalMembershipVersion), nowMs = deps.now();
+ if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined) throw stale();
+ const unset = meta.approvalMembershipVersion === undefined;
+ // A legacy company can use two independently pinned live people. An absent
+ // counter proves no history and can NEVER support a sole-owner exception.
+ if (unset ? scope.proposerId === scope.approverId : !Number.isSafeInteger(meta.approvalMembershipVersion) || Number(meta.approvalMembershipVersion) < 0) throw stale();
+ const version = unset ? 0 : Number(meta.approvalMembershipVersion), nowMs = deps.now();
  let project: Row | undefined;
  if (scope.project !== undefined) {
   project = await read(deps, projectMetaKey(scope.orgId, scope.project));
   if (project === undefined || project.status !== "active") throw stale();
  }
- const conditions: TransactItem[] = [{ ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(scope.orgId), ...secondPersonMembershipCondition(version) } }, ...approver.conditions, ...(proposer === approver ? [] : proposer.conditions)];
+ const conditions: TransactItem[] = [{ ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(scope.orgId), ...(unset ? { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt) AND attribute_not_exists(approvalMembershipVersion)" } : secondPersonMembershipCondition(version)) } }, ...approver.conditions, ...(proposer === approver ? [] : proposer.conditions)];
  if (project !== undefined && scope.project !== undefined) conditions.push(snapshot(deps.tableName, projectMetaKey(scope.orgId, scope.project), project, ["status", "archiveRevision", "createdAt", "createdBy", "approvalLastMaintainerLossAt"]));
  const ownerIds: string[] = [], eligibleIds: string[] = [];
  let complete = true, lastEligibleLossAtMs: number | null = null;
@@ -131,7 +135,7 @@ export async function readSecondPersonApprovalEvidence(deps: SecondPersonEvidenc
   }
  }
  const after = await read(deps, orgMetaKey(scope.orgId));
- if (after?.approvalMembershipVersion !== version || after.closedAt !== undefined || after.closingAt !== undefined) throw stale();
+ if (after === undefined || after.approvalMembershipVersion !== meta.approvalMembershipVersion || after.closedAt !== undefined || after.closingAt !== undefined) throw stale();
  return { decisionInput: { proposerId: scope.proposerId, approverId: scope.approverId, nowMs, complete, membershipVersion: version, ownerIds: ownerIds.sort(), eligibleIds: eligibleIds.sort(), lastEligibleLossAtMs }, conditions };
 }
 

@@ -2,7 +2,7 @@ import { loadSlackBroker } from "../support/slack-broker.js";
 import { createHash } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { canonicalJson, INDEX_EXPIRY_ATTRIBUTE, ProjectDefinitionSchema, egressDomainsKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { canonicalJson, INDEX_EXPIRY_ATTRIBUTE, ProjectDefinitionSchema, egressDomainsKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "../../packages/contracts/src/index.js";
 import { proposeProjectAllowedDomains, readProjectAllowedDomainProposal, decideProjectAllowedDomainProposal, commitReviewedProjectAllowedDomains, readProjectAllowedDomainsReview, commitDirectProjectAllowedDomains } from "../../packages/broker/src/org/project-allowed-domains.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -167,7 +167,7 @@ it("distinct live approval atomically applies websites and preserves immutable r
  const f = approvalFixture();addReviewer(f);await f.propose();const original = f.db.get(projectRevisionKey(orgId, project, 1))!;
  const result = await commitReviewedProjectAllowedDomains(f.deps, { orgId, project, by: reviewer, body: { requestId: randomUUID(), proposalId: f.body.requestId } });
  expect(result).toMatchObject({ state: "applied", mode: "second_person", resultRevision: 2 });
- const next = f.db.get(projectRevisionKey(orgId, project, 2));expect(next).toMatchObject({ registeredBy: original.registeredBy, registeredAt: original.registeredAt, runtimeBinding: original.runtimeBinding, workingBranchSelections: original.workingBranchSelections });
+ const next = f.db.get(projectRevisionKey(orgId, project, 2));expect(next).toMatchObject({ registeredBy: reviewer, registeredAt: new Date(at).toISOString(), runtimeBinding: original.runtimeBinding, workingBranchSelections: original.workingBranchSelections });
  expect((next?.definition as Record<string, unknown>).network).toEqual({ allowedDomains: ["artifacts.acme.dev"] });
  expect(f.db.get(egressDomainsKey(orgId, { kind: "project", project }))?.domains).toMatchObject([{ domain: "artifacts.acme.dev", status: "pending" }]);
  expect(f.db.get({ pk: projectPk(orgId, project), sk: "EGRESS_PROPOSAL_LIVE" })).toBeUndefined();expect(f.audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "second_person", toRevision: 2 } }]);
@@ -234,7 +234,7 @@ it("common Cloud registrar accepts only a persisted exact reviewed proposal and 
  const requestId = randomUUID(), proof = { requestId, proposalId: f.body.requestId, baseRevision: 1, afterDigest: proposal.afterDigest };
  const deps = { ...f.deps, cloud: true, developer: { signInTableName: "signin" } };
  const result = await registerProjectFor(deps as never, { orgId, ownerKey: reviewer }, { definition, runtimeBinding: base.runtimeBinding }, { creatorMembership: "none", appliedDomainProposal: proof });
- expect(result.duplicate).toBe(false);expect(result.project).toMatchObject({ registeredBy: base.registeredBy });
+ expect(result.duplicate).toBe(false);expect(result.project).toMatchObject({ registeredBy: reviewer, registeredAt: new Date(at).toISOString() });
  expect(f.db.get(projectRevisionKey(orgId, project, 2))?.workingBranchSelections).toEqual(base.workingBranchSelections);
  expect((await registerProjectFor(deps as never, { orgId, ownerKey: reviewer }, { definition, runtimeBinding: base.runtimeBinding }, { creatorMembership: "none", appliedDomainProposal: proof })).duplicate).toBe(true);
 });
@@ -290,7 +290,7 @@ async function directFixture() {
 it("reviewed direct narrowing preserves registration, setup and branch pins in one audited revision", async () => {
  const f = await directFixture(), original = f.db.get(projectRevisionKey(orgId, project, 1))!;const result = await f.save();
  expect(result).toMatchObject({ state: "applied", mode: "direct_narrowing", resultRevision: 2 });
- const next = f.db.get(projectRevisionKey(orgId, project, 2));expect(next).toMatchObject({ registeredBy: original.registeredBy, registeredAt: original.registeredAt, runtimeBinding: original.runtimeBinding, setupApproval: original.setupApproval, workingBranchSelections: original.workingBranchSelections });
+ const next = f.db.get(projectRevisionKey(orgId, project, 2));expect(next).toMatchObject({ registeredBy: by, registeredAt: new Date(at).toISOString(), runtimeBinding: original.runtimeBinding, setupApproval: original.setupApproval, workingBranchSelections: original.workingBranchSelections });
  expect((next?.definition as Record<string, unknown>).network).toBeUndefined();expect(f.db.get(f.egressKey)?.domains).toEqual([]);
  expect(f.audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "direct_narrowing", removed: 1, added: 0 } }]);
 });
@@ -332,4 +332,26 @@ it("direct narrowing fails closed on a malformed immutable repository pin", asyn
  f.db.set({ ...row, workingBranchSelections: { main: { branch: "main", commit: "a".repeat(40), installationId: 1, repositoryId: 999 } } });
  const review = await readProjectAllowedDomainsReview(f.deps, { orgId, project, by }), before = structuredClone(f.db.find(() => true));
  await expect(f.save({ expectedContextDigest: review.contextDigest })).rejects.toThrow();expect(f.db.find(() => true)).toEqual(before);expect(f.audit.recordedBy("project.allowed_domains_changed")).toEqual([]);
+});
+
+it("a legacy company commits distinct-person website approval without counter initialization", async () => {
+ const f = approvalFixture();addReviewer(f);const key = orgMetaKey(orgId), meta = { ...f.db.get(key) };delete meta.approvalMembershipVersion;delete meta.approvalTrackingSince;f.db.set(meta);await f.propose();
+ const result = await commitReviewedProjectAllowedDomains(f.deps, { orgId, project, by: reviewer, body: { requestId: randomUUID(), proposalId: f.body.requestId } });
+ expect(result).toMatchObject({ state: "applied", mode: "second_person", resultRevision: 2 });expect(f.db.get(key)?.approvalMembershipVersion).toBeUndefined();
+ expect(f.db.get(projectRevisionKey(orgId, project, 2))).toMatchObject({ registeredBy: reviewer });
+});
+it("takeover with website narrowing commits one project META action retaining lifecycle and loss fences", async () => {
+ vi.spyOn(Date, "now").mockReturnValue(at);const f = approvalFixture();addReviewer(f);
+ const baseKey = projectRevisionKey(orgId, project, 1), base = { ...f.db.get(baseKey) };delete base.workingBranchSelections;
+ f.db.set({ ...f.db.get(orgProjectCatalogKey(orgId, project)), entityType: "PROJECT_CATALOG" });
+ base.definition = { ...(base.definition as Record<string, unknown>), network: { allowedDomains: ["old.acme.dev"] } };f.db.set(base);
+ f.db.set({ ...projectMemberKey(orgId, reviewer, project), entityType: "MEMBERSHIP", ownerKey: reviewer, projectName: project, role: "developer", projectRole: "maintainer", grantId: "old-grant" });
+ await loadSlackBroker();const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
+ const definition = ProjectDefinitionSchema.parse({ ...(base.definition as Record<string, unknown>), revision: 2, network: { allowedDomains: [] } });
+ const result = await registerProjectFor({ ...f.deps, cloud: true, developer: { signInTableName: "signin" } } as never, { orgId, ownerKey: reviewer, auditActor: { kind: "operator", id: "op_" + "1".repeat(24) } }, { definition, runtimeBinding: base.runtimeBinding, takeOwnership: true, takeOwnershipReason: "Reviewed takeover" }, { creatorMembership: "administrator", credentialsChecked: [] });
+ expect(result.duplicate).toBe(false);
+ const actions = f.db.transactions().at(-1)! as Array<{ Update?: { Key: { pk: string; sk: string }; ConditionExpression?: string }; ConditionCheck?: { Key: { pk: string; sk: string } } }>;
+ const matches = actions.filter(action => { const item = action.Update ?? action.ConditionCheck;return item?.Key.pk === projectMetaKey(orgId, project).pk && item.Key.sk === "META"; });
+ expect(matches).toHaveLength(1);expect(matches[0]?.Update?.ConditionExpression).toContain("#m0 = :m0");
+ expect(f.db.get(projectMetaKey(orgId, project))?.approvalLastMaintainerLossAt).toBe(result.project.registeredAt);
 });

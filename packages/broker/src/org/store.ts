@@ -410,7 +410,7 @@ export class OrgStore {
       // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
       { Update: { TableName: this.input.tableName, Key: orgMetaKey(orgId),
         UpdateExpression: "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)",
-        ConditionExpression: "attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)",
         ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": nowIso },
       } },
     ];

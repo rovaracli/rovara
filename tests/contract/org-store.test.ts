@@ -265,3 +265,11 @@ it("reports a closing-company join as stale without creating a membership", asyn
  await expect(store.addMember({ orgId, developerId: "new", role: "member" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
  expect(await store.orgForDeveloper("new")).toBeUndefined();
 });
+
+it("refuses invite acceptance when company META disappeared without creating a stub", async () => {
+ const { store, db } = setup();const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+ const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "admin" });db.delete(orgMetaKey(orgId));
+ await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "new-person" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+ expect(db.get(orgMetaKey(orgId))).toBeUndefined();expect(await store.orgForDeveloper("new-person")).toBeUndefined();
+ expect(db.get(orgInviteKey(inviteTokenHash(token)))?.acceptedAt).toBeUndefined();
+});

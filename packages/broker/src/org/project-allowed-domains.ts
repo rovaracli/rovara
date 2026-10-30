@@ -260,7 +260,7 @@ export async function commitReviewedProjectAllowedDomains(deps: Dependencies, in
  // Evidence pins project META after live eligibility. Context was checked after
  // that read; the full base-row fence and catalog Update replace its other checks.
  const items: TransactItem[] = [...uniqueChecks(evidence.conditions), immutableRecordFence(deps.tableName, baseKey, registered),
-  { Put: { TableName: deps.tableName, Item: { ...registered, ...projectRevisionKey(input.orgId, input.project, nextRevision), definition: nextDefinition }, ConditionExpression: "attribute_not_exists(pk)" } },
+  { Put: { TableName: deps.tableName, Item: { ...registered, ...projectRevisionKey(input.orgId, input.project, nextRevision), registeredBy: input.by, registeredAt: at, definition: nextDefinition }, ConditionExpression: "attribute_not_exists(pk)" } },
   { Update: { TableName: deps.tableName, Key: catalogKey, UpdateExpression: "SET latestRevision = :next", ConditionExpression: "latestRevision = :base", ExpressionAttributeValues: { ":next": nextRevision, ":base": proposal.baseRevision } } },
   ...egress.items,
   { Put: { TableName: deps.tableName, Item: { ...proposal, state: "applied", mode: decision.mode, decidedAt: at, decidedBy: input.by, decisionRequestId: body.requestId, resultRevision: nextRevision },
@@ -369,7 +369,7 @@ export async function commitDirectProjectAllowedDomains(deps: Dependencies, inpu
  const isMeta = (item: TransactItem) => item.ConditionCheck?.Key?.pk === metaKey.pk && item.ConditionCheck.Key.sk === metaKey.sk;
  if (plan.items.filter(isMeta).length !== 1 || plan.items.some(item => item.Update?.Key?.pk === metaKey.pk && item.Update.Key.sk === metaKey.sk)) throw unavailable();
  const items: TransactItem[] = [...plan.items.filter(item => !isMeta(item)), immutableRecordFence(deps.tableName, metaKey, meta, []), immutableRecordFence(deps.tableName, baseKey, registered),
-  { Put: { TableName: deps.tableName, Item: { ...registered, ...projectRevisionKey(input.orgId, input.project, next), definition: nextDefinition }, ConditionExpression: "attribute_not_exists(pk)" } },
+  { Put: { TableName: deps.tableName, Item: { ...registered, ...projectRevisionKey(input.orgId, input.project, next), registeredBy: input.by, registeredAt: new Date(deps.now()).toISOString(), definition: nextDefinition }, ConditionExpression: "attribute_not_exists(pk)" } },
   { Update: { TableName: deps.tableName, Key: catalogKey, UpdateExpression: "SET latestRevision = :next", ConditionExpression: "latestRevision = :base", ExpressionAttributeValues: { ":next": next, ":base": body.expectedRevision } } }];
  if (items.length > 100) throw agentXError("CONFIG_INVALID", "This website save cannot fit one transaction.");
  try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items })); }
