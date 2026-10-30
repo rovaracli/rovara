@@ -207,7 +207,7 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
     taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined), ...projectChecks, ...agentChecks];
 }
 
-const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "spendingAdmission", "budgetPause", "closedAt"] as const;
+const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "share", "shareVersion", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "spendingAdmission", "budgetPause", "closedAt"] as const;
 export async function admittedTaskSourceUnchanged(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<boolean> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(task.taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   if (response.Item === undefined) return false;
