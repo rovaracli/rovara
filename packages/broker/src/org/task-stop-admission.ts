@@ -163,8 +163,10 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
 }
 
 /** Reuses one already captured economic snapshot with a proposed approval. */
-export function approveCapturedTaskStop(snapshot: CapturedTaskStop, approvedRunLimitMicrousd: unknown): CapturedTaskStop {
-  const parsed = TaskStopAdmissionInputSchema.safeParse({ ...snapshot.calculationInput, approvedRunLimitMicrousd });
+export function approveCapturedTaskStop(snapshot: CapturedTaskStop, approvedLimitMicrousd: unknown, operation: "run_limit" | "max_per_run" = "run_limit"): CapturedTaskStop {
+  const { approvedRunLimitMicrousd: _oldRun, approvedMaxPerRunMicrousd: _oldMax, ...basis } = snapshot.calculationInput;
+  void _oldRun; void _oldMax;
+  const parsed = TaskStopAdmissionInputSchema.safeParse({ ...basis, ...(operation === "max_per_run" ? { approvedMaxPerRunMicrousd: approvedLimitMicrousd } : { approvedRunLimitMicrousd: approvedLimitMicrousd }) });
   if (!parsed.success) throw invalid();
   const calculation = calculateTaskStop(parsed.data);
   if (calculation.kind === "refused") throw agentXError(calculation.reason, "This approval is above the company ceiling. Ask an admin to raise the ceiling first; that change needs a second person.");

@@ -81,3 +81,18 @@ it("does not mutate a supplied policy, accept extra aliases, or turn inherit int
   expect(result(input)).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 1 });
   expect(result(policy(M, { maxPerRunCeilingUsd: 1 }))).toMatchObject({ kind: "unavailable" });
 });
+
+it("a new max-per-run approval is separate from the task run limit", () => {
+  expect(result(policy(4 * M, { approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 4 * M, bindingScopes: ["path"] });
+  expect(result(policy(14 * M, { approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 9 * M, bindingScopes: ["approved_max_per_run"] });
+});
+it("the new approval ceiling refuses a per-run raise even when a smaller task run limit remains", () => {
+  expect(result(policy(4 * M, { ceilingMicrousd: 6 * M, approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "refused", reason: "TASK_STOP_APPROVAL_ABOVE_CEILING" });
+});
+it("approved per-run windows retain explicit numeric scope and requested bounds", () => {
+  expect(result(policy(14 * M, { companyDefault: limited(5 * M), approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 5 * M, bindingScopes: ["company_default"] });
+  expect(result(policy(4 * M, { requestedMicrousd: 3 * M, approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "resolved", effectiveStopMicrousd: 3 * M, bindingScopes: ["requested"] });
+});
+it("contradictory approved limit kinds are unavailable", () => {
+  expect(result(policy(4 * M, { approvedRunLimitMicrousd: 9 * M, approvedMaxPerRunMicrousd: 9 * M }))).toMatchObject({ kind: "unavailable", reason: "INVALID_OR_MISSING_POLICY" });
+});

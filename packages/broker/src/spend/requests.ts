@@ -1293,7 +1293,10 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
     names["#maxPerRunUsd"] = "maxPerRunUsd";
     values[":stop"] = stop;
     sets.push("#maxPerRunUsd = :stop");
-    if (forThis) removes.push("#pause");
+    if (forThis) {
+      if (approvalStop !== undefined && stop > runLimitOf(task)) { sets.push("#pause = :followRunPause"); values[":followRunPause"] = { scope: { kind: "task", taskId: task.taskId }, at: iso(deps.now()) }; }
+      else removes.push("#pause");
+    }
     if (stop > runLimitOf(task)) raisedPastRunLimit = runLimitOf(task);
   }
   if (approvalStop !== undefined && !(forPlan && !planBlocked)) {
@@ -1308,7 +1311,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
       ExpressionAttributeNames: names, ExpressionAttributeValues: values,
     },
   };
-  return { items: [update], resume: forThis || (forPlan && planBlocked) || (!forPlan && record.resume === "implement"), resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
+  return { items: [update], resume: !(approvalStop !== undefined && raisedPastRunLimit !== undefined) && (forThis || (forPlan && planBlocked) || (!forPlan && record.resume === "implement")), resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
 }
 
 /** The run limit request that follows a max-per-run raise past the run limit: who it goes to, worked out before the approval writes its event. */
@@ -1535,7 +1538,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
         await expireOne(deps, record, "spending_rules_changed");
         throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
       }
-      approvalStop = approved;
+      approvalStop = record.kind === "max_per_run" ? approveCapturedTaskStop(captured, usdToWholeMicrodollars(newLimitFor(record, approvedUsd)) ?? null, "max_per_run") : approved;
     }
   }
   const originalRequestIndex = approvalTerms === undefined ? undefined : pinTaskApprovalRequest(ending, record);
