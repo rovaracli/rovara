@@ -4,7 +4,7 @@ import { githubConnectorType, type ConnectorType } from "../../packages/broker/s
 import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
 import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { call, createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
+import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 import { TRACKER_ENDPOINT, trackerConnectorType } from "../support/tracker-connector.js";
 import { projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";

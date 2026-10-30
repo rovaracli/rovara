@@ -7,8 +7,8 @@ type Row = Record<string, unknown>;
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Website proposals could not be cleared. Retry company cleanup.");
 const stale = () => agentXError("CHANGE_STALE", "Company cleanup authority changed. Retry company cleanup.");
 const projectSk = z.string().refine(value => value.startsWith("PROJECT#") && AgentXNameSchema.safeParse(value.slice(8)).success);
-const proposalSk = z.string().refine(value => value === "EGRESS_PROPOSAL_LIVE" || (value.startsWith("EGRESS_PROPOSAL#") && z.string().uuid().safeParse(value.slice(16)).success));
-/** Bounded, resumable erasure of every website proposal/receipt generation.
+
+/** Bounded, resumable erasure of every website and Slack proposal/receipt generation.
  * No automatic retry after ambiguous deletion. Every batch pins the same durable
  * closing/closed state; failure prevents teardown/final close in OrgStore. */
 export async function clearProjectAllowedDomainProposals(deps: Dependencies, value: unknown): Promise<{ deleted: number }> {
@@ -39,12 +39,15 @@ export async function clearProjectAllowedDomainProposals(deps: Dependencies, val
     const checked = z.object({ pk: z.literal(catalogPk), sk: projectSk, name: AgentXNameSchema, orgId: z.literal(orgId).optional() }).passthrough().safeParse(raw);
     if (!checked.success || checked.data.sk !== `PROJECT#${checked.data.name}` || projectsSeen.has(checked.data.name)) throw unavailable();
     const project = checked.data.name, pk = projectPk(orgId, project);projectsSeen.add(project);
+    for (const family of ["EGRESS_PROPOSAL", "SLACK_BINDING_PROPOSAL"] as const) {
+    const liveType = `${family}_LIVE`;
+    const proposalSk = z.string().refine(value => value === liveType || (value.startsWith(`${family}#`) && z.string().uuid().safeParse(value.slice(family.length + 1)).success));
     let cursor: { pk: string; sk: string } | undefined;const seen = new Set<string>();let complete = false;
     for (let proposalPage = 0; proposalPage < 100; proposalPage += 1) {
-     const proposals = await page(pk, "EGRESS_PROPOSAL", cursor), next = nextCursor(proposals.LastEvaluatedKey, pk, proposalSk, seen);
+     const proposals = await page(pk, family, cursor), next = nextCursor(proposals.LastEvaluatedKey, pk, proposalSk, seen);
      const rows = (proposals.Items ?? []).map(item => {
-      const row = z.object({ pk: z.literal(pk), sk: proposalSk, orgId: z.literal(orgId), project: z.literal(project), entityType: z.enum(["EGRESS_PROPOSAL", "EGRESS_PROPOSAL_LIVE"]) }).passthrough().safeParse(item);
-      if (!row.success || row.data.entityType !== (row.data.sk === "EGRESS_PROPOSAL_LIVE" ? "EGRESS_PROPOSAL_LIVE" : "EGRESS_PROPOSAL")) throw unavailable();return row.data;
+      const row = z.object({ pk: z.literal(pk), sk: proposalSk, orgId: z.literal(orgId), project: z.literal(project), entityType: z.enum([family, liveType]) }).passthrough().safeParse(item);
+      if (!row.success || row.data.entityType !== (row.data.sk === liveType ? liveType : family)) throw unavailable();return row.data;
      });
      if (new Set(rows.map(row => row.sk)).size !== rows.length || deleted + rows.length > 10000) throw unavailable();
      if (rows.length > 0) {
@@ -62,6 +65,7 @@ export async function clearProjectAllowedDomainProposals(deps: Dependencies, val
      if (next === undefined) { complete = true;break; }cursor = next;
     }
     if (!complete) throw unavailable();
+    }
    }
    if (nextCatalog === undefined) return { deleted };catalogCursor = nextCatalog;
   }

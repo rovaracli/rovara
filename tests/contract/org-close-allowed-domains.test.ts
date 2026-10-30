@@ -61,3 +61,9 @@ it("foreign cleanup pagination is refused before deleting even an owned page", a
  await expect(f.close()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });expect(injected).toBe(true);expect(f.db.get(row)).toEqual(row);
  expect(f.db.get(orgMetaKey(f.orgId))?.closingAt).toBeDefined();expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeUndefined();
 });
+it("B34 company close clears Slack pending approvals and live pointers within its company only", async () => {
+ const f = await fixture();f.seed();const own = { pk: projectPk(f.orgId, "payments"), sk: `SLACK_BINDING_PROPOSAL#${randomUUID()}`, orgId: f.orgId, project: "payments", entityType: "SLACK_BINDING_PROPOSAL" };
+ const pointer = { pk: own.pk, sk: "SLACK_BINDING_PROPOSAL_LIVE", orgId: f.orgId, project: "payments", entityType: "SLACK_BINDING_PROPOSAL_LIVE" };
+ const foreign = { ...own, pk: projectPk(f.other, "payments"), orgId: f.other };f.db.set(own);f.db.set(pointer);f.db.set(foreign);
+ await f.close();expect(f.db.get(own)).toBeUndefined();expect(f.db.get(pointer)).toBeUndefined();expect(f.db.get(foreign)).toEqual(foreign);
+});

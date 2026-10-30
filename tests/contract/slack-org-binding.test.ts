@@ -12,7 +12,7 @@ import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 import {
-  SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, issuer, loadSlackBroker, registerSlackProject,
+  SLACK_CHANNEL, SLACK_TEAM, call, createAuditedSlackBroker as createBroker, ensureWorkspace, issuer, loadSlackBroker, registerSlackProject,
 } from "../support/slack-broker.js";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

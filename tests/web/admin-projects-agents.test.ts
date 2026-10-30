@@ -128,3 +128,9 @@ for (const state of ["viewer", "archived"] as const) it(`B33 own-project ${state
  const f = mount("/app/projects/payments", { role: "member", shipped: true, respond: async r => ({ status: 200, body: r.path.endsWith("/overview") ? value : { notices: [], next: "settled" } }) });
  await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();expect(f.request.mock.calls.some(([r]) => r.path.includes("allowed-websites"))).toBe(false);f.close();
 });
+for (const status of ["active", "archived"] as const) it(`B34 opens recorded Slack links from fresh ${status} admin detail without navigation changes`, async () => {
+ const inventory = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", workspaces: [], bindings: [], continuation: null, partial: false, limitReached: false, inspected: 0, botMembership: "not_verified" };
+ const f = mount("/app/admin/projects/payments", { shipped: true, respond: async r => ({ status: 200, body: r.path.includes("/slack-channel/") ? inventory : r.path.endsWith("/members") ? { members: [] } : { ...project, status } }) });
+ await screen.findByRole("heading", { name: "Slack channels" });expect(f.request.mock.calls.some(([r]) => r.path.includes("/slack-channel/"))).toBe(false);
+ fireEvent.click(screen.getByRole("button", { name: "Manage recorded Slack links" }));await screen.findByRole("region", { name: "Slack links editor" });expect(screen.queryByRole("button", { name: /Bind|Link replacement/ })).toBeNull();expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
+});

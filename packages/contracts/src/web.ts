@@ -105,3 +105,4 @@ export * from "./app-allowed-websites.js";
 
 // V3: the fixed line a refused process publish carries.
 export * from "./stage-model-publish-refusal.js";
+export * from "./app-project-slack.js";

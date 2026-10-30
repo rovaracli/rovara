@@ -224,6 +224,9 @@ describe("the health route's grants (A13)", () => {
       // B33: proposal and atomic narrowing receipts expire after the explicit authority window plus cleanup retention.
       "packages/broker/src/org/project-allowed-domains.ts",
       "packages/broker/src/org/legacy-domain-narrowing.ts",
+      // B34: existing request retention reads and bounded Slack pending approval cleanup retention.
+      "packages/broker/src/org/project-slack-browser.ts",
+      "packages/broker/src/org/project-slack-proposals.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

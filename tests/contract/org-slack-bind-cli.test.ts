@@ -17,7 +17,7 @@ const CHANNEL = "C0CCBS6BBU3";
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function cli(answer: (method: string, path: string) => Response) {
+async function cli(answer: (method: string, path: string, body?: unknown) => Response | Promise<Response>) {
   const home = await mkdtemp(join(tmpdir(), "rovara-slack-bind-cli-"));
   dirs.push(home);
   await saveDeveloperEnvironment(home, "staging", entry);
@@ -30,7 +30,7 @@ async function cli(answer: (method: string, path: string) => Response) {
     const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).pathname;
     const method = init?.method ?? "GET";
     calls.push({ method, path, authorization: new Headers(init?.headers).get("authorization"), body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
-    return answer(method, path);
+    return answer(method, path, typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined);
   });
   const run = (argv: string[]) => executeCli(argv, {
     fetchImplementation, tokenStore, environments: { home },
@@ -115,4 +115,19 @@ describe("the slack command", () => {
     expect(program.commands.find((command) => command.name() === "slack")?.commands.map((command) => command.name())).toEqual(["bind", "unbind"]);
     expect(program.commands.find((command) => command.name() === "admin")?.commands.find((command) => command.name() === "slack")?.commands.map((command) => command.name())).toEqual(["bind", "connect-team", "disconnect-team", "unbind"]);
   });
+});
+
+it("B34 actual CLI requests reach the broker: bind refused and direct unbind succeeds", async () => {
+ const { createDeveloperTaskBroker, seedMembership, OMAR } = await import("../support/developer-task-broker.js");
+ const { TEST_ORG } = await import("../support/orgs.js"), { SLACK_CHANNEL, SLACK_TEAM } = await import("../support/slack-broker.js");
+ const { slackBindingKey } = await import("../../packages/contracts/src/index.js");
+ const broker = await createDeveloperTaskBroker();seedMembership(broker.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+ // Session bridge signs the fixture developer identity; routing, validation,
+ // authorization and mutations are the actual broker, not canned responses.
+ const h = await cli(async (method, path, body) => { const response = await broker.dev(OMAR, method, path, body);return Response.json(response.body, { status: response.status }); });
+ const existing = broker.db.get(slackBindingKey(TEST_ORG, SLACK_TEAM, SLACK_CHANNEL));
+ expect(await h.run(["--env", "staging", "--project", "payments", "slack", "bind", "--channel", CHANNEL])).not.toBe(0);expect(h.err.join("")).toContain("Use the browser Slack approval flow to link a channel.");
+ expect(broker.db.get(slackBindingKey(TEST_ORG, SLACK_TEAM, CHANNEL))).toBeUndefined();expect(broker.db.get(slackBindingKey(TEST_ORG, SLACK_TEAM, SLACK_CHANNEL))).toEqual(existing);
+ expect(await h.run(["--env", "staging", "--project", "payments", "slack", "unbind", "--channel", SLACK_CHANNEL])).toBe(0);expect(broker.db.get(slackBindingKey(TEST_ORG, SLACK_TEAM, SLACK_CHANNEL))).toBeUndefined();
+ expect(h.calls.map(call => call.method)).toEqual(["PUT", "DELETE"]);expect(h.calls.every(call => call.authorization === "Bearer access")).toBe(true);
 });

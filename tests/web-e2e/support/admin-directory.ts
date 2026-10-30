@@ -6,7 +6,7 @@ import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "..
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMemberKey, orgMetaKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
+import { orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
@@ -140,6 +140,11 @@ export function createAdminDirectory() {
  })});
  const checkRepositories: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> = (orgId, definition) => requireRepositoriesConnected({documentClient,tableName:"mock-state",cloud:true,app:github},orgId,definition);
  return {
+  seedSlackLinks() {
+   const teamId = "T0123456789", channelId = "C0123456789";
+   put({ ...orgSlackTeamKey(FIXTURE_ORG, teamId), teamId });put({ ...slackTeamOrgKey(teamId), teamId, orgId: FIXTURE_ORG });
+   put({ ...slackBindingKey(FIXTURE_ORG, teamId, channelId), entityType: "SLACK_BINDING", teamId, channelId, projectName: "payments", updatedAt: "2026-10-01T00:00:00Z" });
+  },
   setRole,
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
