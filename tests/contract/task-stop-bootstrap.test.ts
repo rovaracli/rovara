@@ -16,6 +16,9 @@ function putItem(entry: Record<string, unknown>): Record<string, unknown> | unde
   const item = put.Item;
   return typeof item === "object" && item !== null ? Object.fromEntries(Object.entries(item)) : undefined;
 }
+function historicalBuiltin(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(row).filter(([field]) => !["orgId", "agentId", "revision", "stopKind", "seedProvenance"].includes(field)));
+}
 function fixture(pin = false) {
   const db = new FakeDynamoDb();
   const store = new OrgStore({ documentClient: db, tableName: "state", now: () => now, newOrgId: () => orgId, rovaraCodeV2ForNewOrgs: pin });
@@ -242,7 +245,7 @@ for (const failure of ["missing_catalog", "missing_settings", "corrupt_policy", 
 
 for (const explicit of [false, true]) it(`built-in inheritance upgrade preserves the real org bootstrap pin: explicit=${explicit}`, async () => {
   const f = fixture(true); await f.store.createOrgWithOwner({ name: "Company", developerId: who });
-  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), before = f.db.get(key.pk, key.sk)!;
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), before = historicalBuiltin(f.db.get(key.pk, key.sk)!);
   const original = { ...before, ...(explicit ? { maxPerRunUsd: 0.123456 } : {}) }; f.db.set(original);
   const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, kind: "agent" as const, agentId: ROVARA_CODE_AGENT_ID };
   expect(await taskStopBootstrap.upgradeTaskStopInheritance(deps, input)).toMatchObject({ outcome: "updated" });
@@ -264,7 +267,7 @@ for (const invalid of ["org", "agent", "revision", "pin"] as const) it(`built-in
 });
 for (const race of ["pin", "identity"] as const) it(`built-in inheritance fences ${race} at the native write`, async () => {
   const f = fixture(true); await f.store.createOrgWithOwner({ name: "Company", developerId: who });
-  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), original = f.db.get(key.pk, key.sk)!;
+  const key = builtinSettingsKey(orgId, ROVARA_CODE_AGENT_ID), original = historicalBuiltin(f.db.get(key.pk, key.sk)!); f.db.set(original);
   const winner = { ...original, ...(race === "pin" ? { pinnedVersion: 1 } : { orgId: "org_bbbbbbbbbbbbbbbbbbbb" }) }, send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true; f.db.set(winner); } return send(command); };
   await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId: ROVARA_CODE_AGENT_ID })).rejects.toThrow();

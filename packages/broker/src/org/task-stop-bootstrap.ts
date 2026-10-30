@@ -5,11 +5,11 @@ import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 // These items join the native organization creation transaction. No post-create
 // ensure, runtime numeric default, independent ceiling, or enrollment side effect.
-import { AuditEventInputSchema, AgentGuardrailsSchema, AgentIdSchema, agentKey, builtinSettingsKey, builtinRecipe, projectAiKey, orgProjectCatalogKey, isBuiltinAgentId, OrgIdSchema, agentXError, orgMetaKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgSettingsKey, type OrgId } from "@agentx/contracts";
+import { AuditEventInputSchema, BUILTIN_AGENT_IDS, AgentGuardrailsSchema, AgentIdSchema, agentKey, builtinSettingsKey, builtinRecipe, projectAiKey, orgProjectCatalogKey, isBuiltinAgentId, OrgIdSchema, agentXError, orgMetaKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgSettingsKey, type OrgId } from "@agentx/contracts";
 import { auditTaskStopPolicySeeded } from "../audit/events.js";
 import { auditPendingItem, type TransactItem } from "../audit/outbox.js";
 
-export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: number): TransactItem[] {
+export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: number, options: { codePin?: { version: number; by: string } } = {}): TransactItem[] {
   const at = new Date(nowMs).toISOString();
   const occurrence = `task-stop-bootstrap-v1#${orgId}`;
   const event = AuditEventInputSchema.parse(auditTaskStopPolicySeeded({
@@ -27,6 +27,10 @@ export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: n
       guardrails: structuredClone(DEFAULT_AGENT_GUARDRAILS), seedProvenance: { occurrence, source: "bootstrap", reviewRequired: true, seededAt: at }, updatedBy: "system", updatedAt: at }),
     put({ pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId,
       version: 1, occurrenceId: occurrence, source: "bootstrap", outcome: "created", completedAt: at, policyRevision: 1, auditOccurrence: event.eventId }),
+    ...BUILTIN_AGENT_IDS.map(agentId => put({ ...builtinSettingsKey(orgId, agentId), entityType: "BUILTIN_AGENT_SETTINGS", orgId, agentId, revision: 1, stopKind: "inherit",
+      seedProvenance: { occurrence, source: "bootstrap", reviewRequired: true, seededAt: at }, updatedAt: at,
+      updatedBy: agentId === "rovara-code" && options.codePin !== undefined ? options.codePin.by : "system",
+      ...(agentId === "rovara-code" && options.codePin !== undefined ? { pinnedVersion: options.codePin.version } : {}) })),
     // Persist even when delivery runtime isn't wired yet: no audit-free money seed.
     put({ ...auditPendingItem(event, nowMs) }),
   ];

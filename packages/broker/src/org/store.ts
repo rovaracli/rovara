@@ -19,7 +19,6 @@ import {
   InviteCreateReceiptSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
-  builtinSettingsKey,
   currentBuiltinVersion,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   developerOrgKey,
@@ -269,8 +268,7 @@ export class OrgStore {
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
         // Plan 6: when the flag is on, a new org runs Rovara Code version 2 from its first task, as an explicit pin. Otherwise (and for an org with no settings item) it stays on version 1 until an admin adopts 2.
-        ...((this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? [this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt })] : []),
-        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now()),
+        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now(), (this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? { codePin: { version: currentBuiltinVersion("rovara-code"), by: input.developerId } } : {}),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );
