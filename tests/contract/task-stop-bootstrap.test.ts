@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -197,4 +197,22 @@ for (const race of ["limit", "closed"] as const) it(`legacy inheritance refuses 
   };
   await expect(taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId })).rejects.toThrow();
   expect(raced).toBe(true); expect(f.db.get(key.pk, key.sk)).toEqual(race === "limit" ? { ...original, maxPerRunUsd: 0.5 } : original);
+});
+
+for (const explicit of [false, true]) it(`project inheritance upgrade preserves numeric settings: explicit=${explicit}`, async () => {
+  const f = fixture(), project = "payments", key = projectAiKey(orgId, project);
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  f.db.set({ ...orgProjectCatalogKey(orgId, project), orgId, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 });
+  const original = { ...key, orgId, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50,
+    ...(explicit ? { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } } : {}) }; f.db.set(original);
+  const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopProjectInheritance"); expect(typeof fn).toBe("function");
+  if (typeof fn !== "function") throw new Error("project inheritance upgrade missing");
+  const invoke = fn as (deps: unknown, input: unknown) => Promise<unknown>, deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, project };
+  expect(await invoke(deps, input)).toMatchObject({ outcome: explicit ? "preserved" : "updated" });
+  const saved = f.db.get(key.pk, key.sk);
+  expect(saved).toMatchObject(original);
+  if (explicit) expect(saved).toEqual(original);
+  else expect(saved).toMatchObject({ taskStopPolicy: { schemaVersion: 2, kind: "inherit" }, seedProvenance: { source: "upgrade", reviewRequired: true } });
+  const count = f.db.transactions().length;
+  expect(await invoke(deps, input)).toMatchObject({ outcome: "preserved" }); expect(f.db.transactions()).toHaveLength(count);
 });
