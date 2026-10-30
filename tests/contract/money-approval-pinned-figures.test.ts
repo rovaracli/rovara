@@ -77,3 +77,13 @@ it("C101 leaves a real unchanged ask decidable by the actual second person", asy
   const f = await approval("agent", "owner");
   await expect(f.decide()).resolves.toMatchObject({ spendRequest: { status: "APPROVED" } });
 });
+for (const invalid of ["missing", "missing_key", "wrong_version"] as const) it(`C101 expires ${invalid} original terms without a money write`, async () => {
+  const f = await approval("agent", "owner");
+  const key = spendRequestKey(TEST_ORG, f.requestId), row = f.t.db.get(key)!;
+  if (invalid === "missing") delete row.approvalSource;
+  else row.approvalSource = invalid === "missing_key" ? { version: 1, exists: true, fields: {} } : { version: 999 };
+  f.t.db.set(row); const before = f.t.db.get(f.s.key);
+  await expect(f.decide()).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(f.t.db.get(f.s.key)).toEqual(before);
+  expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
