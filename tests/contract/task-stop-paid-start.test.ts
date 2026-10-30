@@ -1039,7 +1039,7 @@ for (const source of ["valid", "closing", "cap_source"] as const) it(`a newly re
   if (source === "valid") expect(f.t.outboxOf(prepare.id)).toBeDefined(); else expect(f.t.outboxOf(prepare.id)).toBeUndefined();
 });
 
-for (const recovery of ["valid", "closing", "cap_source"] as const) it(`plan acceptance approval repair retains implementation intent and ${recovery} source`, async () => {
+for (const recovery of ["valid", "closing", "cap_source", "invalid_limit", "wrong_request"] as const) it(`plan acceptance approval repair retains implementation intent and ${recovery} source`, async () => {
   const f = await fixture();
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 40 } });
@@ -1065,8 +1065,12 @@ for (const recovery of ["valid", "closing", "cap_source"] as const) it(`plan acc
     return result;
   };
   await expect(f.t.decide(BEN, request.spendRequestId, "APPROVE", { requestId: decisionId })).rejects.toThrow("test implementation approval acknowledgement lost");
+  if (recovery === "invalid_limit" || recovery === "wrong_request") {
+    const held = f.t.db.find(row => row.pk === "HELD_SPEND_STARTS" && row.taskId === taskId)[0]!;
+    f.t.db.set({ ...held, ...(recovery === "invalid_limit" ? { runLimitUsd: 99 } : { spendRequestId: "spr_00000000000000000000" }) });
+  }
   f.t.db.delete(f.policy); captures = 0;
-  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(changed).toBe(true);
+  await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(changed).toBe(recovery !== "invalid_limit" && recovery !== "wrong_request");
   const implementations = () => f.t.taskOps(workspaceId).filter(operation => operation.workflowMode === "IMPLEMENT");
   expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0);
   await escalateOwnerRequests(f.t.deps(), { budgetMs: 5000 }); expect(implementations()).toHaveLength(recovery === "valid" ? 1 : 0); expect(captures).toBe(0);
