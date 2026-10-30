@@ -442,7 +442,7 @@ describe("send-back capture: it runs after the index sync, within its own time b
     expect(indexRow(t).status).not.toBe(before);
   });
 
-  it("a capture that rejects after the time limit is logged and never an unhandled rejection", async () => {
+  it("a capture that rejects after the time limit is logged once, as the timeout, and never an unhandled rejection", async () => {
     const t = await waitingPlan();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     const send = t.harness.db.send.bind(t.harness.db);
@@ -455,7 +455,8 @@ describe("send-back capture: it runs after the index sync, within its own time b
     const logs: Array<Record<string, unknown>> = [];
     await t.page(MAYA_CALLER, NOTE, [], randomUUID(), (entry) => logs.push(entry));
     await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(logs.filter((entry) => entry.event === "learning.send_back_capture_failed").map((entry) => entry.step)).toContain("timeout");
+    // The late result is ignored: one line for the timeout, no second line when the abandoned capture finally fails.
+    expect(logs.filter((entry) => typeof entry.event === "string" && entry.event.startsWith("learning.send_back_capture")).map((entry) => entry.step ?? entry.reason)).toEqual(["timeout"]);
   });
 });
 

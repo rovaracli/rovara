@@ -159,14 +159,21 @@ export const SEND_BACK_CAPTURE_BUDGET_MS = 1500;
  * (no text, no ids but the task's). A capture that runs past `SEND_BACK_CAPTURE_BUDGET_MS` is left to finish on its own (its writes are idempotent per request) and logged as `timeout`.
  */
 export async function captureSendBackQuietly(deps: CaptureDeps, input: SendBackInput): Promise<void> {
-  const work = captureSendBack(deps, input).then(() => "done" as const, (error: unknown) => {
-    logFailure(deps, input.taskId, "capture", error);
+  // Once the budget runs out the abandoned capture's late result is ignored: its writes are atomic and conditional, and only the timeout line is logged.
+  let abandoned = false;
+  const log = (line: Record<string, unknown>): void => { if (!abandoned) (deps.log ?? ((entry) => console.log(JSON.stringify({ component: "broker", ...entry }))))(line); };
+  const quiet: CaptureDeps = { ...deps, log };
+  const work = captureSendBack(quiet, input).then(() => "done" as const, (error: unknown) => {
+    logFailure(quiet, input.taskId, "capture", error);
     return "failed" as const;
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const limit = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), SEND_BACK_CAPTURE_BUDGET_MS); });
   try {
-    if (await Promise.race([work, limit]) === "timeout") logFailure(deps, input.taskId, "timeout", undefined);
+    if (await Promise.race([work, limit]) === "timeout") {
+      logFailure(deps, input.taskId, "timeout", undefined);
+      abandoned = true;
+    }
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
