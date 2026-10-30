@@ -2240,7 +2240,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   });
   // A paused run is prepared but not dispatched: the workspace and its prepare operation are written, the outbox item that sends the prepare is not.
   const noted = setupNote === undefined ? preparation.items : withFirstEvent(preparation.items, deps.tableName, setupNote, receivedAt);
-  const preparationItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparedItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparationItems = spendingStop === undefined ? preparedItems : preparedItems.map(item => item.Put?.Item?.entityType === "OPERATION"
+    ? { Put: { ...item.Put, Item: { ...item.Put.Item, spendingTaskId: taskId, spendingAdmission: task.spendingAdmission } } } : item);
   const items: TransactItems = [
     // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
@@ -2784,6 +2786,20 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
       ExpressionAttributeValues: { ":now": iso(deps), ":operation": held.operationId },
     } },
   ];
+  let operationBindingIndex: number | undefined;
+  if (task.spendingStop !== undefined) {
+    if (task.spendingAdmission === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The held spending admission is unavailable.");
+    const Key = operationKey(task.workspaceId, held.operationId), operation = await get<Record<string, unknown>>(deps, Key);
+    if (operation?.entityType !== "OPERATION" || operation.orgId !== deps.orgId || operation.workspaceId !== task.workspaceId || operation.id !== held.operationId
+      || operation.kind !== "prepare" || operation.status !== "ACCEPTED") throw agentXError("CHANGE_STALE", "The held preparation changed.");
+    const a = new Aliases();
+    const conditions = ["entityType", "orgId", "workspaceId", "id", "kind", "status", "fence", "spendingTaskId", "spendingAdmission"].map(field =>
+      operation[field] === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(operation[field])}`);
+    operationBindingIndex = items.length;
+    items.push({ Update: { TableName: deps.tableName, Key, UpdateExpression: "SET spendingTaskId = :bindingTask, spendingAdmission = :bindingAdmission",
+      ConditionExpression: conditions.join(" AND "), ExpressionAttributeNames: a.names,
+      ExpressionAttributeValues: { ...a.values, ":bindingTask": task.taskId, ":bindingAdmission": task.spendingAdmission } } });
+  }
   const admitted = nativeChecks.length === 0 ? undefined : withAdmittedTaskSource(deps.tableName, task, items);
   const nativeStart = items.length;
   const dispatchItems = [...(admitted?.items ?? items), ...nativeChecks];
@@ -2793,6 +2809,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
     const failed = failedIndexes(error);
     if (nativeChecks.length > 0 && [...(failed ?? [])].some(index => index >= nativeStart)) throw budgetActorRefused();
     if (admitted !== undefined && failed?.has(admitted.sourceIndex)) throw agentXError("CHANGE_STALE", "The held preparation's accepted spending source changed. Review it before starting work.");
+    if (operationBindingIndex !== undefined && failed?.has(operationBindingIndex)) throw agentXError("CHANGE_STALE", "The held preparation operation changed before dispatch.");
     const conflict = await chargeFailure(deps, charge, task.taskId, error);
     if (conflict === "member" || conflict === "organization") throw await limitError(deps, { developerId: task.developerId } as DeveloperCaller, conflict, limits);
     // Another resume dispatched it first, or the task closed meanwhile: either way there is nothing to dispatch.

@@ -1,7 +1,7 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
-import { taskStopKeyActorChecks, withAdmittedTaskSource, requireTaskStopWindowContext } from "../org/task-stop-window.js";
+import { newTaskStopWindowReference, taskStopKeyActorChecks, withAdmittedTaskSource, requireTaskStopWindowContext } from "../org/task-stop-window.js";
 import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../org/project-working-branch-provider.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
 import { withDecideIsolation } from "../developer/confirm-page.js";
@@ -7114,6 +7114,10 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
       await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
+      if (current.spendingAdmission !== undefined || current.spendingTaskId !== undefined || task.spendingStop !== undefined || task.spendingAdmission !== undefined) {
+        if (current.spendingTaskId !== task.taskId || current.spendingAdmission === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined
+          || canonicalJson(current.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation spending window is unavailable or changed.");
+      }
       await requireTaskStopWindowContext(dependencies, task);
       const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
       const taskOrg = task.orgId;
@@ -7227,7 +7231,7 @@ function guardModelKeyOperation(operation: OperationRecord, input: TransactItems
   const update = items[index]?.Update;
   if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation key record is unavailable.");
   const names: Record<string, string> = {}, values: Record<string, unknown> = {};
-  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId"].map(field => {
+  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId", "spendingTaskId", "spendingAdmission"].map(field => {
     const name = `#admittedOp_${field}`, value = `:admittedOp_${field}`;
     if (update.ExpressionAttributeNames?.[name] !== undefined || update.ExpressionAttributeValues?.[value] !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation source condition is ambiguous.");
     names[name] = field;
@@ -7469,6 +7473,16 @@ async function acceptTask(
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
   }, now);
+  let dispatchExtras = extra(publicOperation(operation));
+  const taskPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  const admittedTask = taskPointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskPointer.taskId));
+  if (admittedTask !== undefined && (admittedTask.spendingStop !== undefined || admittedTask.spendingAdmission !== undefined)) {
+    await requireTaskStopWindowContext(dependencies, admittedTask);
+    const reference = newTaskStopWindowReference(dispatchExtras, admittedTask) ?? admittedTask.spendingAdmission;
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    operation.spendingTaskId = admittedTask.taskId; operation.spendingAdmission = reference;
+    dispatchExtras = withAdmittedTaskSource(dependencies.tableName, admittedTask, dispatchExtras, "operationWindow").items;
+  }
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Update: {
@@ -7487,7 +7501,7 @@ async function acceptTask(
       { Put: { TableName: dependencies.tableName, Item: options.firstEvent === undefined ? operation : { ...operation, eventSequence: 1 }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { ...idempotencyKey, entityType: "IDEMPOTENCY", operationId: operation.id, payloadHash: requestHash }, ConditionExpression: "attribute_not_exists(pk)" } },
-      ...extra(publicOperation(operation)),
+      ...dispatchExtras,
       // Last, so the caller's extra items keep their positions in a cancellation's reasons.
       ...(options.firstEvent === undefined ? [] : [{ Put: {
         TableName: dependencies.tableName,
@@ -12881,8 +12895,8 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems }> {
-  const task = pointer.pendingWorkflowMode === "PLAN" ? await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)) : undefined;
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems; admittedTask?: DeveloperTaskRecord }> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   const { operation, outbox, fence } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
@@ -12893,7 +12907,14 @@ async function queuedFirstTask(
     ...(pointer.pendingWorkflowMode === undefined ? { legacyTask: true } : {}),
     ...(task?.workflow?.reviewPhase === undefined ? {} : { workflowPhase: task.workflow.reviewPhase }),
   }, now);
+  if (prepare.spendingAdmission !== undefined || task?.spendingStop !== undefined || task?.spendingAdmission !== undefined) {
+    if (task === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined || prepare.spendingTaskId !== task.taskId
+      || canonicalJson(prepare.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The preparation spending window changed.");
+    await requireTaskStopWindowContext(dependencies, task);
+    operation.spendingTaskId = task.taskId; operation.spendingAdmission = task.spendingAdmission;
+  }
   return {
+    ...(task?.spendingStop === undefined ? {} : { admittedTask: task }),
     workspaceUpdate: { Update: {
       TableName: dependencies.tableName,
       Key: workspaceKey(workspace.id),
@@ -12990,7 +13011,8 @@ async function sendTerminalResult(
     return terminalStatus;
   }
   try {
-    await send([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items]);
+    const queuedItems = [...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items];
+    await send(queued.admittedTask === undefined ? queuedItems : withAdmittedTaskSource(dependencies.tableName, queued.admittedTask, queuedItems, "firstOperationWindow").items);
   } catch (queueError) {
     // C19: a temporary error from the one queuing write committed nothing; the worker tries again.
     // A TransactionCanceledException with a TransactionConflict reason is not temporary here: it

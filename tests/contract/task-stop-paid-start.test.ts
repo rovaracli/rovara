@@ -294,8 +294,10 @@ for (const phase of ["before_policy_capture", "at_native_commit"] as const) it(`
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
-async function continueWindow() {
-  const f = await fixture(), task = await f.t.plainTask();
+async function continueWindow(enrolled = true) {
+  const f = await fixture();
+  if (!enrolled) f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const task = await f.t.plainTask();
   await f.t.finish(task.workspaceId, task.operationId, "SUCCEEDED");
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 500_000 } } });
   const request = { requestId: randomUUID(), instructions: "Continue the accepted task." };
@@ -413,7 +415,7 @@ it("Continue refuses a zero current stop without changing the admitted old windo
 });
 
 for (const enrolled of [false, true]) for (const bound of ["path", "requested"] as const) it(`Continue preserves legacy submicro ${bound} only before enrollment=${enrolled}`, async () => {
-  const f = await continueWindow(), before = f.t.meta(f.task.taskId);
+  const f = await continueWindow(enrolled), before = f.t.meta(f.task.taskId);
   await f.t.set(f.task.taskId, "REMOVE spendingStop");
   f.t.db.set({ ...f.t.meta(f.task.taskId), ...(bound === "path" ? { budgetUsd: 0.0000001 } : { requestedRunLimitUsd: 0.0000001 }) });
   if (!enrolled) f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
@@ -1435,5 +1437,18 @@ it("removing both task admission fields cannot downgrade an admitted operation t
   const before = f.t.access.mintedKeys().length;
   const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
     "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
+});
+
+it("a prior window callback cannot adopt a valid newly admitted Continue window", async () => {
+  const f = await continueWindow(); expect((await f.continue()).status).toBe(200);
+  const current = f.t.taskOps(f.task.workspaceId).at(-1)!, currentRow = f.t.db.get(operationKey(f.task.workspaceId, current.id))!;
+  expect(currentRow).toMatchObject({ spendingTaskId: f.task.taskId, spendingAdmission: f.t.meta(f.task.taskId).spendingAdmission });
+  const prior = f.t.db.get(operationKey(f.task.workspaceId, f.task.operationId))!;
+  // A platform restore must retain the old operation's admitted window.
+  f.t.db.set({ ...prior, status: "RUNNING" });
+  const before = f.t.access.mintedKeys().length;
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(f.task.operationId)!.invocation as { callbackCapability: string }).callbackCapability } });
   expect(reply.status).not.toBe(200); expect(f.t.access.mintedKeys().length).toBe(before);
 });

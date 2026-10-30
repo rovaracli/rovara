@@ -112,6 +112,20 @@ export function taskStopTransitionItem(tableName: string, input: TaskStopWindowI
   return { Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } };
 }
 
+/** A newly accepted window in trusted dispatch extras supersedes the old task
+ * window atomically. Multiple or unrelated receipts cannot select a binding. */
+export function newTaskStopWindowReference(items: readonly TransactItem[], task: DeveloperTaskRecord): SpendingAdmissionReference | undefined {
+  const receipts = items.filter(item => item.Put?.Item?.entityType === "SPENDING_ADMISSION");
+  if (receipts.length === 0) return undefined;
+  if (receipts.length !== 1) throw invalid();
+  const parsed = z.union([receiptSchema, transitionSchema]).safeParse(receipts[0]?.Put?.Item);
+  if (!parsed.success || task.orgId === undefined || task.agent === undefined) throw invalid();
+  const row = parsed.data, Key = taskStopWindowKey(task.orgId, task.taskId, row.requestId);
+  if (row.pk !== Key.pk || row.sk !== Key.sk || row.orgId !== task.orgId || row.workId !== task.taskId
+    || row.spendingStop.orgId !== task.orgId || row.spendingStop.project !== task.project || row.spendingStop.agentId !== task.agent.agentId) throw invalid();
+  return { requestId: row.requestId, actorId: row.actorId, intentHash: row.intentHash };
+}
+
 /** Validate persisted money context without recapturing current financial policy.
  * Native commit-time authority and operation binding remain the caller's job. */
 export async function requireTaskStopWindowContext(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<void> {
@@ -200,12 +214,12 @@ export async function admittedTaskSourceUnchanged(deps: Pick<TableInput, "docume
 }
 /** DynamoDB allows one action per key. Keep a task-notes update and the money
  * source condition on the same action rather than adding a duplicate key. */
-export function withAdmittedTaskSource(tableName: string, task: DeveloperTaskRecord, input: readonly TransactItem[]): { items: TransactItem[]; sourceIndex: number } {
+export function withAdmittedTaskSource(tableName: string, task: DeveloperTaskRecord, input: readonly TransactItem[], prefix = "admitted"): { items: TransactItem[]; sourceIndex: number } {
   const Key = taskKey(task.taskId), names: Record<string, string> = {}, values: Record<string, unknown> = {};
   const condition = admittedTaskFields.map(field => {
-    const name = `#admitted_${field}`; names[name] = field;
+    const name = `#${prefix}_${field}`; names[name] = field;
     if (task[field] === undefined) return `attribute_not_exists(${name})`;
-    const value = `:admitted_${field}`; values[value] = task[field]; return `${name} = ${value}`;
+    const value = `:${prefix}_${field}`; values[value] = task[field]; return `${name} = ${value}`;
   }).join(" AND ");
   const items = [...input];
   const sourceIndex = items.findIndex(item => {
