@@ -26,7 +26,7 @@ import { LoopStore } from "../../packages/cli/src/loop/state.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
 import { createAgentXMcpServer } from "../../packages/mcp/src/index.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
-import { call, createBroker, issuer, loadSlackBroker } from "../support/slack-broker.js";
+import { call, createAuditedSlackBroker as createBroker, issuer, loadSlackBroker } from "../support/slack-broker.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { beforeAll, vi } from "vitest";

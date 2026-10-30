@@ -703,6 +703,7 @@ describe("I4: the builders", () => {
     ["auditProjectWorkingBranchChanged", (occurrence) => builders.auditProjectWorkingBranchChanged({ ...base, occurrence, details, projectName: "Secret Project", fromRevision: 1, toRevision: 2, lifecycleRevision: 3, installationId: 11, repositoryId: 22, requestId: "22222222-2222-4222-8222-222222222222", previousConfigured: false })],
     // Call sites: developer/store.ts setChosenDisplayName; org/slack-binding.ts bind and unbind; aws/broker.ts connectSlackTeam and disconnectSlackTeam (operator actor).
     ["auditMemberRenamed", (occurrence) => builders.auditMemberRenamed({ ...base, occurrence, details, memberId: "dev_1" })],
+    ["auditSlackChannelProposed", (occurrence) => builders.auditSlackChannelProposed({ ...base, occurrence, details, projectName: "project_1", teamId: "T123", channelId: "C123", requestId: "request_1" })],
     ["auditSlackChannelBound", (occurrence) => builders.auditSlackChannelBound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
     ["auditSlackChannelUnbound", (occurrence) => builders.auditSlackChannelUnbound({ ...base, occurrence, details, projectName: "Secret Project", teamId: "T0123ABCD", channelId: "C0123ABCD" })],
     ["auditSlackTeamConnected", (occurrence) => builders.auditSlackTeamConnected({ ...base, actor: { kind: "operator", id: auditOperatorId("https://issuer.example", "operator-subject") }, occurrence, details, teamId: "T0123ABCD" })],

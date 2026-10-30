@@ -167,7 +167,6 @@ const bindingOf = async (deps: PlanDependencies, orgId: OrgId, teamId: string, c
   return typeof item?.projectName === "string" ? { projectName: item.projectName, updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "" } : undefined;
 };
 /** "#name" for a named channel, the ID otherwise. */
-const shortName = (label: string) => (label.startsWith("#") ? label.slice(0, label.indexOf(" ")) : label.split(" ")[0]!);
 
 /** R4: the stored effect names a private channel by ID; the confirmation may name it (B4). */
 function effects(channel: ResolvedChannel, say: (label: string) => string): Pick<ChangePlan, "effect" | "confirmationEffect"> {
@@ -176,25 +175,8 @@ function effects(channel: ResolvedChannel, say: (label: string) => string): Pick
   return confirmationEffect === effect ? { effect } : { effect, confirmationEffect };
 }
 
-const planBind: Planner = async (deps, identity, input, options) => {
-  if (input.kind !== "bind_channel") throw new Error("wrong planner");
-  const teamId = teamOf(deps);
-  const orgId = requireOrgId(identity.orgId);
-  const channel = await resolveChannel(deps, orgId, teamId, input.channel, options);
-  const { channelId, label } = channel;
-  await deps.handlers.requireAdministrator(identity, input.project);
-  const current = await bindingOf(deps, orgId, teamId, channelId);
-  if (current?.projectName === input.project) throw agentXError("CONFIG_INVALID", `channel ${label} is already bound to ${input.project}; there is nothing to change`);
-  if (current !== undefined) await deps.handlers.requireAdministrator(identity, current.projectName);
-  const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), input.project);
-  if (latest === undefined) throw agentXError("NOT_FOUND", `project ${input.project} is not registered; register it with agentx admin project register`);
-  const now = current === undefined ? "It is bound to nothing today." : `It is bound to ${current.projectName} today; its existing threads keep their workspaces.`;
-  return {
-    ...effects(channel, (shown) => `Bind channel ${shown} to project ${input.project}. ${now} New threads in ${shortName(shown)} will use ${input.project} revision ${latest.definition.revision}.`),
-    details: { channelId, project: input.project, currentProject: current?.projectName ?? null, revision: latest.definition.revision },
-    snapshot: { binding: current ?? null, latestRevision: latest.definition.revision },
-    apply: (applier) => deps.handlers.bindChannel(applier, teamId, channelId, input.project),
-  };
+const planBind: Planner = async () => {
+  throw agentXError("FORBIDDEN", "Use the browser Slack approval flow to link a channel.");
 };
 
 const planUnbind: Planner = async (deps, identity, input, options) => {

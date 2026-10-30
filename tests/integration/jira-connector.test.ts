@@ -6,7 +6,7 @@ import { jiraConnectorType } from "../../packages/broker/src/aws/jira-connector-
 import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
 import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
 import { startFakeAtlassian, type FakeAtlassian } from "../support/fake-atlassian-mcp.js";
-import { call, createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
+import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 
 const team = "T0BSHLLUGBD";
 const channel = "C0123456789";

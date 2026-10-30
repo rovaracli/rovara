@@ -101,3 +101,5 @@ export * from "./stage-models.js";
 
 export { SoleOwnerConfirmationSchema } from "./session-views.js";
 export * from "./app-allowed-websites.js";
+
+export * from "./app-project-slack.js";

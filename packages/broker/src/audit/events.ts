@@ -203,8 +203,8 @@ export function auditProjectMemberRemoved(input: AuditBuilderBase & { projectNam
  * `occurrence`: `auditOccurrence(requestId, project, teamId, channelId)` (release 0.4.17). A request id is remembered per project, so the same id can reach
  * another project or channel; each makes its own occurrence. The project is a name-keyed target; the Slack team and channel are opaque ids, related.
  */
-export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string }): AuditEventInput {
-  return build("slack_channel.bound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName });
+export function auditSlackChannelBound(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; mode?: "second_person" | "sole_owner_exception"; proposalId?: string }): AuditEventInput {
+  return build("slack_channel.bound", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { mode: input.mode, proposalId: input.proposalId });
 }
 
 /** `occurrence`: as for `auditSlackChannelBound`. */
@@ -549,3 +549,7 @@ function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|
 export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);
 export const auditModelPolicyLockSet=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_set",input);
 export const auditModelPolicyLockRemoved=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_removed",input);
+/** A pending approval is an observation and request, never an applied binding. */
+export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
+ return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
+}

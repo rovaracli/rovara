@@ -4,7 +4,7 @@
 import { expect, vi } from "vitest";
 import { githubConnectorType } from "../../packages/broker/src/aws/connector-types.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "./fake-linear-mcp.js";
-import { call, createBroker, ensureWorkspace, markReady } from "./slack-broker.js";
+import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, markReady } from "./slack-broker.js";
 
 export const LINEAR_TEAM = "T0BSHLLUGBD";
 export const LINEAR_CHANNEL = "C0123456789";

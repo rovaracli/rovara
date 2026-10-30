@@ -70,6 +70,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-invites" && method === "POST" && current.name === "admin") { await adminDirectory.seedInvites();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-lose-create-ack" && method === "POST" && current.name === "admin") { adminLoseCreateAck = true;json(200,{ok:true});return; }
+ if (url.pathname === "/__mock/b34-slack-links" && method === "POST" && current.name === "admin") { adminDirectory.seedSlackLinks();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-evidence" && method === "GET" && current.name === "admin") { json(200, adminDirectory.evidence());return; }
  if (url.pathname === "/__mock/admin-source-drift" && method === "POST" && current.name === "admin") { adminDirectory.changeSourceOrder();json(200,{ok:true});return; }
  if (url.pathname === "/__mock/admin-target-owner" && method === "POST" && current.name === "admin") { adminDirectory.setRole("b".repeat(64), "owner");json(200, { ok: true });return; }
@@ -114,6 +115,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if(current.name==="admin" && /^\/v1\/web\/projects\/[^/]+\/allowed-websites(?:\/.*)?$/.test(url.pathname)) {
   let body:unknown;if(method!=="GET"){let raw="";for await(const chunk of request){raw+=String(chunk);if(raw.length>16384)throw new Error("Mock body limit.");}body=JSON.parse(raw) as unknown;}
   const result=await adminDirectory.request(deps,webCaller,method,(url.pathname+url.search).replace("/v1/web/","/v1/app/"),body,headers);json(200,result);return;
+ }
+ // B34: reviewed stored Slack evidence and unbind use real cookie handlers.
+ if (current.name === "admin" && /^\/v1\/web\/projects\/[^/]+\/slack-channel\/(links|review|requests\/[^/]+|unbind|proposals(?:\/[^/]+(?:\/approve)?)?)$/.test(url.pathname)) {
+  let body: unknown;if (method !== "GET") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 16384) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown; }
+  const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"), body, headers);json(200, result);return;
  }
  // B32: browser-only save and database status use the same real route adapter.
  if(current.name==="admin"&&((method==="POST"&&/^\/v1\/web\/projects\/[^/]+\/working-branches$/.test(url.pathname))||(method==="GET"&&/^\/v1\/web\/projects\/[^/]+\/working-branches\/requests\/[^/]+$/.test(url.pathname)))){

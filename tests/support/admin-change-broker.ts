@@ -1,6 +1,9 @@
 // tests/support/admin-change-broker.ts
 // Spec 025 phase 25e: the admin read broker with admin changes on, a clock the changes read, a
 // linked Slack user for the admin, and the ingress's press event.
+import { capturingAuditDeps } from "./audit-capture.js";
+import { slackBindingKey } from "../../packages/contracts/src/index.js";
+import { TEST_ORG } from "./orgs.js";
 import { randomUUID } from "node:crypto";
 import type { AdminChangeInput, EndDeveloperSessionsRequest, ChannelInfoRequest, ChannelInfoResponse, ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
 import { createAdminReadBroker } from "./admin-read-broker.js";
@@ -52,6 +55,7 @@ export async function createAdminChangeBroker(options: {
   const endedSessions: EndDeveloperSessionsRequest[] = [];
   const slackUserByEmail = async () => (options.slackLookupDown === true ? { ok: false as const, error: "slack_unavailable" as const } : options.slackLinked === false ? { ok: true as const } : { ok: true as const, userId: ADMIN_SLACK });
   const harness = await createAdminReadBroker({
+    audit: capturingAuditDeps(),
     ...(options.channelInfo === undefined ? {} : { channelInfo: options.channelInfo }),
     ...(options.channelMembers === undefined ? {} : { channelMembers: options.channelMembers }),
     developerExtra: {
@@ -68,6 +72,9 @@ export async function createAdminChangeBroker(options: {
       adminChanges: { confirm: { elicitation: options.elicitation ?? true, slack: options.slack ?? true }, now: clock.now, metric: (outcome: string) => metrics.push(outcome) },
     },
   });
+  // Existing links let generic confirmation tests exercise the still-allowed
+  // unbind action. Binding itself is covered by B34's refusal/approval tests.
+  for (const channelId of ["C0LEDGER01", "C0PRIVATE01"]) harness.db.set({ ...slackBindingKey(TEST_ORG, SLACK_TEAM, channelId), entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId, projectName: "payments", updatedAt: "2026-10-01T00:00:00.000Z", updatedBy: "historical-confirmation-fixture" });
   const call = (method: string, path: string, body?: unknown, subject = "admin-subject") => harness.admin(method, path, { subject, headers: { "x-agentx-trace-id": TRACE }, ...(body === undefined ? {} : { body }) });
   const propose = (change: AdminChangeInput, methods: string[] = ["elicitation"], requestId: string = randomUUID(), subject?: string) =>
     call("POST", "/v1/admin/changes", { requestId, change, client: { cliVersion: "0.0.7", mcpClient: { name: "claude-code", version: "2.1.0" } }, methods }, subject);
