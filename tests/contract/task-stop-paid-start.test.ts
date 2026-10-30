@@ -2140,7 +2140,7 @@ for (const bounded of [false, true]) for (const drift of ["none", "total_before"
   if (drift.endsWith("_commit")) expect(raced).toBe(true);
 });
 
-for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const consumer of ["approve", "cutover", "cutover_commit"] as const) it(`owner-cap ${resource} ${operation} pins carried source topup for ${consumer}`, async () => {
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const consumer of ["approve", "approve_commit", "cutover", "cutover_commit"] as const) it(`owner-cap ${resource} ${operation} pins carried source topup for ${consumer}`, async () => {
   const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
   const projectOwned = operation === "accountable";
   let id: string;
@@ -2163,6 +2163,21 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   const monthly = (await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind: "month", scope, subject: `MONTH#${month}#${resource}#${id}#${randomUUID()}`, amountUsd: 1, newLimitUsd: 41, reason: "Source month topup", requestedBy: { kind: "system" } })).record;
   let raced = false;
   const send = f.t.db.send.bind(f.t.db);
+  if (consumer === "approve_commit") {
+    f.t.db.send = async command => {
+      if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === entityKey.pk && item.Update.Key.sk === entityKey.sk)) {
+        raced = true;
+        expect((await f.t.decide(MAYA, monthly.spendRequestId)).spendRequest.status).toBe("APPROVED");
+      }
+      return send(command);
+    };
+    await expect(f.t.decide(DEB, requestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+    expect(raced).toBe(true);
+    expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore);
+    expect(f.t.db.get(topUpKey(TEST_ORG, month, scope))).toMatchObject({ amountUsd: 1 });
+    expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })).toMatchObject({ status: "EXPIRED" });
+    return;
+  }
   if (consumer === "cutover_commit") {
     // Make expiry necessary, then change its captured carried row at the final write.
     await f.t.budgeted(1, BEN);
