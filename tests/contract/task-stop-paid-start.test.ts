@@ -1269,7 +1269,7 @@ it("saved admission digest verification tolerates stored map key reordering", as
   expect(checkedTaskStopSnapshot(reordered)).toEqual(saved);
 });
 
-for (const source of ["valid", "max_source"] as const) it(`Continue retains the approved task per-run stop and native ${source} source`, async () => {
+for (const source of ["valid", "max_source", "missing_before", "changed_before"] as const) it(`Continue retains the approved task per-run stop and native ${source} source`, async () => {
   const f = await fixture();
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
@@ -1280,6 +1280,8 @@ for (const source of ["valid", "max_source"] as const) it(`Continue retains the 
   const request = f.t.requestOf(task.taskId, "max_per_run")[0]!; await f.t.decide(ADA, request.spendRequestId);
   expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9 });
   await f.t.finish(task.workspaceId, f.t.taskOps(task.workspaceId).at(-1)!.id, "SUCCEEDED");
+  if (source === "missing_before") { const current = { ...f.t.meta(task.taskId) }; delete current.maxPerRunUsd; f.t.db.set(current); }
+  if (source === "changed_before") f.t.db.set({ ...f.t.meta(task.taskId), maxPerRunUsd: 12 });
   const send = f.t.db.send.bind(f.t.db), requestId = randomUUID(), operations = f.t.taskOps(task.workspaceId).map(operation => operation.id); let changed = false;
   f.t.db.send = async command => {
     if (source === "max_source" && !changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === task.workspaceId)) { changed = true; f.t.db.set({ ...f.t.meta(task.taskId), maxPerRunUsd: 12 }); }
@@ -1290,8 +1292,8 @@ for (const source of ["valid", "max_source"] as const) it(`Continue retains the 
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     expect(f.t.meta(task.taskId)).toMatchObject({ budgetUsd: 9, maxPerRunUsd: 9, spendingStop: { effectiveStopMicrousd: 9_000_000, calculationInput: { committedMaxPerRunMicrousd: 9_000_000 } } });
   } else {
-    expect(changed).toBe(true); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: "CHANGE_STALE" });
-    expect(f.t.taskOps(task.workspaceId).map(operation => operation.id)).toEqual(operations); expect(f.t.meta(task.taskId).maxPerRunUsd).toBe(12);
+    expect(changed).toBe(source === "max_source"); expect(reply.status).toBe(409); expect(reply.body.error).toMatchObject({ code: source === "max_source" ? "CHANGE_STALE" : "TASK_STOP_CONFIG_INVALID" });
+    expect(f.t.taskOps(task.workspaceId).map(operation => operation.id)).toEqual(operations); expect(f.t.meta(task.taskId).maxPerRunUsd).toBe(source === "missing_before" ? undefined : 12);
     expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPENDING_ADMISSION#task-window#${task.taskId}`), sk: `REQUEST#${requestId}` })).toBeUndefined();
   }
 });
