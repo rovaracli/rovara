@@ -1063,7 +1063,9 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     const id = await suggest(w);
     const seen = (await viewLearning(decideDeps(w), callerOf(w, OLA), "web")).suggestions[0]!.canDecide;
     const refusal = await failure(acceptSuggestion(decideDeps(w), callerOf(w, OLA), "web", id, acceptBody(w, id)));
-    expect(seen).toBe(refusal?.code !== "FORBIDDEN");
+    // An org admin holds How we work edit rights through the company role: the screen offers Accept and Accept succeeds.
+    expect(seen).toBe(true);
+    expect(refusal).toBeUndefined();
   });
 
   it("view and Accept agree for every role", async () => {

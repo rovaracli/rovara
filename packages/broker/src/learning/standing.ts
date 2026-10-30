@@ -90,7 +90,9 @@ export async function companyIsOpen(deps: StandingDeps, orgId: OrgId): Promise<b
  * author of one of its corrections grants nothing; it only means an author is not barred from accepting their own suggestion when they hold the right. THE one rule: Accept authorises with it
  * and the learning view's per-suggestion `canDecide` is computed with it, so the screen and the API cannot disagree.
  */
-export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean }): boolean {
+// `developerId` and `authors` are kept, unused, so callers written against the earlier shape still compile: authorship no longer changes the answer (owner, L3 option A).
+export function canAcceptSuggestion(who: { standing: LearningStanding; maintainer: boolean; developerId?: string }, authors?: readonly string[]): boolean {
+  void authors;
   return who.standing === "member" && who.maintainer;
 }
 
