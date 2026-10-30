@@ -80,3 +80,15 @@ for (const existing of [false, true]) it(`upgrading an existing company records 
   const txn = f.db.transactions().find(items => items.some(item => putItem(item)?.sk === "V1#upgrade"));
   expect(txn?.some(item => typeof putItem(item)?.event === "object")).toBe(true);
 });
+
+for (const missing of ["occurrenceId", "sourceDigest", "completedAt", "policyRevision", "auditOccurrence"] as const) it(`upgrade replay refuses a receipt missing ${missing}`, async () => {
+  const f = fixture();
+  f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", status: "open" });
+  const deps = { documentClient: f.db, tableName: "state", now: () => now };
+  await taskStopBootstrap.bootstrapTaskStopPolicy(deps, orgId);
+  const key = { pk: seedKey.pk, sk: "V1#upgrade" }, receipt = f.db.get(key.pk, key.sk)!;
+  const damaged = { ...receipt }; delete damaged[missing]; f.db.set(damaged);
+  const count = f.db.transactions().length;
+  await expect(taskStopBootstrap.bootstrapTaskStopPolicy(deps, orgId)).rejects.toThrow();
+  expect(f.db.transactions()).toHaveLength(count);
+});
