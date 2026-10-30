@@ -1,3 +1,5 @@
+import { budgetActorRefused } from "./budget-authority.js";
+import { failedIndexes } from "./table-writes.js";
 // Plan 3, Task 22: the agent-step engine. A run of an agent made of agent steps (`recipeRunner(recipe) === "agent_steps"`) is a task that holds ONE
 // workspace. When its preparation is done the engine dispatches the steps in order, each as an ordinary task operation whose payload is
 // `agentStep.kind === "agent"`; an `approval` step waits for a person in place; a step whose calls asked for write approvals waits for them too, and
@@ -495,7 +497,7 @@ async function rerunOutcomes(deps: AgentRunEngineDependencies, loaded: Loaded, s
 /** Dispatches the step's operation (or a continuation of it): the operation, and with it the run's next state, its event and its watchdog, in one transaction. */
 async function dispatchStep(
   deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: Extract<ResolvedStep, { kind: "agent" }>,
-  options: { continuation?: Continuation; counted?: boolean } = {},
+  options: { continuation?: Continuation; counted?: boolean; nativeRecoveryChecks?: readonly TransactItem[] } = {},
 ): Promise<Moved> {
   const { task, run } = loaded;
   const gated = await gate(deps, loaded, recipe);
@@ -526,10 +528,13 @@ async function dispatchStep(
         ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
         ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
         // The messages' mark moves in the step's own transaction, last: it holds only while the task's note count is the one read.
-        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem])],
+        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem]), ...(options.nativeRecoveryChecks ?? [])],
       });
       return "moved";
     } catch (error) {
+      const nativeCount = options.nativeRecoveryChecks?.length ?? 0;
+      const extraCancellation = error instanceof AgentXError ? (error as { extraCancellation?: string[] }).extraCancellation : undefined;
+      if (nativeCount > 0 && extraCancellation?.slice(-nativeCount).includes("ConditionalCheckFailed")) throw budgetActorRefused();
       // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
       if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "STALE_FENCE")) {
         const fresh = await load(deps, task.taskId);
@@ -576,7 +581,7 @@ async function askForApproval(deps: AgentRunEngineDependencies, loaded: Loaded, 
  * task no longer lets it go on. Safe to call at any time and from any process: a run that is waiting, paused, busy or over is left as it is.
  * `PAUSED_BUDGET` runs again from the step that was cut off once the task's `budgetPause` has been cleared (Task 32's approval of the raise).
  */
-export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string, expectedPausedRevision?: number): Promise<AdvanceResult> {
+export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string, expectedPausedRevision?: number, nativeRecoveryChecks: readonly TransactItem[] = []): Promise<AdvanceResult> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     let loaded = await load(deps, taskId);
     if (loaded === undefined) return "no_run";
@@ -599,7 +604,12 @@ export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: 
       }
       const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING" };
       delete (resumed as { pause?: unknown }).pause;
-      if (!await commitOrLost(deps, [putRun(deps, taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0)])) continue;
+      try {
+        if (!await commitOrLost(deps, [putRun(deps, taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0), ...nativeRecoveryChecks])) continue;
+      } catch (error) {
+        if ([...(failedIndexes(error) ?? [])].some(index => index >= 3)) throw budgetActorRefused();
+        throw error;
+      }
       loaded = { task, run: { ...resumed, revision: run.revision + 1 } };
     }
     const current = loaded.run;
@@ -618,7 +628,7 @@ export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: 
     }
     // The checks before a step (the run is not over, the creator is still a member, the recipe is still allowed) are the gate's, inside each dispatch.
     const moved = step.kind === "approval" ? await askForApproval(deps, loaded, recipe, step)
-      : step.kind === "agent" ? await dispatchStep(deps, loaded, recipe, step, { ...await rerunOutcomes(deps, loaded, step).then((continuation) => (continuation === undefined ? {} : { continuation })) })
+      : step.kind === "agent" ? await dispatchStep(deps, loaded, recipe, step, { nativeRecoveryChecks, ...await rerunOutcomes(deps, loaded, step).then((continuation) => (continuation === undefined ? {} : { continuation })) })
       : undefined;
     if (moved === undefined) {
       await endRun(deps, loaded, { state: "FAILED", reason: `${step.name} is not a step an agent run can take.` });

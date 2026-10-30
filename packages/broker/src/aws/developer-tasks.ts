@@ -2791,6 +2791,7 @@ export interface SpendResumeInput {
   resetRunWindow: boolean;
   firstDispatch: boolean;
   expectedPausedAgentRevision?: number;
+  nativeRecoveryChecks?: TransactItems;
   /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
   resume?: "implement";
   runLimitUsd?: number;
@@ -2823,7 +2824,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision);
+    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision, input.nativeRecoveryChecks);
     return;
   }
   const requestId = resumeRequestId(input.spendRequestId, "resume");
@@ -2833,7 +2834,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     return;
   }
   // A task with no workflow: the system's Continue (its window is the approval's).
-  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => [], { sharedTask: task.shared === true });
+  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => input.nativeRecoveryChecks ?? [], { sharedTask: task.shared === true });
   const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
   if (fresh !== undefined) {
     const view = await taskView(deps, fresh, { events: 0, details: false });
@@ -2861,14 +2862,15 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     if (deps.agentRuns === undefined || current.agent === undefined) throw budgetActorRefused();
     await requireAgentAccess(deps.agentRuns, caller, current.agent.agentId, current.agent.version === "draft" ? "edit" : "use");
     if (current.origin !== "app" || !isDeepStrictEqual(current.payer, receipt.payer) || current.project !== receipt.place.project) throw agentXError("CHANGE_STALE", "The task's payer changed. Review the task before continuing.");
+    const nativeRecoveryChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access)];
     try {
-      await deps.actions.transact([...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access)]);
+      await deps.actions.transact(nativeRecoveryChecks);
     } catch (error) {
       if (failedIndexes(error) !== undefined) throw budgetActorRefused();
       throw error;
     }
     if (current.closedAt === undefined && (receipt.workflowRevision === null || current.workflow?.revision === receipt.workflowRevision)) {
-      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false,
+      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false, nativeRecoveryChecks,
         ...(receipt.agentRunRevision === null ? {} : { expectedPausedAgentRevision: receipt.agentRunRevision }) });
     }
     const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
